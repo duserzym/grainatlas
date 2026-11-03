@@ -26,3 +26,6 @@ Thumbs.db
 !docs/**/*.png
 !ui/public/**
 !ui/static/**
+/ui/src/lib/core/pkg/
+/ui/test-results/
+/ui/playwright-report/

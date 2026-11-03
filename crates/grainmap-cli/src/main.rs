@@ -23,6 +23,9 @@ struct Cli {
 enum Cmd {
     /// Show the areas and tiles of a package without stitching.
     Info { folder: PathBuf },
+    /// Print `<area> <sha256>` of the base mosaic of every area with default parameters
+    /// (the native half of the wasm/native parity check).
+    Hash { folder: PathBuf },
     /// Stitch one area folder (or every area of a package folder) into a project folder.
     Stitch {
         /// An area folder (e.g. Sweden_XS_150X/005_AH1-GC1) or a package folder.
@@ -51,6 +54,19 @@ fn main() -> Result<()> {
         Cmd::Info { folder } => {
             let (pkg, _) = open(&folder)?;
             println!("{}", serde_json::to_string_pretty(pkg.info())?);
+        }
+        Cmd::Hash { folder } => {
+            let (pkg, only) = open(&folder)?;
+            let mut project = Project::new(pkg.info(), "hash", "1970-01-01T00:00:00Z");
+            for (ai, area) in pkg.info().areas.iter().enumerate() {
+                if only.as_ref().is_some_and(|o| o != &area.id) {
+                    continue;
+                }
+                let rec = project.area_mut(&area.id).expect("area");
+                let tiles = pipeline::read_tiles(pkg.as_ref(), ai, rec)?;
+                let o = pipeline::run(rec, &tiles, &AreaParams::default(), &Ctl::NONE, &|| 0.0, &mut Timings::default())?;
+                println!("{} {}", area.id, o.mosaic_json.sha256);
+            }
         }
         Cmd::Stitch { folder, out, params, fast, no_pyramid, png } => {
             let (pkg, only) = open(&folder)?;

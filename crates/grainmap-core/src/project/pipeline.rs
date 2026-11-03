@@ -88,13 +88,13 @@ pub fn run(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, ctl: &Ctl,
     ctl.check()?;
 
     ctl.report("photometric", 0.0);
-    let (mut corrected, photo) = crate::photometric::correct(&placement, &imgs, &params.photometric);
+    let (corrected, photo) = crate::photometric::correct(&placement, &imgs, &params.photometric);
+    drop(imgs);
     lap("photometric", timings);
     ctl.check()?;
     let fill = if params.photometric.background { photo.background_median } else { median_of(&corrected) };
 
-    let (linear, coverage) = crate::blend::blend(&placement, &corrected, &params.blend, fill, ctl)?;
-    corrected.clear();
+    let (linear, coverage) = crate::blend::blend(&placement, corrected, &params.blend, fill, ctl)?;
     lap("blend", timings);
     ctl.check()?;
 
