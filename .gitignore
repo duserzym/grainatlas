@@ -29,3 +29,4 @@ Thumbs.db
 /ui/src/lib/core/pkg/
 /ui/test-results/
 /ui/playwright-report/
+/tauri/src-tauri/icons/

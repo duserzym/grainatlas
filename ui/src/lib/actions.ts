@@ -111,7 +111,7 @@ export async function saveProject() {
   const core = await app.core;
   if (core.kind === 'tauri') {
     const where = await app.run('Saving project', () => core.saveProject(p, {}));
-    if (where) app.error = null;
+    if (where) app.notice = `Saved ${where}`;
     return where;
   }
   download(JSON.stringify(p, null, 2), `${p.package.name}.grainmap.project.json`, 'application/json');
@@ -123,4 +123,17 @@ export async function exportPng(areaId: string) {
   const tone = app.tone[areaId];
   const png = await app.run('Exporting PNG', () => core.exportPng(areaId, tone));
   if (png) download(png, `${areaId}_mosaic.png`, 'image/png');
+}
+
+/** Finds grains in every stitched area (keeps ids and numbers of grains found before). */
+export async function findAllGrains() {
+  const core = await app.core;
+  for (const id of Object.keys(app.stitched)) {
+    const params = JSON.parse(JSON.stringify(app.params[id].segment));
+    const prev = JSON.parse(JSON.stringify(app.grains[id] ?? []));
+    const r = await app.run(`Finding grains in ${id}`, () => core.segment(id, params, prev));
+    if (!r) return;
+    app.grains = { ...app.grains, [id]: r };
+  }
+  app.persist();
 }

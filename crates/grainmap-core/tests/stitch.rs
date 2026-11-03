@@ -142,3 +142,17 @@ fn fixture_stitches_with_small_residuals() {
     let j = project.to_json();
     assert_eq!(Project::from_json(&j).unwrap(), project);
 }
+
+/// Golden hash (plan section 9): the fixture mosaic with default parameters. A change in output
+/// must be deliberate and update tests/golden/fixture_mosaic.sha256 (the wasm build is checked
+/// against the same value by `make parity`).
+#[test]
+fn fixture_mosaic_matches_golden_hash() {
+    let golden = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden/fixture_mosaic.sha256")).unwrap();
+    let pkg = fixture();
+    let mut project = Project::new(pkg.info(), "hash", "1970-01-01T00:00:00Z");
+    let rec = &mut project.areas[0];
+    let tiles = pipeline::read_tiles(pkg.as_ref(), 0, rec).unwrap();
+    let out = pipeline::run(rec, &tiles, &AreaParams::default(), &Ctl::NONE, &|| 0.0, &mut Timings::default()).unwrap();
+    assert_eq!(format!("{} {}", rec.id, out.mosaic_json.sha256), golden.trim());
+}

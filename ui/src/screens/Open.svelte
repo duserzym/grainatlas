@@ -2,13 +2,14 @@
   import { onMount } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { loadProjectFile, openFiles, openPath } from '../lib/actions';
+  import { findAllGrains, loadProjectFile, openFiles, openPath, stitchAll } from '../lib/actions';
   import { isTauri } from '../lib/core/core';
 
   let over = $state(false);
   let input: HTMLInputElement;
   let recent = $state<{ name: string; when: string; areas: number; spots: number }[]>([]);
   const desktop = isTauri();
+  let startupDone = false;
 
   onMount(() => {
     try {
@@ -17,6 +18,19 @@
       recent = [];
     }
     if (!desktop) return;
+    if (!startupDone) {
+      startupDone = true;
+      import('@tauri-apps/api/core').then(async ({ invoke }) => {
+        const s = await invoke<{ path: string | null; stitch: boolean; segment: boolean }>('startup');
+        if (!s.path) return;
+        await openPath(s.path);
+        if (s.stitch) await stitchAll();
+        if (s.segment) {
+          await findAllGrains();
+          app.screen = 'canvas';
+        }
+      });
+    }
     // Desktop: dropped folders arrive as paths through Tauri.
     let un: (() => void) | undefined;
     import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
@@ -90,10 +104,10 @@
     <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={chosen} data-testid="package-input" />
   </div>
 
-  <div class="example">
+  {#if !desktop}<div class="example">
     <button onclick={example} data-testid="example">Try the example</button>
     <span class="faint">one 3 × 2 TM4000 area (HJ-GC1, 150×, SE) from the test fixture</span>
-  </div>
+  </div>{/if}
 
   <div class="cols">
     <div class="glass panel">
