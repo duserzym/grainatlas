@@ -14,7 +14,7 @@ export async function openFiles(name: string, files: PackageFile[]) {
 
 export async function openPath(path: string) {
   const core = await app.core;
-  if (/\.grainmap\/?$/.test(path)) {
+  if (/\.grainatlas\/?$/.test(path)) {
     const r = await app.run(`Opening ${path}`, () => core.openProject(path));
     if (!r) return;
     await adoptPackage(r.info, r.project);
@@ -38,7 +38,7 @@ async function adoptPackage(info: import('./core/types').PackageInfo, fromFolder
   let saved: Project | null = fromFolder;
   if (!saved) {
     try {
-      const s = localStorage.getItem(`grainmap.project.${info.name}`);
+      const s = localStorage.getItem(`grainatlas.project.${info.name}`);
       if (s) saved = JSON.parse(s);
     } catch {
       saved = null;
@@ -75,7 +75,7 @@ export async function loadProjectFile(file: File) {
 }
 
 function stripUi(p: Project): Project {
-  const { grainmap_ui: _ui, ...rest } = p as Project & { grainmap_ui?: unknown };
+  const { grainatlas_ui: _ui, ...rest } = p as Project & { grainatlas_ui?: unknown };
   return rest as Project;
 }
 
@@ -122,7 +122,7 @@ export async function saveProject() {
     if (where) app.notice = `Saved ${where}`;
     return where;
   }
-  download(JSON.stringify(p, null, 2), `${p.package.name}.grainmap.project.json`, 'application/json');
+  download(JSON.stringify(p, null, 2), `${p.package.name}.grainatlas.project.json`, 'application/json');
   return null;
 }
 

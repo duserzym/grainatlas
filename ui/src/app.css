@@ -1,6 +1,6 @@
-/* grainmap design tokens, copied from laicpmsdb/ui/src/app.css (glass design
+/* grainatlas design tokens, copied from laicpmsdb/ui/src/app.css (glass design
    language) so the two apps look like one. Scoped to .gm-root, never :root, so
-   grainmap can live in a tab of the unified shell (plan section 7). Dark is the
+   grainatlas can live in a tab of the unified shell (plan section 7). Dark is the
    default (CL work); [data-theme='light'] switches. Glass is for chrome only;
    the image surface is opaque. */
 
@@ -183,4 +183,4 @@
 .gm-root .pill.warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
 
 /* the host page: only the body margin, nothing else global */
-body:has(> #grainmap) { margin: 0; background: #0c111b; }
+body:has(> #grainatlas) { margin: 0; background: #0c111b; }

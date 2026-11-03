@@ -6,7 +6,7 @@ Context: panorama blending, Laplacian pyramids, Poisson editing, HDR merge and
 GrabCut are classical, well-documented algorithms that storytold/photocraft
 implements in pure, safe Rust that builds for wasm, under MIT OR Apache-2.0.
 
-Decision: depend on `photocraft-algo` (git, pinned rev). Implement here only
+Decision: grainatlas depends on `photocraft-algo` (git, pinned rev). Implement here only
 what is specific to SEM mounts: readers, stage-prior translation stitching with
 phase correlation, background leveling, dark-background grain segmentation,
 scale bars, spots and print layout.

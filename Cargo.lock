@@ -1366,18 +1366,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "grainmap-cli"
+name = "grainatlas-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "grainmap-core",
+ "grainatlas-core",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "grainmap-core"
+name = "grainatlas-core"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
@@ -1400,10 +1400,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "grainmap-desktop"
+name = "grainatlas-desktop"
 version = "0.1.0"
 dependencies = [
- "grainmap-core",
+ "grainatlas-core",
  "serde",
  "serde_json",
  "tauri",
@@ -1412,10 +1412,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "grainmap-wasm"
+name = "grainatlas-wasm"
 version = "0.1.0"
 dependencies = [
- "grainmap-core",
+ "grainatlas-core",
  "js-sys",
  "serde",
  "serde_json",

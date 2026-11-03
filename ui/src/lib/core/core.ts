@@ -15,7 +15,7 @@ export interface Core {
   openFiles(name: string, files: PackageFile[], onProgress?: (p: Progress) => void): Promise<PackageInfo>;
   /** Desktop: open a package folder by path. */
   openPath(path: string): Promise<PackageInfo>;
-  /** Desktop: open a saved `<name>.grainmap/` folder (its package and project). */
+  /** Desktop: open a saved `<name>.grainatlas/` folder (its package and project). */
   openProject(path: string): Promise<{ info: PackageInfo; project: Project }>;
   loadProject(json: string): Promise<void>;
   projectJson(): Promise<string>;

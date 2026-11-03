@@ -259,7 +259,7 @@ fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages
         r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}" font-family="DejaVu Sans, sans-serif"><rect width="{w}" height="{h}" fill="white"/>"#
     );
     // Header.
-    let title = if p.title.is_empty() { "grainmap" } else { &p.title };
+    let title = if p.title.is_empty() { "grainatlas" } else { &p.title };
     let _ = write!(s, r#"<text x="{ox}" y="{}" font-size="4.2" fill="black">{}</text>"#, p.margin_mm + 5.0, esc(title));
     let _ = write!(s, r##"<text x="{}" y="{}" font-size="3" fill="#444" text-anchor="end">1 mm = {} µm</text>"##, w - p.margin_mm, p.margin_mm + 5.0, fmt_num(um_per_mm));
     for &(i, x, y) in list {

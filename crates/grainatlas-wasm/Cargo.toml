@@ -1,6 +1,6 @@
 [package]
-name = "grainmap-wasm"
-description = "grainmap core for the browser (wasm-bindgen)"
+name = "grainatlas-wasm"
+description = "grainatlas core for the browser (wasm-bindgen)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ rust-version.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-grainmap-core = { workspace = true, default-features = false }
+grainatlas-core = { workspace = true, default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = "=0.2.130"

@@ -1,6 +1,6 @@
-use grainmap_core::image::Gray;
-use grainmap_core::scale;
-use grainmap_core::segment::{self, SegmentParams, WorkImage};
+use grainatlas_core::image::Gray;
+use grainatlas_core::scale;
+use grainatlas_core::segment::{self, SegmentParams, WorkImage};
 
 /// Dark epoxy with bright discs; two of them touching (a figure eight) and one long prism.
 fn scene() -> WorkImage {
@@ -137,7 +137,7 @@ fn scale_helpers() {
 
 #[test]
 fn reference_image_registration() {
-    use grainmap_core::scale::register::{apply, fit, invert};
+    use grainatlas_core::scale::register::{apply, fit, invert};
     // A printout photo: scaled by 0.4 um/px, rotated 3°, offset, slightly sheared.
     let truth = |x: f64, y: f64| {
         let (c, s) = (3f64.to_radians().cos(), 3f64.to_radians().sin());

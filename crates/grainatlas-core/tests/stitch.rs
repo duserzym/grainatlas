@@ -3,11 +3,11 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{Rng, Scene, fixture};
-use grainmap_core::Ctl;
-use grainmap_core::mosaic::{self, StitchParams};
-use grainmap_core::project::pipeline::{self, Timings};
-use grainmap_core::project::{AreaParams, Project};
-use grainmap_core::readers::{AreaMeta, TileMeta};
+use grainatlas_core::Ctl;
+use grainatlas_core::mosaic::{self, StitchParams};
+use grainatlas_core::project::pipeline::{self, Timings};
+use grainatlas_core::project::{AreaParams, Project};
+use grainatlas_core::readers::{AreaMeta, TileMeta};
 
 #[test]
 fn tm4000_reader_parses_fixture() {
@@ -44,14 +44,14 @@ fn tm4000_reader_parses_fixture() {
 
 #[test]
 fn generic_reader_reads_positions_csv() {
-    use grainmap_core::source::MemSource;
+    use grainatlas_core::source::MemSource;
     let mut src = MemSource::new("plain");
-    let g = grainmap_core::image::Gray::filled(8, 6, 0.5);
-    let png = grainmap_core::image::encode_png_gray(8, 6, &g.to_u8());
+    let g = grainatlas_core::image::Gray::filled(8, 6, 0.5);
+    let png = grainatlas_core::image::encode_png_gray(8, 6, &g.to_u8());
     src.insert("a/t0.png", png.clone());
     src.insert("a/t1.png", png);
     src.insert("a/positions.csv", b"file,x_um,y_um,pixel_size_nm,note\nt0.png,100,50,500,first\nt1.png,103,50,500,\n".to_vec());
-    let pkg = grainmap_core::readers::open(std::sync::Arc::new(src)).unwrap();
+    let pkg = grainatlas_core::readers::open(std::sync::Arc::new(src)).unwrap();
     let a = &pkg.info().areas[0];
     assert_eq!(pkg.info().reader, "generic");
     assert_eq!(a.tiles.len(), 2);
@@ -110,7 +110,7 @@ fn synthetic_offsets_recovered() {
 /// A pair with no texture falls back to the prior.
 #[test]
 fn flat_pair_falls_back_to_prior() {
-    let a = grainmap_core::image::Gray::filled(200, 150, 0.1);
+    let a = grainatlas_core::image::Gray::filled(200, 150, 0.1);
     let b = a.clone();
     assert!(mosaic::phasecorr::measure_pair(&a, &b, [160.0, 0.0], &StitchParams::default()).is_none());
 }

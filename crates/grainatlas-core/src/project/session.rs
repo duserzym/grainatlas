@@ -1,6 +1,6 @@
 //! A working session over one opened package: the project record, the
 //! stitched areas in memory and the segmentation work images. The browser
-//! (grainmap-wasm) and the desktop app (Tauri commands) are thin wrappers
+//! (grainatlas-wasm) and the desktop app (Tauri commands) are thin wrappers
 //! around this type, so both run the same code. JSON in, JSON or bytes out.
 //!
 //! Image buffers start with an 8-byte header: width and height as
@@ -271,11 +271,11 @@ impl Session {
     }
 
     /// All files of the project folder (plan section 5.4) for a full project JSON that also
-    /// carries the UI's grains, spots and labels under `grainmap_ui`.
+    /// carries the UI's grains, spots and labels under `grainatlas_ui`.
     pub fn project_files(&self, full_project_json: &str) -> Result<Vec<(String, Vec<u8>)>> {
         let v: serde_json::Value = serde_json::from_str(full_project_json).map_err(invalid)?;
         let mut files = vec![("project.json".to_string(), serde_json::to_vec_pretty(&v).map_err(invalid)?)];
-        let ui = &v["grainmap_ui"];
+        let ui = &v["grainatlas_ui"];
         let spots = serde_json::json!({ "spots": ui["spots"], "labels": ui["labels"] });
         files.push(("spots.json".into(), serde_json::to_vec_pretty(&spots).map_err(invalid)?));
         let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;

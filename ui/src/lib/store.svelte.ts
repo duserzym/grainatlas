@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
 
 function loadSettings(): Settings {
   try {
-    const s = localStorage.getItem('grainmap.settings');
+    const s = localStorage.getItem('grainatlas.settings');
     if (s) return { ...DEFAULT_SETTINGS, ...JSON.parse(s) };
   } catch {
     /* storage may be unavailable */
@@ -90,7 +90,7 @@ class AppState {
 
   saveSettings() {
     try {
-      localStorage.setItem('grainmap.settings', JSON.stringify(this.settings));
+      localStorage.setItem('grainatlas.settings', JSON.stringify(this.settings));
     } catch {
       /* ignore */
     }
@@ -160,7 +160,7 @@ class AppState {
     const p = $state.snapshot(this.project) as Project;
     p.settings = $state.snapshot(this.settings) as Settings;
     const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
-    p['grainmap_ui'] = { grains: $state.snapshot(this.grains), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
+    p['grainatlas_ui'] = { grains: $state.snapshot(this.grains), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
     return p;
   }
 
@@ -170,10 +170,10 @@ class AppState {
       const p = this.fullProject();
       if (!p) return;
       try {
-        localStorage.setItem(`grainmap.project.${p.package.name}`, JSON.stringify(p));
-        const recent: { name: string; when: string; areas: number; spots: number }[] = JSON.parse(localStorage.getItem('grainmap.recent') || '[]').filter((r: { name: string }) => r.name !== p.package.name);
+        localStorage.setItem(`grainatlas.project.${p.package.name}`, JSON.stringify(p));
+        const recent: { name: string; when: string; areas: number; spots: number }[] = JSON.parse(localStorage.getItem('grainatlas.recent') || '[]').filter((r: { name: string }) => r.name !== p.package.name);
         recent.unshift({ name: p.package.name, when: new Date().toISOString(), areas: p.areas.length, spots: this.spots.length });
-        localStorage.setItem('grainmap.recent', JSON.stringify(recent.slice(0, 12)));
+        localStorage.setItem('grainatlas.recent', JSON.stringify(recent.slice(0, 12)));
       } catch {
         /* quota or private mode */
       }
@@ -182,7 +182,7 @@ class AppState {
 
   /** Restores UI-held parts of a saved project. */
   adopt(p: Project) {
-    const ui = p['grainmap_ui'] as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
+    const ui = p['grainatlas_ui'] as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
     if (ui?.overlays) this.overlays = ui.overlays;
     if (ui?.grains) this.grains = ui.grains;
     if (ui?.spots) this.spots = ui.spots;

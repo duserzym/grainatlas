@@ -3,11 +3,11 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{Rng, Scene};
-use grainmap_core::Ctl;
-use grainmap_core::image::Gray;
-use grainmap_core::mosaic::{self, StitchParams};
-use grainmap_core::photometric::{self, GainModel, PhotometricParams, TileOverride, background, hdr, tone};
-use grainmap_core::readers::{AreaMeta, TileMeta};
+use grainatlas_core::Ctl;
+use grainatlas_core::image::Gray;
+use grainatlas_core::mosaic::{self, StitchParams};
+use grainatlas_core::photometric::{self, GainModel, PhotometricParams, TileOverride, background, hdr, tone};
+use grainatlas_core::readers::{AreaMeta, TileMeta};
 
 fn grid(gains: &[(f64, f64)]) -> (mosaic::Placement, Vec<Gray>) {
     let (tw, th) = (300usize, 240usize);
@@ -145,7 +145,7 @@ fn hdr_merge_synthetic_exposures() {
 #[test]
 fn duplicate_fields_group_for_hdr() {
     let t = |i: usize, x: f64| TileMeta { index: i, file: String::new(), w: 10, h: 10, pos_um: [x, 0.0], stage_nm: None, pixel_size_nm: 1000.0, grid: None, meta: BTreeMap::new() };
-    let g = grainmap_core::project::pipeline::hdr_groups(&[t(0, 0.0), t(1, 100.0), t(2, 0.3), t(3, 200.0)]);
+    let g = grainatlas_core::project::pipeline::hdr_groups(&[t(0, 0.0), t(1, 100.0), t(2, 0.3), t(3, 200.0)]);
     assert_eq!(g, vec![vec![0, 2], vec![1], vec![3]]);
 }
 

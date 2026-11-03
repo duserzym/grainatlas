@@ -10,7 +10,7 @@ whose names equal the instrument labels of the session, so the laicpmsdb join
 ## 1. Build a project per mount (batch)
 
 ```bash
-grainmap stitch "<package>/<area>" --out "<dir>/<Session>/<package>.grainmap" --segment --print tabloid --sample <SAMPLE>
+grainatlas stitch "<package>/<area>" --out "<dir>/<Session>/<package>.grainatlas" --segment --print tabloid --sample <SAMPLE>
 ```
 
 This stitches the area (stage prior, phase correlation, global solve,
@@ -22,7 +22,7 @@ sample is typed per spot.
 
 ## 2. Open it in the desktop app
 
-Drop the `<package>.grainmap` folder on the window (or choose it). The app
+Drop the `<package>.grainatlas` folder on the window (or choose it). The app
 re-opens the package from the path recorded in `project.json` and restores
 parameters and grains.
 
@@ -47,7 +47,7 @@ name to correct it.
 ## 5. Export
 
 Spots CSV (ids, names, grain, um, px, stage nm) and GeoJSON (grains and spots)
-from the Spots tab; Save project writes the `.grainmap` folder. Linking to
+from the Spots tab; Save project writes the `.grainatlas` folder. Linking to
 laicpmsdb is phase 8 of the plan (`POST /v1/mounts/{id}/spots` of the spot
 export); until then the CSV carries the project, area and (if set) mount ids.
 

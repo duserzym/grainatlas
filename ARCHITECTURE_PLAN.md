@@ -1,4 +1,4 @@
-# grainmap: architecture plan and roadmap
+# grainatlas: architecture plan and roadmap
 
 **Status:** plan, 2026-11-03. Companion to `laicpmsdb` (the LA-ICP-MS session
 database) and UPbRPy (the reduction engine). This document is the
@@ -7,26 +7,28 @@ to be re-opened in code without an ADR in `docs/decisions/`.
 
 ## 1. Purpose
 
-`grainmap` turns a folder of SEM tiles (CL, BSE or SE) of a grain mount into
+`grainatlas` turns a folder of SEM tiles (CL, BSE or SE) of a grain mount into
 one corrected, scaled, segmented, annotated image, and from that image produces
 the two things a laser session needs: a spot list with names and coordinates,
 and printable grain maps. It is the imaging module of a three-part workflow:
 
 | Module | Owns | Repository |
 | --- | --- | --- |
-| grainmap | images, grains, spots, print layouts | this repository |
+| grainatlas | images, grains, spots, print layouts | this repository |
 | laicpmsdb | samples, mounts, sessions, raw sweeps, reductions | `laicpmsdb` |
 | UPbRPy Studio | data reduction | `UPbRPy` |
 
 The end state is one unified application with one tab per module, where a
 user can click a spot on a grain image and open the raw sweep and the reduced
-result for that spot in the database tab. grainmap is built so that link is a
+result for that spot in the database tab. grainatlas is built so that link is a
 matter of identifiers, not of re-architecture (section 7).
 
 ## 2. Decisions
 
-1. **Name:** `grainmap`. Free on GitHub under both `duserzym` and
-   `Swanson-Hysell-Group`; the user picks the owner at publish time.
+1. **Name:** `grainatlas`, chosen over the working name `grainmap` on
+   2026-11-03. Free on GitHub under both `duserzym` and
+   `Swanson-Hysell-Group` (checked 2026-11-03); the user picks the owner at
+   publish time.
 2. **One Rust core, two front ends.** Every pixel operation (reading, stitching,
    photometric correction, blending, segmentation, scale bars, print layout)
    lives in a Rust library crate that compiles natively (desktop, CLI) and to
@@ -51,7 +53,7 @@ matter of identifiers, not of re-architecture (section 7).
    panels, opaque image surface). The infinite canvas is a custom 2D-canvas
    renderer over an image pyramid with an SVG overlay for spots and labels. No
    OpenSeadragon, no Pixi: fewer than a thousand lines, no dependency.
-5. **Projects are folders, not databases.** A `.grainmap/` project folder holds
+5. **Projects are folders, not databases.** A `.grainatlas/` project folder holds
    a versioned `project.json`, content-addressed references to the source
    tiles, the stitched pyramid, masks, spots and layouts (section 5.4). Code
    lives on GitHub; images live on the NAS or the laptop, as in
@@ -156,9 +158,9 @@ shortcuts for every tool; undo and redo for all edits.
 
 | Component | Technology | Why |
 | --- | --- | --- |
-| `grainmap-core` (Rust crate) | Rust 2024, `image`, `rustfft`, `photocraft-algo`, `serde`, `uuid` v7 | all algorithms; native and wasm; no I/O except through a `Package` trait and byte buffers |
-| `grainmap-wasm` | `wasm-bindgen`, `wasm-pack` | the core for the browser: typed JS API, transferable buffers, progress callbacks, cancellation |
-| `grainmap-cli` | `clap` | `grainmap stitch`, `segment`, `export`, `print` for batch work and tests |
+| `grainatlas-core` (Rust crate) | Rust 2024, `image`, `rustfft`, `photocraft-algo`, `serde`, `uuid` v7 | all algorithms; native and wasm; no I/O except through a `Package` trait and byte buffers |
+| `grainatlas-wasm` | `wasm-bindgen`, `wasm-pack` | the core for the browser: typed JS API, transferable buffers, progress callbacks, cancellation |
+| `grainatlas-cli` | `clap` | `grainatlas stitch`, `segment`, `export`, `print` for batch work and tests |
 | `ui` | Svelte 5, TypeScript, Vite | the one interface; talks to the core through a `Core` interface with two implementations (wasm worker, Tauri invoke) |
 | `tauri` | Tauri 2 | desktop shell; file dialogs, native file system, multithreaded core |
 | `fixtures` | one TM4000 area, 6 tiles | tests and the demo |
@@ -166,11 +168,11 @@ shortcuts for every tool; undo and redo for all edits.
 ### 5.2 Repository layout
 
 ```text
-grainmap/
+grainatlas/
   crates/
-    grainmap-core/      readers/, mosaic/, photometric/, blend/, segment/, scale/, spots/, layout/, project/
-    grainmap-wasm/
-    grainmap-cli/
+    grainatlas-core/      readers/, mosaic/, photometric/, blend/, segment/, scale/, spots/, layout/, project/
+    grainatlas-wasm/
+    grainatlas-cli/
   ui/                   Svelte app; src/lib/core/{wasm,tauri}.ts implement the Core interface
   tauri/                Tauri 2 shell (src-tauri)
   tests/fixtures/       tm4000/001_HJ-GC1 (6 tiles + sidecars + .zag excerpt)
@@ -197,7 +199,7 @@ stored in `project.json`.
 ### 5.4 Project folder
 
 ```text
-<name>.grainmap/
+<name>.grainatlas/
   project.json          schema_version, uuid, created, package path and reader, laicpmsdb mount id,
                         areas[] with tile list (filename, sha256, position, pixel size),
                         parameters for every step, per-tile manual overrides
@@ -354,11 +356,11 @@ Letter, Tabloid 11x17 (the lab's default), A4, A3, custom.
 - A spot carries its UUIDv7 from birth; the laser session labels are
   generated from spot names, so `acquisition.label` in laicpmsdb equals the
   spot name and the join is exact.
-- Deep links: `grainmap://project/<uuid>/spot/<uuid>` and
+- Deep links: `grainatlas://project/<uuid>/spot/<uuid>` and
   `laicpmsdb://acquisition/<uuid>`; each app registers its scheme in Tauri and
   the web builds accept the same path as a route.
 - The unified shell is a later Tauri app whose tabs load the laicpmsdb web
-  build, the grainmap web build and UPbRPy Studio; nothing in grainmap may
+  build, the grainatlas web build and UPbRPy Studio; nothing in grainatlas may
   assume it is the only app in the window (no global CSS, no `window.name`).
 
 ## 8. Roadmap
@@ -366,7 +368,7 @@ Letter, Tabloid 11x17 (the lab's default), A4, A3, custom.
 | Phase | Scope | Done when |
 | --- | --- | --- |
 | 0 | repository, plan, ADRs, fixture, CI skeleton | this document committed; fixture area under `tests/fixtures/` |
-| 1 | core readers and stitching | `grainmap stitch <area>` writes a mosaic and pyramid for the 4x8 example with no visible seams; residuals under 1 px; tests on the fixture |
+| 1 | core readers and stitching | `grainatlas stitch <area>` writes a mosaic and pyramid for the 4x8 example with no visible seams; residuals under 1 px; tests on the fixture |
 | 2 | photometric, background, HDR | per-tile gain and offset, background leveling, percentile stretch, CLAHE; HDR merge tested on synthetic exposures |
 | 3 | web UI | Svelte app with wasm worker: open package, stitch, histogram and correction sliders, infinite canvas with pyramid; `vite build` static page works from `file://` and from any static host |
 | 4 | segmentation and scale | grain outlines and numbers on the example areas, scale bars, grain table export |

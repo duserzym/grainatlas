@@ -1,20 +1,20 @@
 [package]
-name = "grainmap-desktop"
-description = "grainmap desktop app (Tauri 2) with the native, multithreaded core"
+name = "grainatlas-desktop"
+description = "grainatlas desktop app (Tauri 2) with the native, multithreaded core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "grainmap_desktop_lib"
+name = "grainatlas_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-grainmap-core = { workspace = true }
+grainatlas-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }

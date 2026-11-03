@@ -13,7 +13,7 @@
 
   onMount(() => {
     try {
-      recent = JSON.parse(localStorage.getItem('grainmap.recent') || '[]');
+      recent = JSON.parse(localStorage.getItem('grainatlas.recent') || '[]');
     } catch {
       recent = [];
     }

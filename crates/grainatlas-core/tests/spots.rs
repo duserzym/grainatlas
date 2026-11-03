@@ -2,13 +2,13 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use grainmap_core::project::Project;
-use grainmap_core::segment::Grain;
-use grainmap_core::spots::{self, Settings, Spot, SpotKind};
+use grainatlas_core::project::Project;
+use grainatlas_core::segment::Grain;
+use grainatlas_core::spots::{self, Settings, Spot, SpotKind};
 
 fn grain(n: u32, cx: f64, cy: f64) -> Grain {
     Grain {
-        id: grainmap_core::project::new_id(),
+        id: grainatlas_core::project::new_id(),
         number: n,
         polygon_um: vec![[cx - 20.0, cy - 30.0], [cx + 20.0, cy - 30.0], [cx + 20.0, cy + 30.0], [cx - 20.0, cy + 30.0]],
         bbox_um: [cx - 20.0, cy - 30.0, cx + 20.0, cy + 30.0],

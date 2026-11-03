@@ -3,11 +3,11 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::fixture;
-use grainmap_core::Ctl;
-use grainmap_core::layout::{self, Items, LayoutParams};
-use grainmap_core::project::pipeline::{self, Timings};
-use grainmap_core::project::{AreaParams, Project};
-use grainmap_core::spots::{self, Settings};
+use grainatlas_core::Ctl;
+use grainatlas_core::layout::{self, Items, LayoutParams};
+use grainatlas_core::project::pipeline::{self, Timings};
+use grainatlas_core::project::{AreaParams, Project};
+use grainatlas_core::spots::{self, Settings};
 
 /// Prints the fixture on Tabloid: pages carry the 10 mm paper bar and a um bar at image scale,
 /// and the PDF has Tabloid pages (792 x 1224 pt).

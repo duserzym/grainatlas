@@ -1,4 +1,4 @@
-//! grainmap-core: every pixel operation of grainmap (ADR-0001).
+//! grainatlas-core: every pixel operation of grainatlas (ADR-0001).
 //!
 //! The crate has no file-system access of its own: packages are read through
 //! [`source::Source`] (an in-memory map in the browser, a directory on native

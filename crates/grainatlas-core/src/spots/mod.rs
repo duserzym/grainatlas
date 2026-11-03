@@ -246,7 +246,7 @@ pub fn geojson(project: &Project, grains: &BTreeMap<String, Vec<Grain>>, spots: 
     json!({
         "type": "FeatureCollection",
         "name": project.name,
-        "grainmap": { "project_uuid": project.uuid, "units": "micrometre", "frame": "mosaic, origin top-left, y down", "laicpmsdb_mount_id": project.laicpmsdb.mount_id },
+        "grainatlas": { "project_uuid": project.uuid, "units": "micrometre", "frame": "mosaic, origin top-left, y down", "laicpmsdb_mount_id": project.laicpmsdb.mount_id },
         "features": features,
     })
 }

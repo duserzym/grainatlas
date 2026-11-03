@@ -6,7 +6,7 @@ Context: the tool must be fast on 40-megapixel mosaics, run as a web page
 without a server, and ship as a desktop app on macOS and Windows, with
 identical results everywhere.
 
-Decision: all image algorithms live in `grainmap-core` (Rust) compiled to
+Decision: all image algorithms live in `grainatlas-core` (Rust) compiled to
 `wasm32` for the browser and natively for Tauri and the CLI. The Svelte UI
 talks to a `Core` interface with a wasm-worker and a Tauri implementation.
 No Python in the product; Python may be used for one-off analysis scripts.

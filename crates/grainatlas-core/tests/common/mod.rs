@@ -2,9 +2,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use grainmap_core::image::Gray;
-use grainmap_core::readers::{self, Package};
-use grainmap_core::source::DirSource;
+use grainatlas_core::image::Gray;
+use grainatlas_core::readers::{self, Package};
+use grainatlas_core::source::DirSource;
 
 pub fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/tm4000/Sweden_XS_150X")

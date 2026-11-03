@@ -24,7 +24,7 @@ function list(dir: string): string[] {
 function demo(): Plugin {
   const manifest = () => JSON.stringify({ name: 'Sweden_XS_150X', files: list(FIXTURE) });
   return {
-    name: 'grainmap-demo',
+    name: 'grainatlas-demo',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const u = decodeURIComponent((req.url || '').split('?')[0]);

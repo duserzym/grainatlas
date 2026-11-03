@@ -53,10 +53,10 @@
     const core = await app.core;
     const pages = $state.snapshot(result.pages) as string[];
     const bytes = await app.run('Writing PDF', () => core.pdf(pages));
-    if (bytes) download(bytes, `${app.pkg?.name ?? 'grainmap'}_${params.items}_${params.paper}.pdf`, 'application/pdf');
+    if (bytes) download(bytes, `${app.pkg?.name ?? 'grainatlas'}_${params.items}_${params.paper}.pdf`, 'application/pdf');
   }
   function svgs() {
-    result?.pages.forEach((s, i) => download(s, `${app.pkg?.name ?? 'grainmap'}_page${i + 1}.svg`, 'image/svg+xml'));
+    result?.pages.forEach((s, i) => download(s, `${app.pkg?.name ?? 'grainatlas'}_page${i + 1}.svg`, 'image/svg+xml'));
   }
   function browserPrint() {
     if (!result) return;

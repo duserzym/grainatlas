@@ -2,10 +2,10 @@
 // parameters in the wasm core (under Node) and print `<area> <sha256>`.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import init, { Session } from '../src/lib/core/pkg/grainmap.js';
+import init, { Session } from '../src/lib/core/pkg/grainatlas.js';
 
 const root = process.argv[2];
-await init({ module_or_path: readFileSync(new URL('../src/lib/core/pkg/grainmap_bg.wasm', import.meta.url)) });
+await init({ module_or_path: readFileSync(new URL('../src/lib/core/pkg/grainatlas_bg.wasm', import.meta.url)) });
 const s = new Session(root.split('/').filter(Boolean).pop());
 const walk = (d) => {
   for (const n of readdirSync(d)) {

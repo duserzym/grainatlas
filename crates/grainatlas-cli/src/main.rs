@@ -1,4 +1,4 @@
-//! `grainmap` command line: batch work and tests.
+//! `grainatlas` command line: batch work and tests.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -6,14 +6,14 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use grainmap_core::Ctl;
-use grainmap_core::project::pipeline::{self, Timings};
-use grainmap_core::project::{AreaParams, Project};
-use grainmap_core::readers::{self, Package};
-use grainmap_core::source::DirSource;
+use grainatlas_core::Ctl;
+use grainatlas_core::project::pipeline::{self, Timings};
+use grainatlas_core::project::{AreaParams, Project};
+use grainatlas_core::readers::{self, Package};
+use grainatlas_core::source::DirSource;
 
 #[derive(Parser)]
-#[command(name = "grainmap", version, about = "Stitch, correct, segment and lay out SEM grain-mount images")]
+#[command(name = "grainatlas", version, about = "Stitch, correct, segment and lay out SEM grain-mount images")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -30,7 +30,7 @@ enum Cmd {
     Stitch {
         /// An area folder (e.g. Sweden_XS_150X/005_AH1-GC1) or a package folder.
         folder: PathBuf,
-        /// Project folder to write (`<name>.grainmap`).
+        /// Project folder to write (`<name>.grainatlas`).
         #[arg(long)]
         out: PathBuf,
         /// Parameters as a JSON file (AreaParams); defaults otherwise.
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
                 None => AreaParams::default(),
             };
             if fast {
-                params.blend.mode = grainmap_core::blend::BlendMode::Feather;
+                params.blend.mode = grainatlas_core::blend::BlendMode::Feather;
             }
             let pj = out.join("project.json");
             let mut project = if pj.exists() {
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
                     continue;
                 }
                 if project.areas.iter().all(|a| a.id != area.id) {
-                    project.areas.push(grainmap_core::project::AreaRecord::from_meta(area));
+                    project.areas.push(grainatlas_core::project::AreaRecord::from_meta(area));
                 }
                 let rec = project.area_mut(&area.id).expect("area");
                 if let Some(s) = &sample {
@@ -140,7 +140,7 @@ fn main() -> Result<()> {
                 if segment || print.is_some() {
                     let t = clock();
                     let rec = project.area_mut(&area.id).expect("area");
-                    let prev: Vec<grainmap_core::segment::Grain> = std::fs::read(out.join(format!("masks/{}/grains.json", area.id)))
+                    let prev: Vec<grainatlas_core::segment::Grain> = std::fs::read(out.join(format!("masks/{}/grains.json", area.id)))
                         .ok()
                         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                         .and_then(|v| serde_json::from_value(v["grains"].clone()).ok())
@@ -150,11 +150,11 @@ fn main() -> Result<()> {
                     for (rel, bytes) in pipeline::mask_files(rec, &o, &grains) {
                         write(&out.join(rel), &bytes)?;
                     }
-                    let csv = grainmap_core::segment::grains_csv(&grains, |x, y| rec.stage_of(x, y), |_| 0);
+                    let csv = grainatlas_core::segment::grains_csv(&grains, |x, y| rec.stage_of(x, y), |_| 0);
                     write(&out.join(format!("exports/{}_grains.csv", area.id)), csv.as_bytes())?;
                     grains_n = Some(grains.len());
-                    // The UI keeps grains under `grainmap_ui` in project.json.
-                    let ui = project.extra.entry("grainmap_ui".into()).or_insert_with(|| serde_json::json!({}));
+                    // The UI keeps grains under `grainatlas_ui` in project.json.
+                    let ui = project.extra.entry("grainatlas_ui".into()).or_insert_with(|| serde_json::json!({}));
                     ui["grains"][&area.id] = serde_json::to_value(&grains)?;
                     if let Some(paper) = &print {
                         let t = clock();
@@ -162,12 +162,12 @@ fn main() -> Result<()> {
                         let img = pipeline::area_image(rec, &o, &params.tone);
                         let mut gmap = std::collections::BTreeMap::new();
                         gmap.insert(rec.id.clone(), grains.clone());
-                        let lp = grainmap_core::layout::LayoutParams { paper: paper.clone(), um_per_mm: scale, title: format!("{} · {}", pkg.info().name, rec.name), ..Default::default() };
-                        let r = grainmap_core::layout::layout(&lp, &[img], &gmap, &[], &[]);
+                        let lp = grainatlas_core::layout::LayoutParams { paper: paper.clone(), um_per_mm: scale, title: format!("{} · {}", pkg.info().name, rec.name), ..Default::default() };
+                        let r = grainatlas_core::layout::layout(&lp, &[img], &gmap, &[], &[]);
                         for (i, svg) in r.pages.iter().enumerate() {
                             write(&out.join(format!("exports/{}_page{}.svg", area.id, i + 1)), svg.as_bytes())?;
                         }
-                        let pdf = grainmap_core::layout::pdf::pdf_from_svgs(&r.pages)?;
+                        let pdf = grainatlas_core::layout::pdf::pdf_from_svgs(&r.pages)?;
                         write(&out.join(format!("exports/{}_grains.pdf", area.id)), &pdf)?;
                         eprintln!("  {} pages at {} um/mm in {:.0} ms", r.pages.len(), r.um_per_mm, clock() - t);
                     }
@@ -180,7 +180,7 @@ fn main() -> Result<()> {
                     }
                 }
                 if png {
-                    let b = grainmap_core::image::encode_png_gray(o.linear.w, o.linear.h, &o.base);
+                    let b = grainatlas_core::image::encode_png_gray(o.linear.w, o.linear.h, &o.base);
                     write(&out.join(format!("exports/{}_mosaic.png", area.id)), &b)?;
                 }
             }

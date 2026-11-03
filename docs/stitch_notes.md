@@ -1,7 +1,7 @@
 # Stitch notes: Sweden_XS_150X (TM4000, 150x, SE)
 
 Measured 2026-11-03 on an Apple M4 Pro (14 cores), release build,
-`grainmap stitch <package> --out <project>` (phase 1 pipeline: stage prior,
+`grainatlas stitch <package> --out <project>` (phase 1 pipeline: stage prior,
 phase correlation, Lucas-Kanade refinement, global solve, seams, multiband,
 pyramid). Photometric correction is not applied in these numbers (phase 2).
 
@@ -52,7 +52,7 @@ several multiband bands at once; the wasm build builds one at a time).
   (`seam_labels` needs one full-canvas plane per tile) and upsampled to
   binary weights for `multiband`.
 
-Synthetic test (`crates/grainmap-core/tests/stitch.rs`): a 3 x 3 grid with
+Synthetic test (`crates/grainatlas-core/tests/stitch.rs`): a 3 x 3 grid with
 random sub-pixel drifts up to ±8 px is recovered within 0.25 px.
 
 ## Phase 2: photometric correction

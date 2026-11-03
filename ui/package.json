@@ -1,9 +1,9 @@
 {
-  "name": "grainmap-ui",
+  "name": "grainatlas-ui",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "grainmap interface (Svelte 5): static web page with the wasm core in a worker, and the Tauri desktop shell",
+  "description": "grainatlas interface (Svelte 5): static web page with the wasm core in a worker, and the Tauri desktop shell",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
