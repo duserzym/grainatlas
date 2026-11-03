@@ -15,6 +15,8 @@ export interface Core {
   openFiles(name: string, files: PackageFile[], onProgress?: (p: Progress) => void): Promise<PackageInfo>;
   /** Desktop: open a package folder by path. */
   openPath(path: string): Promise<PackageInfo>;
+  /** Desktop: open a saved `<name>.grainmap/` folder (its package and project). */
+  openProject(path: string): Promise<{ info: PackageInfo; project: Project }>;
   loadProject(json: string): Promise<void>;
   projectJson(): Promise<string>;
   navigation(): Promise<RawImage | null>;
@@ -42,6 +44,8 @@ export interface Core {
   exportPng(areaId: string, tone: ToneParams): Promise<Uint8Array>;
   layout(params: LayoutParams, grains: Record<string, Grain[]>, spots: Spot[], labels: Label[], tone: Record<string, ToneParams>): Promise<LayoutResult>;
   pdf(pages: string[]): Promise<Uint8Array>;
+  /** Reference-image registration: pairs of [image px, mosaic um] → affine (image px → um). */
+  register(pairs: [[number, number], [number, number]][]): Promise<{ matrix: [number, number, number, number, number, number]; rms_um: number; residuals_um: number[] } | null>;
   /** Desktop: write the project folder (project.json, pyramid, masks, spots). */
   saveProject(project: Project, extras: Record<string, string>): Promise<string | null>;
 }

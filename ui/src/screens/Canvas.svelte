@@ -3,7 +3,7 @@
   // Pointer-first: navigate with trackpad or mouse, click to place, drag a spot
   // to move it, drag its ring handle to resize, double-click its name to rename;
   // the floating panel edits the hovered or selected object. Keys are extras.
-  import { app, type Tool } from '../lib/store.svelte';
+  import { app, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toScreen, type View } from '../lib/canvas/view';
   import type { Core } from '../lib/core/core';
@@ -19,7 +19,9 @@
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
   let cursorUm = $state<[number, number] | null>(null);
   let selGrains = $state<string[]>([]);
-  let tab = $state<'spots' | 'grains'>('spots');
+  let tab = $state<'spots' | 'grains' | 'refOverlay'>('spots');
+  let pairPending = $state<[number, number] | null>(null);
+  let overlayInput = $state<HTMLInputElement>();
   let panel = $state({ x: 16, y: 150, open: true });
   let hoverId = $state<string | null>(null);
   let snapHint = $state<SnapTarget | null>(null);
@@ -39,6 +41,7 @@
   const labels = $derived(app.labels.filter((l) => l.area_id === areaId));
   const segParams = $derived(areaId ? app.params[areaId]?.segment : null);
   const sample = $derived(area?.sample || area?.name || '');
+  const refOverlay = $derived(areaId ? (app.overlays[areaId] ?? null) : null);
   /** screen px → um at the current zoom */
   const k = $derived(view ? umPerPx / view.zoom : 1);
   const rotDeg = $derived(view ? (view.rot * 180) / Math.PI : 0);
@@ -144,7 +147,8 @@
   }
   function makeSpot(x: number, y: number, kind: SpotKind = 'spot', x2: number | null = null, y2: number | null = null): Spot {
     const g = grainAt(grains, x, y);
-    const n = nextN(app.spots);
+    const n = app.nextN ?? nextN(app.spots);
+    if (app.nextN != null) app.nextN = n + 1;
     return {
       id: newId(),
       area_id: areaId!,
@@ -210,6 +214,62 @@
     } catch (e) {
       app.error = `Mount id must be a UUID: ${e instanceof Error ? e.message : e}`;
     }
+  }
+
+  // ---- reference refOverlay (printout photo, post-laser frame) -------------------------
+  async function loadOverlay(file: File) {
+    if (!areaId || !mosaic) return;
+    const url = URL.createObjectURL(file);
+    const im = new Image();
+    try {
+      await new Promise<void>((res, rej) => {
+        im.onload = () => res();
+        im.onerror = () => rej(new Error(`cannot read ${file.name} as an image`));
+        im.src = url;
+      });
+    } catch (e) {
+      app.error = e instanceof Error ? e.message : String(e);
+      return;
+    }
+    const prev = app.overlays[areaId];
+    const keep = prev && prev.name === file.name && prev.w === im.naturalWidth && prev.h === im.naturalHeight;
+    // First placement: the whole image over the whole mosaic.
+    const W = mosaic.w * umPerPx, H = mosaic.h * umPerPx;
+    const k0 = Math.min(W / im.naturalWidth, H / im.naturalHeight);
+    const o: Overlay = keep
+      ? { ...prev, url }
+      : { name: file.name, url, w: im.naturalWidth, h: im.naturalHeight, pairs: [], matrix: [k0, 0, 0, k0, 0, 0], rms_um: 0, opacity: 0.6, visible: true };
+    app.overlays = { ...app.overlays, [areaId]: o };
+    tab = 'refOverlay';
+  }
+  function invAffine(m: number[]): number[] | null {
+    const det = m[0] * m[3] - m[2] * m[1];
+    if (Math.abs(det) < 1e-15) return null;
+    const a = m[3] / det, b = -m[1] / det, c = -m[2] / det, d = m[0] / det;
+    return [a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])];
+  }
+  async function pairClick(x: number, y: number) {
+    if (!areaId || !refOverlay || !core) return;
+    if (!pairPending) {
+      const inv = invAffine(refOverlay.matrix);
+      if (!inv) return;
+      pairPending = [inv[0] * x + inv[2] * y + inv[4], inv[1] * x + inv[3] * y + inv[5]];
+      return;
+    }
+    const pairs = $state.snapshot([...refOverlay.pairs, [pairPending, [x, y]]]) as [[number, number], [number, number]][];
+    pairPending = null;
+    await refit(pairs);
+  }
+  async function refit(pairs: [[number, number], [number, number]][]) {
+    if (!areaId || !refOverlay || !core) return;
+    const r = pairs.length ? await core.register(pairs) : null;
+    const base = app.overlays[areaId];
+    app.overlays = { ...app.overlays, [areaId]: { ...base, pairs, matrix: r ? r.matrix : base.matrix, rms_um: r?.rms_um ?? 0, residuals_um: r?.residuals_um ?? [] } };
+    app.persist();
+  }
+  function setOverlay(patch: Partial<Overlay>) {
+    if (!areaId || !refOverlay) return;
+    app.overlays = { ...app.overlays, [areaId]: { ...refOverlay, ...patch } };
   }
 
   // ---- hit testing (screen pixels) -------------------------------------------------
@@ -396,6 +456,10 @@
   async function click(p: CanvasPoint) {
     const ev = p.ev as MouseEvent;
     const x = p.x * umPerPx, y = p.y * umPerPx;
+    if (app.tool === 'pair') {
+      await pairClick(x, y).catch((e) => (app.error = e instanceof Error ? e.message : String(e)));
+      return;
+    }
     if (app.tool === 'spot') {
       const [sx, sy] = snapped(x, y, ev);
       snapHint = null;
@@ -568,6 +632,18 @@
         onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
           <g transform="scale({1 / umPerPx})">
+            {#if refOverlay?.url && refOverlay.visible}
+              <image class="refimg" href={refOverlay.url} width={refOverlay.w} height={refOverlay.h} transform="matrix({refOverlay.matrix.join(' ')})"
+                opacity={app.tool === 'pair' && pairPending ? 0.12 : app.tool === 'pair' ? 0.95 : refOverlay.opacity} preserveAspectRatio="none" />
+            {/if}
+            {#if refOverlay && app.tool === 'pair'}
+              {#each refOverlay.pairs as pr, i (i)}
+                {@const m = refOverlay.matrix}
+                {@const ix = m[0] * pr[0][0] + m[2] * pr[0][1] + m[4]}
+                {@const iy = m[1] * pr[0][0] + m[3] * pr[0][1] + m[5]}
+                <g class="pairmark"><line x1={ix} y1={iy} x2={pr[1][0]} y2={pr[1][1]} /><circle cx={pr[1][0]} cy={pr[1][1]} r={5 * k} /><text transform="translate({pr[1][0]} {pr[1][1]}) rotate({-rotDeg}) scale({k})" dx="7" dy="-5">{i + 1}</text></g>
+              {/each}
+            {/if}
             {#if app.layers.outlines}
               {#each grains as g (g.id)}
                 <polygon class="grain" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} points={g.polygon_um.map((p) => p.join(',')).join(' ')} />
@@ -728,7 +804,9 @@
       <div class="tabs">
         <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
         <button aria-pressed={tab === 'grains'} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
+        <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
       </div>
+      <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if tab === 'spots'}
         <div class="two">
           <label class="field">Sample <input type="text" value={sample} onchange={(e) => setSample(e.currentTarget.value)} data-testid="sample" /></label>
@@ -739,7 +817,12 @@
             <button class="icon" aria-pressed={app.diameter === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
           {/each}
         </div>
-        <label class="check"><input type="checkbox" bind:checked={app.settings.snap} onchange={() => app.saveSettings()} /> snap (hold ⌥ to place freely)</label>
+        <div class="two">
+          <label class="field" title="Force the {'{n}'} of the next spot (for example the Qtegra run number of a legacy session); it then counts up">Next n
+            <input type="number" min="1" placeholder="auto ({nextN(app.spots)})" value={app.nextN ?? ''} oninput={(e) => (app.nextN = e.currentTarget.value === '' ? null : Math.max(1, Math.round(+e.currentTarget.value)))} />
+          </label>
+          <label class="check"><input type="checkbox" bind:checked={app.settings.snap} onchange={() => app.saveSettings()} /> snap (⌥ = free)</label>
+        </div>
         <div class="row">
           <button onclick={() => exportSpots('csv')} disabled={!app.spots.length} data-testid="export-csv">Spots CSV</button>
           <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
@@ -760,6 +843,34 @@
           </table>
         </div>
         <label class="field">laicpmsdb mount id <input type="text" placeholder="UUID (optional)" value={app.project?.laicpmsdb.mount_id ?? ''} onchange={(e) => setMount(e.currentTarget.value)} /></label>
+      {:else if tab === 'refOverlay'}
+        <p class="muted small-text">Lay a reference image over the mosaic (a photo of an annotated printout, a post-laser frame) and register it by clicking pairs of the same feature: first on the image, then on the mosaic. One pair moves it, two scale and rotate it, three or more fit an affine transform.</p>
+        <div class="row">
+          <button class="primary" onclick={() => overlayInput?.click()}>{refOverlay ? 'Load again / replace' : 'Load image'}</button>
+          {#if refOverlay}<button class="danger" onclick={() => { const { [areaId!]: _, ...rest } = app.overlays; app.overlays = rest; if (app.tool === 'pair') app.tool = 'select'; }}>Remove</button>{/if}
+        </div>
+        {#if refOverlay}
+          <p class="faint">{refOverlay.name} · {refOverlay.w}×{refOverlay.h} px{refOverlay.url ? '' : ' (choose the file again to show it)'}</p>
+          <label class="check"><input type="checkbox" checked={refOverlay.visible} onchange={(e) => setOverlay({ visible: e.currentTarget.checked })} /> show</label>
+          <label class="field">Opacity {Math.round(refOverlay.opacity * 100)}%
+            <input type="range" min="0" max="1" step="0.05" value={refOverlay.opacity} oninput={(e) => setOverlay({ opacity: +e.currentTarget.value })} />
+          </label>
+          <div class="row">
+            <button aria-pressed={app.tool === 'pair'} onclick={() => { app.tool = app.tool === 'pair' ? 'select' : 'pair'; pairPending = null; }} data-testid="pair-tool">{app.tool === 'pair' ? 'Done pairing' : 'Add point pairs'}</button>
+            <button onclick={() => refit(refOverlay.pairs.slice(0, -1))} disabled={!refOverlay.pairs.length}>Undo last pair</button>
+          </div>
+          {#if app.tool === 'pair'}
+            <p class="accent">{pairPending ? '2 · now click the same feature on the mosaic (image faded)' : '1 · click a feature on the image'}</p>
+          {/if}
+          <table class="data">
+            <thead><tr><th>Pair</th><th>Residual µm</th></tr></thead>
+            <tbody>
+              {#each refOverlay.pairs as _, i (i)}<tr><td>{i + 1}</td><td class="num">{refOverlay.pairs.length > 3 && refOverlay.residuals_um?.[i] != null ? refOverlay.residuals_um[i].toFixed(1) : '–'}</td></tr>{/each}
+            </tbody>
+          </table>
+          {#if refOverlay.pairs.length > 3}<p class="muted">Fit RMS <b class="num">{refOverlay.rms_um.toFixed(1)} µm</b> over {refOverlay.pairs.length} pairs.</p>{/if}
+          <p class="faint small-text">Then use the Spot tool with a pattern such as <code>{'{sample}_{n}'}</code> and set "Next n" to the run number before each click, so spot names equal the instrument labels.</p>
+        {/if}
       {:else if segParams}
         <details class="params">
           <summary>Segmentation</summary>
@@ -919,6 +1030,27 @@
   }
   .accent {
     color: var(--accent);
+  }
+  .small-text {
+    font-size: 0.8rem;
+    margin: 0;
+  }
+  :global(.gm-root) .refimg {
+    vector-effect: none;
+  }
+  :global(.gm-root) .pairmark line {
+    stroke: var(--ov-measure);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+  }
+  :global(.gm-root) .pairmark circle {
+    fill: none;
+    stroke: var(--ov-measure);
+    stroke-width: 1.5;
+  }
+  :global(.gm-root) .pairmark text {
+    fill: var(--ov-measure);
+    font: 600 12px var(--font-sans);
   }
   .bar {
     display: inline-flex;

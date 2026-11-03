@@ -2,25 +2,67 @@
 
 Open-source stitching, correction, segmentation, spot-placement and print-layout
 tool for SEM grain-mount images (CL, BSE, SE) used to plan LA-ICP-MS sessions.
-One Rust core, delivered as a static web page and as a desktop app (macOS,
-Windows) from the same Svelte interface. Companion to
-[laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
+One Rust core, delivered as a static web page (wasm in a Web Worker) and as a
+desktop app (Tauri 2, native multithreaded core) from the same Svelte
+interface. Companion to [laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
 
-Status: planning (see `ARCHITECTURE_PLAN.md`). Nothing runs yet.
+Status: roadmap phases 1–7 of `ARCHITECTURE_PLAN.md` are implemented (readers
+and stitching, photometric correction, web UI, segmentation and scale, spots,
+print layout, desktop). Phase 8 (laicpmsdb link, second instrument) is next.
 
-What it will do, in order of the roadmap:
+## What it does
 
-1. read a Hitachi TM4000 Zigzag package (and plain image folders) with scale
-   and stage metadata;
-2. stitch tiles by stage prior plus phase-correlation drift refinement, with
-   gain, offset and background leveling and multiband blending, including HDR
-   merges and manual overrides;
-3. segment grains, number them and register micrometre scale bars;
-4. place and name laser spots on an infinite canvas with a floating metadata
-   panel;
-5. pack grains onto Letter, Tabloid and A-series pages for printing and export
-   PDF, SVG, CSV and GeoJSON;
-6. link spots to `laicpmsdb` mounts and sessions by UUID.
+1. Reads a Hitachi TM4000 Zigzag package (`.zag`, UTF-16LE `.ini` and per-tile
+   `.txt`, unknown keys kept) or any folder of images with `positions.csv`
+   (`file,x_um,y_um,pixel_size_nm`).
+2. Stitches by stage prior, phase correlation with a Lucas-Kanade refinement
+   and a global least-squares solve; corrects per-tile gain and offset, beam
+   exposure steps and background; blends with seams and multiband
+   (photocraft-algo). The 4 x 8 example area (32 tiles, 28 Mpx) takes 0.6 s
+   natively and 8 s in the browser; see `docs/stitch_notes.md`.
+3. Finds and numbers grains (reading order, stable across re-runs), with
+   GrabCut refinement and manual add, split, merge and renumber; scale bars
+   per grain; grain table CSV.
+4. Places laser spots, lines and rasters on an infinite canvas with the mouse
+   or trackpad alone (click to place, drag to move, drag the ring to resize,
+   double-click to rename), named from a pattern such as
+   `{sample}-{grain}-{n}`, with UUIDv7 ids; exports CSV and GeoJSON.
+5. Packs grains or areas onto Letter, Tabloid, A4 or A3 pages with labels,
+   scale bars, spots and cut marks; exports PDF and SVG.
+6. Registers reference images (photos of annotated printouts, post-laser
+   frames) to the mosaic by point pairs, to recover spots of legacy sessions
+   (`docs/legacy_workflow.md`).
+
+## Quick start
+
+```bash
+make setup        # Rust stable + wasm target, wasm-bindgen-cli, UI dependencies, Playwright browser
+make test         # core tests, wasm/native parity of the fixture mosaic, Playwright smoke test
+make ui-build     # static page in ui/dist (serve it from any static server)
+make ui-dev       # dev server on http://localhost:5174
+make desktop-dev  # desktop app (Tauri 2) on this machine
+```
+
+The command line does batch work:
+
+```bash
+cargo run --release -p grainmap-cli -- stitch <package-or-area-folder> --out <name>.grainmap --segment --print tabloid
+```
+
+The desktop app also takes `grainmap <package-folder> [--stitch] [--segment]`
+and opens saved `<name>.grainmap` folders.
+
+## Layout
+
+```text
+crates/grainmap-core   all pixel operations (readers, mosaic, photometric, blend, segment, scale, spots, layout, project)
+crates/grainmap-wasm   the core for the browser (wasm-bindgen)
+crates/grainmap-cli    `grainmap` command line
+ui/                    Svelte 5 + TypeScript + Vite; src/lib/core/{wasm,tauri}.ts implement the Core interface
+tauri/                 Tauri 2 desktop shell (src-tauri)
+tests/fixtures/        one TM4000 area (6 tiles) for tests; tests/golden/ the fixture mosaic hash
+docs/                  ADRs, stitch notes, legacy workflow
+```
 
 Code only lives here. Image data stays on the lab NAS or your laptop; the only
 images in this repository are the small test fixture under `tests/fixtures/`.

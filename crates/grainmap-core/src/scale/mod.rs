@@ -2,6 +2,8 @@
 //! clicked points and a typed length, or from a detected burned-in scale bar;
 //! scale-bar lengths for grains and pages.
 
+pub mod register;
+
 use crate::image::Gray;
 
 /// Candidate bar lengths in micrometres.

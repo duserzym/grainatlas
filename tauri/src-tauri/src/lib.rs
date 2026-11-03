@@ -62,6 +62,23 @@ async fn open_path(state: State<'_, AppState>, path: String) -> Res<String> {
     Ok(info)
 }
 
+/// Opens a `<name>.grainmap/` project folder: its package (by the recorded path) and its
+/// project.json. Returns `{ "info": PackageInfo, "project": full project JSON }`.
+#[tauri::command]
+async fn open_project(state: State<'_, AppState>, path: String) -> Res<String> {
+    let pj = std::fs::read_to_string(PathBuf::from(&path).join("project.json")).map_err(|x| format!("{path}: {x}"))?;
+    let v: serde_json::Value = serde_json::from_str(&pj).map_err(e)?;
+    let pkg = v["package"]["path"].as_str().ok_or("project.json has no package path")?.to_string();
+    let src = DirSource::new(&pkg).map_err(|x| format!("package {pkg}: {x}"))?;
+    let info = {
+        let mut s = lock(&state);
+        s.load_project(&pj).map_err(e)?;
+        s.open_source(Arc::new(src), &pkg, &now_iso()).map_err(e)?
+    };
+    *state.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(PathBuf::from(&pkg));
+    Ok(serde_json::json!({ "info": serde_json::from_str::<serde_json::Value>(&info).map_err(e)?, "project": v }).to_string())
+}
+
 #[tauri::command]
 fn load_project(state: State<'_, AppState>, json: String) -> Res<()> {
     lock(&state).load_project(&json).map_err(e)
@@ -177,6 +194,11 @@ async fn layout(state: State<'_, AppState>, params: String, grains: String, spot
 }
 
 #[tauri::command]
+fn register(pairs: String) -> Res<String> {
+    session::register(&pairs).map_err(e)
+}
+
+#[tauri::command]
 async fn pdf(pages: String) -> Res<Response> {
     session::pdf_from_svgs(&pages).map(Response::new).map_err(e)
 }
@@ -276,6 +298,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             startup,
             open_path,
+            open_project,
             load_project,
             project_json,
             navigation,
@@ -298,6 +321,7 @@ pub fn run() {
             set_link,
             layout,
             pdf,
+            register,
             save_bytes,
             save_project,
         ])

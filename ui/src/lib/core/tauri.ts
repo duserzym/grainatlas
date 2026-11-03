@@ -31,6 +31,9 @@ export class TauriCore implements Core {
   async openPath(path: string): Promise<PackageInfo> {
     return JSON.parse(await invoke<string>('open_path', { path }));
   }
+  async openProject(path: string): Promise<{ info: PackageInfo; project: Project }> {
+    return JSON.parse(await invoke<string>('open_project', { path }));
+  }
   async loadProject(json: string) {
     await invoke('load_project', { json });
   }
@@ -100,6 +103,9 @@ export class TauriCore implements Core {
   }
   async layout(params: LayoutParams, grains: Record<string, Grain[]>, spots: Spot[], labels: Label[], tone: Record<string, ToneParams>): Promise<LayoutResult> {
     return JSON.parse(await invoke<string>('layout', { params: JSON.stringify(params), grains: JSON.stringify(grains), spots: JSON.stringify(spots), labels: JSON.stringify(labels), tone: JSON.stringify(tone) }));
+  }
+  async register(pairs: [[number, number], [number, number]][]) {
+    return JSON.parse(await invoke<string>('register', { pairs: JSON.stringify(pairs) }));
   }
   async pdf(pages: string[]): Promise<Uint8Array> {
     return bytes(await invoke<ArrayBuffer>('pdf', { pages: JSON.stringify(pages) }));

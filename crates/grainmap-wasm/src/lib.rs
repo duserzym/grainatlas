@@ -122,6 +122,11 @@ pub fn tone_lut(tone: &str) -> Result<Vec<u8>, JsError> {
 }
 
 #[wasm_bindgen]
+pub fn register(pairs: &str) -> Result<String, JsError> {
+    session::register(pairs).map_err(err)
+}
+
+#[wasm_bindgen]
 pub fn default_params() -> String {
     serde_json::to_string(&AreaParams::default()).unwrap_or_default()
 }
