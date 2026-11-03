@@ -12,6 +12,7 @@ use grainmap_core::photometric::ToneParams;
 use grainmap_core::project::pipeline::{self, AreaOutput, Timings};
 use grainmap_core::project::{AreaParams, Project};
 use grainmap_core::readers::{self, Package};
+use grainmap_core::segment::{Grain, SegmentParams};
 use grainmap_core::source::MemSource;
 use wasm_bindgen::prelude::*;
 
@@ -41,15 +42,15 @@ pub struct Session {
     pkg: Option<Box<dyn Package>>,
     project: Option<Project>,
     outputs: BTreeMap<String, AreaOutput>,
-    #[allow(dead_code)]
-    extra: BTreeMap<String, String>,
+    /// Segmentation work images per area (and work scale).
+    work: BTreeMap<String, (usize, grainmap_core::segment::WorkImage)>,
 }
 
 #[wasm_bindgen]
 impl Session {
     #[wasm_bindgen(constructor)]
     pub fn new(name: &str) -> Session {
-        Session { src: MemSource::new(name), pkg: None, project: None, outputs: BTreeMap::new(), extra: BTreeMap::new() }
+        Session { src: MemSource::new(name), pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new() }
     }
 
     /// Adds one file of the package (path relative to the package root).
@@ -134,6 +135,7 @@ impl Session {
             "timings": timings.steps,
         });
         self.outputs.insert(area_id.to_string(), out);
+        self.work.remove(area_id);
         Ok(summary.to_string())
     }
 
@@ -188,6 +190,90 @@ impl Session {
         let names: Vec<String> = pipeline::area_files(rec, o).into_iter().map(|(p, _)| p).collect();
         serde_json::to_string(&names).map_err(err)
     }
+}
+
+#[wasm_bindgen]
+impl Session {
+    fn work_for(&mut self, area_id: &str, scale: usize) -> Result<&grainmap_core::segment::WorkImage, JsError> {
+        let fresh = !matches!(self.work.get(area_id), Some((s, _)) if *s == scale);
+        if fresh {
+            let o = self.outputs.get(area_id).ok_or_else(|| JsError::new("not stitched"))?;
+            let rec = self.project.as_ref().and_then(|p| p.areas.iter().find(|a| a.id == area_id)).ok_or_else(|| JsError::new("no such area"))?;
+            self.work.insert(area_id.to_string(), (scale, pipeline::work_image(o, rec, scale)));
+        }
+        Ok(&self.work.get(area_id).expect("inserted").1)
+    }
+
+    /// Automatic segmentation; `previous` (JSON array of grains) keeps ids and numbers.
+    pub fn segment(&mut self, area_id: &str, params: &str, previous: &str) -> Result<String, JsError> {
+        let p: SegmentParams = serde_json::from_str(params).map_err(err)?;
+        let prev: Vec<Grain> = if previous.trim().is_empty() { Vec::new() } else { serde_json::from_str(previous).map_err(err)? };
+        let grains = {
+            let w = self.work_for(area_id, p.work_scale)?;
+            grainmap_core::segment::segment(w, &p, &prev)
+        };
+        if let Some(rec) = self.project.as_mut().and_then(|pr| pr.area_mut(area_id)) {
+            rec.params.segment = p;
+        }
+        serde_json::to_string(&grains).map_err(err)
+    }
+
+    /// Click-grow a grain at a point (um); "null" on background.
+    pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str) -> Result<String, JsError> {
+        let p: SegmentParams = serde_json::from_str(params).map_err(err)?;
+        let w = self.work_for(area_id, p.work_scale)?;
+        serde_json::to_string(&grainmap_core::segment::grain_at(w, &p, x_um, y_um)).map_err(err)
+    }
+
+    /// Splits a grain along a line [x0, y0, x1, y1] in um.
+    pub fn split_grain(&mut self, area_id: &str, grain: &str, line: Vec<f64>) -> Result<String, JsError> {
+        let g: Grain = serde_json::from_str(grain).map_err(err)?;
+        let scale = self.seg_scale(area_id);
+        let w = self.work_for(area_id, scale)?;
+        let l = [line[0], line[1], line[2], line[3]];
+        serde_json::to_string(&grainmap_core::segment::split_grain(w, &g, l, 0.8)).map_err(err)
+    }
+
+    pub fn merge_grains(&mut self, area_id: &str, grains: &str) -> Result<String, JsError> {
+        let gs: Vec<Grain> = serde_json::from_str(grains).map_err(err)?;
+        let scale = self.seg_scale(area_id);
+        let w = self.work_for(area_id, scale)?;
+        serde_json::to_string(&grainmap_core::segment::merge_grains(w, &gs, 0.8)).map_err(err)
+    }
+
+    pub fn refine_grain(&mut self, area_id: &str, grain: &str) -> Result<String, JsError> {
+        let g: Grain = serde_json::from_str(grain).map_err(err)?;
+        let scale = self.seg_scale(area_id);
+        let w = self.work_for(area_id, scale)?;
+        let out = grainmap_core::segment::refine_grain(w, &g, 0.8).unwrap_or(g);
+        serde_json::to_string(&out).map_err(err)
+    }
+
+    /// Grain table CSV with stage positions.
+    pub fn export_grains(&self, area_id: &str, grains: &str) -> Result<String, JsError> {
+        let gs: Vec<Grain> = serde_json::from_str(grains).map_err(err)?;
+        let rec = self.project.as_ref().and_then(|p| p.areas.iter().find(|a| a.id == area_id)).ok_or_else(|| JsError::new("no such area"))?;
+        Ok(grainmap_core::segment::grains_csv(&gs, |x, y| rec.stage_of(x, y), |_| 0))
+    }
+
+    fn seg_scale(&self, area_id: &str) -> usize {
+        self.project.as_ref().and_then(|p| p.areas.iter().find(|a| a.id == area_id)).map_or(2, |a| a.params.segment.work_scale)
+    }
+}
+
+/// Renumbers grains in reading order (from = {"grainId": uuid, "number": n} for "from here").
+#[wasm_bindgen]
+pub fn renumber(grains: &str, tolerance: f64, from: &str) -> Result<String, JsError> {
+    let mut gs: Vec<Grain> = serde_json::from_str(grains).map_err(err)?;
+    let f = if from.trim().is_empty() {
+        None
+    } else {
+        let v: serde_json::Value = serde_json::from_str(from).map_err(err)?;
+        let id = v["grainId"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| JsError::new("grainId"))?;
+        Some((id, v["number"].as_u64().unwrap_or(1) as u32))
+    };
+    grainmap_core::segment::renumber(&mut gs, tolerance, f);
+    serde_json::to_string(&gs).map_err(err)
 }
 
 /// Black / white / gamma lookup table (256 bytes) for display.

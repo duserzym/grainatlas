@@ -178,3 +178,26 @@ pub fn area_files(rec: &AreaRecord, out: &AreaOutput) -> Vec<(String, Vec<u8>)> 
     files.push((format!("mosaic/{}/mosaic.json", rec.id), serde_json::to_vec_pretty(&out.mosaic_json).expect("json")));
     files
 }
+
+/// Work image for segmentation from a stitched area.
+pub fn work_image(out: &AreaOutput, rec: &AreaRecord, scale: usize) -> crate::segment::WorkImage {
+    crate::segment::WorkImage::new(&out.linear, &out.coverage, rec.um_per_px(), scale)
+}
+
+/// Segments a stitched area, keeping ids and numbers of `previous` grains that still match.
+pub fn segment_area(rec: &mut AreaRecord, out: &AreaOutput, p: &crate::segment::SegmentParams, previous: &[crate::segment::Grain]) -> Vec<crate::segment::Grain> {
+    let w = work_image(out, rec, p.work_scale);
+    rec.params.segment = p.clone();
+    crate::segment::segment(&w, p, previous)
+}
+
+/// `masks/<area>/grains.png` (u16 labels by grain number at work resolution) and `grains.json`.
+pub fn mask_files(rec: &AreaRecord, out: &AreaOutput, grains: &[crate::segment::Grain]) -> Vec<(String, Vec<u8>)> {
+    let w = work_image(out, rec, rec.params.segment.work_scale);
+    let lab = crate::segment::label_image(&w, grains);
+    let json = serde_json::json!({ "work_scale": rec.params.segment.work_scale, "um_per_px": w.um_per_px, "w": w.img.w, "h": w.img.h, "grains": grains });
+    vec![
+        (format!("masks/{}/grains.png", rec.id), crate::image::encode_png_gray16(w.img.w, w.img.h, &lab)),
+        (format!("masks/{}/grains.json", rec.id), serde_json::to_vec_pretty(&json).expect("json")),
+    ]
+}
