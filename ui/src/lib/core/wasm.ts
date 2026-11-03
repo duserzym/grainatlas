@@ -83,6 +83,10 @@ export class WasmCore implements Core {
     throw new Error('opening by path needs the desktop app; choose the folder instead');
   }
 
+  async openProject(): Promise<{ info: PackageInfo; project: Project }> {
+    throw new Error('opening a project folder needs the desktop app; open the package, then load its project.json');
+  }
+
   async loadProject(json: string) {
     await this.ready();
     this.project = json;
@@ -188,6 +192,10 @@ export class WasmCore implements Core {
   async layout(params: LayoutParams, grains: Record<string, Grain[]>, spots: Spot[], labels: Label[], tone: Record<string, ToneParams>): Promise<LayoutResult> {
     await this.ready();
     return this.call('layout', { params, grains, spots, labels, tone });
+  }
+
+  async register(pairs: [[number, number], [number, number]][]) {
+    return this.call<{ matrix: [number, number, number, number, number, number]; rms_um: number; residuals_um: number[] } | null>('register', { pairs });
   }
 
   async pdf(pages: string[]): Promise<Uint8Array> {

@@ -134,3 +134,30 @@ fn scale_helpers() {
     }
     assert_eq!(scale::detect_bar(&g, 0.1), Some((40, 140, 95)));
 }
+
+#[test]
+fn reference_image_registration() {
+    use grainmap_core::scale::register::{apply, fit, invert};
+    // A printout photo: scaled by 0.4 um/px, rotated 3°, offset, slightly sheared.
+    let truth = |x: f64, y: f64| {
+        let (c, s) = (3f64.to_radians().cos(), 3f64.to_radians().sin());
+        [0.4 * (c * x - s * y) + 0.01 * y + 120.0, 0.4 * (s * x + c * y) - 35.0]
+    };
+    let src = [[100.0, 80.0], [2400.0, 150.0], [300.0, 3100.0], [2200.0, 2900.0], [1200.0, 1500.0]];
+    let dst: Vec<[f64; 2]> = src.iter().map(|p| truth(p[0], p[1])).collect();
+    let r = fit(&src, &dst).unwrap();
+    assert!(r.rms_um < 1e-9);
+    let p = apply(&r.matrix, 1000.0, 2000.0);
+    let t = truth(1000.0, 2000.0);
+    assert!((p[0] - t[0]).abs() < 1e-6 && (p[1] - t[1]).abs() < 1e-6);
+    let inv = invert(&r.matrix).unwrap();
+    let back = apply(&inv, p[0], p[1]);
+    assert!((back[0] - 1000.0).abs() < 1e-6 && (back[1] - 2000.0).abs() < 1e-6);
+    // Two pairs: similarity (no shear), exact on the pairs.
+    let r2 = fit(&src[..2], &dst[..2]).unwrap();
+    let q = apply(&r2.matrix, src[1][0], src[1][1]);
+    assert!((q[0] - dst[1][0]).abs() < 1e-6 && (q[1] - dst[1][1]).abs() < 1e-6);
+    // One pair: translation.
+    let r1 = fit(&src[..1], &dst[..1]).unwrap();
+    assert_eq!(r1.matrix[0], 1.0);
+}

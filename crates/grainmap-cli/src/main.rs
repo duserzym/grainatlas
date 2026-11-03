@@ -55,6 +55,9 @@ enum Cmd {
         /// Print scale in um of sample per mm of paper (0 = fit).
         #[arg(long, default_value_t = 0.0)]
         scale: f64,
+        /// Sample name for spot names (`{sample}`) of the stitched area(s).
+        #[arg(long)]
+        sample: Option<String>,
     },
 }
 
@@ -62,11 +65,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Info { folder } => {
-            let (pkg, _) = open(&folder)?;
+            let (pkg, _, _) = open(&folder)?;
             println!("{}", serde_json::to_string_pretty(pkg.info())?);
         }
         Cmd::Hash { folder } => {
-            let (pkg, only) = open(&folder)?;
+            let (pkg, only, _) = open(&folder)?;
             let mut project = Project::new(pkg.info(), "hash", "1970-01-01T00:00:00Z");
             for (ai, area) in pkg.info().areas.iter().enumerate() {
                 if only.as_ref().is_some_and(|o| o != &area.id) {
@@ -78,8 +81,8 @@ fn main() -> Result<()> {
                 println!("{} {}", area.id, o.mosaic_json.sha256);
             }
         }
-        Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, scale } => {
-            let (pkg, only) = open(&folder)?;
+        Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, scale, sample } => {
+            let (pkg, only, root) = open(&folder)?;
             let mut params: AreaParams = match params {
                 Some(p) => serde_json::from_str(&std::fs::read_to_string(&p)?)?,
                 None => AreaParams::default(),
@@ -91,7 +94,7 @@ fn main() -> Result<()> {
             let mut project = if pj.exists() {
                 Project::from_json(&std::fs::read_to_string(&pj)?)?
             } else {
-                Project::new(pkg.info(), &abs(&folder), &now_rfc3339())
+                Project::new(pkg.info(), &abs(&root), &now_rfc3339())
             };
             let start = Instant::now();
             let clock = || start.elapsed().as_secs_f64() * 1000.0;
@@ -104,6 +107,9 @@ fn main() -> Result<()> {
                     project.areas.push(grainmap_core::project::AreaRecord::from_meta(area));
                 }
                 let rec = project.area_mut(&area.id).expect("area");
+                if let Some(s) = &sample {
+                    rec.sample = s.clone();
+                }
                 let mut timings = Timings::default();
                 let t0 = clock();
                 let tiles = pipeline::read_tiles(pkg.as_ref(), ai, rec)?;
@@ -147,6 +153,9 @@ fn main() -> Result<()> {
                     let csv = grainmap_core::segment::grains_csv(&grains, |x, y| rec.stage_of(x, y), |_| 0);
                     write(&out.join(format!("exports/{}_grains.csv", area.id)), csv.as_bytes())?;
                     grains_n = Some(grains.len());
+                    // The UI keeps grains under `grainmap_ui` in project.json.
+                    let ui = project.extra.entry("grainmap_ui".into()).or_insert_with(|| serde_json::json!({}));
+                    ui["grains"][&area.id] = serde_json::to_value(&grains)?;
                     if let Some(paper) = &print {
                         let t = clock();
                         let rec = project.areas.iter().find(|a| a.id == area.id).expect("area");
@@ -186,8 +195,8 @@ fn main() -> Result<()> {
 }
 
 /// Opens a package; if `folder` is one area of a package (its parent holds the `.zag`), opens
-/// the parent and returns the area id to restrict to.
-fn open(folder: &Path) -> Result<(Box<dyn Package>, Option<String>)> {
+/// the parent and returns the area id to restrict to. Also returns the package root.
+fn open(folder: &Path) -> Result<(Box<dyn Package>, Option<String>, PathBuf)> {
     let folder = folder.canonicalize().with_context(|| format!("{}", folder.display()))?;
     if let Some(parent) = folder.parent() {
         let has_zag = std::fs::read_dir(parent)?.flatten().any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("zag")));
@@ -196,12 +205,12 @@ fn open(folder: &Path) -> Result<(Box<dyn Package>, Option<String>)> {
             let pkg = readers::open(Arc::new(src))?;
             let id = folder.file_name().unwrap_or_default().to_string_lossy().to_string();
             if pkg.info().areas.iter().any(|a| a.id == id) {
-                return Ok((pkg, Some(id)));
+                return Ok((pkg, Some(id), parent.to_path_buf()));
             }
         }
     }
     let pkg = readers::open(Arc::new(DirSource::new(&folder)?))?;
-    Ok((pkg, None))
+    Ok((pkg, None, folder))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {

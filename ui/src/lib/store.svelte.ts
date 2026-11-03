@@ -5,7 +5,24 @@ import { getCore, type Core } from './core/core';
 import type { AreaParams, AreaRecord, Grain, Label, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
-export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split';
+export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'pair';
+
+/** A reference image (printout photo, post-laser frame) registered to an area's mosaic. */
+export interface Overlay {
+  name: string;
+  /** Object URL of the image (not saved; the file is chosen again by name). */
+  url: string | null;
+  w: number;
+  h: number;
+  /** [image px, mosaic um] pairs. */
+  pairs: [[number, number], [number, number]][];
+  /** Image px → mosaic um affine (a b c d e f). */
+  matrix: [number, number, number, number, number, number];
+  rms_um: number;
+  residuals_um?: number[];
+  opacity: number;
+  visible: boolean;
+}
 
 export const DEFAULT_SETTINGS: Settings = {
   naming_pattern: '{sample}-{grain}-{n}',
@@ -44,6 +61,9 @@ class AppState {
   params = $state<Record<string, AreaParams>>({});
   grains = $state<Record<string, Grain[]>>({});
   spots = $state<Spot[]>([]);
+  overlays = $state<Record<string, Overlay>>({});
+  /** Set to force the next spot's {n} (legacy run numbers); null = continue. */
+  nextN = $state<number | null>(null);
   labels = $state<Label[]>([]);
   selection = $state<string[]>([]);
   hover = $state<string | null>(null);
@@ -139,7 +159,8 @@ class AppState {
     if (!this.project) return null;
     const p = $state.snapshot(this.project) as Project;
     p.settings = $state.snapshot(this.settings) as Settings;
-    p['grainmap_ui'] = { grains: $state.snapshot(this.grains), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone) };
+    const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
+    p['grainmap_ui'] = { grains: $state.snapshot(this.grains), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
     return p;
   }
 
@@ -161,7 +182,8 @@ class AppState {
 
   /** Restores UI-held parts of a saved project. */
   adopt(p: Project) {
-    const ui = p['grainmap_ui'] as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams> } | undefined;
+    const ui = p['grainmap_ui'] as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
+    if (ui?.overlays) this.overlays = ui.overlays;
     if (ui?.grains) this.grains = ui.grains;
     if (ui?.spots) this.spots = ui.spots;
     if (ui?.labels) this.labels = ui.labels;

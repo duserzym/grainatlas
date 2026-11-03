@@ -314,3 +314,11 @@ pub fn tone_lut(tone: &str) -> Result<Vec<u8>> {
     let tone: ToneParams = serde_json::from_str(tone).map_err(invalid)?;
     Ok(crate::photometric::tone::lut(&tone).to_vec())
 }
+
+/// Reference-image registration from point pairs: `pairs` = `[[[img_x, img_y], [um_x, um_y]], ...]`.
+pub fn register(pairs: &str) -> Result<String> {
+    let pairs: Vec<[[f64; 2]; 2]> = serde_json::from_str(pairs).map_err(invalid)?;
+    let src: Vec<[f64; 2]> = pairs.iter().map(|p| p[0]).collect();
+    let dst: Vec<[f64; 2]> = pairs.iter().map(|p| p[1]).collect();
+    serde_json::to_string(&crate::scale::register::fit(&src, &dst)).map_err(invalid)
+}

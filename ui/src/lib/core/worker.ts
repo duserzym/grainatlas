@@ -50,6 +50,7 @@ const ops: Record<string, Handler> = {
   layout: ({ params, grains, spots, labels, tone }) =>
     JSON.parse(s().layout(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(spots), JSON.stringify(labels), JSON.stringify(tone))),
   pdf: ({ pages }) => wasm.pdf_from_svgs(JSON.stringify(pages)),
+  register: ({ pairs }) => JSON.parse(wasm.register(JSON.stringify(pairs))),
 };
 
 function s(): wasm.Session {

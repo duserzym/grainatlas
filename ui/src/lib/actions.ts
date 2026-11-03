@@ -14,12 +14,18 @@ export async function openFiles(name: string, files: PackageFile[]) {
 
 export async function openPath(path: string) {
   const core = await app.core;
+  if (/\.grainmap\/?$/.test(path)) {
+    const r = await app.run(`Opening ${path}`, () => core.openProject(path));
+    if (!r) return;
+    await adoptPackage(r.info, r.project);
+    return;
+  }
   const info = await app.run(`Reading ${path}`, () => core.openPath(path));
   if (!info) return;
   await adoptPackage(info);
 }
 
-async function adoptPackage(info: import('./core/types').PackageInfo) {
+async function adoptPackage(info: import('./core/types').PackageInfo, fromFolder: Project | null = null) {
   const core = await app.core;
   app.pkg = info;
   app.stitched = {};
@@ -29,12 +35,14 @@ async function adoptPackage(info: import('./core/types').PackageInfo) {
   app.selection = [];
   app.tone = {};
   // A project saved earlier for this package (browser storage) is picked up again.
-  let saved: Project | null = null;
-  try {
-    const s = localStorage.getItem(`grainmap.project.${info.name}`);
-    if (s) saved = JSON.parse(s);
-  } catch {
-    saved = null;
+  let saved: Project | null = fromFolder;
+  if (!saved) {
+    try {
+      const s = localStorage.getItem(`grainmap.project.${info.name}`);
+      if (s) saved = JSON.parse(s);
+    } catch {
+      saved = null;
+    }
   }
   if (saved) {
     try {
