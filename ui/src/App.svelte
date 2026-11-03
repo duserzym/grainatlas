@@ -93,6 +93,12 @@
   </main>
 
   {#if app.busy}<Busy />{/if}
+  {#if app.notice}
+    <div class="glass toast ok" role="status">
+      <span>{app.notice}</span>
+      <button class="icon" onclick={() => (app.notice = null)} aria-label="Dismiss">✕</button>
+    </div>
+  {/if}
   {#if app.error}
     <div class="glass toast" role="alert">
       <span>{app.error}</span>
@@ -158,5 +164,8 @@
     color: var(--danger);
     z-index: 50;
     max-width: 80vw;
+  }
+  .toast.ok {
+    color: var(--ok);
   }
 </style>

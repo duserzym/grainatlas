@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/grainmap-core", "crates/grainmap-wasm", "crates/grainmap-cli"]
+members = ["crates/grainmap-core", "crates/grainmap-wasm", "crates/grainmap-cli", "tauri/src-tauri"]
 default-members = ["crates/grainmap-core", "crates/grainmap-cli"]
 
 [workspace.package]

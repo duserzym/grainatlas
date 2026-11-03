@@ -51,6 +51,7 @@ class AppState {
   diameter = $state(25);
   busy = $state<{ label: string; progress: Progress | null } | null>(null);
   error = $state<string | null>(null);
+  notice = $state<string | null>(null);
   settings = $state<Settings>(loadSettings());
   layers = $state({ mosaic: true, outlines: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false });
   private undoStack: Snapshot[] = [];

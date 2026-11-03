@@ -676,8 +676,8 @@
       <button class="icon" title="Zoom out (−)" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
       <button class="icon" title="Fit (0)" onclick={() => viewer?.fitAll()}>Fit</button>
       <button class="icon" title="Pixels 1:1" onclick={() => viewer?.oneToOne()}>1:1</button>
-      <button class="icon" title="Rotate left 15° ([)" onclick={() => viewer?.rotateBy(-Math.PI / 12)}>⟲</button>
-      <button class="icon" title="Rotate right 15° (])" onclick={() => viewer?.rotateBy(Math.PI / 12)}>⟳</button>
+      <button class="icon" title="Rotate left 15° ([)" onclick={() => viewer?.rotateBy(-Math.PI / 12)}>↺</button>
+      <button class="icon" title="Rotate right 15° (])" onclick={() => viewer?.rotateBy(Math.PI / 12)}>↻</button>
     </div>
 
     {#if panel.open && (focus || focusGrain)}

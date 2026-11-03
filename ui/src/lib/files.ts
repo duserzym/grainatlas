@@ -1,6 +1,6 @@
 // Getting package folders in (input, drag and drop) and files out (downloads).
 
-import type { PackageFile } from './core/core';
+import { isTauri, type PackageFile } from './core/core';
 
 /** Files from an <input type=file webkitdirectory>: paths relative to the chosen folder. */
 export function fromInput(list: FileList): { name: string; files: PackageFile[] } {
@@ -49,6 +49,11 @@ function keep(path: string): boolean {
 }
 
 export function download(data: BlobPart | Uint8Array, name: string, type = 'application/octet-stream') {
+  if (isTauri()) {
+    // The desktop app saves through the native dialog.
+    import('./core/tauri').then(({ saveFile }) => saveFile(name, typeof data === 'string' ? data : data instanceof Uint8Array ? data : new Uint8Array(0)));
+    return;
+  }
   const url = URL.createObjectURL(new Blob([data as BlobPart], { type }));
   const a = document.createElement('a');
   a.href = url;

@@ -4,6 +4,7 @@
 //! manual edits are stored as parameters, never as baked pixels.
 
 pub mod pipeline;
+pub mod session;
 
 use std::collections::BTreeMap;
 

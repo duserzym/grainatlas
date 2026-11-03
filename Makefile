@@ -3,7 +3,7 @@ SHELL := /bin/bash
 WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>/dev/null | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
 WASM_OUT := ui/src/lib/core/pkg
 
-.PHONY: setup core-test wasm ui-dev ui-build desktop-dev desktop-build test parity e2e
+.PHONY: setup core-test wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e
 
 setup:
 	rustup update stable
@@ -25,10 +25,14 @@ ui-dev: wasm
 ui-build: wasm
 	cd ui && pnpm build
 
-desktop-dev: ui-build
+# Icons are generated from tauri/assets-icon.svg (no binary images in git).
+icons:
+	@test -f tauri/src-tauri/icons/icon.png || (cd tauri && cargo tauri icon assets-icon.svg -o src-tauri/icons && rm -rf src-tauri/icons/android src-tauri/icons/ios)
+
+desktop-dev: ui-build icons
 	cd tauri && cargo tauri dev
 
-desktop-build: ui-build
+desktop-build: ui-build icons
 	cd tauri && cargo tauri build
 
 # Native and wasm builds must hash the fixture mosaic identically.
