@@ -48,8 +48,8 @@ function keep(path: string): boolean {
   return true;
 }
 
-export function download(data: BlobPart, name: string, type = 'application/octet-stream') {
-  const url = URL.createObjectURL(new Blob([data], { type }));
+export function download(data: BlobPart | Uint8Array, name: string, type = 'application/octet-stream') {
+  const url = URL.createObjectURL(new Blob([data as BlobPart], { type }));
   const a = document.createElement('a');
   a.href = url;
   a.download = name;

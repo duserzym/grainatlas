@@ -164,7 +164,13 @@ export class WasmCore implements Core {
     return this.call('renumber', { grains, tolerance, from });
   }
 
-  async exportSpots(spots: Spot[], grains: Grain[], format: 'csv' | 'geojson'): Promise<string> {
+  async setLink(mountId: string | null, samples: Record<string, string>): Promise<void> {
+    await this.ready();
+    await this.call('setLink', { mountId: mountId ?? '', samples });
+    this.project = await this.call<string>('projectJson');
+  }
+
+  async exportSpots(spots: Spot[], grains: Record<string, Grain[]>, format: 'csv' | 'geojson'): Promise<string> {
     await this.ready();
     return this.call('exportSpots', { spots, grains, format });
   }
