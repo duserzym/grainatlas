@@ -37,12 +37,13 @@ impl Default for BlendParams {
 
 /// Blends corrected tiles at their integer placements. Returns the mosaic and its coverage
 /// (0..1). `fill` is written where no tile covers the mosaic.
-pub fn blend(pl: &Placement, tiles: &[Gray], p: &BlendParams, fill: f32, ctl: &Ctl) -> crate::Result<(Gray, Vec<f32>)> {
+/// Takes the tiles by value so their pixels move into the blend instead of being copied.
+pub fn blend(pl: &Placement, tiles: Vec<Gray>, p: &BlendParams, fill: f32, ctl: &Ctl) -> crate::Result<(Gray, Vec<f32>)> {
     let (w, h) = (pl.width, pl.height);
     ctl.report("seams", 0.0);
     let weights: Vec<Vec<f32>> = match p.mode {
-        BlendMode::Multiband => seam_weights(pl, tiles, p.seam_factor.max(1)),
-        BlendMode::Feather => feather_weights(tiles),
+        BlendMode::Multiband => seam_weights(pl, &tiles, p.seam_factor.max(1)),
+        BlendMode::Feather => feather_weights(&tiles),
     };
     ctl.check()?;
     ctl.report("blend", 0.2);
@@ -52,12 +53,12 @@ pub fn blend(pl: &Placement, tiles: &[Gray], p: &BlendParams, fill: f32, ctl: &C
                 .tiles
                 .iter()
                 .zip(tiles)
-                .map(|(t, g)| RoiImage { x0: t.x as i32, y0: t.y as i32, w: g.w, h: g.h, ch: 1, px: g.px.clone(), alpha: vec![1.0; g.w * g.h] })
+                .map(|(t, g)| RoiImage { x0: t.x as i32, y0: t.y as i32, w: g.w, h: g.h, ch: 1, alpha: vec![1.0; g.w * g.h], px: g.px })
                 .collect();
             let levels = if p.levels == 0 { blend_levels(w, h) } else { p.levels };
             multiband(w, h, &imgs, &weights, levels)
         }
-        BlendMode::Feather => feather(w, h, pl, tiles, &weights),
+        BlendMode::Feather => feather(w, h, pl, &tiles, &weights),
     };
     ctl.report("blend", 1.0);
     let mut out = Gray { w, h, px };

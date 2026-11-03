@@ -1,0 +1,186 @@
+/* grainmap design tokens, copied from laicpmsdb/ui/src/app.css (glass design
+   language) so the two apps look like one. Scoped to .gm-root, never :root, so
+   grainmap can live in a tab of the unified shell (plan section 7). Dark is the
+   default (CL work); [data-theme='light'] switches. Glass is for chrome only;
+   the image surface is opaque. */
+
+.gm-root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  --radius-sm: 8px;
+  --radius: 16px;
+  --radius-lg: 22px;
+  --blur: 18px;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --motion: 180ms;
+
+  /* dark (default) */
+  --wallpaper:
+    radial-gradient(60rem 40rem at 10% -10%, #1d3263 0%, transparent 60%),
+    radial-gradient(50rem 36rem at 100% 0%, #0f4a45 0%, transparent 55%),
+    radial-gradient(40rem 30rem at 60% 110%, #3d1f4a 0%, transparent 60%),
+    #0c111b;
+  --bg: #0c111b;
+  --text: #e7ecf4;
+  --text-muted: #a3aec0;
+  --text-faint: #7a879b;
+  --accent: #7aa7ff;
+  --accent-contrast: #0c111b;
+  --accent-soft: rgba(122, 167, 255, 0.16);
+  --danger: #ff7b72;
+  --warning: #e3b341;
+  --ok: #56d364;
+  --glass: rgba(255, 255, 255, 0.08);
+  --glass-strong: rgba(22, 29, 43, 0.78);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-edge: rgba(0, 0, 0, 0.4);
+  --glass-shadow: 0 12px 34px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --hairline: rgba(255, 255, 255, 0.1);
+  --row-hover: rgba(122, 167, 255, 0.1);
+  --plot-bg: #121926;
+  --plot-grid: #263043;
+  --plot-axis: #a3aec0;
+  /* image surface and overlays (Okabe-Ito based, colour-blind safe) */
+  --image-bg: #05070b;
+  --ov-outline: #56b4e9;
+  --ov-number: #f0e442;
+  --ov-spot: #ff8c42;
+  --ov-spot-selected: #ffffff;
+  --ov-line: #3fd3a4;
+  --ov-raster: #cc79a7;
+  --ov-measure: #e3b341;
+  --ov-label: #e7ecf4;
+
+  color-scheme: dark;
+  position: relative;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--text);
+  background: var(--wallpaper);
+  background-color: var(--bg);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.gm-root[data-theme='light'] {
+  --wallpaper:
+    radial-gradient(60rem 40rem at 10% -10%, #c9dbff 0%, transparent 60%),
+    radial-gradient(50rem 36rem at 100% 0%, #c7f0e6 0%, transparent 55%),
+    radial-gradient(40rem 30rem at 60% 110%, #f3d9f7 0%, transparent 60%),
+    #eef2f8;
+  --bg: #eef2f8;
+  --text: #17202e;
+  --text-muted: #556172;
+  --text-faint: #7d8899;
+  --accent: #2f6fde;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(47, 111, 222, 0.12);
+  --danger: #c2413b;
+  --warning: #a96800;
+  --ok: #1d8a5b;
+  --glass: rgba(255, 255, 255, 0.55);
+  --glass-strong: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.75);
+  --glass-edge: rgba(23, 32, 46, 0.08);
+  --glass-shadow: 0 10px 30px rgba(31, 45, 80, 0.12), 0 1px 2px rgba(31, 45, 80, 0.08);
+  --hairline: rgba(23, 32, 46, 0.1);
+  --row-hover: rgba(47, 111, 222, 0.07);
+  --plot-bg: #ffffff;
+  --plot-grid: #e6e9ef;
+  --plot-axis: #556172;
+  --image-bg: #0b0e14;
+  --ov-outline: #0072b2;
+  --ov-number: #f0e442;
+  --ov-spot: #d55e00;
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-root { --motion: 0ms; }
+}
+
+.gm-root *, .gm-root *::before, .gm-root *::after { box-sizing: border-box; }
+
+.gm-root a { color: var(--accent); text-decoration: none; }
+.gm-root a:hover { text-decoration: underline; }
+.gm-root h1, .gm-root h2, .gm-root h3 { margin: 0; line-height: 1.2; letter-spacing: -0.01em; }
+.gm-root h1 { font-size: 1.6rem; font-weight: 650; }
+.gm-root h2 { font-size: 1.15rem; font-weight: 620; }
+.gm-root h3 { font-size: 0.95rem; font-weight: 600; }
+.gm-root code, .gm-root .mono { font-family: var(--font-mono); font-size: 0.9em; }
+
+/* ---- glass primitives ---------------------------------------------------- */
+.gm-root .glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-border);
+  border-radius: var(--radius);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(140%);
+  backdrop-filter: blur(var(--blur)) saturate(140%);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .gm-root .glass { background: var(--glass-strong); }
+}
+.gm-root .panel { padding: var(--space-4) var(--space-6); }
+.gm-root .surface-opaque { background: var(--plot-bg); border: 1px solid var(--hairline); border-radius: var(--radius-sm); }
+.gm-root .muted { color: var(--text-muted); }
+.gm-root .faint { color: var(--text-faint); }
+.gm-root .num { font-variant-numeric: tabular-nums; }
+
+/* ---- controls ------------------------------------------------------------ */
+.gm-root button, .gm-root .btn {
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+  transition: background var(--motion), border-color var(--motion);
+}
+.gm-root button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.gm-root button:disabled { opacity: 0.45; cursor: default; }
+.gm-root button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); font-weight: 600; }
+.gm-root button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.gm-root button.danger { color: var(--danger); }
+.gm-root button.icon { padding: 0.3rem 0.5rem; min-width: 2rem; }
+.gm-root button[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.gm-root :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.gm-root input[type='text'], .gm-root input[type='number'], .gm-root select, .gm-root textarea {
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--glass);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.5rem;
+  min-width: 0;
+}
+.gm-root select option { background: var(--bg); color: var(--text); }
+.gm-root input[type='range'] { accent-color: var(--accent); width: 100%; }
+.gm-root input[type='checkbox'] { accent-color: var(--accent); }
+.gm-root label.field { display: grid; gap: 0.15rem; font-size: 0.82rem; color: var(--text-muted); }
+.gm-root label.check { display: flex; gap: 0.4rem; align-items: center; font-size: 0.88rem; }
+
+.gm-root table.data { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.gm-root table.data th { text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--hairline); padding: 0.3rem 0.5rem; position: sticky; top: 0; background: var(--glass-strong); }
+.gm-root table.data td { border-bottom: 1px solid var(--hairline); padding: 0.25rem 0.5rem; }
+.gm-root table.data tr:hover td { background: var(--row-hover); }
+.gm-root table.data tr.selected td { background: var(--accent-soft); }
+
+.gm-root .kbd { font-family: var(--font-mono); font-size: 0.75rem; border: 1px solid var(--hairline); border-radius: 4px; padding: 0 0.3rem; color: var(--text-muted); }
+.gm-root .pill { display: inline-block; font-size: 0.75rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.gm-root .pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.gm-root .pill.warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
+
+/* the host page: only the body margin, nothing else global */
+body:has(> #grainmap) { margin: 0; background: #0c111b; }

@@ -298,7 +298,7 @@ impl EdgeSteps {
     }
 }
 
-/// Finds steps in the background profile near each edge (within 45 % of the size).
+/// Finds steps in the background profile near each edge (within 60 % of the size).
 pub fn detect_edge_steps(t: &Gray, thr: f32, dilate: usize) -> EdgeSteps {
     let mut grain: Vec<bool> = t.px.iter().map(|&v| v > thr).collect();
     if dilate > 0 {
@@ -353,7 +353,7 @@ fn find_step(p: &[f32]) -> Option<(f64, Step)> {
         return None;
     }
     let mut best: Option<(f64, Step)> = None;
-    let max_at = (n as f64 * 0.45) as usize;
+    let max_at = (n as f64 * 0.6) as usize;
     let mut s = 32;
     while s <= max_at {
         let mut ata = [0.0f64; 9];
