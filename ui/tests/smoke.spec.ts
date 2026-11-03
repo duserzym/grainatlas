@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const FIXTURE = fileURLToPath(new URL('../../tests/fixtures/tm4000/Sweden_XS_150X', import.meta.url));
 
-test('open the fixture, stitch, find grains, place three spots, export CSV', async ({ page }) => {
+test('open the fixture, stitch, find grains, place three spots, export CSV, print one page', async ({ page }) => {
   await page.goto('./');
   await page.getByTestId('package-input').setInputFiles(FIXTURE);
   await expect(page.getByTestId('area-001_HJ-GC1')).toBeVisible();
@@ -53,4 +53,16 @@ test('open the fixture, stitch, find grains, place three spots, export CSV', asy
   expect(csv[0]).toContain('id,name,sample,area,grain,grain_id,x_um,y_um');
   expect(csv).toHaveLength(4);
   expect(csv[1]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/); // UUIDv7
+
+  // Print one page of grains on Letter and export the PDF.
+  await page.getByRole('button', { name: 'Layout' }).click();
+  await page.getByTestId('paper').selectOption('letter');
+  await page.getByTestId('scale').fill('10');
+  await page.getByTestId('layout').click();
+  await expect(page.getByTestId('page')).toBeVisible();
+  const pdfDl = page.waitForEvent('download');
+  await page.getByTestId('export-pdf').click();
+  const pdf = readFileSync(await (await pdfDl).path());
+  expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  expect(pdf.toString('latin1')).toContain('/MediaBox [0 0 612 792');
 });
