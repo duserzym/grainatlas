@@ -48,6 +48,13 @@ enum Cmd {
         /// Also segment grains (masks/<area>/, exports/<area>_grains.csv).
         #[arg(long)]
         segment: bool,
+        /// Also print grain maps to exports/<area>_grains.pdf and .svg pages (implies --segment).
+        /// Paper: letter, tabloid (default), a4, a3.
+        #[arg(long, value_name = "PAPER", num_args = 0..=1, default_missing_value = "tabloid")]
+        print: Option<String>,
+        /// Print scale in um of sample per mm of paper (0 = fit).
+        #[arg(long, default_value_t = 0.0)]
+        scale: f64,
     },
 }
 
@@ -71,7 +78,7 @@ fn main() -> Result<()> {
                 println!("{} {}", area.id, o.mosaic_json.sha256);
             }
         }
-        Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment } => {
+        Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, scale } => {
             let (pkg, only) = open(&folder)?;
             let mut params: AreaParams = match params {
                 Some(p) => serde_json::from_str(&std::fs::read_to_string(&p)?)?,
@@ -124,7 +131,7 @@ fn main() -> Result<()> {
                     "ms": total, "steps": timings.steps, "sha256": o.mosaic_json.sha256,
                 }));
                 let mut grains_n = None;
-                if segment {
+                if segment || print.is_some() {
                     let t = clock();
                     let rec = project.area_mut(&area.id).expect("area");
                     let prev: Vec<grainmap_core::segment::Grain> = std::fs::read(out.join(format!("masks/{}/grains.json", area.id)))
@@ -140,6 +147,21 @@ fn main() -> Result<()> {
                     let csv = grainmap_core::segment::grains_csv(&grains, |x, y| rec.stage_of(x, y), |_| 0);
                     write(&out.join(format!("exports/{}_grains.csv", area.id)), csv.as_bytes())?;
                     grains_n = Some(grains.len());
+                    if let Some(paper) = &print {
+                        let t = clock();
+                        let rec = project.areas.iter().find(|a| a.id == area.id).expect("area");
+                        let img = pipeline::area_image(rec, &o, &params.tone);
+                        let mut gmap = std::collections::BTreeMap::new();
+                        gmap.insert(rec.id.clone(), grains.clone());
+                        let lp = grainmap_core::layout::LayoutParams { paper: paper.clone(), um_per_mm: scale, title: format!("{} · {}", pkg.info().name, rec.name), ..Default::default() };
+                        let r = grainmap_core::layout::layout(&lp, &[img], &gmap, &[], &[]);
+                        for (i, svg) in r.pages.iter().enumerate() {
+                            write(&out.join(format!("exports/{}_page{}.svg", area.id, i + 1)), svg.as_bytes())?;
+                        }
+                        let pdf = grainmap_core::layout::pdf::pdf_from_svgs(&r.pages)?;
+                        write(&out.join(format!("exports/{}_grains.pdf", area.id)), &pdf)?;
+                        eprintln!("  {} pages at {} um/mm in {:.0} ms", r.pages.len(), r.um_per_mm, clock() - t);
+                    }
                 }
                 summary.last_mut().expect("summary")["grains"] = serde_json::json!(grains_n);
                 let rec = project.areas.iter().find(|a| a.id == area.id).expect("area").clone();

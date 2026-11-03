@@ -284,6 +284,25 @@ impl Session {
         Ok(())
     }
 
+    /// Print layout: SVG pages as JSON `{pages, um_per_mm, items, paper_mm}`.
+    pub fn layout(&self, params: &str, grains: &str, spots: &str, labels: &str, tone: &str) -> Result<String, JsError> {
+        let p: grainmap_core::layout::LayoutParams = serde_json::from_str(params).map_err(err)?;
+        let grains: BTreeMap<String, Vec<Grain>> = serde_json::from_str(grains).map_err(err)?;
+        let spots: Vec<grainmap_core::spots::Spot> = serde_json::from_str(spots).map_err(err)?;
+        let labels: Vec<grainmap_core::spots::Label> = serde_json::from_str(labels).map_err(err)?;
+        let tone: BTreeMap<String, ToneParams> = serde_json::from_str(tone).map_err(err)?;
+        let project = self.project.as_ref().ok_or_else(|| JsError::new("no project"))?;
+        let imgs: Vec<grainmap_core::layout::AreaImage> = project
+            .areas
+            .iter()
+            .filter_map(|rec| {
+                let o = self.outputs.get(&rec.id)?;
+                Some(pipeline::area_image(rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)))
+            })
+            .collect();
+        serde_json::to_string(&grainmap_core::layout::layout(&p, &imgs, &grains, &spots, &labels)).map_err(err)
+    }
+
     fn seg_scale(&self, area_id: &str) -> usize {
         self.project.as_ref().and_then(|p| p.areas.iter().find(|a| a.id == area_id)).map_or(2, |a| a.params.segment.work_scale)
     }
@@ -302,6 +321,13 @@ pub fn renumber(grains: &str, tolerance: f64, from: &str) -> Result<String, JsEr
     };
     grainmap_core::segment::renumber(&mut gs, tolerance, f);
     serde_json::to_string(&gs).map_err(err)
+}
+
+/// SVG pages (JSON array of strings) → PDF bytes.
+#[wasm_bindgen]
+pub fn pdf_from_svgs(pages: &str) -> Result<Vec<u8>, JsError> {
+    let pages: Vec<String> = serde_json::from_str(pages).map_err(err)?;
+    grainmap_core::layout::pdf::pdf_from_svgs(&pages).map_err(err)
 }
 
 /// Black / white / gamma lookup table (256 bytes) for display.

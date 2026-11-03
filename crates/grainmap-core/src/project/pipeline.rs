@@ -201,3 +201,17 @@ pub fn mask_files(rec: &AreaRecord, out: &AreaOutput, grains: &[crate::segment::
         (format!("masks/{}/grains.json", rec.id), serde_json::to_vec_pretty(&json).expect("json")),
     ]
 }
+
+/// An area's pixels for the print layout, with the display LUT of `tone` applied on print.
+pub fn area_image<'a>(rec: &'a AreaRecord, out: &'a AreaOutput, tone: &crate::photometric::ToneParams) -> crate::layout::AreaImage<'a> {
+    crate::layout::AreaImage {
+        id: &rec.id,
+        name: &rec.name,
+        sample: if rec.sample.is_empty() { &rec.name } else { &rec.sample },
+        w: out.linear.w,
+        h: out.linear.h,
+        px: &out.base,
+        lut: crate::photometric::tone::lut(tone),
+        um_per_px: rec.um_per_px(),
+    }
+}

@@ -207,10 +207,13 @@ export interface LayoutParams {
   grain_margin_um: number;
   show_spots: boolean;
   show_labels: boolean;
+  show_outlines: boolean;
   cut_marks: boolean;
   title: string;
+  dpi: number;
+  by_number: boolean;
 }
 
-export interface LayoutResult { pages: string[]; um_per_mm: number; items: number }
+export interface LayoutResult { pages: string[]; um_per_mm: number; items: number; paper_mm: [number, number] }
 
 export interface Progress { stage: string; fraction: number }
