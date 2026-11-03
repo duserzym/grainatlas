@@ -123,7 +123,7 @@ impl Project {
     pub fn from_json(s: &str) -> crate::Result<Project> {
         let p: Project = serde_json::from_str(s).map_err(|e| crate::Error::Invalid(format!("project.json: {e}")))?;
         if p.schema_version > SCHEMA_VERSION {
-            return Err(crate::Error::Unsupported(format!("project schema {} is newer than this grainmap ({SCHEMA_VERSION})", p.schema_version)));
+            return Err(crate::Error::Unsupported(format!("project schema {} is newer than this grainatlas ({SCHEMA_VERSION})", p.schema_version)));
         }
         Ok(p)
     }

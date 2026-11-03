@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "grainmap",
+  "productName": "grainatlas",
   "version": "0.1.0",
-  "identifier": "org.grainmap.desktop",
+  "identifier": "org.grainatlas.desktop",
   "build": {
     "frontendDist": "../../ui/dist",
     "devUrl": "http://localhost:5174",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "grainmap",
+        "title": "grainatlas",
         "width": 1440,
         "height": 900,
         "minWidth": 1024,

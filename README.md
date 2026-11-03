@@ -1,4 +1,4 @@
-# grainmap
+# grainatlas
 
 Open-source stitching, correction, segmentation, spot-placement and print-layout
 tool for SEM grain-mount images (CL, BSE, SE) used to plan LA-ICP-MS sessions.
@@ -46,18 +46,18 @@ make desktop-dev  # desktop app (Tauri 2) on this machine
 The command line does batch work:
 
 ```bash
-cargo run --release -p grainmap-cli -- stitch <package-or-area-folder> --out <name>.grainmap --segment --print tabloid
+cargo run --release -p grainatlas-cli -- stitch <package-or-area-folder> --out <name>.grainatlas --segment --print tabloid
 ```
 
-The desktop app also takes `grainmap <package-folder> [--stitch] [--segment]`
-and opens saved `<name>.grainmap` folders.
+The desktop app also takes `grainatlas <package-folder> [--stitch] [--segment]`
+and opens saved `<name>.grainatlas` folders.
 
 ## Layout
 
 ```text
-crates/grainmap-core   all pixel operations (readers, mosaic, photometric, blend, segment, scale, spots, layout, project)
-crates/grainmap-wasm   the core for the browser (wasm-bindgen)
-crates/grainmap-cli    `grainmap` command line
+crates/grainatlas-core   all pixel operations (readers, mosaic, photometric, blend, segment, scale, spots, layout, project)
+crates/grainatlas-wasm   the core for the browser (wasm-bindgen)
+crates/grainatlas-cli    `grainatlas` command line
 ui/                    Svelte 5 + TypeScript + Vite; src/lib/core/{wasm,tauri}.ts implement the Core interface
 tauri/                 Tauri 2 desktop shell (src-tauri)
 tests/fixtures/        one TM4000 area (6 tiles) for tests; tests/golden/ the fixture mosaic hash

@@ -21,7 +21,7 @@ Thumbs.db
 *.webp
 *.zag
 *.pdf
-*.grainmap/
+*.grainatlas/
 !tests/fixtures/**
 !docs/**/*.png
 !ui/public/**

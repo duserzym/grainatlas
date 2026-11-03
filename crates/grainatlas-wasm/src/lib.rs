@@ -1,11 +1,11 @@
-//! grainmap-core for the browser: a thin wasm-bindgen wrapper around
-//! `grainmap_core::project::session::Session` (the desktop app wraps the same
+//! grainatlas-core for the browser: a thin wasm-bindgen wrapper around
+//! `grainatlas_core::project::session::Session` (the desktop app wraps the same
 //! type in Tauri commands). One session lives in a Web Worker; pixels stay in
 //! wasm memory and leave as transferable buffers with an 8-byte w/h header.
 
-use grainmap_core::Ctl;
-use grainmap_core::project::AreaParams;
-use grainmap_core::project::session;
+use grainatlas_core::Ctl;
+use grainatlas_core::project::AreaParams;
+use grainatlas_core::project::session;
 use wasm_bindgen::prelude::*;
 
 fn err(e: impl std::fmt::Display) -> JsError {
@@ -133,5 +133,5 @@ pub fn default_params() -> String {
 
 #[wasm_bindgen]
 pub fn new_id() -> String {
-    grainmap_core::project::new_id().to_string()
+    grainatlas_core::project::new_id().to_string()
 }

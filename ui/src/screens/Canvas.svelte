@@ -196,7 +196,7 @@
   async function exportSpots(format: 'csv' | 'geojson') {
     if (!core) return;
     const text = await app.run(`Exporting ${format}`, () => core!.exportSpots($state.snapshot(app.spots) as Spot[], $state.snapshot(app.grains) as Record<string, Grain[]>, format));
-    if (text) download(text, `${app.pkg?.name ?? 'grainmap'}_spots.${format === 'csv' ? 'csv' : 'geojson'}`, format === 'csv' ? 'text/csv' : 'application/geo+json');
+    if (text) download(text, `${app.pkg?.name ?? 'grainatlas'}_spots.${format === 'csv' ? 'csv' : 'geojson'}`, format === 'csv' ? 'text/csv' : 'application/geo+json');
   }
   async function setSample(v: string) {
     if (!area || !core) return;

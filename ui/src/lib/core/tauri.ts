@@ -22,7 +22,7 @@ export class TauriCore implements Core {
   private onProgress: ((p: Progress) => void) | null = null;
 
   constructor() {
-    listen<Progress>('grainmap://progress', (e) => this.onProgress?.(e.payload));
+    listen<Progress>('grainatlas://progress', (e) => this.onProgress?.(e.payload));
   }
 
   async openFiles(_name: string, _files: PackageFile[]): Promise<PackageInfo> {

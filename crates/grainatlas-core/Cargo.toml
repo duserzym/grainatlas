@@ -1,5 +1,5 @@
 [package]
-name = "grainmap-core"
+name = "grainatlas-core"
 description = "Stitching, photometric correction, segmentation, spots and print layout for SEM grain-mount images"
 version.workspace = true
 edition.workspace = true

@@ -42,8 +42,8 @@ jobs:
       - name: Web build (wasm core + UI)
         shell: bash
         run: |
-          cargo build -p grainmap-wasm --target wasm32-unknown-unknown --release
-          wasm-bindgen --target web --out-dir ui/src/lib/core/pkg --out-name grainmap target/wasm32-unknown-unknown/release/grainmap_wasm.wasm
+          cargo build -p grainatlas-wasm --target wasm32-unknown-unknown --release
+          wasm-bindgen --target web --out-dir ui/src/lib/core/pkg --out-name grainatlas target/wasm32-unknown-unknown/release/grainatlas_wasm.wasm
           cd ui && pnpm build
       - name: Icons
         shell: bash
@@ -53,7 +53,7 @@ jobs:
         run: cd tauri && cargo tauri build --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: grainmap-${{ matrix.target }}
+          name: grainatlas-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             target/${{ matrix.target }}/release/bundle/macos/*.app

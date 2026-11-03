@@ -2,8 +2,8 @@
 // {id, ok, value} or {id, ok: false, error}; progress: {id, progress}.
 // Image buffers go back as transferables.
 
-import init, * as wasm from './pkg/grainmap.js';
-import wasmUrl from './pkg/grainmap_bg.wasm?url';
+import init, * as wasm from './pkg/grainatlas.js';
+import wasmUrl from './pkg/grainatlas_bg.wasm?url';
 
 let ready: Promise<unknown> | null = null;
 let session: wasm.Session | null = null;

@@ -1,4 +1,4 @@
-// Types mirrored from grainmap-core (serde JSON).
+// Types mirrored from grainatlas-core (serde JSON).
 
 export interface TileMeta {
   index: number;

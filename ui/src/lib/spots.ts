@@ -1,4 +1,4 @@
-// Spot helpers for the canvas: naming (same rules as grainmap-core
+// Spot helpers for the canvas: naming (same rules as grainatlas-core
 // spots::format_name), snapping, hit tests and the stage mapping.
 
 import type { AreaRecord, Grain, Spot } from './core/types';

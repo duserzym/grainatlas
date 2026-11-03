@@ -1,4 +1,4 @@
-//! grainmap desktop: the same Svelte UI, with the core running natively
+//! grainatlas desktop: the same Svelte UI, with the core running natively
 //! (rayon, all cores) behind Tauri commands that mirror the wasm worker API.
 //! Packages are read from disk by path; results are saved with native dialogs.
 
@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use grainmap_core::Ctl;
-use grainmap_core::project::session::{self, Session};
-use grainmap_core::source::DirSource;
+use grainatlas_core::Ctl;
+use grainatlas_core::project::session::{self, Session};
+use grainatlas_core::source::DirSource;
 use serde::Serialize;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, State};
@@ -62,7 +62,7 @@ async fn open_path(state: State<'_, AppState>, path: String) -> Res<String> {
     Ok(info)
 }
 
-/// Opens a `<name>.grainmap/` project folder: its package (by the recorded path) and its
+/// Opens a `<name>.grainatlas/` project folder: its package (by the recorded path) and its
 /// project.json. Returns `{ "info": PackageInfo, "project": full project JSON }`.
 #[tauri::command]
 async fn open_project(state: State<'_, AppState>, path: String) -> Res<String> {
@@ -105,7 +105,7 @@ async fn stitch(app: AppHandle, state: State<'_, AppState>, area_id: String, par
     let cancel = state.cancel.clone();
     let start = Instant::now();
     let prog = |stage: &str, fraction: f32| {
-        let _ = app.emit("grainmap://progress", Progress { stage: stage.to_string(), fraction });
+        let _ = app.emit("grainatlas://progress", Progress { stage: stage.to_string(), fraction });
     };
     let canc = || cancel.load(Ordering::SeqCst);
     let clock = || start.elapsed().as_secs_f64() * 1000.0;
@@ -207,7 +207,7 @@ async fn pdf(pages: String) -> Res<Response> {
 /// Header `x-name` carries the suggested file name. Returns the path, or null if cancelled.
 #[tauri::command]
 async fn save_bytes(app: AppHandle, state: State<'_, AppState>, request: Request<'_>) -> Res<Option<String>> {
-    let raw = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or("grainmap-export");
+    let raw = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or("grainatlas-export");
     let name = percent_decode(raw);
     let bytes = match request.body() {
         InvokeBody::Raw(b) => b.clone(),
@@ -223,7 +223,7 @@ async fn save_bytes(app: AppHandle, state: State<'_, AppState>, request: Request
     Ok(Some(path.display().to_string()))
 }
 
-/// Writes the project folder `<name>.grainmap/` (plan section 5.4) next to the package, or in a
+/// Writes the project folder `<name>.grainatlas/` (plan section 5.4) next to the package, or in a
 /// folder chosen in a dialog. `project` is the full project JSON (with the UI's grains and spots).
 #[tauri::command]
 async fn save_project(app: AppHandle, state: State<'_, AppState>, project: String, ask: bool) -> Res<Option<String>> {
@@ -233,7 +233,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, project: Strin
     let parent = match (ask, pkg_parent) {
         (false, Some(p)) => p,
         (_, start) => {
-            let mut d = app.dialog().file().set_title("Folder for the .grainmap project");
+            let mut d = app.dialog().file().set_title("Folder for the .grainatlas project");
             if let Some(s) = start {
                 d = d.set_directory(s);
             }
@@ -243,7 +243,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, project: Strin
             }
         }
     };
-    let dir = parent.join(format!("{name}.grainmap"));
+    let dir = parent.join(format!("{name}.grainatlas"));
     let files = lock(&state).project_files(&project).map_err(e)?;
     for (rel, bytes) in files {
         let p = dir.join(rel);
@@ -280,7 +280,7 @@ struct Startup {
     segment: bool,
 }
 
-/// Command line: `grainmap [package-folder] [--stitch] [--segment]` opens the folder and, on
+/// Command line: `grainatlas [package-folder] [--stitch] [--segment]` opens the folder and, on
 /// request, stitches every area and finds grains (batch preparation before a session).
 #[tauri::command]
 fn startup() -> Startup {
@@ -326,5 +326,5 @@ pub fn run() {
             save_project,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running grainmap");
+        .expect("error while running grainatlas");
 }

@@ -64,7 +64,7 @@ impl DirSource {
             for e in rd.flatten() {
                 let p = e.path();
                 let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || name.ends_with(".grainmap") {
+                if name.starts_with('.') || name.ends_with(".grainatlas") {
                     continue;
                 }
                 if p.is_dir() {

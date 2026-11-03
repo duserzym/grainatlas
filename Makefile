@@ -1,4 +1,4 @@
-# grainmap tasks. `make setup && make test` from a clean clone.
+# grainatlas tasks. `make setup && make test` from a clean clone.
 SHELL := /bin/bash
 WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>/dev/null | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
 WASM_OUT := ui/src/lib/core/pkg
@@ -16,8 +16,8 @@ core-test:
 	cargo test
 
 wasm:
-	cargo build -p grainmap-wasm --target wasm32-unknown-unknown --release
-	wasm-bindgen --target web --out-dir $(WASM_OUT) --out-name grainmap target/wasm32-unknown-unknown/release/grainmap_wasm.wasm
+	cargo build -p grainatlas-wasm --target wasm32-unknown-unknown --release
+	wasm-bindgen --target web --out-dir $(WASM_OUT) --out-name grainatlas target/wasm32-unknown-unknown/release/grainatlas_wasm.wasm
 
 ui-dev: wasm
 	cd ui && pnpm dev
@@ -37,7 +37,7 @@ desktop-build: ui-build icons
 
 # Native and wasm builds must hash the fixture mosaic identically.
 parity: wasm
-	cargo run --release -q -p grainmap-cli -- hash tests/fixtures/tm4000/Sweden_XS_150X > target/native.hash
+	cargo run --release -q -p grainatlas-cli -- hash tests/fixtures/tm4000/Sweden_XS_150X > target/native.hash
 	node ui/scripts/wasm-hash.mjs tests/fixtures/tm4000/Sweden_XS_150X > target/wasm.hash
 	diff target/native.hash target/wasm.hash && echo "parity ok: $$(cat target/native.hash)"
 
