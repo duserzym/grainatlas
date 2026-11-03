@@ -45,6 +45,9 @@ enum Cmd {
         /// Also write the level-0 mosaic as PNG to exports/.
         #[arg(long)]
         png: bool,
+        /// Also segment grains (masks/<area>/, exports/<area>_grains.csv).
+        #[arg(long)]
+        segment: bool,
     },
 }
 
@@ -68,7 +71,7 @@ fn main() -> Result<()> {
                 println!("{} {}", area.id, o.mosaic_json.sha256);
             }
         }
-        Cmd::Stitch { folder, out, params, fast, no_pyramid, png } => {
+        Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment } => {
             let (pkg, only) = open(&folder)?;
             let mut params: AreaParams = match params {
                 Some(p) => serde_json::from_str(&std::fs::read_to_string(&p)?)?,
@@ -120,6 +123,25 @@ fn main() -> Result<()> {
                     "rms_px": o.placement.rms_residual, "max_px": o.placement.max_residual,
                     "ms": total, "steps": timings.steps, "sha256": o.mosaic_json.sha256,
                 }));
+                let mut grains_n = None;
+                if segment {
+                    let t = clock();
+                    let rec = project.area_mut(&area.id).expect("area");
+                    let prev: Vec<grainmap_core::segment::Grain> = std::fs::read(out.join(format!("masks/{}/grains.json", area.id)))
+                        .ok()
+                        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                        .and_then(|v| serde_json::from_value(v["grains"].clone()).ok())
+                        .unwrap_or_default();
+                    let grains = pipeline::segment_area(rec, &o, &params.segment, &prev);
+                    eprintln!("  {} grains in {:.0} ms", grains.len(), clock() - t);
+                    for (rel, bytes) in pipeline::mask_files(rec, &o, &grains) {
+                        write(&out.join(rel), &bytes)?;
+                    }
+                    let csv = grainmap_core::segment::grains_csv(&grains, |x, y| rec.stage_of(x, y), |_| 0);
+                    write(&out.join(format!("exports/{}_grains.csv", area.id)), csv.as_bytes())?;
+                    grains_n = Some(grains.len());
+                }
+                summary.last_mut().expect("summary")["grains"] = serde_json::json!(grains_n);
                 let rec = project.areas.iter().find(|a| a.id == area.id).expect("area").clone();
                 if !no_pyramid {
                     for (rel, bytes) in pipeline::area_files(&rec, &o) {

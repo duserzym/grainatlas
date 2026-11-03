@@ -85,6 +85,9 @@ export interface AreaParams {
 
 export interface SegmentParams {
   polarity: 'bright' | 'dark';
+  method: 'background' | 'otsu';
+  noise_k: number;
+  contrast_frac: number;
   threshold: number | null;
   smooth_px: number;
   open_px: number;
@@ -92,9 +95,11 @@ export interface SegmentParams {
   min_size_um: number;
   split: boolean;
   split_h: number;
+  neck_ratio: number;
   grabcut: boolean;
   simplify_px: number;
   row_tolerance: number;
+  work_scale: number;
 }
 
 export interface PhotometricResult {
