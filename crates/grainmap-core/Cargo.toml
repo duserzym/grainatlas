@@ -1,0 +1,36 @@
+[package]
+name = "grainmap-core"
+description = "Stitching, photometric correction, segmentation, spots and print layout for SEM grain-mount images"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["parallel"]
+# rayon on native targets (photocraft-algo parallelises on its own on native).
+parallel = ["dep:rayon"]
+
+[dependencies]
+photocraft-algo = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rustfft = "6.4"
+zune-jpeg = "0.5"
+zune-core = "0.5"
+image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
+png = "0.17"
+roxmltree = "0.20"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v7", "serde"] }
+libm = "0.2"
+thiserror = "2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { version = "1", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["v7", "serde", "js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]

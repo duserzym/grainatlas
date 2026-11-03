@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/grainmap-core", "crates/grainmap-wasm", "crates/grainmap-cli"]
+default-members = ["crates/grainmap-core", "crates/grainmap-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+repository = "https://github.com/duserzym/grainmap"
+
+[workspace.dependencies]
+grainmap-core = { path = "crates/grainmap-core" }
+# photocraft-algo, pinned (ADR-0002). MIT OR Apache-2.0.
+photocraft-algo = { git = "https://github.com/storytold/photocraft", rev = "81bd97376f881ee3561371b7da52780844d3dfc7" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+anyhow = "1"
+
+[profile.release]
+debug = false
+lto = "thin"
+codegen-units = 4
+
+# Image work is unusably slow unoptimised; tests run the core at opt-level 3.
+[profile.dev.package."*"]
+opt-level = 3
+[profile.dev.package.grainmap-core]
+opt-level = 3
+[profile.test]
+opt-level = 3
