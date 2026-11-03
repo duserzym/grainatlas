@@ -1,0 +1,263 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ZigzagMultiCapture InstructName="TM4000" ZagVersion="1.0" ImageInfoImageType="SEMMAP" ImageInfoWidth="1280" ImageInfoHeight="960" ImageDispInfoWidth="600" ImageDispInfoHeight="450" ImageInfoPixelSize="42968.75" ImageInfoCenterStagePositionX="13500000" ImageInfoCenterStagePositionY="17500000" ImageInfoTopLeftStagePositionX="41000000" ImageInfoTopLeftStagePositionY="38125000" ImageInfoBottomRightStagePositionX="-14000000" ImageInfoBottomRightStagePositionY="-3125000" ImageInfoStagePositionR="0" ImageInfoStagePositionT="0" ImageInfoStagePositionZ="0" SelectAreaNo="AreaAll" TotalSelectArea="5">
+  <!--AreaNo.1 CaptureInfo-->
+  <AreaDefinition Count="1">
+    <AreaNo>Area1</AreaNo>
+    <AreaWidth>15.6403636363636</AreaWidth>
+    <AreaHeight>7.90145454545453</AreaHeight>
+    <CenterX>291.953454545455</CenterX>
+    <CenterY>202.743272727273</CenterY>
+    <ScreenSize>476</ScreenSize>
+    <MagDisplayMode>Photo</MagDisplayMode>
+    <Mag>150</Mag>
+    <ABCCHistory>
+      <SignalTypeHisCount>1</SignalTypeHisCount>
+      <SignalType1>UVD</SignalType1>
+      <DigitalGain>0</DigitalGain>
+      <Offset>0</Offset>
+      <Contrast>95</Contrast>
+      <Brightness>-3.56</Brightness>
+    </ABCCHistory>
+    <FocusCoarseState>45957</FocusCoarseState>
+    <FocusFineState>32768</FocusFineState>
+    <CaptureNumX>3</CaptureNumX>
+    <CaptureNumY>2</CaptureNumY>
+    <MarginPitchValue>Margin</MarginPitchValue>
+    <MarginSelectIndex>24</MarginSelectIndex>
+    <PitchXText>676</PitchXText>
+    <PitchYText>508</PitchYText>
+    <StartCapturePointXText>14954450</StartCapturePointXText>
+    <StartCapturePointYText>19902350</StartCapturePointYText>
+    <EndCapturePointXText>13520750</EndCapturePointXText>
+    <EndCapturePointYText>19178050</EndCapturePointYText>
+    <ListChecker>true</ListChecker>
+    <AreaName>HJ-GC1</AreaName>
+    <FolderName>001_HJ-GC1</FolderName>
+    <Sample></Sample>
+    <Keyword1></Keyword1>
+    <Keyword2></Keyword2>
+    <Comment>slab</Comment>
+  </AreaDefinition>
+  <!--AreaNo.2 CaptureInfo-->
+  <AreaDefinition Count="2">
+    <AreaNo>Area2</AreaNo>
+    <AreaWidth>15.9109090909091</AreaWidth>
+    <AreaHeight>24.57</AreaHeight>
+    <CenterX>292.548545454545</CenterX>
+    <CenterY>221.576454545455</CenterY>
+    <ScreenSize>476</ScreenSize>
+    <MagDisplayMode>Photo</MagDisplayMode>
+    <Mag>150</Mag>
+    <ABCCHistory>
+      <SignalTypeHisCount>1</SignalTypeHisCount>
+      <SignalType1>UVD</SignalType1>
+      <DigitalGain>0</DigitalGain>
+      <Offset>0</Offset>
+      <Contrast>100</Contrast>
+      <Brightness>-12.17</Brightness>
+    </ABCCHistory>
+    <FocusCoarseState>45957</FocusCoarseState>
+    <FocusFineState>32768</FocusFineState>
+    <CaptureNumX>3</CaptureNumX>
+    <CaptureNumY>5</CaptureNumY>
+    <MarginPitchValue>Margin</MarginPitchValue>
+    <MarginSelectIndex>24</MarginSelectIndex>
+    <PitchXText>676</PitchXText>
+    <PitchYText>508</PitchYText>
+    <StartCapturePointXText>14912300</StartCapturePointXText>
+    <StartCapturePointYText>18939950</StartCapturePointYText>
+    <EndCapturePointXText>13453800</EndCapturePointXText>
+    <EndCapturePointYText>16687700</EndCapturePointYText>
+    <ListChecker>true</ListChecker>
+    <AreaName>Skin_felsic</AreaName>
+    <FolderName>002_Skin_felsic</FolderName>
+    <Sample></Sample>
+    <Keyword1></Keyword1>
+    <Keyword2></Keyword2>
+    <Comment>slab</Comment>
+  </AreaDefinition>
+  <!--AreaNo.3 CaptureInfo-->
+  <AreaDefinition Count="3">
+    <AreaNo>Area3</AreaNo>
+    <AreaWidth>13.638</AreaWidth>
+    <AreaHeight>21.1603636363636</AreaHeight>
+    <CenterX>291.303545454545</CenterX>
+    <CenterY>246.877090909091</CenterY>
+    <ScreenSize>476</ScreenSize>
+    <MagDisplayMode>Photo</MagDisplayMode>
+    <Mag>150</Mag>
+    <ABCCHistory>
+      <SignalTypeHisCount>1</SignalTypeHisCount>
+      <SignalType1>UVD</SignalType1>
+      <DigitalGain>0</DigitalGain>
+      <Offset>0</Offset>
+      <Contrast>90</Contrast>
+      <Brightness>-13.93</Brightness>
+    </ABCCHistory>
+    <FocusCoarseState>45957</FocusCoarseState>
+    <FocusFineState>32768</FocusFineState>
+    <CaptureNumX>3</CaptureNumX>
+    <CaptureNumY>5</CaptureNumY>
+    <MarginPitchValue>Margin</MarginPitchValue>
+    <MarginSelectIndex>24</MarginSelectIndex>
+    <PitchXText>676</PitchXText>
+    <PitchYText>508</PitchYText>
+    <StartCapturePointXText>14922250</StartCapturePointXText>
+    <StartCapturePointYText>16464450</StartCapturePointYText>
+    <EndCapturePointXText>13672100</EndCapturePointXText>
+    <EndCapturePointYText>14524750</EndCapturePointYText>
+    <ListChecker>true</ListChecker>
+    <AreaName>AH2-2</AreaName>
+    <FolderName>003_AH2-2</FolderName>
+    <Sample></Sample>
+    <Keyword1></Keyword1>
+    <Keyword2></Keyword2>
+    <Comment>slab</Comment>
+  </AreaDefinition>
+  <!--AreaNo.4 CaptureInfo-->
+  <AreaDefinition Count="4">
+    <AreaNo>Area4</AreaNo>
+    <AreaWidth>16.1274545454546</AreaWidth>
+    <AreaHeight>23.4878181818182</AreaHeight>
+    <CenterX>312.517363636364</CenterX>
+    <CenterY>210.346090909091</CenterY>
+    <ScreenSize>476</ScreenSize>
+    <MagDisplayMode>Photo</MagDisplayMode>
+    <Mag>150</Mag>
+    <ABCCHistory>
+      <SignalTypeHisCount>1</SignalTypeHisCount>
+      <SignalType1>UVD</SignalType1>
+      <DigitalGain>0</DigitalGain>
+      <Offset>0</Offset>
+      <Contrast>94.1</Contrast>
+      <Brightness>-11.27</Brightness>
+    </ABCCHistory>
+    <FocusCoarseState>45957</FocusCoarseState>
+    <FocusFineState>32768</FocusFineState>
+    <CaptureNumX>3</CaptureNumX>
+    <CaptureNumY>5</CaptureNumY>
+    <MarginPitchValue>Margin</MarginPitchValue>
+    <MarginSelectIndex>24</MarginSelectIndex>
+    <PitchXText>676</PitchXText>
+    <PitchYText>508</PitchYText>
+    <StartCapturePointXText>13091750</StartCapturePointXText>
+    <StartCapturePointYText>19919800</StartCapturePointYText>
+    <EndCapturePointXText>11613400</EndCapturePointXText>
+    <EndCapturePointYText>17766750</EndCapturePointYText>
+    <ListChecker>true</ListChecker>
+    <AreaName>Skin_mafic</AreaName>
+    <FolderName>004_Skin_mafic</FolderName>
+    <Sample></Sample>
+    <Keyword1></Keyword1>
+    <Keyword2></Keyword2>
+    <Comment>slab</Comment>
+  </AreaDefinition>
+  <!--AreaNo.5 CaptureInfo-->
+  <AreaDefinition Count="5">
+    <AreaNo>Area5</AreaNo>
+    <AreaWidth>20.9989090909091</AreaWidth>
+    <AreaHeight>40.4814545454545</AreaHeight>
+    <CenterX>314.844545454545</CenterX>
+    <CenterY>245.306727272727</CenterY>
+    <ScreenSize>476</ScreenSize>
+    <MagDisplayMode>Photo</MagDisplayMode>
+    <Mag>150</Mag>
+    <ABCCHistory>
+      <SignalTypeHisCount>1</SignalTypeHisCount>
+      <SignalType1>UVD</SignalType1>
+      <DigitalGain>0</DigitalGain>
+      <Offset>0</Offset>
+      <Contrast>90</Contrast>
+      <Brightness>-13.73</Brightness>
+    </ABCCHistory>
+    <FocusCoarseState>45957</FocusCoarseState>
+    <FocusFineState>32768</FocusFineState>
+    <CaptureNumX>4</CaptureNumX>
+    <CaptureNumY>8</CaptureNumY>
+    <MarginPitchValue>Margin</MarginPitchValue>
+    <MarginSelectIndex>24</MarginSelectIndex>
+    <PitchXText>676</PitchXText>
+    <PitchYText>508</PitchYText>
+    <StartCapturePointXText>13101700</StartCapturePointXText>
+    <StartCapturePointYText>17493950</StartCapturePointYText>
+    <EndCapturePointXText>11176800</EndCapturePointXText>
+    <EndCapturePointYText>13783150</EndCapturePointYText>
+    <ListChecker>true</ListChecker>
+    <AreaName>AH1-GC1</AreaName>
+    <FolderName>005_AH1-GC1</FolderName>
+    <Sample></Sample>
+    <Keyword1></Keyword1>
+    <Keyword2></Keyword2>
+    <Comment>slab</Comment>
+  </AreaDefinition>
+  <!--AreaNo.6 CaptureInfo-->
+  <AreaDefinition Count="6" />
+  <!--AreaNo.7 CaptureInfo-->
+  <AreaDefinition Count="7" />
+  <!--AreaNo.8 CaptureInfo-->
+  <AreaDefinition Count="8" />
+  <!--AreaNo.9 CaptureInfo-->
+  <AreaDefinition Count="9" />
+  <!--AreaNo.10 CaptureInfo-->
+  <AreaDefinition Count="10" />
+  <!--AreaNo.11 CaptureInfo-->
+  <AreaDefinition Count="11" />
+  <!--AreaNo.12 CaptureInfo-->
+  <AreaDefinition Count="12" />
+  <!--AreaNo.13 CaptureInfo-->
+  <AreaDefinition Count="13" />
+  <!--AreaNo.14 CaptureInfo-->
+  <AreaDefinition Count="14" />
+  <!--AreaNo.15 CaptureInfo-->
+  <AreaDefinition Count="15" />
+  <!--AreaNo.16 CaptureInfo-->
+  <AreaDefinition Count="16" />
+  <!--AreaNo.17 CaptureInfo-->
+  <AreaDefinition Count="17" />
+  <!--AreaNo.18 CaptureInfo-->
+  <AreaDefinition Count="18" />
+  <!--AreaNo.19 CaptureInfo-->
+  <AreaDefinition Count="19" />
+  <!--AreaNo.20 CaptureInfo-->
+  <AreaDefinition Count="20" />
+  <!--AreaNo.21 CaptureInfo-->
+  <AreaDefinition Count="21" />
+  <!--AreaNo.22 CaptureInfo-->
+  <AreaDefinition Count="22" />
+  <!--AreaNo.23 CaptureInfo-->
+  <AreaDefinition Count="23" />
+  <!--AreaNo.24 CaptureInfo-->
+  <AreaDefinition Count="24" />
+  <!--AreaNo.25 CaptureInfo-->
+  <AreaDefinition Count="25" />
+  <!--AreaNo.26 CaptureInfo-->
+  <AreaDefinition Count="26" />
+  <!--AreaNo.27 CaptureInfo-->
+  <AreaDefinition Count="27" />
+  <!--AreaNo.28 CaptureInfo-->
+  <AreaDefinition Count="28" />
+  <!--AreaNo.29 CaptureInfo-->
+  <AreaDefinition Count="29" />
+  <!--AreaNo.30 CaptureInfo-->
+  <AreaDefinition Count="30" />
+  <!--AreaNo.31 CaptureInfo-->
+  <AreaDefinition Count="31" />
+  <!--AreaNo.32 CaptureInfo-->
+  <AreaDefinition Count="32" />
+  <!--AreaNo.33 CaptureInfo-->
+  <AreaDefinition Count="33" />
+  <!--AreaNo.34 CaptureInfo-->
+  <AreaDefinition Count="34" />
+  <!--AreaNo.35 CaptureInfo-->
+  <AreaDefinition Count="35" />
+  <!--AreaNo.36 CaptureInfo-->
+  <AreaDefinition Count="36" />
+  <!--AreaNo.37 CaptureInfo-->
+  <AreaDefinition Count="37" />
+  <!--AreaNo.38 CaptureInfo-->
+  <AreaDefinition Count="38" />
+  <!--AreaNo.39 CaptureInfo-->
+  <AreaDefinition Count="39" />
+  <!--AreaNo.40 CaptureInfo-->
+  <AreaDefinition Count="40" />
+</ZigzagMultiCapture>

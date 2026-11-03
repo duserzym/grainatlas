@@ -1,0 +1,28 @@
+# build
+/target
+**/target
+/ui/node_modules
+/ui/dist
+/tauri/src-tauri/target
+/tauri/src-tauri/gen
+*.wasm
+!tests/fixtures/**/*.wasm
+# env and OS
+.env
+.DS_Store
+Thumbs.db
+# image data never lives in git except the fixture
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.bmp
+*.webp
+*.zag
+*.pdf
+*.grainmap/
+!tests/fixtures/**
+!docs/**/*.png
+!ui/public/**
+!ui/static/**

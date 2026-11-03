@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TsunagiInfo_CMiObject>
+  <szClassVersion>1002</szClassVersion>
+  <TsunagiInfo_CMiInfo />
+  <szClassVersion>1002</szClassVersion>
+  <TsunagiInfo_CTsunagiInfo />
+  <szClassVersion>1002</szClassVersion>
+  <szComment>001_HJ-GC1_</szComment>
+  <wXCount>3</wXCount>
+  <wYCount>2</wYCount>
+  <dXPos>14954.450</dXPos>
+  <dYPos>19902.350</dYPos>
+  <dXSize>846.666</dXSize>
+  <dYSize>635.000</dYSize>
+  <dXPitch>676.000</dXPitch>
+  <dYPitch>508.000</dYPitch>
+  <ViewCount>6</ViewCount>
+  <View0>2545.550 2402.350</View0>
+  <View1>3221.550 2402.350</View1>
+  <View2>3897.550 2402.350</View2>
+  <View3>2545.550 1894.350</View3>
+  <View4>3221.550 1894.350</View4>
+  <View5>3897.550 1894.350</View5>
+  <wCaptureMode>1</wCaptureMode>
+  <wImgViewXMax>1280</wImgViewXMax>
+  <wImgViewYMax>960</wImgViewYMax>
+  <wScanSpeed>Capture_Slow(64)</wScanSpeed>
+  <wPiledUpCount>1</wPiledUpCount>
+  <Stage_coordinates_of_fields />
+  <Upper-Left>-2.546 2.402</Upper-Left>
+  <Upper-Right>-3.898 2.402</Upper-Right>
+  <Lower-Left>-2.546 2.910</Lower-Left>
+  <Lower-Right>-3.898 2.910</Lower-Right>
+  <Stage_coordinates_of_corners />
+  <Upper-Left>-2.122 2.085</Upper-Left>
+  <Upper-Right>-4.321 2.085</Upper-Right>
+  <Lower-Left>-2.122 3.228</Lower-Left>
+  <Lower-Right>-4.321 3.228</Lower-Right>
+</TsunagiInfo_CMiObject>
