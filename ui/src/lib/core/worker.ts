@@ -45,6 +45,7 @@ const ops: Record<string, Handler> = {
   refineGrain: ({ areaId, grain }) => JSON.parse(s().refine_grain(areaId, JSON.stringify(grain))),
   renumber: ({ grains, tolerance, from }) => JSON.parse(wasm.renumber(JSON.stringify(grains), tolerance, from ? JSON.stringify(from) : '')),
   exportSpots: ({ spots, grains, format }) => s().export_spots(JSON.stringify(spots), JSON.stringify(grains), format),
+  setLink: ({ mountId, samples }) => s().set_link(mountId, JSON.stringify(samples)),
   exportGrains: ({ areaId, grains }) => s().export_grains(areaId, JSON.stringify(grains)),
   layout: ({ params, grains, spots, labels, tone }) =>
     JSON.parse(s().layout(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(spots), JSON.stringify(labels), JSON.stringify(tone))),

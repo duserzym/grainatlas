@@ -35,7 +35,9 @@ export interface Core {
   /** GrabCut refinement of one grain. */
   refineGrain(areaId: string, grain: Grain): Promise<Grain>;
   renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]>;
-  exportSpots(spots: Spot[], grains: Grain[], format: 'csv' | 'geojson'): Promise<string>;
+  exportSpots(spots: Spot[], grains: Record<string, Grain[]>, format: 'csv' | 'geojson'): Promise<string>;
+  /** laicpmsdb mount id and per-area sample names into the project record. */
+  setLink(mountId: string | null, samples: Record<string, string>): Promise<void>;
   exportGrains(areaId: string, grains: Grain[]): Promise<string>;
   exportPng(areaId: string, tone: ToneParams): Promise<Uint8Array>;
   layout(params: LayoutParams, grains: Record<string, Grain[]>, spots: Spot[], labels: Label[], tone: Record<string, ToneParams>): Promise<LayoutResult>;

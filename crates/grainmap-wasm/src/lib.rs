@@ -256,6 +256,34 @@ impl Session {
         Ok(grainmap_core::segment::grains_csv(&gs, |x, y| rec.stage_of(x, y), |_| 0))
     }
 
+    /// Spot export: `format` is "csv" or "geojson"; `grains` maps area id → grains.
+    pub fn export_spots(&self, spots: &str, grains: &str, format: &str) -> Result<String, JsError> {
+        let spots: Vec<grainmap_core::spots::Spot> = serde_json::from_str(spots).map_err(err)?;
+        let project = self.project.as_ref().ok_or_else(|| JsError::new("no project"))?;
+        match format {
+            "csv" => Ok(grainmap_core::spots::spots_csv(project, &spots)),
+            _ => {
+                let grains: BTreeMap<String, Vec<Grain>> = serde_json::from_str(grains).map_err(err)?;
+                serde_json::to_string_pretty(&grainmap_core::spots::geojson(project, &grains, &spots)).map_err(err)
+            }
+        }
+    }
+
+    /// Sets the project's laicpmsdb mount id ("" clears it) and area sample names.
+    pub fn set_link(&mut self, mount_id: &str, samples: &str) -> Result<(), JsError> {
+        let project = self.project.as_mut().ok_or_else(|| JsError::new("no project"))?;
+        project.laicpmsdb.mount_id = if mount_id.trim().is_empty() { None } else { Some(mount_id.trim().parse().map_err(err)?) };
+        if !samples.trim().is_empty() {
+            let m: BTreeMap<String, String> = serde_json::from_str(samples).map_err(err)?;
+            for a in project.areas.iter_mut() {
+                if let Some(s) = m.get(&a.id) {
+                    a.sample = s.clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn seg_scale(&self, area_id: &str) -> usize {
         self.project.as_ref().and_then(|p| p.areas.iter().find(|a| a.id == area_id)).map_or(2, |a| a.params.segment.work_scale)
     }
