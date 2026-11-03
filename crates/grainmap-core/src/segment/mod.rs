@@ -1,5 +1,7 @@
 //! Grain segmentation (plan section 6.5). Filled in phase 4.
 
+pub mod morph;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]

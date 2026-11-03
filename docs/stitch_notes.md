@@ -54,3 +54,39 @@ several multiband bands at once; the wasm build builds one at a time).
 
 Synthetic test (`crates/grainmap-core/tests/stitch.rs`): a 3 x 3 grid with
 random sub-pixel drifts up to ±8 px is recovered within 0.25 px.
+
+## Phase 2: photometric correction
+
+Same machine, full pipeline including photometric correction and tone
+(read, stitch, photometric, blend, tone, pyramid), ms:
+
+| Area | Total | photometric | blend |
+| --- | --- | --- | --- |
+| 001_HJ-GC1 | 180 | 39 | 54 |
+| 002_Skin_felsic | 482 | 92 | 166 |
+| 003_AH2-2 | 430 | 95 | 139 |
+| 004_Skin_mafic | 441 | 89 | 135 |
+| 005_AH1-GC1 | 1040 | 219 | 434 |
+
+What the overlaps showed and what is now done about it:
+
+- **Beam-exposure steps.** In every tile the band that the beam had already
+  scanned while a neighbour was captured is 2-3 grey levels (of 255) darker,
+  with a sharp edge 150-320 px from the tile border (wider than the 192 px
+  geometric overlap). A smooth background surface cannot fit a step, and this
+  was the main source of the visible tile rectangles in Zigzag's stitch and in
+  our first runs. `background::detect_edge_steps` fits
+  `a + b·i + h·[i < s]` to the background row and column profiles near each
+  edge (strongest end first, then the other end on the corrected profile),
+  keeps steps with t > 12 and |h| > 1/255, and adds them back with a 4 px ramp.
+- **Gain and offset.** Our affine least squares over the overlap pixels
+  (three rounds of residual trimming, gentle regularisation relative to the
+  data weight). Gains on this package are within 0.94-1.04 and offsets within
+  ±0.025, so the SE detector was stable; the background leveling removes most
+  of the offset differences anyway.
+- **Background.** 2nd-order polynomial per tile fitted to 64 px cell medians
+  of the background (Otsu grain mask dilated by 6 px), subtracted, mosaic
+  median added back.
+- Remaining: in a few places a 1 grey-level contour follows a tile border in
+  the near-black epoxy (8-bit JPEG quantisation of the source at about 10/255;
+  invisible at normal contrast, visible only under extreme stretch).
