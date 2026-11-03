@@ -1,0 +1,1 @@
+//! See ARCHITECTURE_PLAN.md.
