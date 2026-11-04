@@ -4,7 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, Grain, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, BundleOptions, Grain, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
 
 function img(buf: ArrayBuffer | Uint8Array | number[]): RawImage | null {
   const b = buf instanceof Uint8Array ? buf : buf instanceof ArrayBuffer ? new Uint8Array(buf) : Uint8Array.from(buf);
@@ -132,6 +132,15 @@ export class TauriCore implements Core {
   }
   async pdf(pages: string[]): Promise<Uint8Array> {
     return bytes(await invoke<ArrayBuffer>('pdf', { pages: JSON.stringify(pages) }));
+  }
+  async atlasZip(project: Project, options: BundleOptions): Promise<Uint8Array> {
+    return bytes(await invoke<ArrayBuffer>('atlas_zip', { project: JSON.stringify(project), options: JSON.stringify(options) }));
+  }
+  async saveAtlas(project: Project, options: BundleOptions, zip: boolean): Promise<string | null> {
+    return invoke<string | null>('save_atlas', { project: JSON.stringify(project), options: JSON.stringify(options), zip });
+  }
+  async recordPublished(published: Published): Promise<void> {
+    await invoke('record_published', { published: JSON.stringify(published) });
   }
   async saveProject(project: Project, _extras: Record<string, string>): Promise<string | null> {
     return invoke<string | null>('save_project', { project: JSON.stringify(project), ask: false });

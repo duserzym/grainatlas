@@ -1374,6 +1374,7 @@ dependencies = [
  "grainatlas-core",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -1382,6 +1383,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "image",
+ "image-webp",
  "libm",
  "pdf-writer",
  "photocraft-algo",
@@ -1767,6 +1769,16 @@ dependencies = [
  "tiff",
  "zune-core",
  "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]

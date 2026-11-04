@@ -197,7 +197,7 @@ export interface Project {
   name: string;
   created: string;
   package: { path: string; reader: string; name: string; kind: OpenKind; loose?: LooseSpec; files?: string[]; meta: Record<string, string> };
-  laicpmsdb: { mount_id: string | null };
+  laicpmsdb: { mount_id: string | null; published?: Published[] };
   areas: AreaRecord[];
   settings: Settings;
   [k: string]: unknown;
@@ -243,3 +243,22 @@ export interface LayoutParams {
 export interface LayoutResult { pages: string[]; um_per_mm: number; items: number; paper_mm: [number, number] }
 
 export interface Progress { stage: string; fraction: number }
+
+/** One publish of the atlas bundle to laicpmsdb (recorded in project.json). */
+export interface Published {
+  server: string;
+  mount_id: string | null;
+  version: number | null;
+  /** sha256 of atlas.json (which lists the hash of every other file). */
+  atlas_sha256: string;
+  zip_sha256: string;
+  at: string;
+}
+
+/** How the core writes an atlas bundle. */
+export interface BundleOptions {
+  /** 100 = lossless WebP tiles, 90 to 99 = near-lossless. */
+  quality: number;
+  exported: string;
+  nas_path: string | null;
+}

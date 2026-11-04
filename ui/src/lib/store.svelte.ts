@@ -3,6 +3,7 @@
 
 import { getCore, type Core, type RawImage } from './core/core';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
+import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
@@ -122,6 +123,12 @@ class AppState {
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
   settings = $state<Settings>(loadSettings());
+  /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
+  link = $state<LinkSettings>(loadLink());
+  /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
+  serverOverride = $state<string | null>(null);
+  /** The last publish of this session, with the server's full answer. */
+  lastPublish = $state<(import('./core/types').Published & { response: Record<string, unknown> }) | null>(null);
   private theme0 = loadTheme();
   themePref = $state<ThemePref>(this.theme0.pref);
   /** False until the viewer picks a theme (or the address names one). */
@@ -165,6 +172,15 @@ class AppState {
 
   get areaMeta() {
     return this.pkg?.areas.find((a) => a.id === this.areaId) ?? null;
+  }
+
+  /** The laicpmsdb server in effect, or null. */
+  get server(): string | null {
+    return resolveServer(this.serverOverride, this.link.server);
+  }
+
+  saveLink() {
+    saveLink($state.snapshot(this.link) as LinkSettings);
   }
 
   saveSettings() {

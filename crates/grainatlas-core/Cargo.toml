@@ -36,3 +36,5 @@ uuid = { version = "1", features = ["v7", "serde", "js"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
+# Decodes the atlas WebP tiles in tests (the encoder is copied into src/atlas/vp8l.rs).
+image-webp = "0.2"

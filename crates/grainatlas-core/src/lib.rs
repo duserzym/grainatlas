@@ -6,6 +6,7 @@
 //!
 //! Module map follows `ARCHITECTURE_PLAN.md` section 5.2.
 
+pub mod atlas;
 pub mod blend;
 pub mod error;
 pub mod image;

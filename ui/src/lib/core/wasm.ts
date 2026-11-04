@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, Grain, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, BundleOptions, Grain, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onProgress?: (p: Progress) => void };
 
@@ -243,6 +243,21 @@ export class WasmCore implements Core {
 
   async pdf(pages: string[]): Promise<Uint8Array> {
     return this.call('pdf', { pages });
+  }
+
+  async atlasZip(project: Project, options: BundleOptions): Promise<Uint8Array> {
+    await this.ready();
+    return this.call('atlasZip', { project, options });
+  }
+
+  async saveAtlas(): Promise<string | null> {
+    return null; // the web build saves through lib/atlas.ts (download, or a folder where the browser allows it)
+  }
+
+  async recordPublished(published: Published): Promise<void> {
+    await this.ready();
+    await this.call('recordPublished', { published });
+    this.project = await this.call<string>('projectJson');
   }
 
   async saveProject(_project: Project, _extras: Record<string, string>): Promise<string | null> {

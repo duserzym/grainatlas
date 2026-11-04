@@ -5,7 +5,7 @@
 import { isHosted } from '@lab/bridge';
 
 import type {
-  AreaParams, Grain, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
+  AreaParams, BundleOptions, Grain, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
 } from './types';
 
 export interface RawImage { w: number; h: number; data: Uint8Array }
@@ -61,6 +61,12 @@ export interface Core {
   pdf(pages: string[]): Promise<Uint8Array>;
   /** Reference-image registration: pairs of [image px, mosaic um] → affine (image px → um). */
   register(pairs: [[number, number], [number, number]][]): Promise<{ matrix: [number, number, number, number, number, number]; rms_um: number; residuals_um: number[] } | null>;
+  /** The atlas bundle (WORKFLOW.md 3.1) of the full project as a zip, every stitched area included. */
+  atlasZip(project: Project, options: BundleOptions): Promise<Uint8Array>;
+  /** Desktop: save the atlas bundle as a `<project_id>.atlas/` folder or a zip (native dialogs). */
+  saveAtlas(project: Project, options: BundleOptions, zip: boolean): Promise<string | null>;
+  /** Records a publish in the project's laicpmsdb link. */
+  recordPublished(p: Published): Promise<void>;
   /** Desktop: write the project folder (project.json, pyramid, masks, spots). */
   saveProject(project: Project, extras: Record<string, string>): Promise<string | null>;
 }

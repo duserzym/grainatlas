@@ -13,6 +13,8 @@
   import FloatingPanel from '../components/FloatingPanel.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
   import { mountSpots, spotLink } from '../lib/laicpmsdb';
+  import MountPicker from '../components/MountPicker.svelte';
+  import { canSaveFolder, publish, saveAtlas } from '../lib/atlas';
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
@@ -21,7 +23,7 @@
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
   let cursorUm = $state<[number, number] | null>(null);
   let selGrains = $state<string[]>([]);
-  let tab = $state<'spots' | 'grains' | 'refOverlay'>('spots');
+  let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link'>('spots');
   let pairPending = $state<[number, number] | null>(null);
   let overlayInput = $state<HTMLInputElement>();
   let panel = $state({ x: 16, y: 150, open: true });
@@ -839,6 +841,7 @@
         <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
         <button aria-pressed={tab === 'grains'} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
         <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
+        <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to laicpmsdb" data-testid="tab-link">laicpmsdb</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if tab === 'spots'}
@@ -878,7 +881,27 @@
             </tbody>
           </table>
         </div>
-        <label class="field">laicpmsdb mount id <input type="text" placeholder="UUID (optional)" value={app.project?.laicpmsdb.mount_id ?? ''} onchange={(e) => setMount(e.currentTarget.value)} /></label>
+      {:else if tab === 'link'}
+        <MountPicker value={app.project?.laicpmsdb.mount_id ?? null} onchange={setMount} />
+        <p class="faint small-text">Server: {app.server ?? 'none — set it in Settings'}</p>
+        <h3 class="sub">Atlas bundle</h3>
+        <p class="faint small-text">The corrected mosaic as 256 px WebP tiles ({app.link.quality >= 100 ? 'lossless' : `near-lossless ${app.link.quality}`}), grains, spots, scale bars and this project, with a hash of every file. The raw SEM package is not included.</p>
+        <div class="row">
+          <button onclick={() => saveAtlas(false)} disabled={core?.kind !== 'tauri' && !canSaveFolder()} title={core?.kind === 'tauri' || canSaveFolder() ? 'Write a <project id>.atlas folder' : 'This browser cannot write folders: save the zip'} data-testid="save-atlas-folder">Save folder</button>
+          <button onclick={() => saveAtlas(true)} data-testid="save-atlas-zip">Save zip</button>
+          <button class="primary" onclick={publish} disabled={!app.server || !app.project?.laicpmsdb.mount_id} data-testid="publish"
+            title={!app.server ? 'Set the laicpmsdb server in Settings' : !app.project?.laicpmsdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to laicpmsdb</button>
+        </div>
+        {#if app.project?.laicpmsdb.published?.length}
+          <table class="data" data-testid="published">
+            <thead><tr><th>Published</th><th>Version</th><th>atlas.json</th></tr></thead>
+            <tbody>
+              {#each [...app.project.laicpmsdb.published].reverse() as pb (pb.at)}
+                <tr title="{pb.server} · mount {pb.mount_id}"><td>{pb.at.replace('T', ' ').slice(0, 16)}</td><td class="num">{pb.version ?? '–'}</td><td class="mono small">{pb.atlas_sha256.slice(0, 12)}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
       {:else if tab === 'refOverlay'}
         <p class="muted small-text">Lay a reference image over the mosaic (a photo of an annotated printout, a post-laser frame) and register it by clicking pairs of the same feature: first on the image, then on the mosaic. One pair moves it, two scale and rotate it, three or more fit an affine transform.</p>
         <div class="row">
@@ -1070,6 +1093,10 @@
   .small-text {
     font-size: 0.8rem;
     margin: 0;
+  }
+  .sub {
+    font-size: 0.85rem;
+    margin: var(--space-2) 0 0;
   }
   :global(.ga-root) .refimg {
     vector-effect: none;

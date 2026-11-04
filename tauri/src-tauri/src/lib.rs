@@ -331,6 +331,54 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, project: Strin
     Ok(Some(dir.display().to_string()))
 }
 
+/// The atlas bundle as zip bytes (`<project_id>.atlas/…`), for publishing to laicpmsdb.
+#[tauri::command]
+async fn atlas_zip(state: State<'_, AppState>, project: String, options: String) -> Res<Response> {
+    Ok(Response::new(lock(&state).atlas_zip(&project, &options).map_err(e)?))
+}
+
+/// Saves the atlas bundle: a `<project_id>.atlas/` folder in a chosen folder, or a zip through the
+/// save dialog. Returns the path written, or null when cancelled.
+#[tauri::command]
+async fn save_atlas(app: AppHandle, state: State<'_, AppState>, project: String, options: String, zip: bool) -> Res<Option<String>> {
+    let id = serde_json::from_str::<serde_json::Value>(&project).map_err(e)?["uuid"].as_str().unwrap_or("project").to_string();
+    let start = state.package_path.lock().unwrap_or_else(|x| x.into_inner()).as_ref().and_then(|p| p.parent().map(|q| q.to_path_buf()));
+    if zip {
+        let bytes = lock(&state).atlas_zip(&project, &options).map_err(e)?;
+        let mut d = app.dialog().file().set_file_name(format!("{id}.atlas.zip"));
+        if let Some(s) = start {
+            d = d.set_directory(s);
+        }
+        let Some(path) = d.blocking_save_file() else { return Ok(None) };
+        let path = path.into_path().map_err(e)?;
+        std::fs::write(&path, bytes).map_err(e)?;
+        return Ok(Some(path.display().to_string()));
+    }
+    let files = lock(&state).atlas_files(&project, &options).map_err(e)?;
+    let mut d = app.dialog().file().set_title("Folder for the .atlas bundle");
+    if let Some(s) = start {
+        d = d.set_directory(s);
+    }
+    let Some(parent) = d.blocking_pick_folder() else { return Ok(None) };
+    let dir = parent.into_path().map_err(e)?.join(format!("{id}.atlas"));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(e)?;
+    }
+    for (rel, bytes) in files {
+        let p = dir.join(rel);
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d).map_err(e)?;
+        }
+        std::fs::write(&p, bytes).map_err(e)?;
+    }
+    Ok(Some(dir.display().to_string()))
+}
+
+#[tauri::command]
+fn record_published(state: State<'_, AppState>, published: String) -> Res<()> {
+    lock(&state).record_published(&published).map_err(e)
+}
+
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -413,6 +461,9 @@ pub fn run() {
             register,
             save_bytes,
             save_project,
+            atlas_zip,
+            save_atlas,
+            record_published,
         ])
         .run(tauri::generate_context!())
         .expect("error while running grainatlas");

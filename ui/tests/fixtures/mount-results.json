@@ -1,0 +1,58 @@
+{
+  "mount_id": "01972c4e-0000-7000-8000-0000000000b1",
+  "run": "preferred",
+  "generated": "2026-11-03T12:00:00Z",
+  "spots": [
+    {
+      "atlas_spot_id": "01972c4e-0000-7000-8000-00000000a8a5",
+      "physical_spot_id": "01972c4f-0000-7000-8000-000000000001",
+      "label": "HJ-GC1-1-1",
+      "acquisition_id": "01972c4f-0000-7000-8000-0000000000a1",
+      "session_id": "01972c4f-0000-7000-8000-0000000000c1",
+      "session_key": "Zircon_03Nov26",
+      "run_id": "01972c4f-0000-7000-8000-0000000000d1",
+      "date": { "metric": "date_206pb238u_ma", "value": 1012.4, "sigma2": 8.1, "unit": "Ma" },
+      "ratios": [
+        { "metric": "ratio_206pb238u", "value": 0.16994, "sigma2": 0.00142 },
+        { "metric": "ratio_207pb206pb", "value": 0.07312, "sigma2": 0.00061 }
+      ],
+      "concentrations": [
+        { "metric": "conc_u_ppm", "value": 412, "unit": "ppm" },
+        { "metric": "conc_th_ppm", "value": 131, "unit": "ppm" }
+      ],
+      "flags": []
+    },
+    {
+      "atlas_spot_id": "01972c4e-0000-7000-8000-00000000a8a6",
+      "physical_spot_id": "01972c4f-0000-7000-8000-000000000002",
+      "label": "HJ-GC1-2-2",
+      "acquisition_id": "01972c4f-0000-7000-8000-0000000000a2",
+      "session_id": "01972c4f-0000-7000-8000-0000000000c1",
+      "session_key": "Zircon_03Nov26",
+      "run_id": "01972c4f-0000-7000-8000-0000000000d1",
+      "date": { "metric": "date_206pb238u_ma", "value": 1488.9, "sigma2": 12.6, "unit": "Ma" },
+      "ratios": [
+        { "metric": "ratio_206pb238u", "value": 0.25981, "sigma2": 0.0023 },
+        { "metric": "ratio_207pb206pb", "value": 0.09402, "sigma2": 0.0008 }
+      ],
+      "concentrations": [
+        { "metric": "conc_u_ppm", "value": 958, "unit": "ppm" },
+        { "metric": "conc_th_ppm", "value": 77, "unit": "ppm" }
+      ],
+      "flags": ["discordant"]
+    },
+    {
+      "atlas_spot_id": null,
+      "physical_spot_id": "01972c4f-0000-7000-8000-000000000003",
+      "label": "HJ-GC1-0-3",
+      "acquisition_id": "01972c4f-0000-7000-8000-0000000000a3",
+      "session_id": "01972c4f-0000-7000-8000-0000000000c1",
+      "session_key": "Zircon_03Nov26",
+      "run_id": "01972c4f-0000-7000-8000-0000000000d1",
+      "date": { "metric": "date_207pb206pb_ma", "value": 2011.0, "sigma2": 15.2, "unit": "Ma" },
+      "ratios": [{ "metric": "ratio_207pb206pb", "value": 0.12371, "sigma2": 0.001 }],
+      "concentrations": [{ "metric": "conc_u_ppm", "value": 233, "unit": "ppm" }],
+      "flags": []
+    }
+  ]
+}

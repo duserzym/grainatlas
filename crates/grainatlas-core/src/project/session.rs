@@ -439,6 +439,74 @@ impl Session {
     }
 }
 
+impl Session {
+    /// Content hash of the opened package's image tiles ([`crate::atlas::PackageDigest`]): the
+    /// hashes recorded while stitching, the other tiles read again from the source.
+    pub fn package_digest(&self) -> Result<crate::atlas::PackageDigest> {
+        let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
+        let mut entries = Vec::new();
+        for rec in &project.areas {
+            for t in &rec.tiles {
+                let sha = if t.sha256.is_empty() {
+                    let src = self.src.as_ref().ok_or_else(|| Error::Invalid("the package is not open".into()))?;
+                    crate::util::sha256_hex(&src.read(&t.file)?)
+                } else {
+                    t.sha256.clone()
+                };
+                entries.push((t.file.clone(), sha));
+            }
+        }
+        Ok(crate::atlas::PackageDigest::of(entries))
+    }
+
+    /// The files of the atlas bundle for a full project JSON (with `grainatlas_ui`) and
+    /// [`crate::atlas::BundleOptions`] JSON; every stitched area is included.
+    pub fn atlas_files(&self, full_project_json: &str, options: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let project = Project::from_json(full_project_json)?;
+        let opts: crate::atlas::BundleOptions = if options.trim().is_empty() { Default::default() } else { serde_json::from_str(options).map_err(invalid)? };
+        let digest = self.package_digest()?;
+        let areas: Vec<crate::atlas::AreaPixels> = project
+            .areas
+            .iter()
+            .filter_map(|rec| {
+                let o = self.outputs.get(&rec.id)?;
+                Some(crate::atlas::AreaPixels { rec, w: o.linear.w, h: o.linear.h, base: &o.base })
+            })
+            .collect();
+        crate::atlas::build(&project, &areas, &digest, &opts)
+    }
+
+    /// The atlas bundle as one zip (`<project_id>.atlas/…`).
+    pub fn atlas_zip(&self, full_project_json: &str, options: &str) -> Result<Vec<u8>> {
+        let files = self.atlas_files(full_project_json, options)?;
+        let id = Project::from_json(full_project_json)?.uuid.to_string();
+        crate::atlas::zip(&id, &files)
+    }
+
+    /// Fixed identity for reproducible bundles (parity checks, test fixtures): the project gets
+    /// `project_id`, its areas `project_id + 1, + 2, …`, `created` and the package path become
+    /// fixed strings. Nothing else changes.
+    pub fn pin_identity(&mut self, project_id: &str, created: &str) -> Result<()> {
+        let id: uuid::Uuid = project_id.trim().parse().map_err(invalid)?;
+        let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
+        project.uuid = id;
+        for (i, a) in project.areas.iter_mut().enumerate() {
+            a.uuid = uuid::Uuid::from_u128(id.as_u128().wrapping_add(i as u128 + 1));
+        }
+        project.created = created.to_string();
+        project.package.path = project.package.name.clone();
+        Ok(())
+    }
+
+    /// Records a publish (`Published` JSON) in the project's laicpmsdb link.
+    pub fn record_published(&mut self, published: &str) -> Result<()> {
+        let rec: super::Published = serde_json::from_str(published).map_err(invalid)?;
+        let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
+        project.laicpmsdb.published.push(rec);
+        Ok(())
+    }
+}
+
 /// Renumbers grains (from = {"grainId", "number"} JSON or "").
 pub fn renumber(grains: &str, tolerance: f64, from: &str) -> Result<String> {
     let mut gs: Vec<Grain> = serde_json::from_str(grains).map_err(invalid)?;
