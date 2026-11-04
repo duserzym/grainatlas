@@ -40,9 +40,14 @@ ui-dev: wasm
 ui-build: wasm
 	cd ui && pnpm build
 
-# Icons are generated from tauri/assets-icon.svg (no binary images in git).
-icons:
-	@test -f tauri/src-tauri/icons/icon.png || (cd tauri && cargo tauri icon assets-icon.svg -o src-tauri/icons && rm -rf src-tauri/icons/android src-tauri/icons/ios)
+# Icons are generated from tauri/assets-icon.svg (no binary images in git), again whenever the
+# SVG is newer than the generated set. tauri/icon/zircons.py regenerates the SVG itself.
+icons: tauri/src-tauri/icons/icon.png
+
+tauri/src-tauri/icons/icon.png: tauri/assets-icon.svg
+	cd tauri && cargo tauri icon assets-icon.svg -o src-tauri/icons && rm -rf src-tauri/icons/android src-tauri/icons/ios
+	@# The icons are embedded at compile time; Cargo does not watch them, so rebuild the app.
+	touch tauri/src-tauri/build.rs
 
 desktop-dev: ui-build icons
 	cd tauri && cargo tauri dev

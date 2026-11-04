@@ -128,7 +128,8 @@
 <div class="ga-root app" data-theme={app.theme}>
   <header class="glass topbar">
     <div class="brand">
-      <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M10 8l5-2 4 3-1 6-5 3-4-3z" fill="currentColor" /><path d="M19 17l4-1 3 4-2 5-4 0-2-4z" fill="currentColor" opacity="0.6" /><circle cx="13" cy="11" r="2" fill="none" stroke="var(--accent)" stroke-width="1.4" /></svg>
+      <!-- The app icon (a light tile by design, the same in both themes). -->
+      <img class="mark" src="{import.meta.env.BASE_URL}favicon.svg" width="22" height="22" alt="" />
       <span>grainatlas</span>
       {#if app.pkg}<span class="muted pkgname">{app.pkg.name}</span>{/if}
     </div>
@@ -196,6 +197,10 @@
     align-items: center;
     gap: var(--space-2);
     font-weight: 650;
+  }
+  .mark {
+    display: block;
+    flex: none;
   }
   .pkgname {
     font-weight: 400;
