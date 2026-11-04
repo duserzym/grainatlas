@@ -545,7 +545,8 @@ export async function saveProject(app: AppState = current()) {
   if (!p) return;
   const core = await app.core;
   if (core.kind === 'tauri' && app.projectPath?.kind === 'folder') {
-    const where = await app.run('Saving project', () => core.saveProject(p, {}));
+    const dir = app.projectPath.path;
+    const where = await app.run('Saving project', () => core.saveProject(p, {}, dir));
     if (where) {
       app.notice = `Saved ${where}`;
       app.dirty = false;
