@@ -1,7 +1,7 @@
 // Actions shared by the screens: open, stitch, tone, project save/load.
 
 import type { PackageFile } from './core/core';
-import type { AreaParams, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
+import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
 import { app } from './store.svelte';
 import { download } from './files';
 import { packageNameFor, parseDeepLink, sameId, savedProject } from './deeplink';
@@ -119,10 +119,7 @@ async function adoptPackage(info: PackageInfo, fromFolder: Project | null = null
     app.adopt(saved);
     app.settings = { ...app.settings, ...(saved.settings ?? {}) };
   }
-  for (const a of app.project!.areas) {
-    if (!app.params[a.id]) app.params[a.id] = a.params;
-    if (!app.tone[a.id]) app.tone[a.id] = a.params.tone;
-  }
+  fillParams();
   app.areaId = info.areas[0]?.id ?? null;
   app.screen = 'area';
   await resolveDeepLink();
@@ -204,7 +201,20 @@ export async function loadProjectFile(file: File) {
   app.project = JSON.parse(await core.projectJson());
   app.adopt(p);
   app.settings = { ...app.settings, ...(p.settings ?? {}) };
+  fillParams();
   await resolveDeepLink();
+}
+
+/** UI-held parameters from older saves lack newer fields: fill them from the core's record. */
+function fillParams() {
+  for (const a of app.project?.areas ?? []) {
+    const base = a.params;
+    const p = app.params[a.id] ?? base;
+    const t = app.tone[a.id] ?? p.tone ?? base.tone;
+    const tone = { ...base.tone, ...t, grain_norm: { ...base.tone.grain_norm, ...(t.grain_norm ?? {}) } };
+    app.params[a.id] = { ...base, ...p, tone };
+    app.tone[a.id] = tone;
+  }
 }
 
 function stripUi(p: Project): Project {
@@ -215,6 +225,7 @@ function stripUi(p: Project): Project {
 export async function stitch(areaId: string) {
   const core = await app.core;
   const params = $snapshotParams(areaId);
+  await syncGrains(areaId);
   const r = await app.run(`Stitching ${areaId}`, (p) => core.stitch(areaId, params, p));
   if (!r) return false;
   const l = live[areaId];
@@ -222,6 +233,7 @@ export async function stitch(areaId: string) {
     clearTimeout(l.timer);
     l.settled = l.seq;
   }
+  app.liveBusy = { ...app.liveBusy, [areaId]: false };
   // The project first: it records the parameters this stitch used (App.svelte compares them).
   app.project = JSON.parse(await core.projectJson());
   app.stitched = { ...app.stitched, [areaId]: r };
@@ -253,11 +265,28 @@ function $snapshotParams(areaId: string): AreaParams {
 const PREVIEW_PIXELS = 1.5e6;
 const live: Record<string, { seq: number; settled: number; timer: number; previewing: boolean; again: boolean; settling: Promise<void> | null }> = {};
 
-/** The parameters that change pixels after the stitch (black / white / gamma excluded). */
-export function liveKey(p: AreaParams | undefined, t: ToneParams | undefined): string {
+/** The parameters that change pixels after the stitch (black / white / gamma excluded), and the
+ * grains when per-grain normalisation is on. */
+export function liveKey(p: AreaParams | undefined, t: ToneParams | undefined, grains?: Grain[]): string {
   if (!p) return '';
   const { black: _b, white: _w, gamma: _g, ...tone } = (t ?? p.tone) as ToneParams;
-  return JSON.stringify([p.photometric, p.blend, tone]);
+  return JSON.stringify([p.photometric, p.blend, tone, tone.grain_norm?.enabled ? grainsKey(grains) : null]);
+}
+
+function grainsKey(grains: Grain[] | undefined) {
+  return (grains ?? []).map((g) => `${g.id}:${g.polygon_um.length}:${g.bbox_um.map((v) => v.toFixed(1)).join(',')}`).join(';');
+}
+
+const syncedGrains: Record<string, string> = {};
+
+/** Hands the area's current grains to the core when per-grain normalisation needs them. */
+async function syncGrains(areaId: string) {
+  const grains = app.grains[areaId] ?? [];
+  const key = grainsKey(grains);
+  if (syncedGrains[areaId] === key) return;
+  const core = await app.core;
+  await core.setGrains(areaId, JSON.parse(JSON.stringify(grains)) as Grain[]);
+  syncedGrains[areaId] = key;
 }
 
 /** Call after a photometric parameter of a stitched area changed. */
@@ -265,6 +294,7 @@ export function liveChanged(areaId: string, settleMs = 450) {
   if (!app.stitched[areaId]) return;
   const l = (live[areaId] ??= { seq: 0, settled: 0, timer: 0, previewing: false, again: false, settling: null });
   l.seq++;
+  if (!app.liveBusy[areaId]) app.liveBusy = { ...app.liveBusy, [areaId]: true };
   void livePreview(areaId);
   clearTimeout(l.timer);
   l.timer = window.setTimeout(() => void settle(areaId), settleMs);
@@ -290,6 +320,7 @@ async function livePreview(areaId: string) {
       l.again = false;
       const seq = l.seq;
       const level = previewLevel(areaId);
+      await syncGrains(areaId);
       const img = await core.preview(areaId, $snapshotParams(areaId), level);
       if (seq > l.settled && img) app.preview = { ...app.preview, [areaId]: { level, img, over: app.pixelsVersion } };
     } while (l.again);
@@ -309,6 +340,7 @@ async function settle(areaId: string) {
     const core = await app.core;
     app.rendering++;
     try {
+      await syncGrains(areaId);
       const r = await core.recompute(areaId, $snapshotParams(areaId));
       l.settled = Math.max(l.settled, seq);
       app.project = JSON.parse(await core.projectJson());
@@ -317,6 +349,7 @@ async function settle(areaId: string) {
       app.persist();
     } catch (e) {
       app.error = e instanceof Error ? e.message : String(e);
+      l.settled = Math.max(l.settled, seq);
     } finally {
       app.rendering--;
     }
@@ -324,6 +357,7 @@ async function settle(areaId: string) {
   l.settling = run;
   await run;
   if (l.settling === run) l.settling = null;
+  if (l.seq <= l.settled && !l.settling) app.liveBusy = { ...app.liveBusy, [areaId]: false };
 }
 
 /** Waits until no live re-render of `areaId` is pending (tests, exports). */
@@ -333,6 +367,44 @@ export async function liveIdle(areaId: string) {
     if (l.settling) await l.settling;
     else await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+// ---- one-click Auto, Before / After, Reset ------------------------------------
+
+/** Auto: background leveling on, stretch and CLAHE from the histogram. Remembers what was there
+ * for Before / After; every manual control stays editable. */
+export async function autoTone(areaId: string) {
+  const core = await app.core;
+  if (!app.stitched[areaId]) return;
+  const before = $snapshotParams(areaId);
+  const auto = await app.run('Auto tone', () => core.autoParams(areaId, before));
+  if (!auto) return;
+  app.compare = { ...app.compare, [areaId]: { other: before, showing: 'after' } };
+  applyParams(areaId, auto);
+}
+
+/** Swaps between the parameters before Auto and the current ones. */
+export function toggleBeforeAfter(areaId: string) {
+  const c = app.compare[areaId];
+  if (!c) return;
+  const now = $snapshotParams(areaId);
+  app.compare = { ...app.compare, [areaId]: { other: now, showing: c.showing === 'after' ? 'before' : 'after' } };
+  applyParams(areaId, c.other);
+}
+
+/** Back to the defaults for correction, blending and tone (stitch and segmentation are kept). */
+export async function resetTone(areaId: string) {
+  const core = await app.core;
+  const d = await core.defaultParams();
+  const cur = $snapshotParams(areaId);
+  app.compare = { ...app.compare, [areaId]: null };
+  applyParams(areaId, { ...cur, photometric: d.photometric, blend: d.blend, tone: d.tone });
+}
+
+function applyParams(areaId: string, p: AreaParams) {
+  const cur = app.params[areaId];
+  app.params = { ...app.params, [areaId]: { ...cur, photometric: p.photometric, blend: p.blend, tone: p.tone } };
+  app.tone = { ...app.tone, [areaId]: p.tone };
 }
 
 export async function saveProject() {

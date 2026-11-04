@@ -4,6 +4,7 @@
 //! parameters, never baked pixels.
 
 pub mod background;
+pub mod grain_norm;
 pub mod hdr;
 pub mod tone;
 

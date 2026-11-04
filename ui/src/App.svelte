@@ -48,9 +48,9 @@
       // the stitch ran must not be lost).
       if (liveKeys[id] === undefined) {
         const used = app.project?.areas.find((a) => a.id === id)?.params;
-        liveKeys[id] = used ? liveKey(used, used.tone) : '';
+        liveKeys[id] = used ? liveKey(used, used.tone, app.grains[id]) : '';
       }
-      const key = liveKey(app.params[id], app.tone[id]);
+      const key = liveKey(app.params[id], app.tone[id], app.grains[id]);
       if (key !== liveKeys[id]) {
         liveKeys[id] = key;
         liveChanged(id);

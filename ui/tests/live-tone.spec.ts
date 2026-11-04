@@ -16,7 +16,7 @@ async function pixels(page: Page, scope: string): Promise<number> {
 }
 
 async function settled(page: Page, scope: string): Promise<number> {
-  await expect(page.locator('.rendering')).toHaveCount(0);
+  await expect(page.locator('[data-live=busy]')).toHaveCount(0);
   let last = -1;
   await expect.poll(async () => {
     const p = await pixels(page, scope);

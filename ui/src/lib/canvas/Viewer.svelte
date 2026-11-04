@@ -144,12 +144,16 @@
     ctx.imageSmoothingEnabled = vv.zoom * dpr < 1;
     ctx.imageSmoothingQuality = 'high';
     // Live preview: alone while it is newer than the tiles, else as a backdrop while they load.
-    if (previewBmp && preview) {
+    const drawPreview = () => {
+      if (!previewBmp || !preview) return;
       const f = 1 << preview.level;
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(previewBmp, 0, 0, previewBmp.width * f, previewBmp.height * f);
       ctx.imageSmoothingEnabled = vv.zoom * dpr < 1;
-      if (preview.over === version) return;
+    };
+    if (previewBmp && preview && preview.over === version) {
+      drawPreview();
+      return;
     }
     // Visible mosaic bounds.
     const corners = [toMosaic(vv, 0, 0), toMosaic(vv, size.w, 0), toMosaic(vv, 0, size.h), toMosaic(vv, size.w, size.h)];
@@ -162,9 +166,15 @@
     const span = T * (1 << L);
     const info = levels[L];
     const eps = 0.5 / (vv.zoom * dpr); // hide hairline gaps between tiles
-    for (let r = Math.floor(y0 / span); r <= Math.min(info.rows - 1, Math.floor(y1 / span)); r++) {
-      for (let c = Math.floor(x0 / span); c <= Math.min(info.cols - 1, Math.floor(x1 / span)); c++) {
-        const b = cache.get(areaId, L, c, r);
+    const r0 = Math.floor(y0 / span), r1 = Math.min(info.rows - 1, Math.floor(y1 / span));
+    const c0 = Math.floor(x0 / span), c1 = Math.min(info.cols - 1, Math.floor(x1 / span));
+    const got = new Map<string, ImageBitmap | null>();
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) got.set(`${c}/${r}`, cache.get(areaId, L, c, r));
+    // The backdrop only while some visible tile is still loading.
+    if ([...got.values()].some((b) => !b)) drawPreview();
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const b = got.get(`${c}/${r}`);
         if (b) {
           ctx.drawImage(b, c * span, r * span, b.width * (1 << L) + eps, b.height * (1 << L) + eps);
         } else {

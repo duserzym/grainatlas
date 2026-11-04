@@ -175,6 +175,21 @@ async fn preview(state: State<'_, AppState>, area_id: String, params: String, le
 }
 
 #[tauri::command]
+fn auto_params(state: State<'_, AppState>, area_id: String, params: String) -> Res<String> {
+    lock(&state).auto_params(&area_id, &params).map_err(e)
+}
+
+#[tauri::command]
+fn set_grains(state: State<'_, AppState>, area_id: String, grains: String) -> Res<()> {
+    lock(&state).set_grains(&area_id, &grains).map_err(e)
+}
+
+#[tauri::command]
+fn default_params() -> String {
+    serde_json::to_string(&grainatlas_core::project::AreaParams::default()).unwrap_or_default()
+}
+
+#[tauri::command]
 fn cancel(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
@@ -369,6 +384,9 @@ pub fn run() {
             stitch,
             recompute,
             preview,
+            auto_params,
+            set_grains,
+            default_params,
             cancel,
             pyramid_tile,
             histogram,
