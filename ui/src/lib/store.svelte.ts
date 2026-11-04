@@ -57,16 +57,17 @@ const THEME_KEY = 'grainatlas.theme';
  * UPb Studio (its module webviews cannot see the shell's choice yet). A
  * `?theme=light|dark` in the address wins for this page load.
  */
-function loadTheme(): { pref: ThemePref; stored: boolean } {
+function loadTheme(): { pref: ThemePref; chosen: boolean } {
   try {
+    // The address counts as a choice (UPb Studio passes its theme this way), but is not stored.
     const q = new URLSearchParams(location.search).get('theme');
-    if (q === 'light' || q === 'dark' || q === 'system') return { pref: q, stored: false };
+    if (q === 'light' || q === 'dark' || q === 'system') return { pref: q, chosen: true };
     const s = localStorage.getItem(THEME_KEY);
-    if (s === 'light' || s === 'dark' || s === 'system') return { pref: s, stored: true };
+    if (s === 'light' || s === 'dark' || s === 'system') return { pref: s, chosen: true };
   } catch {
     /* storage may be unavailable */
   }
-  return { pref: 'light', stored: false };
+  return { pref: 'light', chosen: false };
 }
 
 function systemDark() {
@@ -143,7 +144,7 @@ class AppState {
   private theme0 = loadTheme();
   themePref = $state<ThemePref>(this.theme0.pref);
   /** False until the viewer picks a theme (or the address names one). */
-  themeChosen = $state(this.theme0.stored);
+  themeChosen = $state(this.theme0.chosen);
   systemDark = $state(systemDark());
   /** `data-theme` the UPb Studio shell put on this page's <html>, when hosted. */
   hostTheme = $state<'light' | 'dark' | null>(null);
