@@ -30,3 +30,17 @@ test('an older stored settings object with theme "dark" no longer forces dark', 
   await page.goto('./');
   await expect(page.locator(root)).toHaveAttribute('data-theme', 'light');
 });
+
+test('hosted in UPb Studio, ?theme= wins over the system theme', async ({ page, baseURL }) => {
+  // The web shell's iframe is named lab-shell:<tab>; the bridge then reports isHosted().
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto('./');
+  for (const [q, want] of [['light', 'light'], ['dark', 'dark']] as const) {
+    await page.setContent(`<iframe name="lab-shell:images" src="${baseURL}?theme=${q}" style="width:1200px;height:800px"></iframe>`);
+    const frame = page.frameLocator('iframe[name="lab-shell:images"]');
+    await expect(frame.locator(root)).toHaveAttribute('data-theme', want);
+  }
+  // Nothing passed and nothing chosen: hosted follows the system.
+  await page.setContent(`<iframe name="lab-shell:images" src="${baseURL}" style="width:1200px;height:800px"></iframe>`);
+  await expect(page.frameLocator('iframe[name="lab-shell:images"]').locator(root)).toHaveAttribute('data-theme', 'dark');
+});
