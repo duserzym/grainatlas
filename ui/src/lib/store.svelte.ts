@@ -127,6 +127,10 @@ class AppState {
   link = $state<LinkSettings>(loadLink());
   /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
   serverOverride = $state<string | null>(null);
+  /** Results of the linked mount (GET /v1/mounts/{id}/results), in memory only, never saved. */
+  results = $state<{ key: string; data: import('./results').MountResults | null; at: string | null; error: string | null; loading: boolean } | null>(null);
+  /** The results layer colours spots by this: 'date' (preferred) or a metric code. */
+  colourBy = $state('date');
   /** A published bundle opened from a server (pixels from its tiles); null for local projects. */
   remote = $state<import('./remote').Remote | null>(null);
   remoteTiles: import('./remote').RemoteTiles | null = null;
@@ -166,7 +170,7 @@ class AppState {
   deepLink = $state<(DeepLink & { name: string | null }) | null>(null);
   /** Spot the canvas should center on once its view is ready (deep links). */
   focusSpot = $state<string | null>(null);
-  layers = $state({ mosaic: true, outlines: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false });
+  layers = $state({ mosaic: true, outlines: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false, results: true });
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];
   canUndo = $state(false);

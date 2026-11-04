@@ -213,3 +213,12 @@ export function publishAtlas(base: string, token: string | null, mountId: string
 export function atlasUrl(base: string, projectId: string, path = ''): string {
   return `${base}/atlas/projects/${encodeURIComponent(projectId)}/${path}`;
 }
+
+export function getResults(base: string, token: string | null, mountId: string): Promise<import('./results').MountResults> {
+  return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/results`, token, { method: 'GET' }, 'Mount results');
+}
+
+/** laicpmsdb's own page for an acquisition (when the shell cannot route a laicpmsdb:// link). */
+export function acquisitionPage(base: string, id: string): string {
+  return `${base}/app/#/acquisitions/${encodeURIComponent(id)}`;
+}
