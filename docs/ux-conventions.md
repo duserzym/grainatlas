@@ -1,6 +1,6 @@
 # UX conventions (grainatlas, laicpmsdb, UPb Studio)
 
-Five rules, applied in grainatlas on 2026-11-03, for the three apps of the
+Seven rules, applied in grainatlas on 2026-11-03, for the three apps of the
 lab workflow to adopt. Each says what to do and where grainatlas does it.
 
 ## 1. Light by default, with dark and system
@@ -82,6 +82,57 @@ wheel keeps scrolling the page there, ctrl + wheel zooms.
   (`sessionStorage`), the answer is stored in the project, shown where it is
   used, and can be changed later ("Change…" on the Area screen).
 
+## 6. Server features are additive, and say where data comes from
+
+- Everything that needs laicpmsdb sits behind one Settings entry (the
+  server) and works the same without it; a missing server, mount or token
+  turns a server action into its file equivalent (grainatlas: "Send spots"
+  downloads the body, the atlas bundle saves as a folder or zip) and the
+  message says which was missing.
+- Sign-in: the shell's `token()` when hosted; standalone, a token pasted in
+  Settings, kept until the tab closes unless "remember" is ticked. Never in
+  a project file or a URL.
+- Something opened from a server is **read-only** until the user asks for a
+  copy ("Edit a copy" in the top bar); the top bar names the server, and a
+  line in the side panel says why nothing can be edited. A read-only view
+  writes nothing to local storage.
+- Values read from the server (results) are shown, never written into the
+  project; the panel says so and has a Refresh button. Errors from the server
+  stay next to the feature (status line) instead of a toast that hides the
+  work.
+- Server image tiles go through the same viewer and gesture module as local
+  pixels (rule 2); overlays on images use the colour-blind-safe set (the
+  results layer: viridis, flags as a dashed ring).
+
+## 7. Fit a 14-inch laptop as well as a large monitor
+
+- Every app is checked at **1440 x 900** and **1280 x 800** (CSS pixels):
+  nothing sticks out of the window, nothing is cut off by a panel that does
+  not scroll, and every control can be reached (grainatlas:
+  `ui/tests/sizes.spec.ts` walks every screen and side-panel tab at both
+  sizes; content inside a scrolling area counts as reachable).
+- Panels collapse, dock, scroll or tab rather than overflow. grainatlas: the
+  Canvas side panel is tabbed, its tab body scrolls under fixed tabs and a
+  Layers section, and it folds to a strip (» / «) to give the image the
+  width; the floating spot and grain panel scrolls inside and is pulled back
+  inside the canvas when the window shrinks; the toolbar wraps. The Area
+  screen's area list and its right-hand panel scroll on their own beside the
+  image; the Layout screen's controls column scrolls and its page preview
+  pans and zooms like every image view (rule 2); Settings scrolls inside the
+  window.
+- Minimum sizes keep nothing clipped: the desktop window opens at 1280 x 800,
+  centred, and cannot go below 1024 x 640; lists in panels keep a minimum
+  height of a few rows.
+- Window and splitter geometry is remembered per viewer, never in a project:
+  grainatlas keeps the spot panel's position, the folded side panel and the
+  open Layers section in `localStorage['grainatlas.layout']`, and the desktop
+  app keeps its window size and position in `window.json` in its config
+  folder, restored only when that place is still on a connected monitor and
+  clamped to its work area (`tauri/src-tauri/src/geometry.rs`). grainatlas
+  has no splitters yet; one added later stores its position in the same key.
+- A **Reset layout** action puts all of it back (grainatlas: Settings →
+  Appearance and layout; the desktop window returns to 1280 x 800, centred).
+
 ## What the other apps need to change
 
 - **UPb Studio shell**: default theme is dark (`ui/src/lib/settings.svelte.ts`);
@@ -94,3 +145,6 @@ wheel keeps scrolling the page there, ctrl + wheel zooms.
   hosted read `?theme=` before its own stored choice. It writes
   `data-theme` on its own `<html>`, so the shell should use `?theme=` for
   it. Any image view it adds uses the gesture table above.
+- **All apps** (rule 7): check every screen at 1440 x 900 and 1280 x 800,
+  remember window and splitter geometry outside shared records, and offer
+  Reset layout.

@@ -157,6 +157,9 @@ export class TauriCore implements Core {
   async recordPublished(published: Published): Promise<void> {
     await invoke('record_published', { published: JSON.stringify(published) });
   }
+  async resetWindow(): Promise<void> {
+    await invoke('reset_window');
+  }
   async saveProject(project: Project, _extras: Record<string, string>): Promise<string | null> {
     return invoke<string | null>('save_project', { project: JSON.stringify(project), ask: false });
   }

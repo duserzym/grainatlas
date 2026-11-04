@@ -1,8 +1,29 @@
 <script lang="ts">
   // A glass panel that can be dragged anywhere over the canvas by its header.
-  import type { Snippet } from 'svelte';
+  // Its place is the caller's (remembered); it is kept inside the area it floats over, also
+  // when the window gets smaller (a place saved on a large monitor, opened on a laptop).
+  import { onMount, type Snippet } from 'svelte';
 
-  let { title, children, x = $bindable(24), y = $bindable(120), onclose }: { title: string; children: Snippet; x?: number; y?: number; onclose?: () => void } = $props();
+  let { title, children, x = $bindable(24), y = $bindable(120), onclose, onmoved }: { title: string; children: Snippet; x?: number; y?: number; onclose?: () => void; onmoved?: () => void } = $props();
+  let el: HTMLDivElement;
+
+  /** Whole panel inside the parent when it fits, at least its header otherwise. */
+  function clamp() {
+    const p = el?.offsetParent as HTMLElement | null;
+    if (!p) return;
+    const maxX = Math.max(0, p.clientWidth - el.offsetWidth);
+    const maxY = Math.max(0, p.clientHeight - 48);
+    const nx = Math.min(Math.max(0, x), maxX);
+    const ny = Math.min(Math.max(0, y), maxY);
+    if (nx !== x) x = nx;
+    if (ny !== y) y = ny;
+  }
+  onMount(() => {
+    clamp();
+    const ro = new ResizeObserver(clamp);
+    if (el.offsetParent) ro.observe(el.offsetParent);
+    return () => ro.disconnect();
+  });
 
   let drag: { dx: number; dy: number } | null = null;
   function down(e: PointerEvent) {
@@ -12,13 +33,19 @@
   }
   function move(e: PointerEvent) {
     if (!drag) return;
-    x = Math.max(0, e.clientX - drag.dx);
-    y = Math.max(0, e.clientY - drag.dy);
+    x = e.clientX - drag.dx;
+    y = e.clientY - drag.dy;
+    clamp();
+  }
+  function up() {
+    if (!drag) return;
+    drag = null;
+    onmoved?.();
   }
 </script>
 
-<div class="glass floating" style:left="{x}px" style:top="{y}px" style:max-height="calc(100% - {y + 8}px)" data-ui role="dialog" aria-label={title}>
-  <header role="toolbar" tabindex="-1" onpointerdown={down} onpointermove={move} onpointerup={() => (drag = null)}>
+<div class="glass floating" bind:this={el} style:left="{x}px" style:top="{y}px" style:max-height="calc(100% - {y + 8}px)" data-ui role="dialog" aria-label={title}>
+  <header role="toolbar" tabindex="-1" onpointerdown={down} onpointermove={move} onpointerup={up}>
     <span class="grip" aria-hidden="true">⠿</span>
     <strong>{title}</strong>
     {#if onclose}<button class="icon close" onclick={onclose} aria-label="Close">✕</button>{/if}

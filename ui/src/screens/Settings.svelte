@@ -77,8 +77,12 @@
     <p class="faint small">Bundles record the raw package as <code>&lt;this folder&gt;/&lt;package name&gt;</code> and its content hash; the package itself is never uploaded.</p>
   </div>
   <div class="glass panel">
-    <h2>Appearance</h2>
+    <h2>Appearance and layout</h2>
     <div class="field">Theme <ThemeSwitch labels /></div>
+    <div class="openrow">
+      <p class="faint small grow">Panel positions and folded panels are remembered on this computer{app.hosted ? '' : ', and the desktop app remembers its window'}. Reset puts everything back where it starts.</p>
+      <button onclick={() => app.resetLayout()} data-testid="reset-layout">Reset layout</button>
+    </div>
     <p class="faint small">Light by default; System follows the computer's setting. Images stay on a dark surface in both. {app.hostTheme ? `UPb Studio sets the theme here (${app.hostTheme}).` : app.hosted ? 'In UPb Studio, with nothing chosen here, grainatlas follows the system setting.' : ''}</p>
   </div>
   <div class="glass panel">
@@ -101,14 +105,17 @@
 </section>
 
 <style>
+  /* The whole screen scrolls inside main (never past the window): padding, not margin. */
   .settings {
     max-width: 960px;
-    margin: var(--space-6) auto;
-    padding: 0 var(--space-4);
+    margin: 0 auto;
+    padding: var(--space-6) var(--space-4);
+    box-sizing: border-box;
     display: grid;
+    align-content: start;
     gap: var(--space-4);
     overflow: auto;
-    max-height: 100%;
+    height: 100%;
   }
   .panel {
     display: grid;
@@ -122,7 +129,8 @@
     gap: var(--space-2);
     align-items: end;
   }
-  .openrow .field {
+  .openrow .field,
+  .openrow .grow {
     flex: 1;
   }
 </style>

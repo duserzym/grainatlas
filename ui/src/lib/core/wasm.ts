@@ -289,6 +289,10 @@ export class WasmCore implements Core {
     this.project = await this.call<string>('projectJson');
   }
 
+  async resetWindow(): Promise<void> {
+    /* the browser owns the window */
+  }
+
   async saveProject(_project: Project, _extras: Record<string, string>): Promise<string | null> {
     return null; // the web build downloads files instead (see lib/files.ts)
   }
