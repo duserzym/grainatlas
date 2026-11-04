@@ -17,7 +17,7 @@ export class TileCache {
   private gen = 0;
   onLoad: () => void = () => {};
 
-  constructor(private core: Core) {}
+  constructor(private core: Pick<Core, 'pyramidTile'>) {}
 
   setLut(lut: Uint8Array) {
     const key = Array.from(lut.subarray(0, 256)).join(',');

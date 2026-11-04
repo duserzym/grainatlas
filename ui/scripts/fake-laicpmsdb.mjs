@@ -83,7 +83,7 @@ export function createFake() {
   const send = (res, status, body, type = 'application/json') => {
     res.statusCode = status;
     res.setHeader('Content-Type', type);
-    res.end(type === 'application/json' ? JSON.stringify(body) : body);
+    res.end(Buffer.isBuffer(body) || typeof body === 'string' ? body : JSON.stringify(body));
   };
   const authed = (req) => req.headers.authorization === `Bearer ${TOKEN}`;
   const body = (req) =>

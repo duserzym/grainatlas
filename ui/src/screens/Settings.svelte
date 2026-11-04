@@ -2,6 +2,9 @@
   import { app } from '../lib/store.svelte';
   import ThemeSwitch from '../components/ThemeSwitch.svelte';
   import { normalizeServer } from '../lib/laicpmsdb';
+  import { openFromServer } from '../lib/remote';
+
+  let openId = $state('');
 
   const hosted = app.hosted;
   let serverText = $state(app.link.server);
@@ -64,6 +67,13 @@
     <label class="field">SEM packages on the lab storage
       <input type="text" placeholder="e.g. /laicpmsdb/sem or \\nas\sem" bind:value={app.link.nasRoot} onchange={() => app.saveLink()} />
     </label>
+    <div class="openrow">
+      <label class="field">Open a published project
+        <input type="text" placeholder="project id" bind:value={openId} data-testid="open-project-id" />
+      </label>
+      <button onclick={() => app.server && openFromServer(app.server, openId.trim())} disabled={!app.server || !openId.trim()} data-testid="open-from-server">Open from server</button>
+    </div>
+    <p class="faint small">Reads <code>{app.server ?? '<server>'}/atlas/projects/&lt;id&gt;/</code>: the mosaic tiles, grains, spots and scale bars, read-only. The same as the link <code>index.html?server=&lt;server&gt;&amp;project=&lt;id&gt;&amp;spot=&lt;spot id&gt;</code>.</p>
     <p class="faint small">Bundles record the raw package as <code>&lt;this folder&gt;/&lt;package name&gt;</code> and its content hash; the package itself is never uploaded.</p>
   </div>
   <div class="glass panel">
@@ -106,5 +116,13 @@
   }
   .small {
     font-size: 0.8rem;
+  }
+  .openrow {
+    display: flex;
+    gap: var(--space-2);
+    align-items: end;
+  }
+  .openrow .field {
+    flex: 1;
   }
 </style>

@@ -102,6 +102,16 @@ export class WasmCore implements Core {
     throw new Error('opening a project folder needs the desktop app; open the package, then load its project.json');
   }
 
+  async blank(name: string): Promise<void> {
+    await this.ready();
+    this.opened = null;
+    this.loose = null;
+    this.project = null;
+    this.stitched.clear();
+    this.grains.clear();
+    await this.call('blank', { name });
+  }
+
   async loadProject(json: string) {
     await this.ready();
     this.project = json;

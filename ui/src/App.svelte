@@ -11,6 +11,7 @@
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
   import ThemeSwitch from './components/ThemeSwitch.svelte';
+  import { editCopy } from './lib/remote';
 
   const screens: { id: Screen; label: string; key: string; needs?: 'pkg' | 'mosaic' }[] = [
     { id: 'open', label: 'Open', key: '1' },
@@ -23,6 +24,8 @@
   const hasMosaic = $derived(Object.keys(app.stitched).length > 0);
   function enabled(s: (typeof screens)[number]) {
     if (s.needs === 'pkg') return !!app.pkg;
+    // A bundle from a server has tiles, not a mosaic in the core: the Canvas only.
+    if (s.id === 'layout' && app.remote) return false;
     if (s.needs === 'mosaic') return hasMosaic;
     return true;
   }
@@ -42,6 +45,8 @@
   // any screen, Auto and Reset included) re-renders its mosaic live.
   const liveKeys: Record<string, string> = {};
   $effect(() => {
+    // Pixels from a server's bundle are final: nothing to re-render.
+    if (app.remote) return;
     for (const id of Object.keys(liveKeys)) if (!app.stitched[id]) delete liveKeys[id];
     for (const id of Object.keys(app.stitched)) {
       // First sight of a stitched area: compare with what the core used (a change made while
@@ -132,6 +137,9 @@
       <img class="mark" src="{import.meta.env.BASE_URL}favicon.svg" width="22" height="22" alt="" />
       <span>grainatlas</span>
       {#if app.pkg}<span class="muted pkgname">{app.pkg.name}</span>{/if}
+      {#if app.remote}
+        <span class="muted pkgname" data-testid="remote-name" title="{app.remote.server}/atlas/projects/{app.remote.projectId}/">{app.remote.atlas.name} · {new URL(app.remote.server).host}{app.remote.readOnly ? ' · read-only' : ' · local copy'}</span>
+      {/if}
     </div>
     <nav aria-label="Screens">
       {#each screens as s (s.id)}
@@ -140,7 +148,9 @@
     </nav>
     <div class="right">
       <ThemeSwitch />
-      {#if app.project}
+      {#if app.readOnly}
+        <button class="primary" onclick={editCopy} title="Make this published project a local, editable one (same project id)" data-testid="edit-copy">Edit a copy</button>
+      {:else if app.project}
         <button onclick={saveProject} title="Save project (Cmd/Ctrl+S)">Save project</button>
       {/if}
     </div>

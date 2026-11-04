@@ -127,6 +127,13 @@ class AppState {
   link = $state<LinkSettings>(loadLink());
   /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
   serverOverride = $state<string | null>(null);
+  /** A published bundle opened from a server (pixels from its tiles); null for local projects. */
+  remote = $state<import('./remote').Remote | null>(null);
+  remoteTiles: import('./remote').RemoteTiles | null = null;
+  /** True while a bundle from a server is shown read-only (before "Edit a copy"). */
+  get readOnly(): boolean {
+    return !!this.remote?.readOnly;
+  }
   /** The last publish of this session, with the server's full answer. */
   lastPublish = $state<(import('./core/types').Published & { response: Record<string, unknown> }) | null>(null);
   private theme0 = loadTheme();
@@ -261,6 +268,8 @@ class AppState {
 
   /** Browser: keep the latest project (without pixels) per package name for "recent projects". */
   persist() {
+    // A bundle shown read-only from a server is not this browser's project.
+    if (this.readOnly) return;
     queueMicrotask(() => {
       const p = this.fullProject();
       if (!p) return;

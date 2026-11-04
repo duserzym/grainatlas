@@ -36,6 +36,10 @@
   let gesture: { mode: 'move' | 'resize'; ids: string[]; startX: number; startY: number; orig: Map<string, { x: number; y: number; x2: number | null; y2: number | null; d: number }>; dirty: boolean } | null = null;
   let editing = $state<{ id: string; text: string; sx: number; sy: number } | null>(null);
 
+  /** A bundle from a server shown read-only; `noPixels`: no stitched mosaic in the core (server tiles). */
+  const ro = $derived(app.readOnly);
+  const noPixels = $derived(!!app.remote);
+  const tiles = $derived(app.remote && app.remoteTiles ? app.remoteTiles : core);
   const areaId = $derived(app.areaId && app.stitched[app.areaId] ? app.areaId : (Object.keys(app.stitched)[0] ?? null));
   const area = $derived(app.project?.areas.find((a) => a.id === areaId) ?? null);
   const mosaic = $derived(areaId ? app.stitched[areaId].mosaic : null);
@@ -350,6 +354,14 @@
   function press(p: CanvasPoint): boolean {
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const ev = p.ev as PointerEvent;
+    if (ro && app.tool !== 'measure') {
+      // Read-only: a press selects a spot, nothing moves.
+      const s = hitSpot(x, y);
+      if (!s) return false;
+      app.selection = [s.id];
+      panel.open = true;
+      return true;
+    }
     if (app.tool === 'grain-split') {
       splitLine = [x, y, x, y];
       return true;
@@ -486,6 +498,7 @@
   async function click(p: CanvasPoint) {
     const ev = p.ev as MouseEvent;
     const x = p.x * umPerPx, y = p.y * umPerPx;
+    if (ro && app.tool !== 'select' && app.tool !== 'measure') return;
     if (app.tool === 'pair') {
       await pairClick(x, y).catch((e) => (app.error = e instanceof Error ? e.message : String(e)));
       return;
@@ -541,6 +554,11 @@
   function dblclick(p: CanvasPoint): boolean {
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const s = hitSpot(x, y) ?? null;
+    if (s && ro) {
+      app.selection = [s.id];
+      return true;
+    }
+    if (ro) return false;
     if (s) {
       app.selection = [s.id];
       startEdit(s.id);
@@ -599,6 +617,17 @@
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
     const mod = e.metaKey || e.ctrlKey;
+    if (ro) {
+      // Read-only: view keys only (the viewer handles zoom and pan), Escape, measure and select.
+      if (mod || e.altKey) return;
+      if (e.key === 'Escape') {
+        app.selection = [];
+        measure = null;
+        app.tool = 'select';
+      } else if (e.key.toLowerCase() === 'm') app.tool = 'measure';
+      else if (e.key.toLowerCase() === 'v') app.tool = 'select';
+      return;
+    }
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       if (e.shiftKey) app.redo();
@@ -613,7 +642,7 @@
     if (mod || e.altKey) return;
     const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split' };
     const kk = e.key.toLowerCase();
-    if (tools[kk]) app.tool = tools[kk];
+    if (tools[kk] && !(noPixels && (kk === 'g' || kk === 'k'))) app.tool = tools[kk];
     else if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
     else if (e.key === ']') viewer?.rotateBy(Math.PI / 12);
@@ -657,10 +686,10 @@
 
 <svelte:window onkeydown={key} />
 
-{#if core && areaId && mosaic}
+{#if core && tiles && areaId && mosaic}
   <div class="canvas">
     {#key areaId}
-      <Viewer bind:this={viewer} bind:view {core} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
+      <Viewer bind:this={viewer} bind:view core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
         preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} canNudge={() => !selSpots.length}
         onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
@@ -760,26 +789,30 @@
 
     <div class="glass toolbar" data-ui>
       <select bind:value={app.areaId} aria-label="Area">
-        {#each Object.keys(app.stitched) as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
+        {#each Object.keys(app.stitched) as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
       </select>
       <span class="sep"></span>
-      {#each toolList as t (t.id)}
+      {#each ro ? toolList.filter((t) => t.id === 'select' || t.id === 'measure') : toolList as t (t.id)}
         <button class="icon" aria-pressed={app.tool === t.id} title="{t.title} ({t.key})" onclick={() => (app.tool = t.id)} data-testid="tool-{t.id}">{t.label}</button>
       {/each}
-      <span class="sep"></span>
-      <label class="diam" title="Spot diameter (µm); 1–6 pick a preset">
+      <span class="sep" class:hidden={ro}></span>
+      <label class="diam" class:hidden={ro} title="Spot diameter (µm); 1–6 pick a preset">
         ⌀
         <select value={String(app.diameter)} onchange={(e) => setDiameter(+e.currentTarget.value)}>
           {#each [...new Set([...app.settings.spot_presets_um, app.diameter])].sort((a, b) => a - b) as d (d)}<option value={String(d)}>{d}</option>{/each}
         </select>
         <input type="number" min="1" step="0.5" value={app.diameter} onchange={(e) => setDiameter(+e.currentTarget.value)} aria-label="Diameter µm" />µm
       </label>
-      <span class="sep"></span>
-      <button class="icon" title="Add grain: click inside it (G)" aria-pressed={app.tool === 'grain-add'} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
-      <button class="icon" title="Split grain: draw a line across it (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
-      <span class="sep"></span>
-      <button class="icon" title="Undo (⌘Z)" disabled={!app.canUndo} onclick={() => app.undo()}>↶</button>
-      <button class="icon" title="Redo (⇧⌘Z)" disabled={!app.canRedo} onclick={() => app.redo()}>↷</button>
+      {#if !noPixels}
+        <span class="sep"></span>
+        <button class="icon" title="Add grain: click inside it (G)" aria-pressed={app.tool === 'grain-add'} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
+        <button class="icon" title="Split grain: draw a line across it (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
+      {/if}
+      {#if !ro}
+        <span class="sep"></span>
+        <button class="icon" title="Undo (⌘Z)" disabled={!app.canUndo} onclick={() => app.undo()}>↶</button>
+        <button class="icon" title="Redo (⇧⌘Z)" disabled={!app.canRedo} onclick={() => app.redo()}>↷</button>
+      {/if}
       <span class="sep"></span>
       <button class="icon" title="Zoom in (+)" onclick={() => viewer?.zoomBy(1.5)}>+</button>
       <button class="icon" title="Zoom out (−)" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
@@ -791,6 +824,7 @@
 
     {#if panel.open && (focus || focusGrain)}
       <FloatingPanel title={focus ? `Spot ${focus.name}` : `Grain ${focusGrain?.number}`} bind:x={panel.x} bind:y={panel.y} onclose={() => (panel.open = false)}>
+        <fieldset class="plain" disabled={ro}>
         {#if focus}
           {@const st = stageOf(app.project?.areas.find((a) => a.id === focus.area_id) ?? null, focus.x_um, focus.y_um)}
           <label class="field">Name <input type="text" value={focus.name} onchange={(e) => updateSpot(focus.id, { name: e.currentTarget.value })} data-testid="panel-name" /></label>
@@ -833,6 +867,7 @@
             </tbody>
           </table>
         {/if}
+        </fieldset>
       </FloatingPanel>
     {/if}
 
@@ -844,6 +879,8 @@
         <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to laicpmsdb" data-testid="tab-link">laicpmsdb</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
+      {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Read-only: published on {app.remote ? new URL(app.remote.server).host : ''}. “Edit a copy” in the top bar makes it yours to change.</p>{/if}
+      <fieldset class="plain tabbody" disabled={ro}>
       {#if tab === 'spots'}
         <div class="two">
           <label class="field">Sample <input type="text" value={sample} onchange={(e) => setSample(e.currentTarget.value)} data-testid="sample" /></label>
@@ -947,12 +984,12 @@
           <label class="check"><input type="checkbox" bind:checked={segParams.grabcut} /> GrabCut refinement (slower)</label>
         </details>
         <div class="row">
-          <button class="primary" onclick={findGrains} data-testid="find-grains">{grains.length ? 'Find again' : 'Find grains'}</button>
+          <button class="primary" onclick={findGrains} disabled={noPixels} title={noPixels ? 'Needs the stitched mosaic: open the raw package' : ''} data-testid="find-grains">{grains.length ? 'Find again' : 'Find grains'}</button>
           <button onclick={exportGrains} disabled={!grains.length}>Grain CSV</button>
         </div>
         <div class="row">
-          <button onclick={refine} disabled={!selGrains.length} title="GrabCut on the selected grains">Refine</button>
-          <button onclick={merge} disabled={selGrains.length < 2} title="Shift-click grains to select several">Merge</button>
+          <button onclick={refine} disabled={!selGrains.length || noPixels} title="GrabCut on the selected grains">Refine</button>
+          <button onclick={merge} disabled={selGrains.length < 2 || noPixels} title="Shift-click grains to select several">Merge</button>
           <button class="danger" onclick={deleteGrains} disabled={!selGrains.length}>Delete</button>
         </div>
         <div class="row">
@@ -972,6 +1009,7 @@
           </table>
         </div>
       {/if}
+      </fieldset>
       <details class="layers">
         <summary>Layers</summary>
         <div class="two">
@@ -1093,6 +1131,16 @@
   .small-text {
     font-size: 0.8rem;
     margin: 0;
+  }
+  .hidden {
+    display: none;
+  }
+  fieldset.plain {
+    border: none;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+    display: contents;
   }
   .sub {
     font-size: 0.85rem;

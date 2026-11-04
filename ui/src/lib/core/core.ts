@@ -22,6 +22,8 @@ export interface Core {
   openLoose(spec: LooseSpec): Promise<PackageInfo>;
   /** Desktop: open a saved `<name>.grainatlas/` folder (its package and project). */
   openProject(path: string): Promise<{ info: PackageInfo; project: Project }>;
+  /** Drops the open package and project: an empty session for a project without its package. */
+  blank(name: string): Promise<void>;
   loadProject(json: string): Promise<void>;
   projectJson(): Promise<string>;
   navigation(): Promise<RawImage | null>;

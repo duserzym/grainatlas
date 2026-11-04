@@ -39,7 +39,8 @@
     canNudge,
     rotate = true,
   }: {
-    core: Core;
+    /** Where pyramid tiles come from: the core, or a published bundle on a server. */
+    core: Pick<Core, 'pyramidTile'>;
     areaId: string;
     mosaic: MosaicJson | null;
     /** Size in mosaic pixels when there is no mosaic. */
