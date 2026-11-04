@@ -3,6 +3,7 @@
   // browser print dialog as a fallback. Two styles: print sheets (every grain of
   // the mount once, at a fixed scale, with a mount map and the print_sheet
   // registration for hand spot registration) and the grain / area layout.
+  import { untrack } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { download } from '../lib/files';
   import type { Grain, LayoutParams, LayoutResult, SheetParams, SheetResult, Spot, Label, ToneParams } from '../lib/core/types';
@@ -31,7 +32,8 @@
     dpi: 300,
     by_number: false,
   });
-  let style = $state<'sheets' | 'layout'>('sheets');
+  // Print sheets need grains: without any, open on the grain / area layout.
+  let style = $state<'sheets' | 'layout'>(untrack(() => stitchedIds.some((id) => (app.grains[id] ?? []).length > 0)) ? 'sheets' : 'layout');
   let sheet = $state<SheetParams>({
     paper: 'tabloid',
     landscape: true,

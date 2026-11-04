@@ -66,6 +66,8 @@ for (const [w, h] of [
     await page.getByTestId('layout').click();
     await expect(page.getByTestId('page').first()).toBeVisible();
     expect(await problems(page), 'Layout').toEqual([]);
+    await page.getByTestId('style-sheets').check();
+    expect(await problems(page), 'Layout, print sheets').toEqual([]);
     await page.getByRole('button', { name: 'Settings' }).click();
     expect(await problems(page), 'Settings').toEqual([]);
   });
