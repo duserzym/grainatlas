@@ -68,6 +68,8 @@ const ops: Record<string, Handler> = {
   laserAdapters: () => JSON.parse(wasm.laser_adapters()),
   setLaser: ({ areaId, reg }) => s().set_laser(areaId, reg ? JSON.stringify(reg) : ''),
   laserExport: ({ spots, areaId, adapter }) => s().laser_export(JSON.stringify(spots), areaId, adapter ?? ''),
+  ownership: ({ grains }) => JSON.parse(s().ownership(JSON.stringify(grains), '')),
+  printSheets: ({ params, grains, tone }) => JSON.parse(s().print_sheets(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(tone))),
 };
 
 function s(): wasm.Session {

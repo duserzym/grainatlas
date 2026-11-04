@@ -30,7 +30,7 @@ fn prints_fixture_grains_on_tabloid() {
     let r = layout::layout(&p, &[img], &gmap, &[sp.clone()], &[]);
     assert_eq!(r.paper_mm, [279.4, 431.8]);
     assert_eq!(r.um_per_mm, 10.0);
-    assert_eq!(r.items, grains.len());
+    assert_eq!(r.items, grains.iter().filter(|g| g.is_grain()).count(), "artifacts are not printed");
     assert!(!r.pages.is_empty());
     let first = &r.pages[0];
     assert!(first.starts_with("<svg") && first.contains(r#"width="279.4mm""#));

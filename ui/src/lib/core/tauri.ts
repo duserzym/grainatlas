@@ -4,7 +4,7 @@
 import { invoke as tauriInvoke, type InvokeArgs } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
 
 function img(buf: ArrayBuffer | Uint8Array | number[]): RawImage | null {
   const b = buf instanceof Uint8Array ? buf : buf instanceof ArrayBuffer ? new Uint8Array(buf) : Uint8Array.from(buf);
@@ -187,6 +187,12 @@ export class TauriCore implements Core {
   }
   async saveProject(project: Project, _extras: Record<string, string>): Promise<string | null> {
     return this.call<string | null>('save_project', { project: JSON.stringify(project), ask: false });
+  }
+  async ownership(grains: Record<string, Grain[]>): Promise<Ownership> {
+    return JSON.parse(await this.call<string>('ownership', { grains: JSON.stringify(grains) }));
+  }
+  async printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult> {
+    return JSON.parse(await this.call<string>('print_sheets', { params: JSON.stringify(params), grains: JSON.stringify(grains), tone: JSON.stringify(tone) }));
   }
 }
 

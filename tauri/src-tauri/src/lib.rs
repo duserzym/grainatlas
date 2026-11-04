@@ -504,6 +504,20 @@ fn laser_export(state: State<'_, AppState>, tab: u32, spots: String, area_id: St
     t.lock().laser_export(&spots, &area_id, &adapter).map_err(e)
 }
 
+/// Which area owns each detected grain (cross-area duplicates).
+#[tauri::command]
+async fn ownership(state: State<'_, AppState>, tab: u32, grains: String) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().ownership(&grains, "").map_err(e)
+}
+
+/// Print sheets of the mount (pages, print_sheet registration, stats, ownership).
+#[tauri::command]
+async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grains: String, tone: String) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().print_sheets(&params, &grains, &tone).map_err(e)
+}
+
 /// Drops the open package and project (a project opened from a server becomes a local copy).
 #[tauri::command]
 fn blank(state: State<'_, AppState>, tab: u32, name: String) {
@@ -666,6 +680,8 @@ pub fn run() {
             set_laser,
             laser_export,
             reset_window,
+            ownership,
+            print_sheets,
         ])
         .build(tauri::generate_context!())
         .expect("error while running grainatlas")

@@ -21,6 +21,8 @@ fn grain(n: u32, cx: f64, cy: f64) -> Grain {
         mean_intensity: 0.5,
         manual: false,
         scale_bar_um: 10.0,
+        artifact: None,
+        kept: false,
     }
 }
 

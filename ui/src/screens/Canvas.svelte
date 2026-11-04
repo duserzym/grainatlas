@@ -7,7 +7,7 @@
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toScreen, type View } from '../lib/canvas/view';
   import type { Core } from '../lib/core/core';
-  import type { Grain, Label, SegmentParams, Spot, SpotKind } from '../lib/core/types';
+  import { ARTIFACT_LABELS, type ArtifactReason, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
   import { formatName, grainAt, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
@@ -53,10 +53,35 @@
   const area = $derived(app.project?.areas.find((a) => a.id === areaId) ?? null);
   const mosaic = $derived(areaId ? app.stitched[areaId].mosaic : null);
   const umPerPx = $derived(mosaic?.um_per_px ?? 1);
-  const grains = $derived(areaId ? (app.grains[areaId] ?? []) : []);
+  /** Every detection of the area: grains and flagged artifacts. */
+  const detections = $derived(areaId ? (app.grains[areaId] ?? []) : []);
+  const grains = $derived(detections.filter((g) => !g.artifact));
+  const artifacts = $derived(detections.filter((g) => !!g.artifact));
+  const artifactCounts = $derived(Object.entries(artifacts.reduce((m, g) => ({ ...m, [g.artifact!]: (m[g.artifact!] ?? 0) + 1 }), {} as Record<string, number>)).map(([k, v]) => `${k} ${v}`).join(', '));
   const spots = $derived(app.spots.filter((s) => s.area_id === areaId));
   const labels = $derived(app.labels.filter((l) => l.area_id === areaId));
   const segParams = $derived(areaId ? app.params[areaId]?.segment : null);
+  /** Owner of each detection here: a grain also seen in an overlapping area belongs to the area it lies deepest in. */
+  const owners = $derived.by(() => {
+    const m = new Map<string, GrainOwner>();
+    for (const o of app.ownership?.grains ?? []) if (o.area_id === areaId) m.set(o.grain_id, o);
+    return m;
+  });
+  const dupCount = $derived(grains.filter((g) => owners.get(g.id)?.duplicate_of).length);
+  $effect(() => {
+    void app.grains;
+    app.refreshOwnership();
+  });
+  function areaLabel(id: string) {
+    return app.pkg?.areas.find((a) => a.id === id)?.name ?? id;
+  }
+  /** "duplicate of HH4 #12" for a grain owned by another area. */
+  function ownerNote(g: Grain): string {
+    const o = owners.get(g.id);
+    if (!o?.duplicate_of) return '';
+    const og = app.grains[o.owner_area]?.find((q) => q.id === o.duplicate_of);
+    return `duplicate of ${areaLabel(o.owner_area)} #${og?.number ?? '?'}`;
+  }
   const sample = $derived(area?.sample || area?.name || '');
   const refOverlay = $derived(areaId ? (app.overlays[areaId] ?? null) : null);
   /** screen px → um at the current zoom */
@@ -96,7 +121,7 @@
     else app.notice = `Acquisition ${id}: open it in laicpmsdb (no server set here).`;
   }
 
-  const focusGrain = $derived(!focus ? (grains.find((g) => g.id === (selGrains[0] ?? hoverId)) ?? null) : null);
+  const focusGrain = $derived(!focus ? (detections.find((g) => g.id === (selGrains[0] ?? hoverId)) ?? null) : null);
 
   $effect(() => {
     const t = areaId ? app.tone[areaId] : null;
@@ -128,11 +153,22 @@
     app.grains = { ...app.grains, [id]: r };
     relinkSpots(id);
   }
-  function setGrains(gs: Grain[]) {
+  /** Replaces the area's grains; flagged artifacts stay unless `all` is the whole list. */
+  function setGrains(gs: Grain[], all = false) {
     if (!areaId) return;
     app.checkpoint();
-    app.grains = { ...app.grains, [areaId]: gs };
+    app.grains = { ...app.grains, [areaId]: all ? gs : [...gs, ...artifacts.filter((a) => !gs.some((g) => g.id === a.id))] };
     relinkSpots(areaId);
+  }
+  /** Keeps a flagged detection as a grain (the next number); re-runs keep it too. */
+  function keepAsGrain(id: string) {
+    const n = Math.max(0, ...grains.map((g) => g.number)) + 1;
+    setGrains(detections.map((g) => (g.id === id ? { ...g, artifact: undefined, kept: true, number: n } : g)), true);
+  }
+  /** Marks the selected grains as artifacts (unnumbered, left off sheets); re-runs keep the mark. */
+  function markArtifact() {
+    if (!selGrains.length) return;
+    setGrains(detections.map((g) => (selGrains.includes(g.id) ? { ...g, artifact: 'manual' as ArtifactReason, kept: false, number: 0 } : g)), true);
   }
   /** Spots follow the grain under them (number changes, merges, splits). Names are kept. */
   function relinkSpots(id: string) {
@@ -164,7 +200,7 @@
   }
   function deleteGrains() {
     if (!selGrains.length) return;
-    setGrains(grains.filter((g) => !selGrains.includes(g.id)));
+    setGrains(detections.filter((g) => !selGrains.includes(g.id)), true);
     selGrains = [];
   }
   async function renumber(fromHere = false) {
@@ -545,10 +581,15 @@
     const id = areaId;
     const parts = await app.run(`Splitting grain ${g.number}`, () => core!.splitGrain(id, $state.snapshot(g) as Grain, line));
     if (!parts || parts.length < 2) return;
-    const max = Math.max(0, ...grains.map((q) => q.number));
-    parts[0] = { ...parts[0], id: g.id, number: g.number };
-    for (let i = 1; i < parts.length; i++) parts[i] = { ...parts[i], number: max + i };
-    setGrains([...grains.filter((q) => q.id !== g.id), ...parts].sort((a, b) => a.number - b.number));
+    // The largest grain part keeps the grain; a part the core recognised as a bubble becomes a
+    // bubble artifact (one cut detaches a bubble), the others get new numbers.
+    const real = parts.filter((q) => !q.artifact).sort((a, b) => b.area_um2 - a.area_um2);
+    const flagged = parts.filter((q) => q.artifact).map((q) => ({ ...q, number: 0 }));
+    if (!real.length) return;
+    let max = Math.max(0, ...grains.map((q) => q.number));
+    const kept = real.map((q, i) => (i === 0 ? { ...q, id: g.id, number: g.number } : { ...q, number: ++max }));
+    setGrains([...grains.filter((q) => q.id !== g.id), ...kept, ...flagged].sort((a, b) => a.number - b.number));
+    if (flagged.length) app.notice = `Split off ${flagged.length === 1 ? 'a bubble' : `${flagged.length} bubbles`}: flagged as not a grain (Keep as grain restores it).`;
   }
 
   async function click(p: CanvasPoint) {
@@ -588,7 +629,7 @@
     // Select / other tools on empty space: select a grain or clear.
     app.selection = [];
     measure = null;
-    const g = grainAt(grains, x, y);
+    const g = grainAt(detections, x, y, app.layers.artifacts);
     const multi = ev.shiftKey || ev.metaKey;
     if (!g) {
       if (!multi) selGrains = [];
@@ -635,7 +676,7 @@
       return;
     }
     const x = p.x * umPerPx, y = p.y * umPerPx;
-    hoverId = hitSpot(x, y)?.id ?? grainAt(grains, x, y)?.id ?? null;
+    hoverId = hitSpot(x, y)?.id ?? grainAt(detections, x, y, app.layers.artifacts)?.id ?? null;
     if (app.tool === 'spot' && app.settings.snap && !(p.ev as MouseEvent).altKey) {
       const prev = app.spots.filter((s) => s.area_id === areaId).at(-1) ?? null;
       snapHint = snap(x, y, snapTargets(grains, prev, app.diameter), 12 * k);
@@ -762,9 +803,15 @@
                 <g class="pairmark"><line x1={ix} y1={iy} x2={pr[1][0]} y2={pr[1][1]} /><circle cx={pr[1][0]} cy={pr[1][1]} r={5 * k} /><text transform="translate({pr[1][0]} {pr[1][1]}) rotate({-rotDeg}) scale({k})" dx="7" dy="-5">{i + 1}</text></g>
               {/each}
             {/if}
+            {#if app.layers.outlines && app.layers.artifacts}
+              {#each artifacts as g (g.id)}
+                <polygon class="grain artifact" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid="grain-artifact"><title>Not a grain: {ARTIFACT_LABELS[g.artifact!]} (select it and Keep as grain to restore)</title></polygon>
+              {/each}
+            {/if}
             {#if app.layers.outlines}
               {#each grains as g (g.id)}
-                <polygon class="grain" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} points={g.polygon_um.map((p) => p.join(',')).join(' ')} />
+                {@const own = owners.get(g.id)}
+                <polygon class="grain" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined}><title>{own?.duplicate_of ? ownerNote(g) : own?.cut ? 'owned here, cut by the area edge' : own ? 'owned by this area' : ''}</title></polygon>
               {/each}
             {/if}
             {#if app.layers.scalebars}
@@ -953,6 +1000,15 @@
               <tr><td>area</td><td class="num">{fmt(focusGrain.area_um2, 0)} µm²</td></tr>
               <tr><td>centroid</td><td class="num">{fmt(focusGrain.centroid_um[0], 1)}, {fmt(focusGrain.centroid_um[1], 1)} µm</td></tr>
               <tr><td>spots</td><td>{app.spots.filter((s) => s.grain_id === focusGrain.id).map((s) => s.name).join(', ') || '–'}</td></tr>
+              {#if focusGrain.artifact}
+                <tr><td>not a grain</td><td data-testid="artifact-reason">{ARTIFACT_LABELS[focusGrain.artifact]} <button class="link" onclick={() => keepAsGrain(focusGrain!.id)} data-testid="keep-grain">Keep as grain</button></td></tr>
+              {:else if focusGrain.kept}
+                <tr><td>kept</td><td>flagged, kept by you as a grain</td></tr>
+              {/if}
+              {#if owners.get(focusGrain.id)}
+                {@const own = owners.get(focusGrain.id)!}
+                <tr><td>owner area</td><td data-testid="owner-area">{own.duplicate_of ? ownerNote(focusGrain) : `this area${own.cut ? ' (cut by its edge)' : ''}`}</td></tr>
+              {/if}
               <tr><td>id</td><td class="mono small">{focusGrain.id}</td></tr>
             </tbody>
           </table>
@@ -1088,8 +1144,18 @@
         <details class="params">
           <summary>Segmentation</summary>
           <label class="field">Grains are
-            <select bind:value={segParams.polarity}><option value="bright">brighter than the epoxy</option><option value="dark">darker (transmitted light)</option></select>
+            <select bind:value={segParams.polarity} data-testid="polarity"><option value="bright">brighter than the epoxy</option><option value="both">brighter or darker (CL: also CL-dark grains)</option><option value="dark">darker (transmitted light)</option></select>
           </label>
+          {#if segParams.polarity === 'both'}
+            <label class="field">Dark below the local epoxy level by (fraction) <input type="number" step="0.05" min="0.05" max="0.95" bind:value={segParams.dark_rel} /></label>
+          {/if}
+          <p class="faint small-text">Artifacts are flagged, not deleted: they show dimmed with their reason and can be kept as grains.</p>
+          <label class="check"><input type="checkbox" bind:checked={segParams.flag_bubbles} /> flag epoxy bubbles and their halos</label>
+          <label class="check"><input type="checkbox" bind:checked={segParams.flag_slivers} /> flag tile-seam slivers (and cut seam lines)</label>
+          <label class="check"><input type="checkbox" bind:checked={segParams.flag_blocks} /> flag exposure-step tile blocks</label>
+          <label class="check"><input type="checkbox" bind:checked={segParams.flag_specks} /> flag specks</label>
+          <label class="field">Reference grain size (µm, 0 = the area's median) <input type="number" min="0" bind:value={segParams.reference_size_um} /></label>
+          <label class="field">Maximum size (µm, 0 = none) <input type="number" min="0" bind:value={segParams.max_size_um} /></label>
           <label class="field">Threshold
             <select bind:value={segParams.method}><option value="background">background + margin</option><option value="otsu">Otsu</option></select>
           </label>
@@ -1107,30 +1173,52 @@
         <div class="row">
           <button onclick={refine} disabled={!selGrains.length || noPixels} title="GrabCut on the selected grains">Refine</button>
           <button onclick={merge} disabled={selGrains.length < 2 || noPixels} title="Shift-click grains to select several">Merge</button>
+          <button onclick={markArtifact} disabled={!selGrains.some((id) => grains.some((g) => g.id === id))} title="Not a grain: unnumbered, left off print sheets and spots" data-testid="mark-artifact">Not a grain</button>
           <button class="danger" onclick={deleteGrains} disabled={!selGrains.length}>Delete</button>
         </div>
         <div class="row">
           <button onclick={() => renumber(false)} disabled={!grains.length}>Renumber all</button>
           <button onclick={() => renumber(true)} disabled={selGrains.length !== 1}>Renumber from here</button>
         </div>
+        {#if dupCount}
+          <p class="muted small-text" data-testid="dup-note">{dupCount} of {grains.length} are duplicates of grains another area owns (dashed outlines; left off print sheets).</p>
+        {/if}
         <div class="list">
           <table class="data">
-            <thead><tr><th>#</th><th>⌀ µm</th><th>L × W µm</th><th>spots</th></tr></thead>
+            <thead><tr><th>#</th><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
             <tbody>
               {#each grains as g (g.id)}
                 <tr class:selected={selGrains.includes(g.id)} onclick={(e) => { selGrains = e.shiftKey ? [...selGrains, g.id] : [g.id]; app.selection = []; panel.open = true; centerOnUm(g.centroid_um[0], g.centroid_um[1], Math.max(g.bbox_um[2] - g.bbox_um[0], g.bbox_um[3] - g.bbox_um[1])); }}>
                   <td class="num">{g.number}{g.manual ? '*' : ''}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
+                  <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)} #{app.grains[o.owner_area]?.find((q) => q.id === o.duplicate_of)?.number ?? '?'}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
               {/each}
             </tbody>
           </table>
         </div>
+        {#if artifacts.length}
+          <details class="artifacts" data-testid="artifact-list">
+            <summary>Not grains <span class="faint">{artifacts.length}: {artifactCounts}</span></summary>
+            <table class="data">
+              <thead><tr><th>why</th><th>⌀ µm</th><th></th></tr></thead>
+              <tbody>
+                {#each artifacts as g (g.id)}
+                  <tr class:selected={selGrains.includes(g.id)} onclick={() => { selGrains = [g.id]; app.selection = []; panel.open = true; centerOnUm(g.centroid_um[0], g.centroid_um[1], Math.max(g.bbox_um[2] - g.bbox_um[0], g.bbox_um[3] - g.bbox_um[1], 150)); }}>
+                    <td title={ARTIFACT_LABELS[g.artifact!]}>{g.artifact}</td><td class="num">{fmt(g.eq_diameter_um)}</td>
+                    <td><button class="link" onclick={(e) => { e.stopPropagation(); keepAsGrain(g.id); }} data-testid="keep-artifact">Keep as grain</button></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </details>
+        {/if}
       {/if}
       </fieldset>
       <details class="layers" open={app.layout.layersOpen} ontoggle={(e) => { app.layout.layersOpen = e.currentTarget.open; app.saveLayout(); }}>
         <summary>Layers</summary>
         <div class="two">
           <label class="check"><input type="checkbox" bind:checked={app.layers.outlines} /> outlines</label>
+          <label class="check"><input type="checkbox" bind:checked={app.layers.artifacts} /> not grains</label>
           <label class="check"><input type="checkbox" bind:checked={app.layers.numbers} /> numbers</label>
           <label class="check"><input type="checkbox" bind:checked={app.layers.spots} /> spots</label>
           <label class="check"><input type="checkbox" bind:checked={app.layers.labels} /> names and labels</label>
@@ -1406,6 +1494,36 @@
     stroke: var(--ov-outline);
     stroke-width: 1.4;
     opacity: 0.85;
+  }
+  :global(.ga-root) .grain.artifact {
+    stroke: var(--ov-artifact, #9a9a9a);
+    stroke-dasharray: 2 3;
+    opacity: 0.55;
+  }
+  button.link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent, inherit);
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+  }
+  .artifacts summary {
+    cursor: pointer;
+    margin: var(--space-1) 0;
+  }
+  :global(.ga-root) .grain.dup {
+    stroke-dasharray: 6 4;
+    opacity: 0.5;
+  }
+  :global(.ga-root) .grain.cut {
+    stroke-dasharray: 2 3;
+  }
+  .owner {
+    font-size: 0.8em;
+    white-space: nowrap;
+    color: var(--text-muted, inherit);
   }
   :global(.ga-root) .grain.hov {
     opacity: 1;

@@ -151,6 +151,8 @@ pub fn grain_from_mask(mask: &[bool], bw: usize, bh: usize, origin: (usize, usiz
         mean_intensity: si / n,
         manual,
         scale_bar_um: crate::scale::grain_bar_um(x1 - x0),
+        artifact: None,
+        kept: false,
     })
 }
 

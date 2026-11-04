@@ -45,7 +45,7 @@ fn stats(mut v: Vec<f32>) -> Option<(f32, f32)> {
 /// Label image (index + 1 into `grains`, 0 = none) at the resolution of `g`.
 fn labels(w: usize, h: usize, grains: &[Grain], um_per_px: f64) -> Vec<u32> {
     let mut lab = vec![0u32; w * h];
-    for (i, gr) in grains.iter().enumerate() {
+    for (i, gr) in grains.iter().enumerate().filter(|(_, g)| g.is_grain()) {
         let (mask, bw, bh, (ox, oy)) = crate::segment::shape::rasterize(gr, um_per_px, 0);
         for y in 0..bh {
             for x in 0..bw {

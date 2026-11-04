@@ -1,9 +1,12 @@
 <script lang="ts">
   // Print layout: paper, scale, packing, preview, PDF / SVG export and the
-  // browser print dialog as a fallback.
+  // browser print dialog as a fallback. Two styles: print sheets (every grain of
+  // the mount once, at a fixed scale, with a mount map and the print_sheet
+  // registration for hand spot registration) and the grain / area layout.
+  import { untrack } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { download } from '../lib/files';
-  import type { Grain, LayoutParams, LayoutResult, Spot, Label, ToneParams } from '../lib/core/types';
+  import type { Grain, LayoutParams, LayoutResult, SheetParams, SheetResult, Spot, Label, ToneParams } from '../lib/core/types';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
 
   /** Preview pixels per paper millimetre (zooming in re-rasterises the SVG page). */
@@ -29,6 +32,27 @@
     dpi: 300,
     by_number: false,
   });
+  // Print sheets need grains: without any, open on the grain / area layout.
+  let style = $state<'sheets' | 'layout'>(untrack(() => stitchedIds.some((id) => (app.grains[id] ?? []).length > 0)) ? 'sheets' : 'layout');
+  let sheet = $state<SheetParams>({
+    paper: 'tabloid',
+    landscape: true,
+    margin_mm: 8,
+    um_per_mm: 8,
+    pad_um: 22,
+    gap_break_um: 420,
+    min_grain_um: 35,
+    max_grain_um: 0,
+    spot_sizes_um: [15, 20, 25, 30, 35, 50],
+    enhance: { denoise: true, denoise_h: 0.7, sharpen: true, sharpen_radius: 1.6, sharpen_amount: 0.55, strip: false, strip_grey: 22, strip_margin_um: 6 },
+    title: '',
+    lab: '',
+    project: '',
+    registration_file: '',
+    printed: '',
+  });
+  let spotText = $state('15, 20, 25, 30, 35, 50');
+  let sheets = $state<SheetResult | null>(null);
   let result = $state<LayoutResult | null>(null);
   let pageIdx = $state(0);
   let urls = $state<string[]>([]);
@@ -39,10 +63,32 @@
     if (!hasGrains && params.items === 'grains') params.items = 'areas';
   });
 
+  async function generateSheets() {
+    const core = await app.core;
+    const p = $state.snapshot(sheet) as SheetParams;
+    const name = app.pkg?.name ?? app.project?.package.name ?? 'grainatlas';
+    p.spot_sizes_um = spotText.split(/[,\s]+/).map(Number).filter((v) => v > 0);
+    p.registration_file = `${name}_print_registration.json`;
+    p.project = `${name}.grainatlas`;
+    p.printed = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+    const r = await app.run('Laying out print sheets', () => core.printSheets(p, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.tone) as Record<string, ToneParams>));
+    if (!r) return;
+    app.ownership = r.ownership;
+    for (const u of urls) URL.revokeObjectURL(u);
+    urls = r.pages.map((s) => URL.createObjectURL(new Blob([s], { type: 'image/svg+xml' })));
+    sheets = r;
+    result = { pages: r.pages, um_per_mm: r.registration.um_per_mm, items: r.stats.bands, paper_mm: r.registration.paper_mm };
+    pageIdx = 0;
+  }
+  function registration() {
+    if (sheets) download(JSON.stringify(sheets.registration, null, 1), sheets.registration.package + '_print_registration.json', 'application/json');
+  }
+
   async function generate() {
     const core = await app.core;
     const p = $state.snapshot(params) as LayoutParams;
     if (!p.area_ids.length) p.area_ids = stitchedIds;
+    sheets = null;
     const r = await app.run('Laying out pages', () =>
       core.layout(p, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.spots) as Spot[], $state.snapshot(app.labels) as Label[], $state.snapshot(app.tone) as Record<string, ToneParams>),
     );
@@ -58,7 +104,8 @@
     const core = await app.core;
     const pages = $state.snapshot(result.pages) as string[];
     const bytes = await app.run('Writing PDF', () => core.pdf(pages));
-    if (bytes) download(bytes, `${app.pkg?.name ?? 'grainatlas'}_${params.items}_${params.paper}.pdf`, 'application/pdf');
+    const what = style === 'sheets' ? `grain_sheets_${sheet.paper}` : `${params.items}_${params.paper}`;
+    if (bytes) download(bytes, `${app.pkg?.name ?? 'grainatlas'}_${what}.pdf`, 'application/pdf');
   }
   function svgs() {
     result?.pages.forEach((s, i) => download(s, `${app.pkg?.name ?? 'grainatlas'}_page${i + 1}.svg`, 'image/svg+xml'));
@@ -71,7 +118,7 @@
       app.error = 'The print window was blocked; allow pop-ups or use the PDF.';
       return;
     }
-    win.document.write(`<!doctype html><title>${params.title}</title><style>@page{size:${w}mm ${h}mm;margin:0}body{margin:0}svg{display:block;width:${w}mm;height:${h}mm;page-break-after:always}</style>${result.pages.join('')}`);
+    win.document.write(`<!doctype html><title>${style === 'sheets' ? sheet.title || app.pkg?.name : params.title}</title><style>@page{size:${w}mm ${h}mm;margin:0}body{margin:0}svg{display:block;width:${w}mm;height:${h}mm;page-break-after:always}</style>${result.pages.join('')}`);
     win.document.close();
     win.focus();
     setTimeout(() => win.print(), 300);
@@ -84,6 +131,53 @@
 <div class="layout">
   <aside class="glass side">
     <h2>Print layout</h2>
+    <div class="seg" role="radiogroup" aria-label="Style">
+      <label class="check"><input type="radio" bind:group={style} value="sheets" data-testid="style-sheets" /> Print sheets</label>
+      <label class="check"><input type="radio" bind:group={style} value="layout" data-testid="style-layout" /> Grains or areas</label>
+    </div>
+    {#if style === 'sheets'}
+      <p class="muted small-text">Every grain of the mount once (duplicates in overlapping areas go to the area they lie deepest in), sample by sample, at one scale, as bands cut straight out of the mosaic. Each sheet has the instrument header, a mount map and laser spot sizes; the registration file maps every band on paper back to the mosaic.</p>
+      <label class="field">Title <input type="text" bind:value={sheet.title} placeholder={app.pkg?.name ?? ''} /></label>
+      <label class="field">Lab and operator <input type="text" bind:value={sheet.lab} placeholder="e.g. Boise State Isotope Geology Lab · Y. Zhang" /></label>
+      <div class="two">
+        <label class="field">Paper
+          <select bind:value={sheet.paper}>
+            <option value="tabloid">Tabloid 11 × 17 in</option>
+            <option value="letter">Letter</option>
+            <option value="a3">A3</option>
+            <option value="a4">A4</option>
+          </select>
+        </label>
+        <label class="field">Scale (µm per mm) <input type="number" min="1" step="1" bind:value={sheet.um_per_mm} data-testid="sheet-scale" /></label>
+      </div>
+      <div class="two">
+        <label class="field">Smallest grain (µm) <input type="number" min="0" bind:value={sheet.min_grain_um} /></label>
+        <label class="field">Mark gaps over (µm) <input type="number" min="50" step="10" bind:value={sheet.gap_break_um} /></label>
+      </div>
+      <label class="field">Laser spot sizes (µm) <input type="text" bind:value={spotText} /></label>
+      <div class="two">
+        <label class="check"><input type="checkbox" bind:checked={sheet.enhance.denoise} /> denoise (NLM)</label>
+        <label class="check"><input type="checkbox" bind:checked={sheet.enhance.sharpen} /> sharpen</label>
+      </div>
+      <label class="check" title="Only where every grain in a band has a closed outline and nothing else stands out; otherwise that band keeps its background"><input type="checkbox" bind:checked={sheet.enhance.strip} data-testid="strip-bg" /> strip background to one grey</label>
+      {#if sheet.enhance.strip}
+        <label class="field">Grey <span class="num">{sheet.enhance.strip_grey}</span>
+          <input type="range" min="0" max="255" bind:value={sheet.enhance.strip_grey} />
+          <span class="swatch" style="background: rgb({sheet.enhance.strip_grey},{sheet.enhance.strip_grey},{sheet.enhance.strip_grey})"></span>
+        </label>
+      {/if}
+      <button class="primary" onclick={generateSheets} disabled={!hasGrains} title={hasGrains ? '' : 'Find grains first'} data-testid="sheets">Make print sheets</button>
+      {#if sheets}
+        {@const st = sheets.stats}
+        <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}.</p>
+        <div class="two">
+          <button onclick={pdf} data-testid="export-pdf">Export PDF</button>
+          <button onclick={registration} data-testid="export-registration">Registration</button>
+          <button onclick={svgs}>Export SVG</button>
+          <button onclick={browserPrint}>Print…</button>
+        </div>
+      {/if}
+    {:else}
     <label class="field">Title <input type="text" bind:value={params.title} /></label>
     <div class="two">
       <label class="field">Paper
@@ -137,6 +231,7 @@
         <button onclick={svgs}>Export SVG</button>
         <button onclick={browserPrint}>Print…</button>
       </div>
+    {/if}
     {/if}
   </aside>
   <section class="preview" data-testid="layout-view">
@@ -200,6 +295,18 @@
     display: block;
     background: white;
     box-shadow: var(--glass-shadow);
+  }
+  .seg {
+    display: flex;
+    gap: var(--space-3);
+  }
+  .swatch {
+    display: inline-block;
+    width: 1.2rem;
+    height: 1.2rem;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    vertical-align: middle;
   }
   .pager {
     position: absolute;
