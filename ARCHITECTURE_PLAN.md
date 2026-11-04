@@ -367,6 +367,22 @@ What exists (2026-11-03, ADR-0005):
 - The shell is UPb Studio (`../upbstudio`); grainatlas is its Images tab and
   uses `@lab/bridge` (sibling-checkout dependency until published). Hosted, it
   runs the wasm core with the web file input and drag-drop.
+- Files the user drops on the shell's window or opens through the OS
+  (Finder "Open with", a `.zag` association, Home's Open folder / Open files)
+  reach grainatlas through the bridge's `onOpenFiles` (protocol v2), registered
+  once at start-up in `App.svelte`. The bridge takes the offer at once and
+  hands over `{ path, file: File }` entries: on desktop it reads the bytes with
+  `bridge_read_file` (four at a time) from the manifest of `bridge_open_files`;
+  on the web delivery the `File` objects come by structured clone in the
+  `open-files` reply. `fromShell` (`ui/src/lib/files.ts`) turns the set into
+  the `{ name, files }` of a drop and `openOffered` (`ui/src/lib/actions.ts`)
+  opens it like one: package, area folder, or loose images with the scale
+  dialog. With a project open, one dialog (Open, Cancel) asks before replacing
+  it. A `.grainatlas` project folder is refused with a hint (the wasm core
+  cannot open one). Each outcome is reported to the shell as
+  `notify({ type: 'grainatlas.files.opened', kind, name, files, outcome })`.
+  In the desktop shell every drop, including one on grainatlas's own drop
+  zone, arrives this way (the shell keeps Tauri's drag-drop handler).
 - Deep links into grainatlas: `index.html?project=<uuid>&spot=<uuid>`, which
   the shell produces from `grainatlas://project/<uuid>/spot/<uuid>`. Projects
   are found by uuid in `grainatlas.recent`; the package is read again (the

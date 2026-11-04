@@ -1,7 +1,7 @@
 // Application state (Svelte 5 runes). The core holds pixels; the UI holds the
 // project record, grains, spots and labels, and an undo history of edits.
 
-import { getCore, type Core, type RawImage } from './core/core';
+import { getCore, type Core, type PackageFile, type RawImage } from './core/core';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
@@ -110,6 +110,8 @@ class AppState {
   /** Loose images waiting for a scale (the scale dialog is open while set). */
   pendingLoose = $state<{ name: string; images: ImageEntry[]; spec: LooseSpec | null } | null>(null);
   project = $state<Project | null>(null);
+  /** Files UPb Studio handed over while a project was open: the replace dialog asks first. */
+  offer = $state.raw<{ name: string; files: PackageFile[] } | null>(null);
   areaId = $state<string | null>(null);
   stitched = $state<Record<string, StitchSummary>>({});
   /** Bumps when pyramid pixels change (re-stitch, re-tone): the canvas drops its tile cache. */
