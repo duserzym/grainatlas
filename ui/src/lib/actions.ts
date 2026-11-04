@@ -290,14 +290,24 @@ export async function loadProjectFile(file: File) {
   await resolveDeepLink(app);
 }
 
-/** UI-held parameters from older saves lack newer fields: fill them from the core's record. */
+/** `base` with the values of `over` (objects merged at every depth, in `base`'s key order). */
+function deepFill<T>(base: T, over: unknown): T {
+  if (!over || typeof over !== 'object' || Array.isArray(over) || !base || typeof base !== 'object' || Array.isArray(base)) return (over ?? base) as T;
+  const out: Record<string, unknown> = {};
+  const o = over as Record<string, unknown>;
+  for (const [k, v] of Object.entries(base as Record<string, unknown>)) out[k] = k in o ? deepFill(v, o[k]) : v;
+  for (const [k, v] of Object.entries(o)) if (!(k in out)) out[k] = v;
+  return out as T;
+}
+
+/** UI-held parameters from older saves lack newer fields (at any depth): fill them from the
+ * core's record, so what the UI holds is what the core renders. */
 function fillParams(app: AppState) {
   for (const a of app.project?.areas ?? []) {
     const base = a.params;
-    const p = app.params[a.id] ?? base;
-    const t = app.tone[a.id] ?? p.tone ?? base.tone;
-    const tone = { ...base.tone, ...t, grain_norm: { ...base.tone.grain_norm, ...(t.grain_norm ?? {}) } };
-    app.params[a.id] = { ...base, ...p, tone };
+    const p = deepFill(base, app.params[a.id] ?? base);
+    const tone = deepFill(base.tone, app.tone[a.id] ?? p.tone);
+    app.params[a.id] = { ...p, tone };
     app.tone[a.id] = tone;
   }
 }
@@ -337,9 +347,10 @@ export async function restoreAreas(app: AppState = current()) {
   const core = await app.core;
   const todo = (app.project?.areas ?? []).filter((a) => a.placement && !app.stitched[a.id] && app.pkg?.areas.some((m) => m.id === a.id));
   for (const [k, a] of todo.entries()) {
+    // The placement was solved with the recorded stitch settings: render with exactly those (the
+    // UI's copy can differ in key order or in fields added since), so the core never re-stitches.
+    app.params = { ...app.params, [a.id]: { ...app.params[a.id], stitch: a.params.stitch } };
     const params = $snapshotParams(app, a.id);
-    // A different stitch setting needs a stitch; restoring must never re-stitch on its own.
-    if (JSON.stringify(params.stitch) !== JSON.stringify(a.params.stitch)) continue;
     await syncGrains(app, a.id);
     const r = await app.run(`Rendering ${a.id} (${k + 1} of ${todo.length})`, (p) => core.recompute(a.id, params, p));
     if (!r) return;
@@ -381,7 +392,12 @@ const PREVIEW_PIXELS = 1.5e6;
 export function liveKey(p: AreaParams | undefined, t: ToneParams | undefined, grains?: Grain[]): string {
   if (!p) return '';
   const { black: _b, white: _w, gamma: _g, ...tone } = (t ?? p.tone) as ToneParams;
-  return JSON.stringify([p.photometric, p.blend, tone, tone.grain_norm?.enabled ? grainsKey(grains) : null]);
+  return canonical([p.photometric, p.blend, tone, tone.grain_norm?.enabled ? grainsKey(grains) : null]);
+}
+
+/** JSON with object keys sorted (the same parameters give the same key whatever their order). */
+function canonical(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 }
 
 function grainsKey(grains: Grain[] | undefined) {
