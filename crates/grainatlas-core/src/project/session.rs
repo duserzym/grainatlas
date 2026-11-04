@@ -498,6 +498,25 @@ impl Session {
         Ok(())
     }
 
+    /// Stores the laser registration of an area (`AreaRegistration` JSON; "" removes it).
+    pub fn set_laser(&mut self, area_id: &str, registration: &str) -> Result<()> {
+        let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
+        if registration.trim().is_empty() {
+            project.laser.areas.remove(area_id);
+        } else {
+            let reg: crate::laser::AreaRegistration = serde_json::from_str(registration).map_err(invalid)?;
+            project.laser.areas.insert(area_id.to_string(), reg);
+        }
+        Ok(())
+    }
+
+    /// The spot list of one area for the laser (the area's adapter, or `adapter` when not empty).
+    pub fn laser_export(&self, spots: &str, area_id: &str, adapter: &str) -> Result<String> {
+        let spots: Vec<Spot> = serde_json::from_str(spots).map_err(invalid)?;
+        let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
+        crate::laser::export(project, &spots, area_id, (!adapter.trim().is_empty()).then_some(adapter.trim()))
+    }
+
     /// Records a publish (`Published` JSON) in the project's laicpmsdb link.
     pub fn record_published(&mut self, published: &str) -> Result<()> {
         let rec: super::Published = serde_json::from_str(published).map_err(invalid)?;
@@ -505,6 +524,17 @@ impl Session {
         project.laicpmsdb.published.push(rec);
         Ok(())
     }
+}
+
+/// Laser registration from fiducials (`[Fiducial]` JSON) in stage `units` ("mm" or "um").
+pub fn laser_fit(fiducials: &str, units: &str) -> Result<String> {
+    let f: Vec<crate::laser::Fiducial> = serde_json::from_str(fiducials).map_err(invalid)?;
+    serde_json::to_string(&crate::laser::fit(&f, units)?).map_err(invalid)
+}
+
+/// The laser adapters: `[{"id","label","extension"}]`.
+pub fn laser_adapters() -> String {
+    serde_json::json!(crate::laser::adapters().iter().map(|a| serde_json::json!({ "id": a.id(), "label": a.label(), "extension": a.extension() })).collect::<Vec<_>>()).to_string()
 }
 
 /// Renumbers grains (from = {"grainId", "number"} JSON or "").

@@ -4,7 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, BundleOptions, Grain, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
 
 function img(buf: ArrayBuffer | Uint8Array | number[]): RawImage | null {
   const b = buf instanceof Uint8Array ? buf : buf instanceof ArrayBuffer ? new Uint8Array(buf) : Uint8Array.from(buf);
@@ -141,6 +141,18 @@ export class TauriCore implements Core {
   }
   async saveAtlas(project: Project, options: BundleOptions, zip: boolean): Promise<string | null> {
     return invoke<string | null>('save_atlas', { project: JSON.stringify(project), options: JSON.stringify(options), zip });
+  }
+  async laserFit(fiducials: Fiducial[], units: string): Promise<LaserFit> {
+    return JSON.parse(await invoke<string>('laser_fit', { fiducials: JSON.stringify(fiducials), units }));
+  }
+  async laserAdapters(): Promise<LaserAdapterInfo[]> {
+    return JSON.parse(await invoke<string>('laser_adapters'));
+  }
+  async setLaser(areaId: string, reg: AreaRegistration | null): Promise<void> {
+    await invoke('set_laser', { areaId, registration: reg ? JSON.stringify(reg) : '' });
+  }
+  async laserExport(spots: Spot[], areaId: string, adapter?: string): Promise<string> {
+    return invoke<string>('laser_export', { spots: JSON.stringify(spots), areaId, adapter: adapter ?? '' });
   }
   async recordPublished(published: Published): Promise<void> {
     await invoke('record_published', { published: JSON.stringify(published) });

@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, BundleOptions, Grain, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onProgress?: (p: Progress) => void };
 
@@ -262,6 +262,25 @@ export class WasmCore implements Core {
 
   async saveAtlas(): Promise<string | null> {
     return null; // the web build saves through lib/atlas.ts (download, or a folder where the browser allows it)
+  }
+
+  async laserFit(fiducials: Fiducial[], units: string): Promise<LaserFit> {
+    return this.call('laserFit', { fiducials, units });
+  }
+
+  async laserAdapters(): Promise<LaserAdapterInfo[]> {
+    return this.call('laserAdapters');
+  }
+
+  async setLaser(areaId: string, reg: AreaRegistration | null): Promise<void> {
+    await this.ready();
+    await this.call('setLaser', { areaId, reg });
+    this.project = await this.call<string>('projectJson');
+  }
+
+  async laserExport(spots: Spot[], areaId: string, adapter?: string): Promise<string> {
+    await this.ready();
+    return this.call('laserExport', { spots, areaId, adapter });
   }
 
   async recordPublished(published: Published): Promise<void> {

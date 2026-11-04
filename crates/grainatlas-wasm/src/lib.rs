@@ -133,6 +133,14 @@ impl Session {
     pub fn atlas_zip(&self, project: &str, options: &str) -> Result<Vec<u8>, JsError> {
         self.0.atlas_zip(project, options).map_err(err)
     }
+    /// Stores an area's laser registration (AreaRegistration JSON; "" removes it).
+    pub fn set_laser(&mut self, area_id: &str, registration: &str) -> Result<(), JsError> {
+        self.0.set_laser(area_id, registration).map_err(err)
+    }
+    /// The area's spot list for the laser software.
+    pub fn laser_export(&self, spots: &str, area_id: &str, adapter: &str) -> Result<String, JsError> {
+        self.0.laser_export(spots, area_id, adapter).map_err(err)
+    }
     /// Records a publish (Published JSON) in the project.
     pub fn record_published(&mut self, published: &str) -> Result<(), JsError> {
         self.0.record_published(published).map_err(err)
@@ -164,6 +172,16 @@ pub fn tone_lut(tone: &str) -> Result<Vec<u8>, JsError> {
 #[wasm_bindgen]
 pub fn register(pairs: &str) -> Result<String, JsError> {
     session::register(pairs).map_err(err)
+}
+
+#[wasm_bindgen]
+pub fn laser_fit(fiducials: &str, units: &str) -> Result<String, JsError> {
+    session::laser_fit(fiducials, units).map_err(err)
+}
+
+#[wasm_bindgen]
+pub fn laser_adapters() -> String {
+    session::laser_adapters()
 }
 
 #[wasm_bindgen]
