@@ -49,6 +49,11 @@ make ui-dev       # dev server on http://localhost:5174
 make desktop-dev  # desktop app (Tauri 2) on this machine
 ```
 
+CI: until the first release, GitHub Actions runs only on `v*` tags and by hand,
+not on push or pull requests. Run it with `gh workflow run ci` (tests),
+`gh workflow run desktop` (installers) or `gh workflow run release` (web
+archive, no draft release); all three need the `UPBSTUDIO_TOKEN` secret below.
+
 ## Dependencies: `@lab/bridge`
 
 grainatlas runs on its own and as the Images tab of UPb Studio. It talks to

@@ -1,7 +1,9 @@
+# Pre-release: runs on v* tags and by hand only; push triggers return at the first release (see README).
 name: ci
 on:
   push:
-  pull_request:
+    tags: ['v*']
+  workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest

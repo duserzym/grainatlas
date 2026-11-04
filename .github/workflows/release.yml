@@ -1,3 +1,4 @@
+# Pre-release: runs on v* tags and by hand only; push triggers return at the first release (see README).
 name: release
 # On a v* tag: build the static web build and attach it to a draft release as
 # grainatlas-web-<version>.tar.gz (index.html at the top) plus its .sha256.
@@ -7,9 +8,13 @@ name: release
 # job checks out grainatlas and upbstudio side by side (ui/package.json has
 # "file:../../upbstudio/bridge"). If duserzym/upbstudio is private, add a
 # read-only token as the UPBSTUDIO_TOKEN secret.
+#
+# A manual run (gh workflow run release) builds the same archive and skips the
+# tag check and the draft release.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -42,6 +47,7 @@ jobs:
         with:
           node-version: 22
       - name: Tag matches ui/package.json
+        if: github.ref_type == 'tag'
         run: |
           V=$(node -p "require('./ui/package.json').version")
           test "v$V" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME but ui/package.json is $V"; exit 1; }
@@ -54,6 +60,7 @@ jobs:
       - name: Web build archive
         run: make release-web
       - uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
         with:
           draft: true
           files: |

@@ -1,3 +1,4 @@
+# Pre-release: runs on v* tags and by hand only; push triggers return at the first release (see README).
 name: desktop
 # Builds the Tauri desktop app for macOS (arm64) and Windows (x86-64) and keeps
 # the installers as artifacts. Configured but not exercised locally (only the
