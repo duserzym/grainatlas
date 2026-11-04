@@ -614,6 +614,16 @@
       startEdit(l.id);
       return;
     }
+    if (app.tool === 'delete') {
+      // Spots and labels went in press(); here the click is on a grain (or nothing).
+      const g = grainAt(detections, x, y, app.layers.artifacts);
+      if (g) {
+        selGrains = [g.id];
+        deleteGrains();
+        app.notice = `Deleted ${g.artifact ? 'a flagged detection' : `grain ${g.number}`} (⌘Z brings it back).`;
+      }
+      return;
+    }
     if (app.tool === 'grain-add' && core && areaId && segParams) {
       const id = areaId;
       const g = await app.run('Growing grain', () => core!.grainAt(id, x, y, $state.snapshot(segParams) as SegmentParams));
@@ -777,7 +787,7 @@
     { id: 'raster', label: 'Raster', key: 'R', title: 'Drag to draw a raster area' },
     { id: 'measure', label: 'Measure', key: 'M', title: 'Drag to measure a distance' },
     { id: 'label', label: 'Label', key: 'T', title: 'Click to place a text label' },
-    { id: 'delete', label: 'Delete', key: 'D', title: 'Click a spot or label to delete it' },
+    { id: 'delete', label: 'Delete', key: 'D', title: 'Click a spot, label or grain to delete it' },
   ];
 </script>
 
@@ -1012,6 +1022,14 @@
               <tr><td>id</td><td class="mono small">{focusGrain.id}</td></tr>
             </tbody>
           </table>
+          {#if selGrains.includes(focusGrain.id)}
+            <div class="row">
+              {#if !focusGrain.artifact}
+                <button onclick={markArtifact} title="Unnumbered, left off print sheets and spots; Find again keeps the mark" data-testid="card-not-grain">Not a grain</button>
+              {/if}
+              <button class="danger" onclick={deleteGrains} title="Remove it from the project (⌘Z undoes)" data-testid="card-delete-grain">Delete grain</button>
+            </div>
+          {/if}
         {/if}
         </fieldset>
       </FloatingPanel>
