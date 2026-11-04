@@ -78,6 +78,14 @@ impl Session {
     pub fn preview(&mut self, area_id: &str, params: &str, level: usize) -> Result<Vec<u8>, JsError> {
         self.0.preview(area_id, params, level).map_err(err)
     }
+    /// The UI's grains of an area, for per-grain tone normalisation.
+    pub fn set_grains(&mut self, area_id: &str, grains: &str) -> Result<(), JsError> {
+        self.0.set_grains(area_id, grains).map_err(err)
+    }
+    /// One-click Auto: `params` with background leveling on and an automatic tone.
+    pub fn auto_params(&self, area_id: &str, params: &str) -> Result<String, JsError> {
+        self.0.auto_params(area_id, params).map_err(err)
+    }
     pub fn has_mosaic(&self, area_id: &str) -> bool {
         self.0.outputs.contains_key(area_id)
     }

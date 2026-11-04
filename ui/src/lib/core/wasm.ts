@@ -17,6 +17,7 @@ export class WasmCore implements Core {
   private loose: LooseSpec | null = null;
   private project: string | null = null;
   private stitched = new Map<string, AreaParams>();
+  private grains = new Map<string, Grain[]>();
   private restoring: Promise<void> | null = null;
 
   constructor() {
@@ -68,6 +69,7 @@ export class WasmCore implements Core {
       await this.call('open', opened);
       if (this.loose) await this.call('openLoose', { spec: this.loose });
       if (project) await this.call('loadProject', { json: project });
+      for (const [areaId, grains] of this.grains) await this.call('setGrains', { areaId, grains });
       for (const [areaId, params] of redo) await this.call('stitch', { areaId, params });
     })().finally(() => {
       this.restoring = null;
@@ -79,6 +81,7 @@ export class WasmCore implements Core {
     this.loose = null;
     this.project = null;
     this.stitched.clear();
+    this.grains.clear();
     return this.call('open', { name, files }, onProgress);
   }
 
@@ -136,6 +139,21 @@ export class WasmCore implements Core {
     this.stitched.set(areaId, params);
     this.project = await this.call<string>('projectJson');
     return r;
+  }
+
+  async autoParams(areaId: string, params: AreaParams): Promise<AreaParams> {
+    await this.ready();
+    return this.call('autoParams', { areaId, params });
+  }
+
+  async setGrains(areaId: string, grains: Grain[]): Promise<void> {
+    await this.ready();
+    this.grains.set(areaId, grains);
+    await this.call('setGrains', { areaId, grains });
+  }
+
+  async defaultParams(): Promise<AreaParams> {
+    return this.call('defaultParams');
   }
 
   async preview(areaId: string, params: AreaParams, level: number): Promise<RawImage> {

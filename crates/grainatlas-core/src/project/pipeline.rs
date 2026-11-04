@@ -9,6 +9,7 @@ use crate::image::Gray;
 use crate::mosaic::pyramid::{MosaicJson, Pyramid, TILE};
 use crate::mosaic::{self, Placement};
 use crate::readers::{Package, Tile};
+use crate::segment::Grain;
 
 /// Wall-clock milliseconds per step (filled by the caller's clock; the core has none on wasm).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -88,18 +89,24 @@ pub fn inputs(rec: &AreaRecord, tiles: &[Tile]) -> Inputs {
 
 /// Runs the whole pipeline on decoded tiles.
 pub fn run(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
+    run_with(rec, tiles, params, &[], ctl, clock, timings)
+}
+
+/// The whole pipeline, with the area's grains for per-grain tone normalisation.
+pub fn run_with(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, grains: &[Grain], ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
     let Inputs { imgs, meta } = inputs(rec, tiles);
     let t0 = clock();
     ctl.report("stitch", 0.0);
     let placement = mosaic::stitch(&meta, &imgs, &params.stitch, ctl)?;
     timings.steps.push(("stitch".into(), clock() - t0));
     ctl.check()?;
-    finish(rec, imgs, placement, params, ctl, clock, timings)
+    finish(rec, imgs, placement, params, grains, ctl, clock, timings)
 }
 
 /// Everything after the stitch, on a solved placement: photometric correction, blend, tone,
 /// pyramid. A change of correction, blending or tone re-runs only this (no re-stitch).
-pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, params: &AreaParams, ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
+#[allow(clippy::too_many_arguments)]
+pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, params: &AreaParams, grains: &[Grain], ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
     let mut t0 = clock();
     let mut lap = |name: &str, timings: &mut Timings| {
         let t = clock();
@@ -118,7 +125,7 @@ pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, param
     ctl.check()?;
 
     ctl.report("tone", 0.0);
-    let base = tone_base(&linear, &coverage, &params.tone);
+    let base = tone_base_with(&linear, &coverage, &params.tone, grains, rec.um_per_px());
     lap("tone", timings);
     let mosaic_json_sha = crate::util::sha256_hex(&base);
     let pyramid = Pyramid::build(linear.w, linear.h, base.clone());
@@ -142,18 +149,25 @@ pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, param
 
 /// The 8-bit base mosaic: percentile stretch over covered pixels, then CLAHE if enabled.
 pub fn tone_base(linear: &Gray, coverage: &[f32], p: &crate::photometric::ToneParams) -> Vec<u8> {
+    tone_base_with(linear, coverage, p, &[], 0.0)
+}
+
+/// `tone_base`, then per-grain normalisation inside the grain masks when enabled
+/// (`um_per_px` of `linear`).
+pub fn tone_base_with(linear: &Gray, coverage: &[f32], p: &crate::photometric::ToneParams, grains: &[Grain], um_per_px: f64) -> Vec<u8> {
     let mut g = linear.clone();
     crate::photometric::tone::stretch(&mut g, Some(coverage), p);
     if p.clahe {
         crate::photometric::tone::clahe(&mut g, p.clahe_tile, p.clahe_clip);
     }
+    crate::photometric::grain_norm::normalize(&mut g, grains, um_per_px, &p.grain_norm);
     g.to_u8()
 }
 
 /// A low-resolution render of the whole area (downsampled `factor` times) with `params`, for a
 /// live preview while a control moves: correction, blend and tone run on downsampled inputs and
 /// a scaled placement, with pixel-sized parameters scaled to match. Returns (w, h, 8-bit pixels).
-pub fn preview(small: &[Gray], placement: &Placement, params: &AreaParams, factor: usize) -> (usize, usize, Vec<u8>) {
+pub fn preview(small: &[Gray], placement: &Placement, params: &AreaParams, factor: usize, grains: &[Grain], um_per_px: f64) -> (usize, usize, Vec<u8>) {
     let k = factor.max(1);
     let pl = scale_placement(placement, small, k);
     let mut p = params.clone();
@@ -167,18 +181,18 @@ pub fn preview(small: &[Gray], placement: &Placement, params: &AreaParams, facto
     let Ok((linear, coverage)) = crate::blend::blend(&pl, corrected, &p.blend, fill, &Ctl::NONE) else {
         return (0, 0, Vec::new());
     };
-    let base = tone_base(&linear, &coverage, &p.tone);
+    let base = tone_base_with(&linear, &coverage, &p.tone, grains, um_per_px * k as f64);
     (linear.w, linear.h, base)
 }
 
 /// Tone-only preview from an existing output: the linear mosaic downsampled, then tone.
-pub fn preview_tone(out: &AreaOutput, tone: &crate::photometric::ToneParams, factor: usize) -> (usize, usize, Vec<u8>) {
+pub fn preview_tone(out: &AreaOutput, tone: &crate::photometric::ToneParams, factor: usize, grains: &[Grain], um_per_px: f64) -> (usize, usize, Vec<u8>) {
     let k = factor.max(1);
     let lin = out.linear.downsample(k);
     let cov = Gray { w: out.linear.w, h: out.linear.h, px: out.coverage.clone() }.downsample(k).px;
     let mut t = tone.clone();
     t.clahe_tile = (t.clahe_tile / k).max(8);
-    (lin.w, lin.h, tone_base(&lin, &cov, &t))
+    (lin.w, lin.h, tone_base_with(&lin, &cov, &t, grains, um_per_px * k as f64))
 }
 
 /// The placement of `pl` for inputs downsampled `k` times (sizes from the small images).
@@ -199,8 +213,8 @@ pub fn scale_placement(pl: &Placement, small: &[Gray], k: usize) -> Placement {
 }
 
 /// Rebuilds base, pyramid and mosaic.json after a tone change (no re-stitch).
-pub fn retone(rec: &mut AreaRecord, out: &mut AreaOutput, tone: &crate::photometric::ToneParams) {
-    out.base = tone_base(&out.linear, &out.coverage, tone);
+pub fn retone(rec: &mut AreaRecord, out: &mut AreaOutput, tone: &crate::photometric::ToneParams, grains: &[Grain]) {
+    out.base = tone_base_with(&out.linear, &out.coverage, tone, grains, rec.um_per_px());
     out.pyramid = Pyramid::build(out.linear.w, out.linear.h, out.base.clone());
     out.mosaic_json.sha256 = crate::util::sha256_hex(&out.base);
     out.mosaic_json.levels = out.pyramid.infos();

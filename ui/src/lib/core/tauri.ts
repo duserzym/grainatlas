@@ -70,6 +70,15 @@ export class TauriCore implements Core {
   async preview(areaId: string, params: AreaParams, level: number): Promise<RawImage> {
     return img(await invoke<ArrayBuffer>('preview', { areaId, params: JSON.stringify(params), level }))!;
   }
+  async autoParams(areaId: string, params: AreaParams): Promise<AreaParams> {
+    return JSON.parse(await invoke<string>('auto_params', { areaId, params: JSON.stringify(params) }));
+  }
+  async setGrains(areaId: string, grains: Grain[]): Promise<void> {
+    await invoke('set_grains', { areaId, grains: JSON.stringify(grains) });
+  }
+  async defaultParams(): Promise<AreaParams> {
+    return JSON.parse(await invoke<string>('default_params'));
+  }
   cancel() {
     invoke('cancel');
   }

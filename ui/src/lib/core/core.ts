@@ -31,6 +31,12 @@ export interface Core {
   recompute(areaId: string, params: AreaParams, onProgress?: (p: Progress) => void): Promise<StitchSummary>;
   /** The whole mosaic at pyramid `level` with `params`, for a live preview while a control moves. */
   preview(areaId: string, params: AreaParams, level: number): Promise<RawImage>;
+  /** One-click Auto: `params` with background leveling on and an automatic tone (stretch, CLAHE). */
+  autoParams(areaId: string, params: AreaParams): Promise<AreaParams>;
+  /** The UI's grains of an area, for per-grain tone normalisation (applies on the next recompute). */
+  setGrains(areaId: string, grains: Grain[]): Promise<void>;
+  /** The core's default parameters (Reset). */
+  defaultParams(): Promise<AreaParams>;
   /** Stops the running step (the area stays unstitched). */
   cancel(): void;
   pyramidTile(areaId: string, level: number, col: number, row: number): Promise<RawImage>;

@@ -98,6 +98,10 @@ class AppState {
    * instead of the tiles), else a backdrop under the fresh tiles while they load.
    */
   preview = $state<Record<string, { level: number; img: RawImage; over: number } | null>>({});
+  /** After Auto: the other parameter set for Before / After, and which one is shown. */
+  compare = $state<Record<string, { other: AreaParams; showing: 'before' | 'after' } | null>>({});
+  /** Areas with a live re-render pending or running (a change not yet in the full-resolution pyramid). */
+  liveBusy = $state<Record<string, boolean>>({});
   /** Full-resolution recomputes running in the background (not modal). */
   rendering = $state(0);
   /** Pyramid level the image view draws now (previews are not finer than this). */

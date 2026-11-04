@@ -45,11 +45,13 @@ pub struct Session {
     path: String,
     /// Downsampled stitch inputs per (area, factor), for live previews.
     small: BTreeMap<(String, usize), Vec<crate::image::Gray>>,
+    /// The UI's current grains per area (for per-grain tone normalisation).
+    grains: BTreeMap<String, Vec<Grain>>,
 }
 
 impl Session {
     pub fn new(name: &str) -> Session {
-        Session { mem: MemSource::new(name), src: None, pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new(), origin_files: Vec::new(), path: String::new(), small: BTreeMap::new() }
+        Session { mem: MemSource::new(name), src: None, pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new(), origin_files: Vec::new(), path: String::new(), small: BTreeMap::new(), grains: BTreeMap::new() }
     }
 
     pub fn add_file(&mut self, path: &str, bytes: Vec<u8>) {
@@ -162,7 +164,8 @@ impl Session {
         ctl.report("read", 0.0);
         let tiles = pipeline::read_tiles(pkg, ai, rec)?;
         timings.steps.push(("read".into(), clock() - t0));
-        let out = pipeline::run(rec, &tiles, &params, ctl, clock, &mut timings)?;
+        let grains = self.grains.get(area_id).map_or(&[][..], |g| g.as_slice());
+        let out = pipeline::run_with(rec, &tiles, &params, grains, ctl, clock, &mut timings)?;
         let summary = serde_json::json!({
             "mosaic": out.mosaic_json,
             "placement": out.placement,
@@ -203,7 +206,8 @@ impl Session {
             drop(tiles);
             timings.steps.push(("read".into(), clock() - t0));
             let placement = rec.placement.clone().expect("placement");
-            let out = pipeline::finish(rec, inputs.imgs, placement, &p, ctl, clock, &mut timings)?;
+            let grains = self.grains.get(area_id).map_or(&[][..], |g| g.as_slice());
+            let out = pipeline::finish(rec, inputs.imgs, placement, &p, grains, ctl, clock, &mut timings)?;
             self.outputs.insert(area_id.to_string(), out);
             self.work.remove(area_id);
         }
@@ -221,7 +225,7 @@ impl Session {
         let placement = rec.placement.clone().ok_or_else(|| Error::Invalid(format!("{area_id} is not stitched")))?;
         let o = self.out(area_id)?;
         if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
-            let (w, h, px) = pipeline::preview_tone(o, &p.tone, k);
+            let (w, h, px) = pipeline::preview_tone(o, &p.tone, k, self.grains_of(area_id), rec.um_per_px());
             return Ok(with_header(w, h, &px));
         }
         let key = (area_id.to_string(), k);
@@ -234,8 +238,45 @@ impl Session {
             self.small.retain(|(a, _), _| a != area_id);
             self.small.insert(key.clone(), small);
         }
-        let (w, h, px) = pipeline::preview(&self.small[&key], &placement, &p, k);
+        let (w, h, px) = pipeline::preview(&self.small[&key], &placement, &p, k, self.grains_of(area_id), rec.um_per_px());
         Ok(with_header(w, h, &px))
+    }
+
+    fn grains_of(&self, area_id: &str) -> &[Grain] {
+        self.grains.get(area_id).map_or(&[][..], |g| g.as_slice())
+    }
+
+    /// The UI's grains of an area (JSON list), used by per-grain tone normalisation. Pixels do
+    /// not change until the next recompute.
+    pub fn set_grains(&mut self, area_id: &str, grains: &str) -> Result<()> {
+        let gs: Vec<Grain> = if grains.trim().is_empty() { Vec::new() } else { serde_json::from_str(grains).map_err(invalid)? };
+        self.grains.insert(area_id.to_string(), gs);
+        Ok(())
+    }
+
+    /// Suggested one-click parameters for a stitched area: `params` with background leveling on
+    /// and the tone from `tone::auto` (see there), measured on the mosaic as these parameters
+    /// leave it (so Auto gives the same answer whatever was set before). The caller applies them
+    /// like any edit.
+    pub fn auto_params(&self, area_id: &str, params: &str) -> Result<String> {
+        let mut p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
+        p.photometric.background = true;
+        let o = self.out(area_id)?;
+        let rec = self.rec(area_id)?;
+        let tone = if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
+            crate::photometric::tone::auto(&o.linear, Some(&o.coverage), rec.um_per_px(), &p.tone)
+        } else {
+            // The current mosaic is corrected differently: render the linear mosaic Auto will give.
+            let pkg = self.pkg()?;
+            let ai = pkg.info().areas.iter().position(|a| a.id == area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
+            let mut r = rec.clone();
+            let placement = r.placement.clone().ok_or_else(|| Error::Invalid(format!("{area_id} is not stitched")))?;
+            let inputs = pipeline::inputs(&r, &pkg.tiles(ai)?);
+            let out = pipeline::finish(&mut r, inputs.imgs, placement, &p, &[], &Ctl::NONE, &|| 0.0, &mut Timings::default())?;
+            crate::photometric::tone::auto(&out.linear, Some(&out.coverage), rec.um_per_px(), &p.tone)
+        };
+        p.tone = tone;
+        serde_json::to_string(&p).map_err(invalid)
     }
 
     fn out(&self, area_id: &str) -> Result<&AreaOutput> {
@@ -263,7 +304,7 @@ impl Session {
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
         let rec = project.area_mut(area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
         let o = self.outputs.get_mut(area_id).ok_or_else(|| Error::Invalid("not stitched".into()))?;
-        pipeline::retone(rec, o, &tone);
+        pipeline::retone(rec, o, &tone, self.grains.get(area_id).map_or(&[][..], |g| g.as_slice()));
         serde_json::to_string(&o.mosaic_json).map_err(invalid)
     }
 

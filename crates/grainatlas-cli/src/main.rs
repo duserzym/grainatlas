@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use grainatlas_core::Ctl;
 use grainatlas_core::project::pipeline::{self, Timings};
+use grainatlas_core::project::session::Session;
 use grainatlas_core::project::{AreaParams, Project};
 use grainatlas_core::readers::{self, Package};
 use grainatlas_core::source::DirSource;
@@ -23,8 +24,9 @@ struct Cli {
 enum Cmd {
     /// Show the areas and tiles of a package without stitching.
     Info { folder: PathBuf },
-    /// Print `<area> <sha256>` of the base mosaic of every area with default parameters
-    /// (the native half of the wasm/native parity check).
+    /// Print `<area> <sha256>` of the base mosaic of every area with default parameters, then
+    /// `<area>+auto+grains <sha256>` after Auto tone and per-grain normalisation on the default
+    /// segmentation (the native half of the wasm/native parity check).
     Hash { folder: PathBuf },
     /// Stitch one area folder (or every area of a package folder) into a project folder.
     Stitch {
@@ -79,6 +81,15 @@ fn main() -> Result<()> {
                 let tiles = pipeline::read_tiles(pkg.as_ref(), ai, rec)?;
                 let o = pipeline::run(rec, &tiles, &AreaParams::default(), &Ctl::NONE, &|| 0.0, &mut Timings::default())?;
                 println!("{} {}", area.id, o.mosaic_json.sha256);
+            }
+            // The same steps as ui/scripts/wasm-hash.mjs, through the Session both front ends use.
+            let mut s = Session::new("hash");
+            s.open_source(Arc::new(DirSource::new(&folder)?), "hash", "1970-01-01T00:00:00Z")?;
+            for area in &pkg.info().areas {
+                if only.as_ref().is_some_and(|o| o != &area.id) {
+                    continue;
+                }
+                println!("{}+auto+grains {}", area.id, auto_grains_hash(&mut s, &area.id)?);
             }
         }
         Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, scale, sample } => {
@@ -211,6 +222,19 @@ fn open(folder: &Path) -> Result<(Box<dyn Package>, Option<String>, PathBuf)> {
     }
     let pkg = readers::open(Arc::new(DirSource::new(&folder)?))?;
     Ok((pkg, None, folder))
+}
+
+/// Stitch with defaults, find grains, apply Auto and per-grain normalisation (strength 0.8, area
+/// reference), and return the base mosaic's sha256.
+fn auto_grains_hash(s: &mut Session, id: &str) -> Result<String> {
+    let defaults = serde_json::to_string(&AreaParams::default())?;
+    s.stitch(id, &defaults, &Ctl::NONE, &|| 0.0)?;
+    let grains = s.segment(id, &serde_json::to_string(&grainatlas_core::segment::SegmentParams::default())?, "")?;
+    s.set_grains(id, &grains)?;
+    let mut p: AreaParams = serde_json::from_str(&s.auto_params(id, &defaults)?)?;
+    p.tone.grain_norm.enabled = true;
+    let r: serde_json::Value = serde_json::from_str(&s.recompute(id, &serde_json::to_string(&p)?, &Ctl::NONE, &|| 0.0)?)?;
+    Ok(r["mosaic"]["sha256"].as_str().unwrap_or_default().to_string())
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {

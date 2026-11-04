@@ -21,7 +21,11 @@ print layout, desktop). Phase 8 (laicpmsdb link, second instrument) is next.
    and a global least-squares solve; corrects per-tile gain and offset, beam
    exposure steps and background; blends with seams and multiband
    (photocraft-algo). The 4 x 8 example area (32 tiles, 28 Mpx) takes 0.6 s
-   natively and 8 s in the browser; see `docs/stitch_notes.md`.
+   natively and 8 s in the browser; see `docs/stitch_notes.md`. Tone is one
+   click (Auto: leveling, stretch, CLAHE from the histogram, with Before /
+   After and Reset) or manual; every control re-renders the mosaic live, and
+   after segmentation each grain's tone can be matched to the area or to one
+   grain.
 3. Finds and numbers grains (reading order, stable across re-runs), with
    GrabCut refinement and manual add, split, merge and renumber; scale bars
    per grain; grain table CSV.

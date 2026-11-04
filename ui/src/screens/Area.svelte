@@ -5,7 +5,7 @@
   // residual map. Every correction and tone control re-renders the mosaic live
   // (App.svelte watches the parameters; lib/actions.ts liveChanged).
   import { app } from '../lib/store.svelte';
-  import { changeScale, exportPng, scaleText, stitch, stitchAll } from '../lib/actions';
+  import { autoTone, changeScale, exportPng, resetTone, scaleText, stitch, stitchAll, toggleBeforeAfter } from '../lib/actions';
   import { rawToCanvas } from '../lib/files';
   import Histogram from '../components/Histogram.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
@@ -29,6 +29,8 @@
   const tone = $derived(app.areaId ? app.tone[app.areaId] : null);
   const summary = $derived(app.areaId ? app.stitched[app.areaId] : null);
   const placement = $derived(summary?.placement ?? null);
+  const compare = $derived(app.areaId ? (app.compare[app.areaId] ?? null) : null);
+  const areaGrains = $derived(app.areaId ? (app.grains[app.areaId] ?? []) : []);
   const umPerPx = $derived((meta?.pixel_size_nm ?? 1000) / 1000);
 
   // Tile frames in mosaic pixels: the solved placement if stitched, else the prior.
@@ -144,7 +146,7 @@
           <button onclick={() => (app.screen = 'canvas')} disabled={!summary} data-testid="to-canvas">Open canvas</button>
         </div>
       </div>
-      <div class="grid" data-testid="area-view">
+      <div class="grid" data-testid="area-view" data-live={app.liveBusy[meta.id] ? 'busy' : 'idle'}>
         {#if core}
           {#key `${meta.id}/${summary ? 'mosaic' : 'tiles'}`}
             <Viewer bind:this={viewer} {core} areaId={meta.id} mosaic={summary?.mosaic ?? null} extent={frame} {lut} version={app.pixelsVersion}
@@ -185,7 +187,7 @@
           <span>Pairs <b class="num">{placement?.pairs.filter((p) => p.used).length}/{placement?.pairs.length}</b> measured</span>
           <span>Residual RMS <b class="num" data-testid="rms">{fmt(placement?.rms_residual ?? 0)}</b> px, max <b class="num">{fmt(placement?.max_residual ?? 0)}</b> px</span>
           <span>Overlap RMS <b class="num">{fmt(summary.photometric.overlap_rms_before * 255, 1)} → {fmt(summary.photometric.overlap_rms_after * 255, 1)}</b> grey levels</span>
-          <span class="faint">{summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}</span>
+          <span class="faint" title={summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}>{summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}</span>
         </div>
       {/if}
     </section>
@@ -193,6 +195,11 @@
     <aside class="glass side">
       <section>
         <h3>Tone</h3>
+        <div class="row3">
+          <button class="primary" onclick={() => autoTone(meta.id)} disabled={!summary || !!app.busy} title="Background leveling on, stretch and CLAHE chosen from the histogram" data-testid="auto-tone">Auto</button>
+          <button aria-pressed={compare?.showing === 'before'} disabled={!compare} onclick={() => toggleBeforeAfter(meta.id)} title="Swap between the result of Auto and what was there before" data-testid="before-after">{compare?.showing === 'before' ? 'Before' : 'After'} ⇄</button>
+          <button onclick={() => resetTone(meta.id)} title="Correction, blending and tone back to the defaults" data-testid="reset-tone">Reset</button>
+        </div>
         <Histogram bins={hist} bind:black={tone.black} bind:white={tone.white} gamma={tone.gamma} />
         <div class="row3">
           <label class="field">Black <input type="number" step="0.01" min="0" max="1" bind:value={tone.black} /></label>
@@ -212,6 +219,25 @@
           </div>
         {/if}
         <button onclick={() => Object.assign(tone, { black: 0, white: 1, gamma: 1 })}>Reset levels</button>
+      </section>
+
+      <section>
+        <h3>Per-grain tone</h3>
+        <label class="check"><input type="checkbox" bind:checked={tone.grain_norm.enabled} disabled={!areaGrains.length && !tone.grain_norm.enabled} data-testid="grain-norm" /> equalize grains (median and spread)</label>
+        {#if !areaGrains.length}<p class="faint small">Find grains on the Canvas first; then each grain's tone can be matched to the area or to one grain.</p>{/if}
+        {#if tone.grain_norm.enabled}
+          <label class="field">Strength {Math.round(tone.grain_norm.strength * 100)} %
+            <input type="range" min="0" max="1" step="0.05" bind:value={tone.grain_norm.strength} data-testid="grain-norm-strength" /></label>
+          <div class="row3">
+            <label class="field">Match to
+              <select bind:value={tone.grain_norm.reference}>
+                <option value={null}>the area</option>
+                {#each areaGrains as g (g.id)}<option value={g.id}>grain {g.number}</option>{/each}
+              </select>
+            </label>
+            <label class="field">Soft edge µm <input type="number" min="0" step="0.5" bind:value={tone.grain_norm.feather_um} /></label>
+          </div>
+        {/if}
       </section>
 
       <section>
@@ -361,11 +387,17 @@
     left: var(--space-2);
     top: var(--space-2);
   }
+  /* One line per cell, the cell count fixed: the view keeps its size when the numbers change. */
   .stats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-4);
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    gap: var(--space-1) var(--space-4);
     font-size: 0.85rem;
+  }
+  .stats > span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .side section {
     display: grid;

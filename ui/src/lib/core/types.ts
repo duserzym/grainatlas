@@ -83,9 +83,13 @@ export interface Placement {
 
 export interface TileOverride { index: number; gain: number | null; offset: number | null; no_background?: boolean }
 
+/** Per-grain tone normalisation (core `photometric::grain_norm::GrainNorm`). */
+export interface GrainNorm { enabled: boolean; strength: number; reference: string | null; feather_um: number }
+
 export interface ToneParams {
   low_pct: number; high_pct: number; black: number; white: number; gamma: number;
   clahe: boolean; clahe_tile: number; clahe_clip: number;
+  grain_norm: GrainNorm;
 }
 
 export interface AreaParams {

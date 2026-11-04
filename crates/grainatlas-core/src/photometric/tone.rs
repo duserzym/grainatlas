@@ -22,12 +22,32 @@ pub struct ToneParams {
     /// CLAHE tile size (px) and clip limit (multiple of the mean bin count).
     pub clahe_tile: usize,
     pub clahe_clip: f32,
+    /// Per-grain normalisation (after segmentation).
+    pub grain_norm: super::grain_norm::GrainNorm,
 }
 
 impl Default for ToneParams {
     fn default() -> Self {
-        Self { low_pct: 0.1, high_pct: 99.9, black: 0.0, white: 1.0, gamma: 1.0, clahe: false, clahe_tile: 64, clahe_clip: 2.5 }
+        Self { low_pct: 0.1, high_pct: 99.9, black: 0.0, white: 1.0, gamma: 1.0, clahe: false, clahe_tile: 64, clahe_clip: 2.5, grain_norm: Default::default() }
     }
+}
+
+/// One-click tone that is hard to get wrong: a percentile stretch that clips almost nothing,
+/// CLAHE with a tile of about a grain (250 µm) and a clip limit (1.5 to 3) from the histogram of
+/// the stretched mosaic (low contrast → more enhancement, already spread → gentle), levels and gamma
+/// neutral. Per-grain normalisation is left as it was. `cov` marks pixels inside the mosaic.
+pub fn auto(linear: &Gray, cov: Option<&[f32]>, um_per_px: f64, current: &ToneParams) -> ToneParams {
+    let mut t = ToneParams { low_pct: 0.5, high_pct: 99.8, black: 0.0, white: 1.0, gamma: 1.0, clahe: true, grain_norm: current.grain_norm.clone(), ..ToneParams::default() };
+    let mut g = linear.clone();
+    stretch(&mut g, cov, &t);
+    let h = histogram(&g, cov, 256);
+    let spread = percentile(&h, 95.0) - percentile(&h, 5.0);
+    // 1.5 (already spread) to 3 (narrow); capped so a dark mount background's noise is not pumped up.
+    t.clahe_clip = ((1.5 + 1.5 * (1.0 - spread).powi(2)) * 4.0).round() / 4.0;
+    t.clahe_clip = t.clahe_clip.clamp(1.5, 3.0);
+    let tile = if um_per_px > 0.0 { 250.0 / um_per_px } else { 128.0 };
+    t.clahe_tile = (((tile / 16.0).round() as usize) * 16).clamp(64, 512);
+    t
 }
 
 /// 1024-bin histogram of covered pixels in 0..1.
