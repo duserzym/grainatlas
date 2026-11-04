@@ -1,0 +1,71 @@
+import { expect, test } from '@playwright/test';
+
+// Results overlay (WORKFLOW.md 5) from GET /v1/mounts/{id}/results. laicpmsdb does not serve it
+// yet: the fake laicpmsdb of `pnpm preview` answers with tests/fixtures/mount-results.json, whose
+// three spots are the fixture bundle's (two by atlas_spot_id, one by label only).
+
+const FAKE = 'http://localhost:4173/fake-laicpmsdb';
+const PROJECT = '01972c4e-0000-7000-8000-00000000a7a5';
+const SPOT2 = '01972c4e-0000-7000-8000-00000000a8a6';
+
+test('results of the linked mount in the spot panel and as a coloured layer', async ({ page, request, context }) => {
+  await request.post(`${FAKE}/_fake/reset`);
+  await page.goto('./');
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByTestId('token').fill('test-token');
+  await page.getByTestId('token').press('Tab');
+  await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}&spot=${SPOT2}`);
+  await expect(page.getByTestId('spot')).toHaveCount(3);
+
+  // The selected spot's values, its flag, and the link to its acquisition.
+  const box = page.getByTestId('spot-results');
+  await expect(box).toContainText('1488.9 ± 12.6 Ma');
+  await expect(box).toContainText('date_206pb238u_ma');
+  await expect(box).toContainText('discordant');
+  await expect(box).toContainText('conc_u_ppm');
+  await expect(box).toContainText('958');
+  await expect(box).toContainText('Zircon_03Nov26');
+
+  // The layer: all three spots coloured (one matched by label), one flagged, a legend.
+  await expect(page.getByTestId('result-dot')).toHaveCount(3);
+  await expect(page.getByTestId('result-flag')).toHaveCount(1);
+  const legend = page.getByTestId('results-legend');
+  await expect(legend).toContainText('Preferred date (Ma)');
+  await expect(legend).toContainText('1012');
+  await expect(legend).toContainText('2011');
+  await expect(legend).toContainText('3 of 3 spots');
+  const fills = await page.getByTestId('result-dot').evaluateAll((els) => els.map((e) => e.getAttribute('fill')));
+  expect(new Set(fills).size).toBe(3);
+
+  // Colour by a concentration; the status in the laicpmsdb tab; layer off.
+  await page.getByTestId('tab-link').click();
+  await expect(page.getByTestId('results-status')).toContainText('3 of 3 spots have results (preferred run)');
+  await page.getByTestId('colour-by').selectOption('conc_u_ppm');
+  await expect(legend).toContainText('conc_u_ppm (ppm)');
+  await expect(legend).toContainText('233');
+  await page.getByTestId('refresh-results').click();
+  await expect(page.getByTestId('results-status')).toContainText('3 of 3');
+  const st = await (await request.get(`${FAKE}/_fake/state`)).json();
+  const calls = st.requests.filter((r: { path: string }) => r.path.endsWith('/results'));
+  expect(calls.length).toBe(2);
+  expect(calls[0].auth).toBe('Bearer test-token');
+  expect(calls[0].path).toBe('/v1/mounts/01972c4e-0000-7000-8000-0000000000b1/results');
+
+  // Open acquisition: not inside UPb Studio, so laicpmsdb's own page opens.
+  const popup = context.waitForEvent('page');
+  await page.getByTestId('open-acquisition').click();
+  expect((await popup).url()).toBe(`${FAKE}/app/#/acquisitions/01972c4f-0000-7000-8000-0000000000a2`);
+
+  await page.getByText('show on the canvas').click();
+  await expect(page.getByTestId('result-dot')).toHaveCount(0);
+  await expect(legend).toHaveCount(0);
+});
+
+test('without a token the results say so and nothing is drawn', async ({ page, request }) => {
+  await request.post(`${FAKE}/_fake/reset`);
+  await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}`);
+  await expect(page.getByTestId('spot')).toHaveCount(3);
+  await page.getByTestId('tab-link').click();
+  await expect(page.getByTestId('results-status')).toContainText('401');
+  await expect(page.getByTestId('result-dot')).toHaveCount(0);
+});

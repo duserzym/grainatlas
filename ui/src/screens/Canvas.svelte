@@ -15,6 +15,8 @@
   import { mountSpots, postSpots, spotLink } from '../lib/laicpmsdb';
   import MountPicker from '../components/MountPicker.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
+  import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, refreshResults, valueOf, type SpotResult } from '../lib/results';
+  import { acquisitionPage } from '../lib/laicpmsdb';
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
@@ -58,6 +60,34 @@
     const id = app.selection[0] ?? hoverId;
     return app.spots.find((s) => s.id === id) ?? null;
   });
+  // ---- results overlay (GET /v1/mounts/{id}/results; memory only) ------------------------------
+  const mountId = $derived(app.project?.laicpmsdb.mount_id ?? null);
+  const resultsBy = $derived<Record<string, SpotResult>>(app.results?.data ? matchResults(app.spots, app.results.data) : {});
+  const metrics = $derived(app.results?.data ? metricsOf(app.results.data.spots) : ['date']);
+  const shown = $derived(spots.filter((s) => resultsBy[s.id]).map((s) => ({ s, r: resultsBy[s.id], v: valueOf(resultsBy[s.id], app.colourBy) })));
+  const range = $derived.by(() => {
+    const vs = shown.map((x) => x.v?.value).filter((v): v is number => v != null && Number.isFinite(v));
+    if (!vs.length) return null;
+    const lo = Math.min(...vs), hi = Math.max(...vs);
+    return { lo, hi, unit: shown.find((x) => x.v?.unit)?.v?.unit ?? '' };
+  });
+  const tOf = (v: number | undefined) => (range && v != null ? (range.hi > range.lo ? (v - range.lo) / (range.hi - range.lo) : 0.5) : 0);
+  // Fetch once per server and mount; Refresh fetches again.
+  $effect(() => {
+    const key = app.server && mountId ? `${app.server}|${mountId}` : null;
+    if (!key) {
+      if (app.results) app.results = null;
+      return;
+    }
+    if (app.results?.key !== key) void refreshResults();
+  });
+  async function openAcquisition(id: string) {
+    if (await openLink(`laicpmsdb://acquisition/${encodeURIComponent(id)}`)) return;
+    // Not inside UPb Studio: laicpmsdb's own page, when the server is known.
+    if (app.server) window.open(acquisitionPage(app.server, id), '_blank', 'noopener');
+    else app.notice = `Acquisition ${id}: open it in laicpmsdb (no server set here).`;
+  }
+
   const focusGrain = $derived(!focus ? (grains.find((g) => g.id === (selGrains[0] ?? hoverId)) ?? null) : null);
 
   $effect(() => {
@@ -743,6 +773,18 @@
                 <text class="gnum" class:sel={selGrains.includes(g.id)} transform="translate({g.bbox_um[0]} {g.bbox_um[1]}) rotate({-rotDeg}) scale({k})" dy="-3">{g.number}</text>
               {/each}
             {/if}
+            {#if app.layers.results && range}
+              <g class="results" data-testid="results-layer">
+                {#each shown as { s, r, v } (s.id)}
+                  {#if v}
+                    <circle class="rfill" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} fill={rampColor(tOf(v.value))} data-testid="result-dot" />
+                  {/if}
+                  {#if r.flags.length}
+                    <circle class="rflag" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2 + 4 * k} data-testid="result-flag"><title>{r.flags.join(', ')}</title></circle>
+                  {/if}
+                {/each}
+              </g>
+            {/if}
             {#if app.layers.spots}
               {#each spots as s (s.id)}
                 {@const sel = app.selection.includes(s.id)}
@@ -842,6 +884,23 @@
 
     {#if panel.open && (focus || focusGrain)}
       <FloatingPanel title={focus ? `Spot ${focus.name}` : `Grain ${focusGrain?.number}`} bind:x={panel.x} bind:y={panel.y} onclose={() => (panel.open = false)}>
+          {#if focus && resultsBy[focus.id]}
+          {@const r = resultsBy[focus.id]}
+          <div class="resbox" data-testid="spot-results">
+            <div class="resdate"><span class="num">{fmtValue(r.date)}</span> <span class="faint">{r.date?.metric ?? 'no date'} · 2σ</span></div>
+            {#if r.flags.length}<div class="flags">{#each r.flags as f (f)}<span class="flag">{f}</span>{/each}</div>{/if}
+            <table class="data kv">
+              <tbody>
+                {#each r.ratios as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v)}</td></tr>{/each}
+                {#each r.concentrations as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v, 0)}</td></tr>{/each}
+                {#if r.session_key}<tr><td>session</td><td>{r.session_key}</td></tr>{/if}
+              </tbody>
+            </table>
+            {#if r.acquisition_id}
+              <button class="linkout" onclick={() => openAcquisition(r.acquisition_id!)} disabled={false} data-testid="open-acquisition">Open acquisition</button>
+            {/if}
+          </div>
+        {/if}
         <fieldset class="plain" disabled={ro}>
         {#if focus}
           {@const st = stageOf(app.project?.areas.find((a) => a.id === focus.area_id) ?? null, focus.x_um, focus.y_um)}
@@ -898,7 +957,7 @@
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Read-only: published on {app.remote ? new URL(app.remote.server).host : ''}. “Edit a copy” in the top bar makes it yours to change.</p>{/if}
-      <fieldset class="plain tabbody" disabled={ro}>
+      <fieldset class="plain tabbody" disabled={ro && tab !== 'link'}>
       {#if tab === 'spots'}
         <div class="two">
           <label class="field">Sample <input type="text" value={sample} onchange={(e) => setSample(e.currentTarget.value)} data-testid="sample" /></label>
@@ -937,15 +996,15 @@
           </table>
         </div>
       {:else if tab === 'link'}
-        <MountPicker value={app.project?.laicpmsdb.mount_id ?? null} onchange={setMount} />
+        <MountPicker value={app.project?.laicpmsdb.mount_id ?? null} onchange={setMount} disabled={ro} />
         <p class="faint small-text">Server: {app.server ?? 'none — set it in Settings'}</p>
         <h3 class="sub">Atlas bundle</h3>
         <p class="faint small-text">The corrected mosaic as 256 px WebP tiles ({app.link.quality >= 100 ? 'lossless' : `near-lossless ${app.link.quality}`}), grains, spots, scale bars and this project, with a hash of every file. The raw SEM package is not included.</p>
         <div class="row">
-          <button onclick={() => saveAtlas(false)} disabled={core?.kind !== 'tauri' && !canSaveFolder()} title={core?.kind === 'tauri' || canSaveFolder() ? 'Write a <project id>.atlas folder' : 'This browser cannot write folders: save the zip'} data-testid="save-atlas-folder">Save folder</button>
-          <button onclick={() => saveAtlas(true)} data-testid="save-atlas-zip">Save zip</button>
-          <button class="primary" onclick={publish} disabled={!app.server || !app.project?.laicpmsdb.mount_id} data-testid="publish"
-            title={!app.server ? 'Set the laicpmsdb server in Settings' : !app.project?.laicpmsdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to laicpmsdb</button>
+          <button onclick={() => saveAtlas(false)} disabled={noPixels || (core?.kind !== 'tauri' && !canSaveFolder())} title={core?.kind === 'tauri' || canSaveFolder() ? 'Write a <project id>.atlas folder' : 'This browser cannot write folders: save the zip'} data-testid="save-atlas-folder">Save folder</button>
+          <button onclick={() => saveAtlas(true)} disabled={noPixels} title={noPixels ? 'Needs the stitched mosaic: open the raw package' : ''} data-testid="save-atlas-zip">Save zip</button>
+          <button class="primary" onclick={publish} disabled={noPixels || !app.server || !app.project?.laicpmsdb.mount_id} data-testid="publish"
+            title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the laicpmsdb server in Settings' : !app.project?.laicpmsdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to laicpmsdb</button>
         </div>
         {#if app.project?.laicpmsdb.published?.length}
           <table class="data" data-testid="published">
@@ -956,6 +1015,24 @@
               {/each}
             </tbody>
           </table>
+        {/if}
+        <h3 class="sub">Results</h3>
+        {#if !mountId || !app.server}
+          <p class="faint small-text">With a server and a linked mount, the dates, ratios, concentrations and flags laicpmsdb holds for these spots show here and on the canvas.</p>
+        {:else}
+          <p class="faint small-text" data-testid="results-status">
+            {#if app.results?.loading}Loading results…{:else if app.results?.error}{app.results.error}{:else if app.results?.data}{Object.keys(resultsBy).length} of {app.spots.length} spots have results ({app.results.data.run ?? 'preferred'} run){app.results.at ? `, fetched ${app.results.at.slice(11, 16)}` : ''}.{/if}
+          </p>
+          <div class="row">
+            <button onclick={() => refreshResults()} disabled={app.results?.loading} data-testid="refresh-results">Refresh results</button>
+            <label class="check"><input type="checkbox" bind:checked={app.layers.results} /> show on the canvas</label>
+          </div>
+          <label class="field">Colour by
+            <select bind:value={app.colourBy} data-testid="colour-by">
+              {#each metrics as m (m)}<option value={m}>{m === 'date' ? 'preferred date' : m}</option>{/each}
+            </select>
+          </label>
+          <p class="faint small-text">Read from laicpmsdb each time; nothing is stored in the project.</p>
         {/if}
       {:else if tab === 'refOverlay'}
         <p class="muted small-text">Lay a reference image over the mosaic (a photo of an annotated printout, a post-laser frame) and register it by clicking pairs of the same feature: first on the image, then on the mosaic. One pair moves it, two scale and rotate it, three or more fit an affine transform.</p>
@@ -1036,11 +1113,20 @@
           <label class="check"><input type="checkbox" bind:checked={app.layers.spots} /> spots</label>
           <label class="check"><input type="checkbox" bind:checked={app.layers.labels} /> names and labels</label>
           <label class="check"><input type="checkbox" bind:checked={app.layers.scalebars} /> scale bars</label>
+          <label class="check"><input type="checkbox" bind:checked={app.layers.results} /> results</label>
           <label class="check"><input type="checkbox" bind:checked={panel.open} /> info panel</label>
         </div>
       </details>
     </aside>
 
+    {#if app.layers.results && range}
+      <div class="glass legend" data-ui data-testid="results-legend">
+        <div class="lt">{app.colourBy === 'date' ? 'Preferred date' : app.colourBy}{range.unit ? ` (${range.unit})` : ''}</div>
+        <div class="ramp" style:background={RAMP_CSS}></div>
+        <div class="ends num"><span>{range.lo.toPrecision(4)}</span><span>{range.hi.toPrecision(4)}</span></div>
+        <div class="faint">{shown.length} of {spots.length} spots · <span class="flagkey"></span> flagged</div>
+      </div>
+    {/if}
     <div class="glass status" data-ui>
       {#if cursorUm}<span class="num">x {cursorUm[0].toFixed(1)} µm, y {cursorUm[1].toFixed(1)} µm</span>{/if}
       {#if snapHint}<span class="accent">snap: {snapHint.what}</span>{/if}
@@ -1159,6 +1245,71 @@
     padding: 0;
     min-width: 0;
     display: contents;
+  }
+  .legend {
+    position: absolute;
+    right: calc(21rem + 2 * var(--space-2));
+    bottom: 3rem;
+    padding: var(--space-2) var(--space-3);
+    font-size: 0.8rem;
+    display: grid;
+    gap: 2px;
+    min-width: 12rem;
+  }
+  .legend .ramp {
+    height: 10px;
+    border-radius: 3px;
+  }
+  .legend .ends {
+    display: flex;
+    justify-content: space-between;
+  }
+  .flagkey {
+    display: inline-block;
+    width: 0.8em;
+    height: 0.8em;
+    border-radius: 50%;
+    border: 2px dashed #ff6b6b;
+    vertical-align: middle;
+  }
+  .resbox {
+    display: grid;
+    gap: var(--space-1);
+    padding: var(--space-2);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--surface-2, transparent);
+    border: 1px solid var(--hairline);
+  }
+  .resdate {
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+  .resdate .faint {
+    font-size: 0.75rem;
+    font-weight: 400;
+  }
+  .flags {
+    display: flex;
+    gap: var(--space-1);
+    flex-wrap: wrap;
+  }
+  .flag {
+    font-size: 0.75rem;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid #ff6b6b;
+    color: #ff6b6b;
+  }
+  :global(.ga-root) .results .rfill {
+    stroke: none;
+    opacity: 0.85;
+  }
+  :global(.ga-root) .results .rflag {
+    fill: none;
+    stroke: #ff6b6b;
+    stroke-width: 2px;
+    stroke-dasharray: 3 2;
+    vector-effect: non-scaling-stroke;
   }
   .sub {
     font-size: 0.85rem;
