@@ -37,6 +37,9 @@ pub struct Project {
     pub areas: Vec<AreaRecord>,
     #[serde(default)]
     pub settings: Settings,
+    /// Laser stage registration per area and the spot-list adapter (phase 11).
+    #[serde(default, skip_serializing_if = "crate::laser::LaserRegistration::is_empty")]
+    pub laser: crate::laser::LaserRegistration,
     /// Keys this version does not know are kept verbatim.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -148,6 +151,7 @@ impl Project {
             laicpmsdb: LaicpmsdbLink::default(),
             areas: info.areas.iter().map(AreaRecord::from_meta).collect(),
             settings: Settings::default(),
+            laser: Default::default(),
             extra: BTreeMap::new(),
         }
     }

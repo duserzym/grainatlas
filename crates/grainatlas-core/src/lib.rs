@@ -10,6 +10,7 @@ pub mod atlas;
 pub mod blend;
 pub mod error;
 pub mod image;
+pub mod laser;
 pub mod layout;
 pub mod mosaic;
 pub mod photometric;

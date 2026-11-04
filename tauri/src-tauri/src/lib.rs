@@ -374,6 +374,26 @@ async fn save_atlas(app: AppHandle, state: State<'_, AppState>, project: String,
     Ok(Some(dir.display().to_string()))
 }
 
+#[tauri::command]
+fn laser_fit(fiducials: String, units: String) -> Res<String> {
+    session::laser_fit(&fiducials, &units).map_err(e)
+}
+
+#[tauri::command]
+fn laser_adapters() -> String {
+    session::laser_adapters()
+}
+
+#[tauri::command]
+fn set_laser(state: State<'_, AppState>, area_id: String, registration: String) -> Res<()> {
+    lock(&state).set_laser(&area_id, &registration).map_err(e)
+}
+
+#[tauri::command]
+fn laser_export(state: State<'_, AppState>, spots: String, area_id: String, adapter: String) -> Res<String> {
+    lock(&state).laser_export(&spots, &area_id, &adapter).map_err(e)
+}
+
 /// Drops the open package and project (a project opened from a server becomes a local copy).
 #[tauri::command]
 fn blank(state: State<'_, AppState>, name: String) {
@@ -472,6 +492,10 @@ pub fn run() {
             save_atlas,
             record_published,
             blank,
+            laser_fit,
+            laser_adapters,
+            set_laser,
+            laser_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running grainatlas");

@@ -14,6 +14,7 @@
   import { isHosted, open as openLink } from '@lab/bridge';
   import { mountSpots, postSpots, spotLink } from '../lib/laicpmsdb';
   import MountPicker from '../components/MountPicker.svelte';
+  import LaserPanel from '../components/LaserPanel.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
   import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, refreshResults, valueOf, type SpotResult } from '../lib/results';
   import { acquisitionPage } from '../lib/laicpmsdb';
@@ -25,7 +26,7 @@
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
   let cursorUm = $state<[number, number] | null>(null);
   let selGrains = $state<string[]>([]);
-  let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link'>('spots');
+  let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser'>('spots');
   let pairPending = $state<[number, number] | null>(null);
   let overlayInput = $state<HTMLInputElement>();
   let panel = $state({ x: 16, y: 150, open: true });
@@ -81,6 +82,7 @@
     }
     if (app.results?.key !== key) void refreshResults();
   });
+  const laserOf = (s: Spot) => app.project?.laser?.areas?.[s.area_id]?.fit ?? null;
   async function openAcquisition(id: string) {
     if (await openLink(`laicpmsdb://acquisition/${encodeURIComponent(id)}`)) return;
     // Not inside UPb Studio: laicpmsdb's own page, when the server is known.
@@ -918,6 +920,11 @@
             <tbody>
               <tr><td>grain</td><td>{focus.grain_number ?? '–'}</td></tr>
               <tr><td>sample</td><td>{focus.sample}</td></tr>
+              {#if laserOf(focus)}
+                {@const lf = laserOf(focus)!}
+                {@const lu = app.project?.laser?.areas?.[focus.area_id]?.units === 'um' ? 'µm' : 'mm'}
+                <tr><td>laser</td><td class="num" data-testid="panel-laser">{(lf.matrix[0] * focus.x_um + lf.matrix[2] * focus.y_um + lf.matrix[4]).toFixed(lu === 'mm' ? 4 : 1)}, {(lf.matrix[1] * focus.x_um + lf.matrix[3] * focus.y_um + lf.matrix[5]).toFixed(lu === 'mm' ? 4 : 1)} {lu}</td></tr>
+              {/if}
               <tr><td>stage</td><td class="num">{st ? `${(st[0] / 1e6).toFixed(4)}, ${(st[1] / 1e6).toFixed(4)} mm` : '–'}</td></tr>
               <tr><td>created</td><td>{focus.created.replace('T', ' ').slice(0, 19)} {focus.created_by}</td></tr>
               <tr><td>id</td><td class="mono small">{focus.id}</td></tr>
@@ -953,6 +960,7 @@
         <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
         <button aria-pressed={tab === 'grains'} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
         <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
+        <button aria-pressed={tab === 'laser'} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
         <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to laicpmsdb" data-testid="tab-link">laicpmsdb</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
@@ -995,6 +1003,8 @@
             </tbody>
           </table>
         </div>
+      {:else if tab === 'laser'}
+        <LaserPanel {core} {areaId} {spots} selected={app.selection} />
       {:else if tab === 'link'}
         <MountPicker value={app.project?.laicpmsdb.mount_id ?? null} onchange={setMount} disabled={ro} />
         <p class="faint small-text">Server: {app.server ?? 'none — set it in Settings'}</p>

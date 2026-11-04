@@ -5,7 +5,7 @@
 import { isHosted } from '@lab/bridge';
 
 import type {
-  AreaParams, BundleOptions, Grain, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
+  AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
 } from './types';
 
 export interface RawImage { w: number; h: number; data: Uint8Array }
@@ -67,6 +67,13 @@ export interface Core {
   atlasZip(project: Project, options: BundleOptions): Promise<Uint8Array>;
   /** Desktop: save the atlas bundle as a `<project_id>.atlas/` folder or a zip (native dialogs). */
   saveAtlas(project: Project, options: BundleOptions, zip: boolean): Promise<string | null>;
+  /** Laser registration from fiducials (stage units "mm" or "um"); throws when fewer than 3 or collinear. */
+  laserFit(fiducials: Fiducial[], units: string): Promise<LaserFit>;
+  laserAdapters(): Promise<LaserAdapterInfo[]>;
+  /** Stores an area's laser registration in the project (null removes it). */
+  setLaser(areaId: string, reg: AreaRegistration | null): Promise<void>;
+  /** The area's spot list in the laser software's format. */
+  laserExport(spots: Spot[], areaId: string, adapter?: string): Promise<string>;
   /** Records a publish in the project's laicpmsdb link. */
   recordPublished(p: Published): Promise<void>;
   /** Desktop: write the project folder (project.json, pyramid, masks, spots). */

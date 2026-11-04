@@ -198,6 +198,8 @@ export interface Project {
   created: string;
   package: { path: string; reader: string; name: string; kind: OpenKind; loose?: LooseSpec; files?: string[]; meta: Record<string, string> };
   laicpmsdb: { mount_id: string | null; published?: Published[] };
+  /** Laser stage registration per area (phase 11). */
+  laser?: { areas: Record<string, AreaRegistration> };
   areas: AreaRecord[];
   settings: Settings;
   [k: string]: unknown;
@@ -262,3 +264,36 @@ export interface BundleOptions {
   exported: string;
   nas_path: string | null;
 }
+
+/** A fiducial: a spot in mosaic µm and the laser stage reading there. */
+export interface Fiducial {
+  spot_id: string | null;
+  name: string;
+  x_um: number;
+  y_um: number;
+  x_stage: number | null;
+  y_stage: number | null;
+}
+
+/** Affine mosaic µm → laser stage ([a, b, c, d, e, f]: x' = a x + c y + e, y' = b x + d y + f). */
+export interface LaserFit {
+  matrix: [number, number, number, number, number, number];
+  residuals_um: number[];
+  rms_um: number;
+  max_um: number;
+  n: number;
+  exact: boolean;
+  warn: boolean;
+  scale: [number, number];
+  rotation_deg: number;
+  mirrored: boolean;
+}
+
+export interface AreaRegistration {
+  units: 'mm' | 'um';
+  adapter: string;
+  fiducials: Fiducial[];
+  fit: LaserFit | null;
+}
+
+export interface LaserAdapterInfo { id: string; label: string; extension: string }

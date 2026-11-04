@@ -64,6 +64,10 @@ const ops: Record<string, Handler> = {
   register: ({ pairs }) => JSON.parse(wasm.register(JSON.stringify(pairs))),
   atlasZip: ({ project, options }) => s().atlas_zip(JSON.stringify(project), JSON.stringify(options)),
   recordPublished: ({ published }) => s().record_published(JSON.stringify(published)),
+  laserFit: ({ fiducials, units }) => JSON.parse(wasm.laser_fit(JSON.stringify(fiducials), units)),
+  laserAdapters: () => JSON.parse(wasm.laser_adapters()),
+  setLaser: ({ areaId, reg }) => s().set_laser(areaId, reg ? JSON.stringify(reg) : ''),
+  laserExport: ({ spots, areaId, adapter }) => s().laser_export(JSON.stringify(spots), areaId, adapter ?? ''),
 };
 
 function s(): wasm.Session {
