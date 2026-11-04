@@ -30,18 +30,50 @@ export const DEFAULT_SETTINGS: Settings = {
   spot_presets_um: [15, 20, 25, 30, 35, 50],
   default_diameter_um: 25,
   user: '',
-  theme: 'dark',
   snap: true,
 };
 
 function loadSettings(): Settings {
   try {
     const s = localStorage.getItem('grainatlas.settings');
-    if (s) return { ...DEFAULT_SETTINGS, ...JSON.parse(s) };
+    if (s) {
+      // The theme lives under its own key now (older builds saved 'dark' here by default).
+      const { theme: _old, ...rest } = JSON.parse(s);
+      return { ...DEFAULT_SETTINGS, ...rest };
+    }
   } catch {
     /* storage may be unavailable */
   }
   return { ...DEFAULT_SETTINGS };
+}
+
+export type ThemePref = 'light' | 'dark' | 'system';
+const THEME_KEY = 'grainatlas.theme';
+
+/**
+ * The viewer's own theme choice: stored only when picked with the switch, so
+ * nothing stored means the default: light, or the system theme when hosted by
+ * UPb Studio (its module webviews cannot see the shell's choice yet). A
+ * `?theme=light|dark` in the address wins for this page load.
+ */
+function loadTheme(): { pref: ThemePref; stored: boolean } {
+  try {
+    const q = new URLSearchParams(location.search).get('theme');
+    if (q === 'light' || q === 'dark' || q === 'system') return { pref: q, stored: false };
+    const s = localStorage.getItem(THEME_KEY);
+    if (s === 'light' || s === 'dark' || s === 'system') return { pref: s, stored: true };
+  } catch {
+    /* storage may be unavailable */
+  }
+  return { pref: 'light', stored: false };
+}
+
+function systemDark() {
+  try {
+    return matchMedia('(prefers-color-scheme: dark)').matches;
+  } catch {
+    return false;
+  }
 }
 
 interface Snapshot {
@@ -76,6 +108,32 @@ class AppState {
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
   settings = $state<Settings>(loadSettings());
+  private theme0 = loadTheme();
+  themePref = $state<ThemePref>(this.theme0.pref);
+  /** False until the viewer picks a theme (or the address names one). */
+  themeChosen = $state(this.theme0.stored);
+  systemDark = $state(systemDark());
+  /** `data-theme` the UPb Studio shell put on this page's <html>, when hosted. */
+  hostTheme = $state<'light' | 'dark' | null>(null);
+  /** True when hosted: with nothing chosen here, follow the system like the shell's "system". */
+  hosted = $state(false);
+
+  /** The theme in effect: the shell's when it sets one, else the choice here, else light (system when hosted). */
+  get theme(): 'light' | 'dark' {
+    if (this.hostTheme) return this.hostTheme;
+    const pref = !this.themeChosen && this.hosted ? 'system' : this.themePref;
+    return pref === 'system' ? (this.systemDark ? 'dark' : 'light') : pref;
+  }
+
+  setTheme(p: ThemePref) {
+    this.themePref = p;
+    this.themeChosen = true;
+    try {
+      localStorage.setItem(THEME_KEY, p);
+    } catch {
+      /* ignore */
+    }
+  }
   /** A deep link (`?project=&spot=`) waiting for its package to be opened; `name` is the package, null when unknown here. */
   deepLink = $state<(DeepLink & { name: string | null }) | null>(null);
   /** Spot the canvas should center on once its view is ready (deep links). */

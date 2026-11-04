@@ -1,8 +1,9 @@
 /* grainatlas design tokens, copied from laicpmsdb/ui/src/app.css (glass design
    language) so the two apps look like one. Scoped to .ga-root, never :root, so
-   grainatlas can live in a tab of the unified shell (plan section 7). Dark is the
-   default (CL work); [data-theme='light'] switches. Glass is for chrome only;
-   the image surface is opaque. */
+   grainatlas can live in a tab of the unified shell (plan section 7). Light is the
+   default; [data-theme='dark'] switches (App.svelte resolves light, dark or
+   system, and the UPb Studio shell's theme when hosted). Glass is for chrome
+   only; the image surface is opaque and dark in both themes. */
 
 .ga-root {
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -20,56 +21,7 @@
   --space-8: 2rem;
   --motion: 180ms;
 
-  /* dark (default) */
-  --wallpaper:
-    radial-gradient(60rem 40rem at 10% -10%, #1d3263 0%, transparent 60%),
-    radial-gradient(50rem 36rem at 100% 0%, #0f4a45 0%, transparent 55%),
-    radial-gradient(40rem 30rem at 60% 110%, #3d1f4a 0%, transparent 60%),
-    #0c111b;
-  --bg: #0c111b;
-  --text: #e7ecf4;
-  --text-muted: #a3aec0;
-  --text-faint: #7a879b;
-  --accent: #7aa7ff;
-  --accent-contrast: #0c111b;
-  --accent-soft: rgba(122, 167, 255, 0.16);
-  --danger: #ff7b72;
-  --warning: #e3b341;
-  --ok: #56d364;
-  --glass: rgba(255, 255, 255, 0.08);
-  --glass-strong: rgba(22, 29, 43, 0.78);
-  --glass-border: rgba(255, 255, 255, 0.14);
-  --glass-edge: rgba(0, 0, 0, 0.4);
-  --glass-shadow: 0 12px 34px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4);
-  --hairline: rgba(255, 255, 255, 0.1);
-  --row-hover: rgba(122, 167, 255, 0.1);
-  --plot-bg: #121926;
-  --plot-grid: #263043;
-  --plot-axis: #a3aec0;
-  /* image surface and overlays (Okabe-Ito based, colour-blind safe) */
-  --image-bg: #05070b;
-  --ov-outline: #56b4e9;
-  --ov-number: #f0e442;
-  --ov-spot: #ff8c42;
-  --ov-spot-selected: #ffffff;
-  --ov-line: #3fd3a4;
-  --ov-raster: #cc79a7;
-  --ov-measure: #e3b341;
-  --ov-label: #e7ecf4;
-
-  color-scheme: dark;
-  position: relative;
-  min-height: 100vh;
-  font-family: var(--font-sans);
-  font-size: 15px;
-  color: var(--text);
-  background: var(--wallpaper);
-  background-color: var(--bg);
-  line-height: 1.45;
-  -webkit-font-smoothing: antialiased;
-}
-
-.ga-root[data-theme='light'] {
+  /* light (default) */
   --wallpaper:
     radial-gradient(60rem 40rem at 10% -10%, #c9dbff 0%, transparent 60%),
     radial-gradient(50rem 36rem at 100% 0%, #c7f0e6 0%, transparent 55%),
@@ -87,6 +39,8 @@
   --ok: #1d8a5b;
   --glass: rgba(255, 255, 255, 0.55);
   --glass-strong: rgba(255, 255, 255, 0.72);
+  /* chrome floating over the (dark) image surface: denser so text stays readable */
+  --glass-on-image: rgba(246, 248, 252, 0.9);
   --glass-border: rgba(255, 255, 255, 0.75);
   --glass-edge: rgba(23, 32, 46, 0.08);
   --glass-shadow: 0 10px 30px rgba(31, 45, 80, 0.12), 0 1px 2px rgba(31, 45, 80, 0.08);
@@ -95,11 +49,58 @@
   --plot-bg: #ffffff;
   --plot-grid: #e6e9ef;
   --plot-axis: #556172;
-  --image-bg: #0b0e14;
-  --ov-outline: #0072b2;
+  /* image surface and overlays: the same in both themes (SEM images are dark;
+     Okabe-Ito based, colour-blind safe) */
+  --image-bg: #05070b;
+  --ov-outline: #56b4e9;
   --ov-number: #f0e442;
-  --ov-spot: #d55e00;
+  --ov-spot: #ff8c42;
+  --ov-spot-selected: #ffffff;
+  --ov-line: #3fd3a4;
+  --ov-raster: #cc79a7;
+  --ov-measure: #e3b341;
+  --ov-label: #e7ecf4;
+
   color-scheme: light;
+  position: relative;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--text);
+  background: var(--wallpaper);
+  background-color: var(--bg);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.ga-root[data-theme='dark'] {
+  --wallpaper:
+    radial-gradient(60rem 40rem at 10% -10%, #1d3263 0%, transparent 60%),
+    radial-gradient(50rem 36rem at 100% 0%, #0f4a45 0%, transparent 55%),
+    radial-gradient(40rem 30rem at 60% 110%, #3d1f4a 0%, transparent 60%),
+    #0c111b;
+  --bg: #0c111b;
+  --text: #e7ecf4;
+  --text-muted: #a3aec0;
+  --text-faint: #7a879b;
+  --accent: #7aa7ff;
+  --accent-contrast: #0c111b;
+  --accent-soft: rgba(122, 167, 255, 0.16);
+  --danger: #ff7b72;
+  --warning: #e3b341;
+  --ok: #56d364;
+  --glass: rgba(255, 255, 255, 0.08);
+  --glass-strong: rgba(22, 29, 43, 0.78);
+  --glass-on-image: rgba(20, 27, 40, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-edge: rgba(0, 0, 0, 0.4);
+  --glass-shadow: 0 12px 34px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --hairline: rgba(255, 255, 255, 0.1);
+  --row-hover: rgba(122, 167, 255, 0.1);
+  --plot-bg: #121926;
+  --plot-grid: #263043;
+  --plot-axis: #a3aec0;
+  color-scheme: dark;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -125,6 +126,7 @@
   -webkit-backdrop-filter: blur(var(--blur)) saturate(140%);
   backdrop-filter: blur(var(--blur)) saturate(140%);
 }
+.ga-root .glass[data-ui] { background: var(--glass-on-image); }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .ga-root .glass { background: var(--glass-strong); }
 }
@@ -168,7 +170,7 @@
 .ga-root select option { background: var(--bg); color: var(--text); }
 .ga-root input[type='range'] { accent-color: var(--accent); width: 100%; }
 .ga-root input[type='checkbox'] { accent-color: var(--accent); }
-.ga-root label.field { display: grid; gap: 0.15rem; font-size: 0.82rem; color: var(--text-muted); }
+.ga-root label.field, .ga-root div.field { display: grid; gap: 0.15rem; font-size: 0.82rem; color: var(--text-muted); }
 .ga-root label.check { display: flex; gap: 0.4rem; align-items: center; font-size: 0.88rem; }
 
 .ga-root table.data { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
@@ -183,4 +185,5 @@
 .ga-root .pill.warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
 
 /* the host page: only the body margin, nothing else global */
-body:has(> #grainatlas) { margin: 0; background: #0c111b; }
+body:has(> #grainatlas) { margin: 0; background: #eef2f8; }
+body:has(.ga-root[data-theme='dark']) { background: #0c111b; }

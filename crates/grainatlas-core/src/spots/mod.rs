@@ -17,6 +17,7 @@ pub struct Settings {
     pub spot_presets_um: Vec<f64>,
     pub default_diameter_um: f64,
     pub user: String,
+    /// Kept for older projects; the theme is each viewer's own preference (UI storage).
     pub theme: String,
     pub snap: bool,
 }
@@ -28,7 +29,7 @@ impl Default for Settings {
             spot_presets_um: vec![15.0, 20.0, 25.0, 30.0, 35.0, 50.0],
             default_diameter_um: 25.0,
             user: String::new(),
-            theme: "dark".into(),
+            theme: "light".into(),
             snap: true,
         }
     }

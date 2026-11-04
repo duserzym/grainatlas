@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, type Screen } from './lib/store.svelte';
-  import { notify } from '@lab/bridge';
+  import { isHosted, notify } from '@lab/bridge';
   import { saveProject, startDeepLink } from './lib/actions';
   import Open from './screens/Open.svelte';
   import Area from './screens/Area.svelte';
@@ -10,6 +10,7 @@
   import Settings from './screens/Settings.svelte';
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
+  import ThemeSwitch from './components/ThemeSwitch.svelte';
 
   const screens: { id: Screen; label: string; key: string; needs?: 'pkg' | 'mosaic' }[] = [
     { id: 'open', label: 'Open', key: '1' },
@@ -53,7 +54,30 @@
     void notify({ type: 'grainatlas.spot.selected', project, spot: spot.id, name: spot.name });
   });
 
+  // Theme: the system setting, and the shell's data-theme on <html> when hosted.
+  function watchTheme() {
+    const mq = matchMedia('(prefers-color-scheme: dark)');
+    const sys = (e: MediaQueryListEvent) => (app.systemDark = e.matches);
+    mq.addEventListener('change', sys);
+    app.hosted = isHosted();
+    let mo: MutationObserver | null = null;
+    if (app.hosted) {
+      const read = () => {
+        const t = document.documentElement.getAttribute('data-theme');
+        app.hostTheme = t === 'light' || t === 'dark' ? t : null;
+      };
+      read();
+      mo = new MutationObserver(read);
+      mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
+    return () => {
+      mq.removeEventListener('change', sys);
+      mo?.disconnect();
+    };
+  }
+
   onMount(() => {
+    const unwatch = watchTheme();
     fromHash();
     void startDeepLink();
     window.addEventListener('hashchange', fromHash);
@@ -74,13 +98,14 @@
     };
     window.addEventListener('keydown', key);
     return () => {
+      unwatch();
       window.removeEventListener('hashchange', fromHash);
       window.removeEventListener('keydown', key);
     };
   });
 </script>
 
-<div class="ga-root app" data-theme={app.settings.theme}>
+<div class="ga-root app" data-theme={app.theme}>
   <header class="glass topbar">
     <div class="brand">
       <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M10 8l5-2 4 3-1 6-5 3-4-3z" fill="currentColor" /><path d="M19 17l4-1 3 4-2 5-4 0-2-4z" fill="currentColor" opacity="0.6" /><circle cx="13" cy="11" r="2" fill="none" stroke="var(--accent)" stroke-width="1.4" /></svg>
@@ -93,6 +118,7 @@
       {/each}
     </nav>
     <div class="right">
+      <ThemeSwitch />
       {#if app.project}
         <button onclick={saveProject} title="Save project (Cmd/Ctrl+S)">Save project</button>
       {/if}

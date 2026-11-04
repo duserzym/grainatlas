@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
+  import ThemeSwitch from '../components/ThemeSwitch.svelte';
 
   let presets = $state(app.settings.spot_presets_um.join(', '));
   function save() {
@@ -28,12 +29,8 @@
   </div>
   <div class="glass panel">
     <h2>Appearance</h2>
-    <label class="field">Theme
-      <select bind:value={app.settings.theme} onchange={save}>
-        <option value="dark">dark (default, CL work)</option>
-        <option value="light">light</option>
-      </select>
-    </label>
+    <div class="field">Theme <ThemeSwitch labels /></div>
+    <p class="faint small">Light by default; System follows the computer's setting. Images stay on a dark surface in both. {app.hostTheme ? `UPb Studio sets the theme here (${app.hostTheme}).` : app.hosted ? 'In UPb Studio, with nothing chosen here, grainatlas follows the system setting.' : ''}</p>
   </div>
   <div class="glass panel">
     <h2>Keyboard</h2>
