@@ -4,6 +4,11 @@
   import { app } from '../lib/store.svelte';
   import { download } from '../lib/files';
   import type { Grain, LayoutParams, LayoutResult, Spot, Label, ToneParams } from '../lib/core/types';
+  import PanZoom from '../lib/canvas/PanZoom.svelte';
+
+  /** Preview pixels per paper millimetre (zooming in re-rasterises the SVG page). */
+  const PX_PER_MM = 6;
+  let panzoom = $state<ReturnType<typeof PanZoom>>();
 
   const stitchedIds = $derived(Object.keys(app.stitched));
   let params = $state<LayoutParams>({
@@ -134,14 +139,21 @@
       </div>
     {/if}
   </aside>
-  <section class="preview">
+  <section class="preview" data-testid="layout-view">
     {#if result && urls[pageIdx]}
-      <div class="pager glass">
+      {@const pw = result.paper_mm[0] * PX_PER_MM}
+      {@const ph = result.paper_mm[1] * PX_PER_MM}
+      <PanZoom bind:this={panzoom} w={pw} h={ph} fitKey="{pageIdx}/{urls[pageIdx]}" label="Page preview">
+        <img class="page" src={urls[pageIdx]} alt="Page {pageIdx + 1}" width={pw} height={ph} data-testid="page" />
+      </PanZoom>
+      <div class="pager glass" data-ui>
         <button class="icon" disabled={pageIdx === 0} onclick={() => pageIdx--}>‹</button>
         <span class="num">{pageIdx + 1} / {result.pages.length}</span>
         <button class="icon" disabled={pageIdx >= result.pages.length - 1} onclick={() => pageIdx++}>›</button>
+        <button class="icon" title="Zoom out" onclick={() => panzoom?.zoomBy(1 / 1.5)}>−</button>
+        <button class="icon" title="Zoom in" onclick={() => panzoom?.zoomBy(1.5)}>+</button>
+        <button class="icon" title="Fit (double-click)" onclick={() => panzoom?.fitAll()}>Fit</button>
       </div>
-      <img class="page" src={urls[pageIdx]} alt="Page {pageIdx + 1}" style:aspect-ratio="{result.paper_mm[0]} / {result.paper_mm[1]}" data-testid="page" />
     {:else}
       <div class="glass panel empty"><p class="muted">Choose paper and scale, then lay out pages. Every page carries a 10 mm bar at paper scale and a µm bar at image scale, so the print scale can be checked with a ruler.</p></div>
     {/if}
@@ -178,24 +190,27 @@
   }
   .preview {
     position: relative;
-    overflow: auto;
+    overflow: hidden;
     display: grid;
     justify-items: center;
     align-content: start;
-    padding: var(--space-4);
-    gap: var(--space-2);
+    border-radius: var(--radius);
   }
   .page {
-    height: calc(100vh - 9rem);
-    max-width: 100%;
+    display: block;
     background: white;
     box-shadow: var(--glass-shadow);
   }
   .pager {
+    position: absolute;
+    top: var(--space-2);
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
     gap: var(--space-2);
     align-items: center;
     padding: var(--space-1) var(--space-3);
+    background: var(--glass-strong);
   }
   .empty {
     max-width: 32rem;
