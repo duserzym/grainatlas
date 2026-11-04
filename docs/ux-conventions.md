@@ -72,6 +72,14 @@ wheel keeps scrolling the page there, ctrl + wheel zooms.
 - The project records how it was opened (`package.kind`: `package`,
   `area`, `loose`, plus what was asked), so reopening rebuilds it the same
   way without asking again.
+- Hosted in UPb Studio, the shell opens anything dropped on its window (or
+  opened through the OS), routes it by content to the tab that reads it and
+  hands the files over (`@lab/bridge` `onOpenFiles`). The module opens the
+  set exactly like a drop on its own Open screen, the one-time scale dialog
+  included, and takes the files at once.
+- Opening never silently discards work: when a project is already open,
+  one dialog (Open, Cancel) asks before the new set replaces it. Cancel is
+  the default button, so Enter keeps the open project.
 
 ## 5. The scale is always known, or asked once
 
