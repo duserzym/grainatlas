@@ -383,6 +383,29 @@ What exists (2026-11-03, ADR-0005):
   (`tauri-plugin-deep-link`, single-instance on Windows; needs a bundled build
   to test and a rule for machines where the shell also claims the scheme).
 
+Workflow v1 (2026-11-03, `../upbstudio/docs/WORKFLOW.md`): grainatlas is
+stages 2 and 3 of the lab workflow and gains three hand-offs:
+
+- **Publish an atlas bundle** (section 3.1 of the contract): the corrected
+  mosaic as a tiled WebP pyramid, `grains.geojson`, `spots.json`,
+  `scalebars.json`, `project.json` and `atlas.json` with hashes, posted to
+  `POST /v1/mounts/{id}/atlas` with the bridge token (hosted) or saved as a
+  `.atlas` folder to hand over by file (standalone). The raw SEM package is
+  never uploaded. **Open from server**: `?server=<base>&project=<id>` loads
+  a published bundle read-only from `/atlas/projects/<id>/`, which is how
+  laicpmsdb's mount page and any user's click on a spot reach the images;
+  re-publishing is append-only.
+- **Results overlay**: when a project is linked to a mount and a server is
+  known, the spot panel and a results layer show the preferred date with
+  2σ, key ratios, concentrations and flags from `GET /v1/mounts/{id}/results`,
+  with a link to the acquisition; nothing is stored in the project.
+- **Laser registration and spot list**: a three-point (or more, least
+  squares) affine from mosaic micrometres to the laser stage, entered from
+  the laser's readout on fiducials; export of the spot list in a generic CSV
+  (name, x, y stage units, diameter, kind) plus one adapter per laser
+  control software, added when the lab names its software and supplies an
+  example file. Spot names are the labels the operator types into Qtegra.
+
 ## 8. Roadmap
 
 | Phase | Scope | Done when |
@@ -396,6 +419,9 @@ What exists (2026-11-03, ADR-0005):
 | 6 | print layout | Tabloid and Letter pages with auto packing, PDF export, cut marks |
 | 7 | desktop | Tauri 2 build on macOS and Windows using the native core; file dialogs; drag and drop of a package folder |
 | 8 | link | mount id, spot sync to laicpmsdb, deep links; readers for a second instrument when example files arrive |
+| 9 | publish | atlas bundle export (`.atlas` folder, zip) with hashes; publish over the bridge token; open-from-server mode on `/atlas/projects/<id>/`; the fixture mount round-trips through a local laicpmsdb |
+| 10 | results | results layer and spot-panel values from `GET /v1/mounts/{id}/results`, preferred run by default, link to the acquisition |
+| 11 | laser | stage registration from fiducials, generic spot-list CSV, one adapter per named laser software with an example file |
 
 ## 9. Verification
 
