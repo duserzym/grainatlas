@@ -50,6 +50,8 @@ export interface Remote {
   /** laicpmsdb serves bundles to a bearer token or a signed read-only `access` token (12 h). */
   token: string | null;
   access: string | null;
+  /** The mount the server says the project is published on (`?mount=`), when given. */
+  mount: string | null;
 }
 
 /** URL and headers for one file of the remote bundle. */
@@ -101,7 +103,7 @@ function mosaicOf(a: AtlasArea, tile: number): MosaicJson {
 }
 
 /** Loads a published bundle and shows it on the Canvas, read-only; selects `spot` when given. */
-export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null) {
+export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null) {
   const server = normalizeServer(serverIn);
   if (!server) {
     app.error = `Not a server address: ${serverIn}`;
@@ -117,7 +119,7 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
     return { atlas, project };
   });
   if (!r) return false;
-  const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true, token, access };
+  const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true, token, access, mount };
   app.remote = remote;
   app.remoteTiles = new RemoteTiles(remote);
   app.pkg = null;

@@ -109,7 +109,7 @@ export function createFake() {
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain');
-    state.requests.push({ method: req.method, path, auth: req.headers.authorization ?? null });
+    state.requests.push({ method: req.method, path, auth: req.headers.authorization ?? null, access: url.searchParams.has('access') });
     let m;
     try {
       if (path === '/_fake/state') return send(res, 200, { published: state.published, spots: state.spots, requests: state.requests, atlases: [...state.atlases.keys()] });
@@ -172,7 +172,11 @@ export function createFake() {
         return send(res, 201, rec);
       }
       if ((m = path.match(/^\/v1\/mounts\/([^/]+)\/results$/)) && req.method === 'GET') {
-        if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
+        // As laicpmsdb 1bf6ad4: the viewer's access token reads the results of the mount its
+        // project is published on (the fixture's), 404 for any other mount.
+        const viaAccess = !authed(req) && url.searchParams.get('access') === ACCESS;
+        if (!authed(req) && !viaAccess) return send(res, 401, { detail: 'Unauthorized' });
+        if (viaAccess && m[1] !== MOUNTS[0].id) return send(res, 404, { detail: 'Not Found' });
         const r = JSON.parse(readFileSync(join(FIXTURES, 'mount-results.json'), 'utf8'));
         return send(res, 200, { ...r, mount_id: m[1] });
       }

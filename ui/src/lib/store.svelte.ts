@@ -208,6 +208,12 @@ class AppState {
     return this.pkg?.areas.find((a) => a.id === this.areaId) ?? null;
   }
 
+  /** The mount whose results are shown: the one the server named for a published bundle
+   * (`?mount=`), else the project's link. */
+  get mountId(): string | null {
+    return this.remote?.mount ?? this.project?.laicpmsdb.mount_id ?? null;
+  }
+
   /** The laicpmsdb server in effect, or null. */
   get server(): string | null {
     return resolveServer(this.serverOverride, this.link.server);

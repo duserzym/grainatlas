@@ -122,7 +122,9 @@ All of this is optional; without a server grainatlas works as before.
   server answers, else it is typed. `grainatlas atlas <package> --out <dir or
   .zip>` writes the same bundle from the command line, and native and browser
   builds write identical bytes (`make parity`).
-- **Open from server**: `index.html?server=<base>&project=<id>[&spot=<id>]`,
+- **Open from server**: `index.html?server=<base>&project=<id>[&spot=<id>]`
+  (`&mount=<id>&access=<token>` in laicpmsdb's own viewer links, enough for
+  the files and the mount's results without signing in),
   or Settings → "Open a published project", reads
   `<base>/atlas/projects/<id>/` and shows the bundle read-only (tiles straight
   from the server, nothing stitched). **Edit a copy** makes it a local
