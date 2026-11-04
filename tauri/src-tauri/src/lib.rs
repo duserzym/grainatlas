@@ -12,7 +12,9 @@ use grainatlas_core::project::session::{self, Session};
 use grainatlas_core::source::{DirSource, FileListSource, Source};
 use serde::Serialize;
 use tauri::ipc::{InvokeBody, Request, Response};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+
+mod geometry;
 use tauri_plugin_dialog::DialogExt;
 
 struct AppState {
@@ -374,6 +376,12 @@ async fn save_atlas(app: AppHandle, state: State<'_, AppState>, project: String,
     Ok(Some(dir.display().to_string()))
 }
 
+/// Settings → Reset layout: the window back to its default size, centred.
+#[tauri::command]
+fn reset_window(window: tauri::WebviewWindow) {
+    geometry::reset(&window);
+}
+
 #[tauri::command]
 fn laser_fit(fiducials: String, units: String) -> Res<String> {
     session::laser_fit(&fiducials, &units).map_err(e)
@@ -451,6 +459,17 @@ fn startup() -> Startup {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            if let Some(w) = app.get_webview_window("main") {
+                geometry::restore(&w);
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::CloseRequested { .. }) {
+                geometry::save(window);
+            }
+        })
         .manage(AppState { session: Mutex::new(Session::new("package")), cancel: Arc::new(AtomicBool::new(false)), package_path: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             startup,
@@ -496,6 +515,7 @@ pub fn run() {
             laser_adapters,
             set_laser,
             laser_export,
+            reset_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running grainatlas");

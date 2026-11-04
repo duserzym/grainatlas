@@ -30,7 +30,8 @@
   let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser'>('spots');
   let pairPending = $state<[number, number] | null>(null);
   let overlayInput = $state<HTMLInputElement>();
-  let panel = $state({ x: 16, y: 150, open: true });
+  // Open state per visit; the position is remembered (app.layout, ux-conventions rule 7).
+  let panel = $state({ open: true });
   let hoverId = $state<string | null>(null);
   let snapHint = $state<SnapTarget | null>(null);
   // In-progress gestures.
@@ -738,7 +739,7 @@
 <svelte:window onkeydown={key} />
 
 {#if core && tiles && areaId && mosaic}
-  <div class="canvas">
+  <div class="canvas" class:folded={app.layout.sideCollapsed}>
     {#key areaId}
       <Viewer bind:this={viewer} bind:view core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
         preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} canNudge={() => !selSpots.length}
@@ -886,7 +887,7 @@
     </div>
 
     {#if panel.open && (focus || focusGrain)}
-      <FloatingPanel title={focus ? `Spot ${focus.name}` : `Grain ${focusGrain?.number}`} bind:x={panel.x} bind:y={panel.y} onclose={() => (panel.open = false)}>
+      <FloatingPanel title={focus ? `Spot ${focus.name}` : `Grain ${focusGrain?.number}`} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}>
           {#if focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
           <div class="resbox" data-testid="spot-results">
@@ -956,6 +957,11 @@
       </FloatingPanel>
     {/if}
 
+    {#if app.layout.sideCollapsed}
+      <aside class="glass side-mini" data-ui>
+        <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" data-testid="side-expand">«</button>
+      </aside>
+    {:else}
     <aside class="glass side" data-ui>
       <div class="tabs">
         <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
@@ -963,6 +969,7 @@
         <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
         <button aria-pressed={tab === 'laser'} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
         <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to laicpmsdb" data-testid="tab-link">laicpmsdb</button>
+        <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away (more room for the image)" aria-label="Fold the side panel" data-testid="side-collapse">»</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Read-only: published on {app.remote ? new URL(app.remote.server).host : ''}. “Edit a copy” in the top bar makes it yours to change.</p>{/if}
@@ -1116,7 +1123,7 @@
         </div>
       {/if}
       </fieldset>
-      <details class="layers">
+      <details class="layers" open={app.layout.layersOpen} ontoggle={(e) => { app.layout.layersOpen = e.currentTarget.open; app.saveLayout(); }}>
         <summary>Layers</summary>
         <div class="two">
           <label class="check"><input type="checkbox" bind:checked={app.layers.outlines} /> outlines</label>
@@ -1129,6 +1136,7 @@
         </div>
       </details>
     </aside>
+    {/if}
 
     {#if app.layers.results && range}
       <div class="glass legend" data-ui data-testid="results-legend">
@@ -1164,6 +1172,21 @@
     gap: var(--space-1);
     padding: var(--space-2);
     align-items: center;
+  }
+  .folded .toolbar {
+    max-width: calc(100% - 5rem);
+  }
+  .folded .legend {
+    right: calc(3rem + 2 * var(--space-2));
+  }
+  .side-mini {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    padding: var(--space-1);
+  }
+  .fold {
+    margin-left: auto;
   }
   .sep {
     width: 1px;
@@ -1256,6 +1279,20 @@
     padding: 0;
     min-width: 0;
     display: contents;
+  }
+  /* The side panel's tab body scrolls on its own, so the tabs and Layers stay in reach on a
+     laptop screen; lists inside keep at least a few rows. */
+  fieldset.tabbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+  fieldset.tabbody .list {
+    flex: 1 0 auto;
+    max-height: 60vh;
   }
   .legend {
     position: absolute;
