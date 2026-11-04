@@ -1,15 +1,19 @@
-//! Second-pass segmentation (Boise SEM run, 2026-11-03): the deviation from the
-//! local epoxy level, CL-dark (metamict) grains that `Polarity::Bright` misses,
-//! epoxy bubbles, tile-seam slivers and bright exposure-step tile blocks.
+//! Second pass and artifact classifier (Boise SEM runs, 2026-11-03 and -04): the
+//! deviation from the local epoxy level, CL-dark (metamict) grains that
+//! `Polarity::Bright` misses, and the artifacts of TM4000 CL mounts.
 //!
-//! The primary segmenter stays as it is. [`analyse`] measures the mosaic once;
-//! [`reject`] removes primary grains that are bubbles, bubble halos, slivers or
-//! tile blocks; [`supplement`] finds grains of either polarity relative to the
-//! local epoxy level, and the caller adds those that overlap no primary grain.
+//! The primary segmenter stays as it is. [`analyse`] measures the mosaic once and
+//! finds bubbles; [`clean_mask`] keeps bubble halos out of the bright mask and cuts
+//! seam lines that bridge grains; [`merge_footprints`] adds the grains of either
+//! polarity and joins the fragments of one grain into its whole footprint;
+//! [`classify`] flags artifacts with a reason (it never deletes them), splitting
+//! oversized blobs back into their parts first. Sizes scale with the area's median
+//! grain size ([`reference_size`], module [`rel`]): the rules were tuned at about
+//! 110 um (S mount) and 175 um (L mount).
 
 use serde::{Deserialize, Serialize};
 
-use super::{Grain, SegmentParams, WorkImage, morph, shape, watershed};
+use super::{Artifact, Grain, Polarity, SegmentParams, WorkImage, morph, shape, watershed};
 use crate::image::Gray;
 use crate::photometric::background::gaussian_blur;
 
@@ -42,10 +46,80 @@ pub struct Analysis {
     pub t_bright: f32,
     pub t_dark: f32,
     pub bubbles: Vec<Bubble>,
+    /// The bubbles as artifact detections (shown, never printed).
+    #[serde(skip)]
+    pub bubble_grains: Vec<Grain>,
     #[serde(skip)]
     pub dev: Option<Gray>,
     #[serde(skip)]
     pub dark: Vec<bool>,
+    /// Bubble cores (work pixels).
+    #[serde(skip)]
+    pub bubble_mask: Vec<bool>,
+}
+
+/// Size rules relative to the reference grain size `r` (um), as tuned on the Boise mounts.
+pub mod rel {
+    /// Largest bubble: 75 um at r = 110 (S mount), 115 um at r = 175 (L mount).
+    pub fn bubble_max(r: f64) -> f64 {
+        (0.68 * r).clamp(40.0, 160.0)
+    }
+    /// Seam opening radius: 4 um on S, 6.6 um on L.
+    pub fn seam_open(r: f64) -> f64 {
+        (0.037 * r).clamp(2.5, 9.0)
+    }
+    /// Oversized blob: 330 um on S, 500 um on L.
+    pub fn block_split(r: f64) -> f64 {
+        (3.0 * r).max(260.0)
+    }
+    /// A weakly contrasted region larger than this is a tile block.
+    pub fn block_weak(r: f64) -> f64 {
+        (2.4 * r).max(200.0)
+    }
+    /// Specks: under 22 um on S, 35 um on L (at least the 20 um minimum).
+    pub fn speck(r: f64) -> f64 {
+        (0.21 * r).max(22.0)
+    }
+    /// A speck this far from every grain is off the row.
+    pub fn speck_far(r: f64) -> f64 {
+        (1.8 * r).max(200.0)
+    }
+    /// Halo crescents: under 50 um on S.
+    pub fn crescent(r: f64) -> f64 {
+        (0.45 * r).max(40.0)
+    }
+    /// Fragments of one grain: under 35 um on S.
+    pub fn fragment(r: f64) -> f64 {
+        (0.32 * r).max(30.0)
+    }
+    /// Largest radius of a bubble rim arc.
+    pub fn rim_max(r: f64) -> f64 {
+        (0.8 * r).max(60.0)
+    }
+}
+
+/// Reference grain size of an area: the median eq. diameter of its grains over 35 um that are
+/// not seam slivers, each weighted by its eq. diameter so fragments of zoned grains count for
+/// less, leaving out blobs over three times the upper quartile (tile blocks). 110 um with fewer
+/// than five grains.
+pub fn reference_size(grains: &[Grain]) -> f64 {
+    let mut e: Vec<f64> = grains.iter().filter(|g| g.is_grain() && g.eq_diameter_um >= 35.0 && g.minor_um >= 15.0).map(|g| g.eq_diameter_um).collect();
+    if e.len() < 5 {
+        return 110.0;
+    }
+    e.sort_by(f64::total_cmp);
+    // Tile blocks: over three times the upper quartile.
+    let cap = 3.0 * e[(e.len() * 3) / 4];
+    e.retain(|&d| d <= cap);
+    let total: f64 = e.iter().sum();
+    let mut acc = 0.0;
+    for d in &e {
+        acc += d;
+        if acc >= total / 2.0 {
+            return *d;
+        }
+    }
+    e[e.len() / 2]
 }
 
 /// Convex hull (monotone chain), counter-clockwise, without the closing point.
@@ -192,9 +266,11 @@ fn eqd_px(um: f64, k: f64) -> f64 {
     um / k
 }
 
-/// Measures the deviation from the local epoxy level and finds bubbles. Values are normalised
-/// first (covered p1 → 0, p99.5 → 1) so the thresholds do not depend on the tone.
-pub fn analyse(w: &WorkImage, p: &SegmentParams) -> Analysis {
+/// Measures the deviation from the local epoxy level and finds bubbles (round dark blobs from
+/// 12 um to [`rel::bubble_max`] of the reference size `r`; not in transmitted light, where the
+/// grains are the dark blobs). Values are normalised first (covered p1 → 0, p99.5 → 1) so the
+/// thresholds do not depend on the tone.
+pub fn analyse(w: &WorkImage, p: &SegmentParams, r: f64) -> Analysis {
     let k = w.um_per_px;
     let covered: Vec<f32> = w.img.px.iter().zip(&w.cov).filter(|(_, c)| **c).map(|(v, _)| *v).step_by(3).collect();
     if covered.len() < 64 {
@@ -217,17 +293,88 @@ pub fn analyse(w: &WorkImage, p: &SegmentParams) -> Analysis {
     let mut dark: Vec<bool> = (0..iw * ih).map(|i| w.cov[i] && dev.px[i] < -td.min((p.dark_rel * bg.px[i]).max(14.0 / 255.0))).collect();
     dark = morph::open(&dark, iw, ih, 2);
     let mut bubbles = Vec::new();
-    if p.reject_bubbles {
+    let mut bubble_grains = Vec::new();
+    let mut bubble_mask = vec![false; iw * ih];
+    if p.flag_bubbles && p.polarity != Polarity::Dark {
         let (lab, counts) = morph::components(&dark, iw, ih);
         let gs = grains_of_labels(&lab, &counts, iw, ih, w, eqd_px(12.0, k).powi(2) * std::f64::consts::PI / 4.0, 0.8);
-        for (_, g) in gs {
+        let max = rel::bubble_max(r);
+        let mut is_bubble = vec![false; counts.len().max(1)];
+        for (l, mut g) in gs {
             let s = shape_stats(&g, k);
-            if (12.0..=75.0).contains(&g.eq_diameter_um) && s.circularity > 0.72 && s.solidity > 0.88 && s.aspect < 1.35 {
+            let round = s.circularity > 0.72 && s.solidity > 0.88 && s.aspect < 1.35;
+            // Larger round dark blobs (up to 1.2 x the reference size) are bubbles when a bright
+            // halo rings them; a CL-dark zircon sits in plain epoxy.
+            let haloed = || g.eq_diameter_um <= 1.2 * r && ring_mean(&dev, &g, k, 6.0) > 0.5 * t_bright as f64;
+            if round && g.eq_diameter_um >= 12.0 && (g.eq_diameter_um <= max || haloed()) {
                 bubbles.push(Bubble { c: g.centroid_um, r: g.eq_diameter_um / 2.0 });
+                if (l as usize) < is_bubble.len() {
+                    is_bubble[l as usize] = true;
+                }
+                g.artifact = Some(Artifact::Bubble);
+                bubble_grains.push(g);
+            }
+        }
+        for (m, &l) in bubble_mask.iter_mut().zip(&lab) {
+            *m = l > 0 && is_bubble[l as usize];
+        }
+    }
+    Analysis { sigma, t_bright, t_dark: td, bubbles, bubble_grains, dev: Some(dev), dark, bubble_mask }
+}
+
+/// Mean of `img` in a ring `width_um` wide just outside a grain's outline.
+fn ring_mean(img: &Gray, g: &Grain, k: f64, width_um: f64) -> f64 {
+    let d = ((width_um / k).round() as usize).max(1);
+    let (mask, bw, bh, o) = shape::rasterize(g, k, d + 1);
+    let grown = morph::dilate(&mask, bw, bh, d);
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for y in 0..bh {
+        for x in 0..bw {
+            let i = y * bw + x;
+            let (gx, gy) = (o.0 + x, o.1 + y);
+            if grown[i] && !mask[i] && gx < img.w && gy < img.h {
+                sum += img.px[gy * img.w + gx] as f64;
+                n += 1;
             }
         }
     }
-    Analysis { sigma, t_bright, t_dark: td, bubbles, dev: Some(dev), dark }
+    if n == 0 { 0.0 } else { sum / n as f64 }
+}
+
+/// Bubble cores grown by 9 um: their halo zone.
+fn bubble_zone(an: &Analysis, iw: usize, ih: usize, k: f64) -> Vec<bool> {
+    if an.bubble_mask.len() != iw * ih {
+        return vec![false; iw * ih];
+    }
+    morph::dilate(&an.bubble_mask, iw, ih, ((9.0 / k).round() as usize).max(3))
+}
+
+/// The primary mask cleaned of artifacts before labelling, or `None` when nothing changes:
+/// bubble cores and their halo zone removed (else the halo becomes a crescent "grain" or fuses
+/// with a zircon next to it), and seam lines that bridge grains cut by an opening of
+/// [`rel::seam_open`].
+pub fn clean_mask(mask: &[bool], w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) -> Option<Vec<bool>> {
+    let (iw, ih) = (w.img.w, w.img.h);
+    let k = w.um_per_px;
+    let bubbles = !an.bubbles.is_empty() && p.polarity != Polarity::Dark;
+    let seam = if p.flag_slivers { (rel::seam_open(r) / k).round() as usize } else { 0 };
+    let seam = if seam > p.open_px { seam } else { 0 };
+    if !bubbles && seam == 0 {
+        return None;
+    }
+    let mut m = mask.to_vec();
+    if bubbles {
+        let zone = bubble_zone(an, iw, ih, k);
+        for (v, z) in m.iter_mut().zip(&zone) {
+            if *z {
+                *v = false;
+            }
+        }
+    }
+    if seam > 0 {
+        m = morph::open(&m, iw, ih, seam);
+    }
+    Some(morph::fill_holes(&m, iw, ih))
 }
 
 /// Grains of every label of `lab` with at least `min_px` pixels, with their label.
@@ -283,10 +430,12 @@ pub fn mean_inside(img: &Gray, g: &Grain, k: f64) -> f64 {
 }
 
 /// A tile-seam sliver: a thin line along a seam, not a grain. Narrower than 15 um, or long
-/// (aspect > 5), under 30 um wide and straight along a tile axis (its outline hugs its bounding
-/// box): a zircon needle, even one lying along an axis, has tapering ends and stays.
-pub fn is_sliver(g: &Grain) -> bool {
-    g.minor_um < 15.0 || (g.major_um / g.minor_um.max(1e-6) > 5.0 && g.minor_um < 30.0 && box_fraction(g, 3.0) > 0.5)
+/// (aspect > 5), under 30 um wide, straight along a tile axis (its outline hugs its bounding
+/// box) and either weak or very long (aspect > 8): a bright zircon needle lying along an axis
+/// stays.
+pub fn is_sliver(g: &Grain, contrast: f64) -> bool {
+    let aspect = g.major_um / g.minor_um.max(1e-6);
+    g.minor_um < 15.0 || (aspect > 5.0 && g.minor_um < 30.0 && box_fraction(g, 3.0) > 0.5 && (contrast < 0.6 || aspect > 8.0))
 }
 
 /// Fraction of a grain's pixels that stand out from the local epoxy level (above the bright
@@ -312,9 +461,17 @@ pub fn contrast_fraction(dev: &Gray, g: &Grain, k: f64, tb: f32, td: f32) -> f64
 /// A bright exposure-step tile block (or the step region next to one): larger than
 /// `max_size_um`; or with almost no pixels that stand out from the local epoxy level (it was
 /// only above the global threshold because its tile was exposed brighter); or weakly contrasted
-/// and either larger than any grain of the run (260 um) or bounded by its box (tile edges).
-pub fn is_block(g: &Grain, contrast: f64, max_size_um: f64) -> bool {
-    (max_size_um > 0.0 && g.eq_diameter_um > max_size_um) || contrast < 0.15 || (contrast < 0.5 && (g.eq_diameter_um > 260.0 || box_fraction(g, 3.0) > 0.45))
+/// and either larger than [`rel::block_weak`] of the reference size or bounded by its box (tile
+/// edges); or a dark straight-edged rectangle filling its bounding box.
+pub fn is_block(g: &Grain, contrast: f64, dark: bool, max_size_um: f64, r: f64) -> bool {
+    let bx = box_fraction(g, 3.0);
+    let extent = g.area_um2 / ((g.bbox_um[2] - g.bbox_um[0]) * (g.bbox_um[3] - g.bbox_um[1])).max(1e-9);
+    (max_size_um > 0.0 && g.eq_diameter_um > max_size_um)
+        || contrast < 0.15
+        || (contrast < 0.5 && (g.eq_diameter_um > rel::block_weak(r) || bx > 0.45))
+        // A dark straight-edged rectangle filling its box: a tile exposed darker. (Bright
+        // prisms lying along an axis, or grains cut by the mosaic edge, are boxy too.)
+        || (dark && bx > 0.65 && extent > 0.85 && g.eq_diameter_um > 40.0)
 }
 
 /// Least-squares circle through points (Kåsa): centre, radius and RMS distance off the circle.
@@ -348,15 +505,15 @@ pub fn fit_circle(p: &[[f64; 2]]) -> Option<([f64; 2], f64, f64)> {
     Some((c, r, rms))
 }
 
-/// The bright rim of a bubble (12 to 120 um): an arc or a ring on a circle, or a round blob
-/// whose middle is no brighter than the epoxy.
-pub fn is_bubble_rim(g: &Grain, s: &ShapeStats, dev: Option<&Gray>, k: f64, tb: f32) -> bool {
+/// The bright rim of a bubble (radius 6 um to `rim_max`): an arc or a ring on a circle, or a
+/// round blob whose middle is no brighter than the epoxy.
+pub fn is_bubble_rim(g: &Grain, s: &ShapeStats, dev: Option<&Gray>, k: f64, tb: f32, rim_max: f64) -> bool {
     let Some((c, r, rms)) = fit_circle(&g.polygon_um) else { return false };
-    if !(6.0..=60.0).contains(&r) || rms > 0.15 * r + k {
+    if !(6.0..=rim_max).contains(&r) || rms > 0.15 * r + k {
         return false;
     }
     // An arc: on a circle but thin and hollow.
-    if s.solidity < 0.75 && thickness(g) < 0.36 * g.eq_diameter_um {
+    if s.solidity < 0.7 && thickness(g) < 0.32 * g.eq_diameter_um {
         return true;
     }
     // A filled ring: round, its middle at the epoxy level.
@@ -379,50 +536,167 @@ pub fn is_bubble_rim(g: &Grain, s: &ShapeStats, dev: Option<&Gray>, k: f64, tb: 
     n > 0 && (sum / n as f64).abs() < 0.5 * tb as f64
 }
 
-/// A bubble's halo (or the bubble itself) mistaken for a grain.
-pub fn is_bubble_halo(g: &Grain, bubbles: &[Bubble]) -> bool {
-    bubbles.iter().any(|b| (g.centroid_um[0] - b.c[0]).hypot(g.centroid_um[1] - b.c[1]) < b.r + 12.0 && g.eq_diameter_um < 2.2 * b.r + 25.0)
+/// A bubble's halo mistaken for a grain: centred on a bubble and not much larger than it, or a
+/// small crescent (under [`rel::crescent`]) touching a bubble's edge.
+pub fn is_bubble_halo(g: &Grain, bubbles: &[Bubble], r: f64) -> bool {
+    bubbles.iter().any(|b| {
+        let d = (g.centroid_um[0] - b.c[0]).hypot(g.centroid_um[1] - b.c[1]);
+        (d < b.r + 12.0 && g.eq_diameter_um < 2.2 * b.r + 25.0) || (g.eq_diameter_um < rel::crescent(r) && d - g.eq_diameter_um / 2.0 < b.r + 15.0)
+    })
 }
 
-/// Removes bubbles and their rims, slivers and tile blocks from `grains` (as `p` enables).
-/// Returns how many of each were dropped.
-pub fn reject(grains: &mut Vec<Grain>, p: &SegmentParams, an: &Analysis, k: f64) -> [usize; 3] {
-    let debug = std::env::var_os("GRAINATLAS_DEBUG_SEG").is_some();
-    let dev = an.dev.as_ref();
-    let verdict: Vec<usize> = crate::util::par_map(grains.len(), |i| {
-        let g = &grains[i];
-        let s = shape_stats(g, k);
-        let contrast = dev.map_or(1.0, |d| contrast_fraction(d, g, k, an.t_bright, an.t_dark));
-        let bright = dev.is_none_or(|d| mean_inside(d, g, k) > 0.0);
-        let v = if p.reject_bubbles && ((bright && is_bubble_halo(g, &an.bubbles)) || is_bubble_rim(g, &s, dev, k, an.t_bright)) {
-            0
-        } else if p.reject_slivers && is_sliver(g) {
-            1
-        } else if p.reject_blocks && is_block(g, contrast, p.max_size_um) {
-            2
-        } else {
-            3
-        };
-        if debug {
-            let circle = fit_circle(&g.polygon_um).map_or((0.0, 0.0), |(_, r, e)| (r, e / r));
-            eprintln!(
-                "seg {} c=({:.0},{:.0}) eqd={:.0} min={:.0} or={:.0} sol={:.2} circ={:.2} asp={:.2} thick={:.2} contrast={:.2} box={:.2} r={:.0} rms/r={:.2}",
-                ["bubble", "sliver", "block", "keep"][v], g.centroid_um[0], g.centroid_um[1], g.eq_diameter_um, g.minor_um, g.orientation_deg, s.solidity, s.circularity, s.aspect, thickness(g) / g.eq_diameter_um, contrast, box_fraction(g, 3.0), circle.0, circle.1
-            );
+/// A crescent halo of a bubble that was not found (a large bubble with a grey middle): a small
+/// bright arc (under [`rel::crescent`], solidity < 0.8, aspect > 1.8) whose concave side, the
+/// rest of its convex hull, is a sizeable region at the epoxy level.
+pub fn is_crescent(g: &Grain, s: &ShapeStats, dev: &Gray, k: f64, tb: f32, r: f64) -> bool {
+    if g.eq_diameter_um >= rel::crescent(r) || s.solidity >= 0.8 || s.aspect <= 1.8 {
+        return false;
+    }
+    let hull = Grain { polygon_um: convex_hull(&g.polygon_um), ..g.clone() };
+    let (hm, bw, bh, o) = shape::rasterize(&hull, k, 0);
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for y in 0..bh {
+        for x in 0..bw {
+            let (gx, gy) = (o.0 + x, o.1 + y);
+            if hm[y * bw + x] && gx < dev.w && gy < dev.h && !shape::inside_polygon_px(g, k, (0, 0), gx, gy) {
+                sum += dev.px[gy * dev.w + gx] as f64;
+                n += 1;
+            }
         }
-        v
-    });
-    let mut n = [0usize; 3];
+    }
+    let deficit = n as f64 * k * k;
+    n > 0 && deficit > 0.25 * g.area_um2 && sum / (n as f64) < 0.6 * tb as f64
+}
+
+/// Why `g` is an artifact, if it is (as the `flag_*` switches allow). Specks are decided
+/// later, against the grains that remain.
+fn verdict(g: &Grain, p: &SegmentParams, an: &Analysis, k: f64, r: f64) -> Option<Artifact> {
+    let dev = an.dev.as_ref();
+    let s = shape_stats(g, k);
+    let bright = dev.is_none_or(|d| mean_inside(d, g, k) > 0.0);
+    if p.flag_bubbles
+        && p.polarity != Polarity::Dark
+        && ((bright && (is_bubble_halo(g, &an.bubbles, r) || dev.is_some_and(|d| is_crescent(g, &s, d, k, an.t_bright, r)))) || is_bubble_rim(g, &s, dev, k, an.t_bright, rel::rim_max(r)))
+    {
+        return Some(Artifact::Halo);
+    }
+    let contrast = dev.map_or(1.0, |d| contrast_fraction(d, g, k, an.t_bright, an.t_dark));
+    if p.flag_slivers && is_sliver(g, contrast) {
+        return Some(Artifact::Sliver);
+    }
+    if p.flag_blocks && is_block(g, contrast, !bright, p.max_size_um, r) {
+        return Some(Artifact::Block);
+    }
+    None
+}
+
+/// The raw parts of an oversized blob (grains joined through seams, or an exposure-step block
+/// with real grains inside): its pixels that stand out from the local epoxy level, opened
+/// harder than the seam opening, holes filled, at least the speck size.
+fn split_blob(g: &Grain, w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) -> Vec<Grain> {
+    let Some(dev) = &an.dev else { return Vec::new() };
+    let k = w.um_per_px;
+    let (mask, bw, bh, o) = shape::rasterize(g, k, 0);
+    let mut m: Vec<bool> = (0..bw * bh)
+        .map(|i| {
+            let (x, y) = (o.0 + i % bw, o.1 + i / bw);
+            mask[i] && x < dev.w && y < dev.h && {
+                let v = dev.px[y * dev.w + x];
+                v > an.t_bright || v < -an.t_dark
+            }
+        })
+        .collect();
+    let rr = ((2.0 * rel::seam_open(r) / k).round() as usize).max(3);
+    m = morph::open(&m, bw, bh, rr);
+    m = morph::fill_holes(&m, bw, bh);
+    let (lab, counts) = morph::components(&m, bw, bh);
+    let min_px = std::f64::consts::PI / 4.0 * (p.min_size_um.max(rel::speck(r)) / k).powi(2);
+    let mut out = Vec::new();
+    for (l, &n) in counts.iter().enumerate().skip(1) {
+        if (n as f64) < min_px {
+            continue;
+        }
+        let part: Vec<bool> = lab.iter().map(|&v| v as usize == l).collect();
+        if let Some(mut q) = shape::grain_from_mask(&part, bw, bh, o, w, p.simplify_px, false) {
+            q.mean_intensity = mean_inside(&w.img, &q, k);
+            out.push(q);
+        }
+    }
+    out
+}
+
+/// Blobs over [`rel::block_split`] of the reference size (grains joined through seams, or an
+/// exposure-step block with real grains inside) are flagged as blocks, and their raw parts are
+/// added to be joined into whole grains and classified on their own.
+pub fn split_blocks(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) {
+    let big: Vec<usize> = (0..grains.len()).filter(|&i| grains[i].is_grain() && grains[i].eq_diameter_um > rel::block_split(r)).collect();
+    let mut parts = Vec::new();
+    for i in big {
+        grains[i].artifact = Some(Artifact::Block);
+        parts.extend(split_blob(&grains[i], w, p, an, r));
+    }
+    grains.extend(parts);
+}
+
+/// Drops detections lying inside a larger grain's outline (fragments of a zoned grain found
+/// on their own); the larger grain stands for them.
+pub fn drop_nested(grains: &mut Vec<Grain>) {
+    let nested: Vec<bool> = (0..grains.len())
+        .map(|i| {
+            let g = &grains[i];
+            g.is_grain()
+                && grains.iter().enumerate().any(|(j, q)| {
+                    j != i && q.is_grain() && q.area_um2 > 2.0 * g.area_um2 && g.bbox_um[0] >= q.bbox_um[0] && g.bbox_um[2] <= q.bbox_um[2] && g.bbox_um[1] >= q.bbox_um[1] && g.bbox_um[3] <= q.bbox_um[3] && shape::inside(&q.polygon_um, g.centroid_um[0], g.centroid_um[1])
+                })
+        })
+        .collect();
     let mut i = 0;
     grains.retain(|_| {
-        let v = verdict[i];
         i += 1;
-        if v < 3 {
-            n[v] += 1;
-        }
-        v == 3
+        !nested[i - 1]
     });
-    n
+}
+
+/// Flags the artifacts among `grains` with their reason (never removes anything). Specks:
+/// smaller than [`rel::speck`] and weakly contrasted or farther than [`rel::speck_far`] from
+/// every grain.
+pub fn classify(grains: &mut [Grain], w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) {
+    let k = w.um_per_px;
+    let verdicts: Vec<Option<Artifact>> = crate::util::par_map(grains.len(), |i| if grains[i].is_grain() { verdict(&grains[i], p, an, k, r) } else { grains[i].artifact });
+    for (g, v) in grains.iter_mut().zip(verdicts) {
+        g.artifact = v;
+    }
+    if p.flag_specks {
+        let dev = an.dev.as_ref();
+        let real: Vec<([f64; 2], f64)> = grains.iter().filter(|g| g.is_grain() && g.eq_diameter_um >= rel::speck(r)).map(|g| (g.centroid_um, g.eq_diameter_um / 2.0)).collect();
+        for g in grains.iter_mut().filter(|g| g.is_grain() && g.eq_diameter_um < rel::speck(r)) {
+            let contrast = dev.map_or(1.0, |d| contrast_fraction(d, g, k, an.t_bright, an.t_dark));
+            let gap = real.iter().map(|(c, rad)| (c[0] - g.centroid_um[0]).hypot(c[1] - g.centroid_um[1]) - rad).fold(f64::INFINITY, f64::min);
+            if contrast < 0.5 || gap > rel::speck_far(r) {
+                g.artifact = Some(Artifact::Speck);
+            }
+        }
+    }
+    if std::env::var_os("GRAINATLAS_DEBUG_SEG").is_some() {
+        for g in grains.iter() {
+            let s = shape_stats(g, k);
+            let contrast = an.dev.as_ref().map_or(1.0, |d| contrast_fraction(d, g, k, an.t_bright, an.t_dark));
+            eprintln!(
+                "seg {} c=({:.0},{:.0}) eqd={:.0} min={:.0} or={:.0} sol={:.2} circ={:.2} asp={:.2} contrast={:.2} box={:.2} ref={r:.0}",
+                g.artifact.map_or("grain", |a| a.label()),
+                g.centroid_um[0],
+                g.centroid_um[1],
+                g.eq_diameter_um,
+                g.minor_um,
+                g.orientation_deg,
+                s.solidity,
+                s.circularity,
+                s.aspect,
+                contrast,
+                box_fraction(g, 3.0)
+            );
+        }
+    }
 }
 
 fn bbox_inter(a: &[f64; 4], b: &[f64; 4]) -> f64 {
@@ -438,59 +712,100 @@ pub fn overlaps(a: &Grain, b: &Grain) -> bool {
     bbox_inter(&a.bbox_um, &b.bbox_um) > 0.25 * bbox_area(&a.bbox_um).min(bbox_area(&b.bbox_um))
 }
 
-/// Grains of either polarity relative to the local epoxy level (mostly the CL-dark grains the
-/// primary segmenter misses), without bubbles, slivers and tile blocks.
-pub fn supplement(w: &WorkImage, p: &SegmentParams, an: &Analysis) -> Vec<Grain> {
-    let Some(dev) = &an.dev else { return Vec::new() };
-    let k = w.um_per_px;
+/// Pixels of either polarity relative to the local epoxy level (mostly the CL-dark grains the
+/// primary pass misses), without bubbles and their halo zone, closed, filled and opened.
+pub fn supplement_mask(w: &WorkImage, an: &Analysis) -> Option<Vec<bool>> {
+    let dev = an.dev.as_ref()?;
     let (iw, ih) = (dev.w, dev.h);
-    let mut bub = vec![false; iw * ih];
-    for b in &an.bubbles {
-        let (cx, cy, r) = (b.c[0] / k, b.c[1] / k, b.r / k + 0.5);
-        let (x0, x1) = ((cx - r).floor().max(0.0) as usize, ((cx + r).ceil() as usize).min(iw.saturating_sub(1)));
-        let (y0, y1) = ((cy - r).floor().max(0.0) as usize, ((cy + r).ceil() as usize).min(ih.saturating_sub(1)));
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                if (x as f64 + 0.5 - cx).hypot(y as f64 + 0.5 - cy) <= r {
-                    bub[y * iw + x] = true;
+    let zone = bubble_zone(an, iw, ih, w.um_per_px);
+    let core = |i: usize| an.bubble_mask.get(i).copied().unwrap_or(false);
+    let mut m: Vec<bool> = (0..iw * ih).map(|i| w.cov[i] && ((dev.px[i] > an.t_bright && !zone[i]) || (an.dark[i] && !core(i)))).collect();
+    m = morph::close(&m, iw, ih, 3);
+    m = morph::fill_holes(&m, iw, ih);
+    m = morph::open(&m, iw, ih, 2);
+    Some(morph::fill_holes(&m, iw, ih))
+}
+
+/// Adds the grains of either polarity and makes one footprint per grain (`Polarity::Both`):
+/// the supplement mask joined with the grain outlines, bridged by a 5 um closing, holes filled
+/// and opened like the seams. A footprint holding fragments of one grain (at most one piece
+/// over [`rel::fragment`] of the reference size), or one grain whose detection covers under two
+/// thirds of it (the bright part of a mostly CL-dark grain), becomes that grain, keeping the
+/// largest piece's id. Footprints with no grain in them are added.
+pub fn merge_footprints(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) {
+    let Some(sup) = supplement_mask(w, an) else { return };
+    let (iw, ih) = (w.img.w, w.img.h);
+    let k = w.um_per_px;
+    let mut fp = sup;
+    for g in grains.iter().filter(|g| g.is_grain()) {
+        let (mask, bw, bh, o) = shape::rasterize(g, k, 0);
+        for y in 0..bh {
+            for x in 0..bw {
+                let (gx, gy) = (o.0 + x, o.1 + y);
+                if mask[y * bw + x] && gx < iw && gy < ih {
+                    fp[gy * iw + gx] = true;
                 }
             }
         }
     }
-    let zone = morph::dilate(&bub, iw, ih, ((9.0 / k).round() as usize).max(3));
-    let mut m: Vec<bool> = (0..iw * ih).map(|i| w.cov[i] && ((dev.px[i] > an.t_bright && !zone[i]) || (an.dark[i] && !bub[i]))).collect();
-    m = morph::close(&m, iw, ih, 3);
-    m = morph::fill_holes(&m, iw, ih);
-    m = morph::open(&m, iw, ih, 2);
-    m = morph::fill_holes(&m, iw, ih);
-    let lab = watershed::split(&m, iw, ih, p.split_h, p.neck_ratio);
-    let n = lab.iter().copied().max().unwrap_or(0) as usize;
-    let counts = vec![0usize; n + 1];
-    let min_px = std::f64::consts::PI / 4.0 * (28.0f64.max(p.min_size_um) / k).powi(2);
-    let mut out = Vec::new();
-    for (_, mut g) in grains_of_labels(&lab, &counts, iw, ih, w, min_px, p.simplify_px) {
-        let s = shape_stats(&g, k);
-        if is_sliver(&g) || s.solidity < 0.45 || g.area_um2 > 0.5e6 || (p.max_size_um > 0.0 && g.eq_diameter_um > p.max_size_um) {
-            continue;
+    fp = morph::close(&fp, iw, ih, ((5.0 / k).round() as usize).max(2));
+    fp = morph::fill_holes(&fp, iw, ih);
+    let seam = if p.flag_slivers { ((rel::seam_open(r) / k).round() as usize).max(2) } else { 2 };
+    fp = morph::open(&fp, iw, ih, seam);
+    for (i, v) in fp.iter_mut().enumerate() {
+        if an.bubble_mask.get(i).copied().unwrap_or(false) {
+            *v = false;
         }
-        let contrast = contrast_fraction(dev, &g, k, an.t_bright, an.t_dark);
-        if p.reject_blocks && is_block(&g, contrast, 0.0) {
-            continue;
-        }
-        if p.reject_bubbles && is_bubble_rim(&g, &s, Some(dev), k, an.t_bright) {
-            continue;
-        }
-        let md = mean_inside(dev, &g, k);
-        if g.eq_diameter_um < 60.0 && s.circularity > 0.78 && s.aspect < 1.3 && s.solidity > 0.92 && (md < 0.0 || g.eq_diameter_um < 45.0) {
-            continue; // a bubble with its halo
-        }
-        if md > 0.0 && is_bubble_halo(&g, &an.bubbles) {
-            continue;
-        }
-        g.mean_intensity = mean_inside(&w.img, &g, k);
-        out.push(g);
     }
-    out
+    // Footprints that touch each other stay apart where the watershed splits them.
+    let lab = watershed::split(&fp, iw, ih, p.split_h, p.neck_ratio);
+    let n = lab.iter().copied().max().unwrap_or(0) as usize;
+    let min_px = std::f64::consts::PI / 4.0 * (28.0f64.max(p.min_size_um) / k).powi(2);
+    let shapes: Vec<(u32, Grain)> = grains_of_labels(&lab, &vec![0; n + 1], iw, ih, w, min_px, p.simplify_px);
+    let label_of = |g: &Grain| {
+        let (x, y) = ((g.centroid_um[0] / k) as usize, (g.centroid_um[1] / k) as usize);
+        if x < iw && y < ih { lab[y * iw + x] } else { 0 }
+    };
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); n + 1];
+    for (i, g) in grains.iter().enumerate() {
+        if g.is_grain() {
+            members[label_of(g) as usize].push(i);
+        }
+    }
+    let mut drop = vec![false; grains.len()];
+    let mut add = Vec::new();
+    for (l, shape) in &shapes {
+        let ms = &members[*l as usize];
+        let large = ms.iter().filter(|&&i| grains[i].eq_diameter_um >= rel::fragment(r)).count();
+        let area: f64 = ms.iter().map(|&i| grains[i].area_um2).sum();
+        // Pieces in one footprint are one grain (the watershed keeps touching grains apart),
+        // unless two large ones each fill a good part of it.
+        let big = ms.iter().filter(|&&i| grains[i].eq_diameter_um >= rel::fragment(r) && grains[i].area_um2 > 0.25 * shape.area_um2).count();
+        let whole = match ms.len() {
+            0 => true,
+            1 => area < shape.area_um2 / 1.5,
+            _ => large <= 1 || big <= 1,
+        };
+        if !whole {
+            continue;
+        }
+        let mut q = shape.clone();
+        q.mean_intensity = mean_inside(&w.img, &q, k);
+        if let Some(&keep) = ms.iter().max_by(|&&a, &&b| grains[a].area_um2.total_cmp(&grains[b].area_um2)) {
+            q.id = grains[keep].id;
+            q.manual = grains[keep].manual;
+        }
+        for &i in ms {
+            drop[i] = true;
+        }
+        add.push(q);
+    }
+    let mut i = 0;
+    grains.retain(|_| {
+        i += 1;
+        !drop[i - 1]
+    });
+    grains.extend(add);
 }
 
 /// Mean width of an outline: twice its area over its perimeter (a disc gives its radius).
@@ -536,32 +851,4 @@ pub fn straight_fraction(g: &Grain, min_um: f64) -> f64 {
         }
     }
     on / total
-}
-
-/// Adds supplement grains to the primary ones: a supplement grain that overlaps no primary grain
-/// is added; one that covers primary grains and is at least 1.5 times their area replaces them
-/// (the primary pass found only the bright part of a mostly CL-dark grain) and keeps the id of
-/// the largest; otherwise the primary grains stay.
-pub fn merge_supplement(grains: &mut Vec<Grain>, sup: Vec<Grain>) {
-    for s in sup {
-        let hit: Vec<usize> = (0..grains.len()).filter(|&i| overlaps(&grains[i], &s)).collect();
-        if hit.is_empty() {
-            grains.push(s);
-            continue;
-        }
-        let area: f64 = hit.iter().map(|&i| grains[i].area_um2).sum();
-        let inside = hit.iter().all(|&i| shape::inside(&s.polygon_um, grains[i].centroid_um[0], grains[i].centroid_um[1]));
-        if s.area_um2 >= 1.5 * area && inside {
-            let keep = *hit.iter().max_by(|&&a, &&b| grains[a].area_um2.total_cmp(&grains[b].area_um2)).expect("hit");
-            let mut s = s;
-            s.id = grains[keep].id;
-            s.manual = grains[keep].manual;
-            grains[keep] = s;
-            let mut drop: Vec<usize> = hit.into_iter().filter(|&i| i != keep).collect();
-            drop.sort_unstable_by(|a, b| b.cmp(a));
-            for i in drop {
-                grains.remove(i);
-            }
-        }
-    }
 }

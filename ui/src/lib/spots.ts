@@ -27,8 +27,10 @@ export function inside(poly: [number, number][], px: number, py: number) {
   return c;
 }
 
-export function grainAt(gs: Grain[], x: number, y: number): Grain | null {
+/** The grain under a point; artifacts only when asked (selection), never for spot linking. */
+export function grainAt(gs: Grain[], x: number, y: number, artifacts = false): Grain | null {
   for (const g of gs) {
+    if (g.artifact && !artifacts) continue;
     const [x0, y0, x1, y1] = g.bbox_um;
     if (x < x0 || y < y0 || x > x1 || y > y1) continue;
     if (inside(g.polygon_um, x, y)) return g;

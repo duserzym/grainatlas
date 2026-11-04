@@ -169,7 +169,7 @@
       <button class="primary" onclick={generateSheets} disabled={!hasGrains} title={hasGrains ? '' : 'Find grains first'} data-testid="sheets">Make print sheets</button>
       {#if sheets}
         {@const st = sheets.stats}
-        <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>; {st.duplicates} duplicates left to their owner area{st.filtered ? `, ${st.filtered} below the size limit` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}.</p>
+        <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}.</p>
         <div class="two">
           <button onclick={pdf} data-testid="export-pdf">Export PDF</button>
           <button onclick={registration} data-testid="export-registration">Registration</button>

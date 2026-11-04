@@ -23,33 +23,81 @@ one sample, when the base name is another area's name.
 In the app the Grains tab shows duplicates dashed, with "→ HH4 #12" in the
 grain table; print sheets and their counts leave them out.
 
-## Segmentation (`segment::filter`)
+## Segmentation and the artifact classifier (`segment::filter`)
 
-The primary segmenter is unchanged. On top of it:
+The primary threshold segmenter is unchanged. On top of it, artifacts are
+**flagged, never deleted**: a detection gets `artifact` = `bubble`, `halo`,
+`sliver`, `block`, `speck` or `manual`. Artifacts stay in the area's grain list,
+unnumbered, drawn dimmed and dotted with their reason, and are left off print
+sheets, spot linking, ownership, per-grain tone and the atlas bundle. In the
+Grains tab, "Not grains" lists them, and **Keep as grain** restores one with one
+click (`kept: true`); **Not a grain** marks selected grains (`manual`). Re-running
+Find grains keeps both decisions (matched by position, ids kept).
 
-- `polarity: "both"` adds grains brighter or darker than the local epoxy level
-  (a running median of 330 µm on the mosaic normalised to its p1..p99.5): a
-  pixel is dark when it is below that level by the noise margin (5.5 σ, at
-  least 18/255) or by `dark_rel` (0.45) of the level, whichever is smaller. A
-  supplement grain is added when it overlaps no primary grain, and replaces the
-  primary grains it covers when it is at least 1.5 times their area (the
-  primary pass found only the bright part of a mostly CL-dark grain).
-- `reject_bubbles`: round dark blobs of 12 to 75 µm (circularity > 0.72,
-  solidity > 0.88, aspect < 1.35) are bubbles, and bright grains centred on one
-  are its halo; bright arcs and rings on a circle of 12 to 120 µm whose middle
-  is at the epoxy level are bubble rims. Off for `polarity: "dark"`.
-- `reject_slivers`: minor axis < 15 µm, or aspect > 5, minor axis < 30 µm and
-  straight along a tile axis (the outline hugs its box).
-- `reject_blocks`: exposure-step tile blocks: regions where fewer than 15 % of
-  the pixels stand out from the local epoxy level, or under 50 % and larger
-  than 260 µm or box-shaped; and anything larger than `max_size_um` when set.
+Sizes scale with the area's **reference grain size** `r` (module `rel`), tuned
+on the Boise mounts at r ≈ 110 µm (S) and 175 µm (L):
 
-`GRAINATLAS_DEBUG_SEG=1` prints every primary grain's measures and verdict.
+| rule | S (r = 110) | L (r = 175) | relative |
+|---|---|---|---|
+| largest bubble | 75 µm | 115 µm | 0.68 r |
+| seam opening radius | 4 µm | 6.6 µm | 0.037 r |
+| oversized blob, split | 330 µm | 500 µm | 3 r |
+| speck | < 22 µm | < 35 µm | 0.21 r |
+| speck off the row | > 200 µm | > 315 µm | 1.8 r |
+| halo crescent | < 50 µm | < 79 µm | 0.45 r |
+| fragment of one grain | < 35 µm | < 56 µm | 0.32 r |
 
-Known limits on the Boise run: bright rims of large bubbles (80 to 100 µm,
-grey middles) next to CL-dark grains are still found as small grains in HH11,
-two step regions in HH11 survive, and mid-grey grains close to the epoxy level
-need click-grow.
+`r` is `reference_size_um` when set, else the median eq. diameter of the area's
+grains over 35 µm, weighted by eq. diameter (fragments count less), leaving out
+blobs over three times the upper quartile (tile blocks). The first estimate comes
+from raw detections, which split zoned grains; when the whole grains found with
+it differ by more than 25 %, the classifier runs again with theirs.
+
+The steps (`segment()`, then `second_pass`):
+
+1. **Bubbles** (`flag_bubbles`; not in transmitted light): round dark blobs
+   (circularity > 0.72, solidity > 0.88, aspect < 1.35) from 12 µm to 0.68 r,
+   or up to 1.2 r when a bright halo rings them. The cores, grown by 9 µm (the halo
+   zone), are taken out of the bright mask before labelling, so a halo can neither
+   become a crescent "grain" nor fuse with a zircon next to it. Bubbles are listed
+   as artifacts, except dark blobs inside a grain (inclusions).
+2. **Seam lines** (`flag_slivers`): an opening of 0.037 r cuts seam lines that
+   bridge grains.
+3. **Oversized blobs** (`flag_blocks`): over 3 r, the blob is flagged `block` and
+   its raw parts (pixels that stand out from the local epoxy level, opened at twice
+   the seam radius) are added back, because real grains sit inside exposure-step
+   blocks.
+4. **Whole-grain footprints** (`polarity: "both"`): the two-polarity mask joined
+   with the grain outlines, closed by 5 µm, holes filled, opened like the seams,
+   bubbles removed, split by the watershed. The pieces in one footprint become one
+   grain (keeping the largest piece's id) unless two large pieces each fill over a
+   quarter of it; a footprint with one grain replaces it when the detection covers
+   under two thirds (the bright part of a CL-dark grain); a footprint with none is
+   a new grain. Detections nested inside a larger grain are dropped.
+5. **Classification** of every grain:
+   - `halo`: centred on a bubble and not much larger; a crescent under 0.45 r
+     touching a bubble; an arc on a circle (radius ≤ 0.8 r, solidity < 0.7); a round
+     blob whose middle is at the epoxy level; or a crescent (solidity < 0.8,
+     aspect > 1.8) whose concave side is at the epoxy level (a bubble too grey to be
+     found).
+   - `sliver`: minor axis < 15 µm, or aspect > 5, minor < 30 µm, hugging its box and
+     either weak (contrast < 0.6) or very long (aspect > 8). Bright zircon needles
+     along an axis stay.
+   - `block`: under 15 % of its pixels stand out from the local epoxy level; or
+     under 50 % and larger than 2.4 r or box-shaped; or a dark rectangle filling its
+     box; or larger than `max_size_um` when set.
+   - `speck` (`flag_specks`): under 0.21 r and weakly contrasted, or farther than
+     1.8 r from every grain.
+
+`GRAINATLAS_DEBUG_SEG=1` prints every detection's measures, verdict and `r`.
+
+Validation: galleries of every flagged detection on the four Boise packages
+(Grenville S and L, Sweden S and XS) were checked by eye. On Grenville S, the
+prototype's extra detections were noise patches on the epoxy and fragments of
+grains this pass outlines whole. Known misses on S HH11 and L H11: a few rims of
+large grey-centred bubbles and a step region stay grains, and on S a few
+fragments of real grains next to bubbles are flagged `halo` (one click restores
+them).
 
 ## Export enhancement (`photometric::enhance`)
 
@@ -64,7 +112,10 @@ of 30 µm or more outside every hull departs from the background by 6 robust σ
 
 ## Sheets (`layout::sheets`)
 
-Tabloid landscape at a fixed scale (1 mm = 8 µm by default). Samples are
+Tabloid landscape at a fixed scale (1 mm = 8 µm by default). Only grains are
+printed: artifacts and duplicates are left off, and the stats count both. A print
+check (`audit`) counts printed grains that no band holds whole (always 0 so far)
+and grains printed twice (a neighbouring row's band holds them too). Samples are
 ordered top of the mount first. The owned grains of each area are chained into
 rows along x; rows flow across the lines of a sheet and break only between
 grains. A row whose grains step up or down is cut into bands of their own
