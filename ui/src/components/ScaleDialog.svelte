@@ -128,7 +128,7 @@
   }
   .grid4 {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: 1fr 1fr 1fr 2fr;
     gap: var(--space-2);
     align-items: end;
   }

@@ -10,6 +10,7 @@ test('one area folder on its own opens as a one-area package with the sidecar ca
   await page.getByTestId('package-input').setInputFiles(AREA);
   await expect(page.getByTestId('area-001_HJ-GC1')).toBeVisible();
   await expect(page.getByTestId('open-kind')).toContainText('One area folder');
+  await expect(page.locator('.area h2')).toHaveText(/^HJ-GC1\s+001_HJ-GC1$/);
   await page.getByTestId('stitch').click();
   await expect(page.getByTestId('rms')).toBeVisible();
   expect(Number(await page.getByTestId('rms').textContent())).toBeLessThan(0.5);

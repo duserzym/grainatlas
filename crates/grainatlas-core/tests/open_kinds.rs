@@ -46,6 +46,7 @@ fn area_folder_alone_is_a_one_area_package_with_stage_calibration() {
     let a = &info["areas"][0];
     assert_eq!(info["areas"].as_array().unwrap().len(), 1);
     assert_eq!(a["id"], "001_HJ-GC1");
+    assert_eq!(a["name"], "HJ-GC1", "the name spot names use, as in the package");
     assert_eq!(a["grid"], serde_json::json!([3, 2]));
     assert!((a["pixel_size_nm"].as_f64().unwrap() - 661.4583).abs() < 1e-6);
     assert_eq!(a["tiles"][0]["stage_nm"], serde_json::json!([14954450.0, 19902350.0]));

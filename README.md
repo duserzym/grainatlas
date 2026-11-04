@@ -115,8 +115,9 @@ The command line does batch work:
 cargo run --release -p grainatlas-cli -- stitch <package-or-area-folder> --out <name>.grainatlas --segment --print tabloid
 ```
 
-The desktop app also takes `grainatlas <package-folder> [--stitch] [--segment]`
-and opens saved `<name>.grainatlas` folders.
+The desktop app also takes `grainatlas <package-or-area-folder> [--stitch] [--segment]`
+or `grainatlas <images…> --um-per-px <µm> | --field-um <µm> [--stitch]`, and
+opens saved `<name>.grainatlas` folders.
 
 ## Layout
 

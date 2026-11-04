@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { findAllGrains, loadProjectFile, openExample, openFiles, openPaths, stitchAll } from '../lib/actions';
+  import { findAllGrains, loadProjectFile, openExample, openFiles, openLoose, openPaths, stitchAll } from '../lib/actions';
   import { isDesktop } from '../lib/core/core';
   import { readRecent, type RecentEntry } from '../lib/deeplink';
 
@@ -20,9 +20,15 @@
     if (!startupDone) {
       startupDone = true;
       import('@tauri-apps/api/core').then(async ({ invoke }) => {
-        const s = await invoke<{ path: string | null; stitch: boolean; segment: boolean }>('startup');
-        if (!s.path) return;
-        await openPaths([s.path]);
+        const s = await invoke<{ paths: string[]; stitch: boolean; segment: boolean; um_per_px: number | null; field_um: number | null }>('startup');
+        if (!s.paths.length) return;
+        await openPaths(s.paths);
+        // Loose images with a scale on the command line open without the dialog.
+        const pending = app.pendingLoose;
+        if (pending && (s.um_per_px || s.field_um)) {
+          await openLoose({ um_per_px: s.um_per_px ?? 0, ...(s.field_um ? { field_width_um: s.field_um } : {}), files: pending.images.map((i) => i.file) });
+        }
+        if (!app.pkg) return;
         if (s.stitch) await stitchAll();
         if (s.segment) {
           await findAllGrains();
