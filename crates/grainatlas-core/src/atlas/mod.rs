@@ -109,7 +109,12 @@ impl UiParts {
     pub fn of(project: &Project) -> UiParts {
         let ui = project.extra.get("grainatlas_ui").cloned().unwrap_or(serde_json::Value::Null);
         UiParts {
-            grains: serde_json::from_value(ui["grains"].clone()).unwrap_or_default(),
+            // Artifacts (bubbles, seams, tile blocks the user did not keep) are not published.
+            grains: serde_json::from_value::<BTreeMap<String, Vec<Grain>>>(ui["grains"].clone())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(a, gs)| (a, gs.into_iter().filter(|g| g.is_grain()).collect()))
+                .collect(),
             spots: serde_json::from_value(ui["spots"].clone()).unwrap_or_default(),
             tone: serde_json::from_value(ui["tone"].clone()).unwrap_or_default(),
         }

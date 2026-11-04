@@ -196,7 +196,7 @@ class AppState {
   deepLink = $state<(DeepLink & { name: string | null }) | null>(null);
   /** Spot the canvas should center on once its view is ready (deep links). */
   focusSpot = $state<string | null>(null);
-  layers = $state({ mosaic: true, outlines: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false, results: true });
+  layers = $state({ mosaic: true, outlines: true, artifacts: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false, results: true });
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];
   canUndo = $state(false);

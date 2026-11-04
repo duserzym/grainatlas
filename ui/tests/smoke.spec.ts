@@ -24,7 +24,7 @@ test('open the fixture, stitch, find grains, place three spots, export CSV, prin
   await page.getByRole('button', { name: /^Spots/ }).click();
   await page.getByTestId('tool-spot').click();
   for (let i = 0; i < 3; i++) {
-    const box = (await page.locator('polygon.grain').nth(i * 3).boundingBox())!;
+    const box = (await page.locator('polygon.grain:not(.artifact)').nth(i * 3).boundingBox())!;
     await page.keyboard.down('Alt'); // place exactly where clicked (no snapping)
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await page.keyboard.up('Alt');

@@ -13,7 +13,7 @@ use grainatlas_core::mosaic::{Placement, TilePlacement};
 use grainatlas_core::ownership::{self, OwnershipParams};
 use grainatlas_core::photometric::enhance::{self, EnhanceParams, StripRefusal};
 use grainatlas_core::project::{AreaParams, AreaRecord, TileRef};
-use grainatlas_core::segment::{self, Grain, Polarity, SegmentParams, WorkImage};
+use grainatlas_core::segment::{self, Artifact, Grain, Polarity, SegmentParams, WorkImage};
 
 /// A one-tile area of `w` x `h` um at 1 um/px, its stage centre at `stage_x` nm (TM4000 signs).
 fn area(id: &str, name: &str, stage_x: f64, w: usize, h: usize) -> AreaRecord {
@@ -57,6 +57,8 @@ fn grain(x: f64, y: f64, side: f64) -> Grain {
         mean_intensity: 0.5,
         manual: false,
         scale_bar_um: 20.0,
+        artifact: None,
+        kept: false,
     }
 }
 
@@ -168,36 +170,95 @@ fn cl_scene() -> WorkImage {
 }
 
 #[test]
-fn both_polarities_find_dark_grains_and_reject_bubbles_slivers_and_blocks() {
+fn both_polarities_find_dark_grains_and_flag_bubbles_slivers_and_blocks() {
     let w = cl_scene();
-    let near = |gs: &[Grain], x: f64, y: f64| gs.iter().any(|g| (g.centroid_um[0] - x * 2.0).hypot(g.centroid_um[1] - y * 2.0) < 20.0);
+    let near = |gs: &[Grain], x: f64, y: f64| gs.iter().any(|g| g.is_grain() && (g.centroid_um[0] - x * 2.0).hypot(g.centroid_um[1] - y * 2.0) < 20.0);
+    let flagged = |gs: &[Grain], x: f64, y: f64, why: Artifact| gs.iter().any(|g| g.artifact == Some(why) && (g.centroid_um[0] - x * 2.0).hypot(g.centroid_um[1] - y * 2.0) < 30.0);
     let bright = segment::segment(&w, &SegmentParams { work_scale: 1, ..Default::default() }, &[]);
     assert!(near(&bright, 60.0, 80.0) && near(&bright, 160.0, 80.0));
     assert!(!near(&bright, 60.0, 250.0), "Bright does not see CL-dark grains");
     let both = segment::segment(&w, &SegmentParams { work_scale: 1, polarity: Polarity::Both, ..Default::default() }, &[]);
     assert!(near(&both, 60.0, 80.0) && near(&both, 160.0, 80.0));
-    assert!(near(&both, 60.0, 250.0) && near(&both, 170.0, 260.0), "{:?}", both.iter().map(|g| g.centroid_um).collect::<Vec<_>>());
+    assert!(near(&both, 60.0, 250.0) && near(&both, 170.0, 260.0), "{:?}", both.iter().map(|g| (g.centroid_um, g.artifact)).collect::<Vec<_>>());
     for gs in [&bright, &both] {
-        assert!(!near(gs, 300.0, 150.0), "bubble and halo rejected");
-        assert!(!near(gs, 310.0, 332.0), "seam sliver rejected");
-        assert!(gs.iter().all(|g| g.eq_diameter_um < 200.0), "tile block rejected");
+        // Flagged with a reason, never deleted, never a grain.
+        assert!(!near(gs, 300.0, 150.0), "bubble and halo are not grains");
+        assert!(flagged(gs, 300.0, 150.0, Artifact::Bubble), "the bubble is flagged: {:?}", gs.iter().map(|g| (g.centroid_um, g.artifact)).collect::<Vec<_>>());
+        assert!(!near(gs, 310.0, 332.0), "the seam sliver is not a grain");
+        assert!(gs.iter().filter(|g| g.is_grain()).all(|g| g.eq_diameter_um < 200.0), "the tile block is not a grain");
+        // Artifacts have no number; grains are 1..n.
+        assert!(gs.iter().filter(|g| !g.is_grain()).all(|g| g.number == 0));
+        let mut ns: Vec<u32> = gs.iter().filter(|g| g.is_grain()).map(|g| g.number).collect();
+        ns.sort_unstable();
+        assert_eq!(ns, (1..=ns.len() as u32).collect::<Vec<_>>());
     }
-    assert_eq!(both.iter().filter(|g| g.centroid_um[0] < 800.0).count(), 4, "{:?}", both.iter().map(|g| (g.centroid_um, g.eq_diameter_um)).collect::<Vec<_>>());
-    // With the rejections off the block and the halo come back as grains.
-    let raw = segment::segment(&w, &SegmentParams { work_scale: 1, reject_bubbles: false, reject_slivers: false, reject_blocks: false, ..Default::default() }, &[]);
-    assert!(raw.len() > bright.len());
+    assert_eq!(both.iter().filter(|g| g.is_grain() && g.centroid_um[0] < 800.0).count(), 4, "{:?}", both.iter().map(|g| (g.centroid_um, g.eq_diameter_um, g.artifact)).collect::<Vec<_>>());
+    // With the classifier off, the halo and the block come back as grains.
+    let raw = segment::segment(&w, &SegmentParams { work_scale: 1, flag_bubbles: false, flag_slivers: false, flag_blocks: false, flag_specks: false, ..Default::default() }, &[]);
+    assert!(raw.iter().all(|g| g.is_grain()));
+    assert!(raw.len() > bright.iter().filter(|g| g.is_grain()).count());
 }
 
 #[test]
-fn supplement_replaces_a_bright_fragment_of_a_dark_grain() {
-    let big = grain(100.0, 100.0, 80.0);
-    let fragment = grain(110.0, 95.0, 20.0);
-    let mut gs = vec![fragment.clone(), grain(400.0, 100.0, 60.0)];
-    segment::filter::merge_supplement(&mut gs, vec![big.clone(), grain(402.0, 101.0, 58.0), grain(700.0, 100.0, 50.0)]);
-    assert_eq!(gs.len(), 3);
-    assert_eq!(gs[0].id, fragment.id, "keeps the primary id");
-    assert_eq!(gs[0].area_um2, big.area_um2, "takes the whole grain");
-    assert_eq!(gs[1].area_um2, 3600.0, "a primary grain of about the same size stays");
+fn user_decisions_survive_a_rerun() {
+    let w = cl_scene();
+    let p = SegmentParams { work_scale: 1, polarity: Polarity::Both, ..Default::default() };
+    let mut first = segment::segment(&w, &p, &[]);
+    // Keep the flagged bubble as a grain, mark the first grain as not a grain.
+    let b = first.iter().position(|g| g.artifact == Some(Artifact::Bubble)).expect("a bubble");
+    first[b].artifact = None;
+    first[b].kept = true;
+    first[b].number = 99;
+    let m = first.iter().position(|g| g.is_grain() && !g.kept).expect("a grain");
+    first[m].artifact = Some(Artifact::Manual);
+    let (bid, mid) = (first[b].id, first[m].id);
+    let again = segment::segment(&w, &p, &first);
+    let kept = again.iter().find(|g| g.id == bid).expect("kept grain keeps its id");
+    assert!(kept.is_grain() && kept.kept && kept.number == 99);
+    let marked = again.iter().find(|g| g.id == mid).expect("marked detection keeps its id");
+    assert_eq!(marked.artifact, Some(Artifact::Manual));
+    assert_eq!(marked.number, 0);
+}
+
+#[test]
+fn reference_size_ignores_fragments_and_blocks() {
+    let mut gs: Vec<Grain> = (0..8).map(|i| grain(100.0 + 300.0 * i as f64, 100.0, 150.0)).collect();
+    gs.extend((0..20).map(|i| grain(100.0 + 50.0 * i as f64, 400.0, 36.0)));
+    gs.push(grain(5000.0, 5000.0, 1500.0));
+    let r = segment::filter::reference_size(&gs);
+    let side = 2.0 * (150.0f64 * 150.0 / std::f64::consts::PI).sqrt();
+    assert!((r - side).abs() < 1.0, "{r}");
+    assert_eq!(segment::filter::reference_size(&gs[..3]), 110.0);
+    // The bubble and block limits scale with it: 75 um and 330 um at 110 um, 115 um and 500 um at 170 um.
+    assert!((segment::filter::rel::bubble_max(110.0) - 75.0).abs() < 1.0 && (segment::filter::rel::bubble_max(170.0) - 115.6).abs() < 1.0);
+    assert!((segment::filter::rel::block_split(110.0) - 330.0).abs() < 1.0 && (segment::filter::rel::block_split(170.0) - 510.0).abs() < 1.0);
+}
+
+/// A CL-dark grain whose bright rim the primary pass finds in pieces.
+#[test]
+fn a_dark_grain_with_a_bright_rim_is_one_footprint() {
+    let (w, h) = (300usize, 200usize);
+    let mut g = Gray::filled(w, h, 0.3);
+    for y in 0..h {
+        for x in 0..w {
+            let d = ((x as f64 - 150.0).powi(2) + (y as f64 - 100.0).powi(2)).sqrt();
+            let a = (y as f64 - 100.0).atan2(x as f64 - 150.0);
+            if d <= 40.0 {
+                g.px[y * w + x] = 0.04; // dark core
+            } else if d <= 46.0 && (a.sin() * 3.0).fract().abs() < 0.6 {
+                g.px[y * w + x] = 0.85; // broken bright rim
+            }
+        }
+    }
+    let mut r = Rng(11);
+    for v in g.px.iter_mut() {
+        *v += ((r.next() - 0.5) * 0.02) as f32;
+    }
+    let wi = WorkImage { img: g, cov: vec![true; w * h], um_per_px: 2.0 };
+    let both = segment::segment(&wi, &SegmentParams { work_scale: 1, polarity: Polarity::Both, ..Default::default() }, &[]);
+    let real: Vec<&Grain> = both.iter().filter(|g| g.is_grain()).collect();
+    assert_eq!(real.len(), 1, "{:?}", both.iter().map(|g| (g.centroid_um, g.eq_diameter_um, g.artifact)).collect::<Vec<_>>());
+    assert!(real[0].eq_diameter_um > 160.0, "{}", real[0].eq_diameter_um);
 }
 
 #[test]

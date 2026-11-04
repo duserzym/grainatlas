@@ -15,11 +15,27 @@ test('CL-dark grains, then print sheets with the print_sheet registration', asyn
   // Brighter or darker than the epoxy (CL): at least as many grains as bright only.
   await page.getByTestId('find-grains').click();
   await expect(page.locator('polygon.grain').first()).toBeVisible();
-  const bright = await page.locator('polygon.grain').count();
+  const real = page.locator('polygon.grain:not(.artifact)');
+  const bright = await real.count();
   await page.locator('summary', { hasText: 'Segmentation' }).click();
   await page.getByTestId('polarity').selectOption('both');
   await page.getByTestId('find-grains').click();
-  await expect.poll(() => page.locator('polygon.grain').count()).toBeGreaterThanOrEqual(bright);
+  await expect.poll(() => real.count()).toBeGreaterThanOrEqual(bright);
+
+  // Artifacts are flagged with a reason, shown dimmed, and one click keeps one as a grain.
+  const flagged = page.getByTestId('grain-artifact');
+  await expect(flagged.first()).toBeVisible();
+  const nArt = await flagged.count();
+  const nReal = await real.count();
+  await page.getByTestId('artifact-list').locator('summary').click();
+  await page.getByTestId('keep-artifact').first().click();
+  await expect(flagged).toHaveCount(nArt - 1);
+  await expect(real).toHaveCount(nReal + 1);
+  // And a grain can be marked as not a grain.
+  await page.locator('.list tbody tr').first().click();
+  await page.getByTestId('mark-artifact').click();
+  await expect(flagged).toHaveCount(nArt);
+  await expect(real).toHaveCount(nReal);
 
   // Sheets: tabloid landscape at 1 mm = 8 um, background stripped where safe.
   await page.getByRole('button', { name: 'Layout' }).click();

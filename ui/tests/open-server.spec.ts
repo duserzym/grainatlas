@@ -23,7 +23,7 @@ test('?server=&project=&spot= opens the published bundle read-only, selects and 
   await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}&spot=${SPOT2}&access=test-access`);
   await expect(page.getByTestId('remote-name')).toContainText('read-only');
   await expect(page.getByTestId('spot')).toHaveCount(3);
-  await expect(page.locator('polygon.grain')).toHaveCount(21);
+  await expect(page.locator('polygon.grain:not(.artifact)')).toHaveCount(21);
   await expect(page.getByRole('dialog', { name: 'Spot HJ-GC1-2-2' })).toBeVisible();
   await expect(page.locator('[data-testid=spot].sel')).toHaveCount(1);
   expect(new URL(page.url()).search).toBe('');

@@ -217,8 +217,14 @@ pub struct SheetStats {
     pub duplicates: usize,
     /// Owned grains left off by the size limits.
     pub filtered: usize,
+    /// Detections flagged as artifacts (left off).
+    pub artifacts: usize,
     pub stripped: usize,
     pub strip_refused: usize,
+    /// Print check: printed grains not wholly inside any band of their area (should be 0).
+    pub grains_cut: usize,
+    /// Printed grains wholly inside more than one band (printed twice).
+    pub grains_twice: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -337,7 +343,9 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         let all = grains.get(&a.rec.id).map_or(&[][..], |v| v.as_slice());
         let mut v = Vec::new();
         for g in all {
-            if !ownership.is_owned(&a.rec.id, &g.id) {
+            if !g.is_grain() {
+                stats.artifacts += 1;
+            } else if !ownership.is_owned(&a.rec.id, &g.id) {
                 stats.duplicates += 1;
             } else if g.eq_diameter_um < p.min_grain_um || (p.max_grain_um > 0.0 && g.eq_diameter_um > p.max_grain_um) {
                 stats.filtered += 1;
@@ -627,7 +635,29 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         s.push_str("</svg>");
         svgs.push(s);
     }
+    let (cut, twice) = audit(&reg, &printed, areas);
+    stats.grains_cut = cut;
+    stats.grains_twice = twice;
     SheetResult { pages: svgs, registration: reg, stats }
+}
+
+/// The print check: for every printed grain, how many bands of its area hold its whole box.
+/// Returns (grains in no band, grains in more than one).
+pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetArea]) -> (usize, usize) {
+    let (mut cut, mut twice) = (0, 0);
+    for (ai, gs) in printed.iter().enumerate() {
+        let bands: Vec<[f64; 4]> = reg.bands.iter().filter(|b| b.area == areas[ai].rec.id).map(|b| b.mosaic_rect_um).collect();
+        for g in gs {
+            let b = g.bbox_um;
+            let n = bands.iter().filter(|r| r[0] <= b[0] + 0.5 && r[1] <= b[1] + 0.5 && r[2] >= b[2] - 0.5 && r[3] >= b[3] - 0.5).count();
+            if n == 0 {
+                cut += 1;
+            } else if n > 1 {
+                twice += 1;
+            }
+        }
+    }
+    (cut, twice)
 }
 
 fn r3(v: f64) -> f64 {

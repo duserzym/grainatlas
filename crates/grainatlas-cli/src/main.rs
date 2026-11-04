@@ -287,13 +287,23 @@ fn main() -> Result<()> {
                         .and_then(|v| serde_json::from_value(v["grains"].clone()).ok())
                         .unwrap_or_default();
                     let grains = pipeline::segment_area(rec, &o, &params.segment, &prev);
-                    eprintln!("  {} grains in {:.0} ms", grains.len(), clock() - t);
+                    let mut why: std::collections::BTreeMap<&str, usize> = Default::default();
+                    for g in grains.iter().filter_map(|g| g.artifact) {
+                        *why.entry(g.label()).or_default() += 1;
+                    }
+                    let flagged: usize = why.values().sum();
+                    eprintln!(
+                        "  {} grains, {flagged} artifacts{} in {:.0} ms",
+                        grains.len() - flagged,
+                        if flagged > 0 { format!(" ({})", why.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")) } else { String::new() },
+                        clock() - t
+                    );
                     for (rel, bytes) in pipeline::mask_files(rec, &o, &grains) {
                         write(&out.join(rel), &bytes)?;
                     }
                     let csv = grainatlas_core::segment::grains_csv(&grains, |x, y| rec.stage_of(x, y), |_| 0);
                     write(&out.join(format!("exports/{}_grains.csv", area.id)), csv.as_bytes())?;
-                    grains_n = Some(grains.len());
+                    grains_n = Some(grains.iter().filter(|g| g.is_grain()).count());
                     // The UI keeps grains under `grainatlas_ui` in project.json.
                     let ui = project.extra.entry("grainatlas_ui".into()).or_insert_with(|| serde_json::json!({}));
                     ui["grains"][&area.id] = serde_json::to_value(&grains)?;
@@ -381,8 +391,8 @@ fn main() -> Result<()> {
                 write(&out.join("exports/ownership.json"), &serde_json::to_vec_pretty(&own)?)?;
                 let s = &r.stats;
                 eprintln!(
-                    "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} outside the size limits, background stripped in {} bands, kept in {} for safety) in {:.0} ms",
-                    s.sheets, s.bands, s.grains, s.duplicates, s.filtered, s.stripped, s.strip_refused, clock() - t
+                    "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice) in {:.0} ms",
+                    s.sheets, s.bands, s.grains, s.duplicates, s.artifacts, s.filtered, s.stripped, s.strip_refused, s.grains_cut, s.grains_twice, clock() - t
                 );
                 let ui = project.extra.entry("grainatlas_ui".into()).or_insert_with(|| serde_json::json!({}));
                 ui["ownership"] = serde_json::to_value(&own)?;

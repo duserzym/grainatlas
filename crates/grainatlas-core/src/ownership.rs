@@ -234,7 +234,7 @@ pub fn assign(areas: &[AreaRecord], grains: &BTreeMap<String, Vec<Grain>>, p: &O
     }
     let mut dets: Vec<Det> = Vec::new();
     for (ai, a) in areas.iter().enumerate() {
-        for g in grains.get(&a.id).map_or(&[][..], |v| v.as_slice()) {
+        for g in grains.get(&a.id).map_or(&[][..], |v| v.as_slice()).iter().filter(|g| g.is_grain()) {
             let (stage, interior) = match &geo[ai] {
                 Some(ge) => (Some(ge.to_stage(g.centroid_um)), ge.interior(g.bbox_um)),
                 None => (None, f64::INFINITY),

@@ -126,9 +126,13 @@ export interface SegmentParams {
   work_scale: number;
   dark_rel: number;
   background_window_um: number;
-  reject_bubbles: boolean;
-  reject_slivers: boolean;
-  reject_blocks: boolean;
+  /** Artifact classifier: flag (never delete) bubbles and their halos, seam slivers, tile blocks, specks. */
+  flag_bubbles: boolean;
+  flag_slivers: boolean;
+  flag_blocks: boolean;
+  flag_specks: boolean;
+  /** Grain size the artifact sizes scale with (µm); 0 = the area's median grain size. */
+  reference_size_um: number;
   /** 0 = no limit */
   max_size_um: number;
 }
@@ -161,7 +165,22 @@ export interface Grain {
   mean_intensity: number;
   manual: boolean;
   scale_bar_um: number;
+  /** Not a grain, and why (shown dimmed, unnumbered, left off sheets and spots). */
+  artifact?: ArtifactReason;
+  /** The user kept this detection as a grain although it was flagged. */
+  kept?: boolean;
 }
+
+export type ArtifactReason = 'bubble' | 'halo' | 'sliver' | 'block' | 'speck' | 'manual';
+
+export const ARTIFACT_LABELS: Record<ArtifactReason, string> = {
+  bubble: 'epoxy bubble or pit',
+  halo: 'bubble halo or rim',
+  sliver: 'tile-seam sliver',
+  block: 'exposure-step tile block',
+  speck: 'speck',
+  manual: 'marked by you',
+};
 
 export type SpotKind = 'spot' | 'line' | 'raster';
 
@@ -309,7 +328,7 @@ export interface PrintRegistration {
   bands: BandRecord[];
 }
 
-export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; stripped: number; strip_refused: number }
+export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number }
 
 /** One detection and the area that owns the grain. */
 export interface GrainOwner {
