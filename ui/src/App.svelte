@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, type Screen } from './lib/store.svelte';
-  import { isHosted, notify } from '@lab/bridge';
-  import { liveChanged, liveKey, saveProject, startDeepLink } from './lib/actions';
+  import { isHosted, notify, onOpenFiles } from '@lab/bridge';
+  import { liveChanged, liveKey, openOffered, saveProject, startDeepLink } from './lib/actions';
   import Open from './screens/Open.svelte';
   import Area from './screens/Area.svelte';
   import Canvas from './screens/Canvas.svelte';
@@ -10,6 +10,7 @@
   import Settings from './screens/Settings.svelte';
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
+  import ReplaceDialog from './components/ReplaceDialog.svelte';
   import ThemeSwitch from './components/ThemeSwitch.svelte';
   import { editCopy } from './lib/remote';
 
@@ -103,6 +104,10 @@
 
   onMount(() => {
     const unwatch = watchTheme();
+    // Files dropped on UPb Studio's window or opened through the OS (rule 4): the
+    // bridge takes them at once (before the shell's 3 s fallback) and hands them
+    // over as {path, file}; they open like a drop on the Open screen.
+    const stopFiles = isHosted() ? onOpenFiles((set) => openOffered(set)) : () => {};
     fromHash();
     void startDeepLink();
     window.addEventListener('hashchange', fromHash);
@@ -124,6 +129,7 @@
     window.addEventListener('keydown', key);
     return () => {
       unwatch();
+      stopFiles();
       window.removeEventListener('hashchange', fromHash);
       window.removeEventListener('keydown', key);
     };
@@ -170,6 +176,7 @@
     {/if}
   </main>
 
+  {#if app.offer}<ReplaceDialog />{/if}
   {#if app.pendingLoose}<ScaleDialog />{/if}
   {#if app.busy}<Busy />{/if}
   {#if app.notice}

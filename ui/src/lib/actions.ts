@@ -3,7 +3,8 @@
 import type { PackageFile } from './core/core';
 import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
 import { app } from './store.svelte';
-import { download } from './files';
+import { notify, type OpenedFiles } from '@lab/bridge';
+import { download, fromShell } from './files';
 import { packageNameFor, parseDeepLink, sameId, savedProject } from './deeplink';
 
 /** Web: a package folder, an area folder or loose images, handed over as files. */
@@ -11,6 +12,45 @@ export async function openFiles(name: string, files: PackageFile[]) {
   const core = await app.core;
   const r = await app.run(`Reading ${name}`, (p) => core.openFiles(name, files, p));
   if (r) await opened(r);
+}
+
+/**
+ * Hosted: files the user dropped on UPb Studio's window or opened through the OS
+ * (bridge `onOpenFiles`, ux-conventions rule 4). They open exactly like a drop on
+ * the Open screen; `kind` is only the shell's hint, the core still decides. With
+ * a project open, the replace dialog asks first.
+ */
+export async function openOffered(set: OpenedFiles) {
+  const told = (outcome: string) => void notify({ type: 'grainatlas.files.opened', kind: set.kind, name: set.name, files: set.files.length, outcome });
+  if (set.kind === 'project') {
+    app.error = `${set.name} is a saved project folder: it opens in the grainatlas desktop app. Here, open its package folder, then load its project.json (Open screen, Project file).`;
+    told('refused: project folder');
+    return;
+  }
+  const s = fromShell(set);
+  if (!s.files.length) {
+    app.error = `Nothing to open in ${set.name}: drop a package folder, an area folder or image files.`;
+    told('refused: nothing to open');
+    return;
+  }
+  if (app.pkg || app.remote) {
+    app.offer = s;
+    told(`asked: replace ${app.pkg?.name ?? 'the project from the server'}`);
+    return;
+  }
+  await openFiles(s.name, s.files);
+  // Read again: the open just changed it (TypeScript still has it narrowed to null).
+  const pkg = app.pkg as PackageInfo | null;
+  told(app.pendingLoose ? 'asked: scale' : pkg ? `opened: ${pkg.kind}, ${pkg.areas.length} area(s)` : `failed: ${app.error ?? 'not opened'}`);
+}
+
+/** The replace dialog: Open replaces the open project with the offered files, Cancel keeps it. */
+export async function answerOffer(open: boolean) {
+  const s = app.offer;
+  app.offer = null;
+  if (!s) return;
+  void notify({ type: 'grainatlas.files.opened', name: s.name, files: s.files.length, outcome: open ? 'replaced' : 'kept the open project' });
+  if (open) await openFiles(s.name, s.files);
 }
 
 /** Desktop: one folder (package, area folder, `.grainatlas` project) or a set of files, by path. */
