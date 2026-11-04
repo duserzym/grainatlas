@@ -16,7 +16,8 @@
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
-  import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, refreshResults, valueOf, type SpotResult } from '../lib/results';
+  import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
+  import { refreshResults } from '../lib/results-load';
   import { acquisitionPage } from '../lib/laicpmsdb';
 
   let core = $state<Core | null>(null);
@@ -889,12 +890,12 @@
           {#if focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
           <div class="resbox" data-testid="spot-results">
-            <div class="resdate"><span class="num">{fmtValue(r.date)}</span> <span class="faint">{r.date?.metric ?? 'no date'} · 2σ</span></div>
+            <div class="resdate"><span class="num">{fmtValue(r.date)}</span> <span class="faint">{r.date ? `${r.date.method ?? r.date.metric} · ${r.date.utype ?? '2σ'}${r.date.passes === false ? ' · fails filters' : ''}` : 'no date yet'}</span></div>
             {#if r.flags.length}<div class="flags">{#each r.flags as f (f)}<span class="flag">{f}</span>{/each}</div>{/if}
             <table class="data kv">
               <tbody>
-                {#each r.ratios as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v)}</td></tr>{/each}
-                {#each r.concentrations as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v, 0)}</td></tr>{/each}
+                {#each r.ratios as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v)}{v.utype ? ` (${v.utype})` : ''}</td></tr>{/each}
+                {#each r.concentrations as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v, Math.abs(v.value) >= 100 ? 0 : 1)}</td></tr>{/each}
                 {#if r.session_key}<tr><td>session</td><td>{r.session_key}</td></tr>{/if}
               </tbody>
             </table>

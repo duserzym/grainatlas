@@ -12,6 +12,8 @@ export interface DeepLink {
   spot: string | null;
   /** `?server=<base>`: open the project's published bundle from that laicpmsdb server. */
   server?: string | null;
+  /** `?access=`: laicpmsdb's signed read-only token for that project's files. */
+  access?: string | null;
 }
 
 export interface RecentEntry {
@@ -32,7 +34,7 @@ export function parseDeepLink(search: string): DeepLink | null {
   if (!project || !ID.test(project)) return null;
   const spot = q.get('spot');
   const server = q.get('server');
-  return { project, spot: spot && ID.test(spot) ? spot : null, server: server && /^https?:\/\//i.test(server) ? server : null };
+  return { project, spot: spot && ID.test(spot) ? spot : null, server: server && /^https?:\/\//i.test(server) ? server : null, access: q.get('access') };
 }
 
 /** Ids compare case-insensitively (a UUID may arrive upper-case from another tool). */
