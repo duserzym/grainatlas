@@ -21,6 +21,14 @@
 - `svg2pdf` and `pdf-writer` (typst project, MIT OR Apache-2.0) convert the
   SVG print pages to PDF (`crates/grainatlas-core/src/layout/pdf.rs`).
 
+## Icon
+
+- The application icon (`tauri/assets-icon.svg`, `ui/public/favicon.svg`) draws
+  Pupin-type zircon crystals projected from the STL models of
+  mineral-habit-matrix (https://github.com/duserzym/mineral-habit-matrix),
+  MIT licence, by Yiming Zhang. `tauri/icon/zircons.py` regenerates it from
+  those models.
+
 ## Fonts
 
 - DejaVu Sans (`crates/grainatlas-core/assets/fonts/DejaVuSans.ttf`), embedded
