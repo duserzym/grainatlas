@@ -229,7 +229,7 @@ pub struct SheetResult {
 }
 
 // Sheet geometry (mm).
-const HEADER_MM: f64 = 60.0;
+const HEADER_MM: f64 = 66.0;
 const FOOTER_MM: f64 = 5.0;
 const LABEL_MM: f64 = 4.6;
 const NOTE_MM: f64 = 4.2;
@@ -790,7 +790,7 @@ fn area_boxes(areas: &[SheetArea]) -> Vec<Option<[f64; 4]>> {
         .collect()
 }
 
-const MAP_LABEL_MM: f64 = 24.0;
+const MAP_LABEL_MM: f64 = 26.0;
 
 /// Width of the map box: the mount at the full header height plus its labels, within limits.
 fn map_width(page: super::Paper, areas: &[SheetArea]) -> f64 {
@@ -801,7 +801,7 @@ fn map_width(page: super::Paper, areas: &[SheetArea]) -> f64 {
     }
     let w = all.iter().map(|b| b[2]).fold(f64::NEG_INFINITY, f64::max) - all.iter().map(|b| b[0]).fold(f64::INFINITY, f64::min);
     let h = all.iter().map(|b| b[3]).fold(f64::NEG_INFINITY, f64::max) - all.iter().map(|b| b[1]).fold(f64::INFINITY, f64::min);
-    ((HEADER_MM - 10.5) * w / h.max(1.0) + MAP_LABEL_MM + 6.0).clamp(90.0, max)
+    ((HEADER_MM - 7.5) * w / h.max(1.0) + MAP_LABEL_MM + 6.0).clamp(90.0, max)
 }
 
 /// Vector map of the mount's areas in the SEM view (stage axes signed like the mosaic), this
@@ -820,9 +820,9 @@ fn mount_map(s: &mut String, p: &SheetParams, page: super::Paper, areas: &[Sheet
     let (x0, y0) = (all.iter().map(|b| b[0]).fold(f64::INFINITY, f64::min), all.iter().map(|b| b[1]).fold(f64::INFINITY, f64::min));
     let (x1, y1) = (all.iter().map(|b| b[2]).fold(f64::NEG_INFINITY, f64::max), all.iter().map(|b| b[3]).fold(f64::NEG_INFINITY, f64::max));
     let label_w = MAP_LABEL_MM;
-    let sc = ((bw - label_w - 6.0) / (x1 - x0)).min((bh - 9.0) / (y1 - y0));
+    let sc = ((bw - label_w - 6.0) / (x1 - x0)).min((bh - 6.0) / (y1 - y0));
     let ox = bx + 3.0 + (bw - label_w - 6.0 - (x1 - x0) * sc) / 2.0;
-    let oy = by + 3.0 + (bh - 9.0 - (y1 - y0) * sc) / 2.0;
+    let oy = by + 2.0 + (bh - 6.0 - (y1 - y0) * sc) / 2.0;
     let tx = |u: f64| ox + (u - x0) * sc;
     let ty = |v: f64| oy + (v - y0) * sc;
     for (ai, b) in boxes.iter().enumerate() {
@@ -861,14 +861,14 @@ fn mount_map(s: &mut String, p: &SheetParams, page: super::Paper, areas: &[Sheet
         let (v0, v1) = (c[0][1].min(c[1][1]), c[0][1].max(c[1][1]));
         let _ = write!(s, r#"<rect x="{:.3}" y="{:.3}" width="{:.3}" height="{:.3}" fill="none" stroke="white" stroke-width="0.35"/><rect x="{:.3}" y="{:.3}" width="{:.3}" height="{:.3}" fill="none" stroke="black" stroke-width="0.12"/>"#, tx(u0), ty(v0), (u1 - u0) * sc, (v1 - v0) * sc, tx(u0), ty(v0), (u1 - u0) * sc, (v1 - v0) * sc);
     }
-    // One label per sample, right of its areas, at their mean height.
-    let mut done: Vec<String> = Vec::new();
+    // One label per sample in a column right of the mount, at the sample's mean height (pushed
+    // apart where they would touch), with a leader from the sample's right edge.
+    let mut labels: Vec<(String, f64, f64, bool)> = Vec::new();
     for ai in 0..areas.len() {
         let sn = sample_of(ai);
-        if done.contains(&sn) {
+        if labels.iter().any(|l| l.0 == sn) {
             continue;
         }
-        done.push(sn.clone());
         let bs: Vec<[f64; 4]> = (0..areas.len()).filter(|&j| sample_of(j) == sn).filter_map(|j| boxes[j]).collect();
         if bs.is_empty() {
             continue;
@@ -876,18 +876,37 @@ fn mount_map(s: &mut String, p: &SheetParams, page: super::Paper, areas: &[Sheet
         let right = bs.iter().map(|b| b[2]).fold(f64::NEG_INFINITY, f64::max);
         let mid = bs.iter().map(|b| (b[1] + b[3]) / 2.0).sum::<f64>() / bs.len() as f64;
         let on = here.contains(&sn);
+        labels.push((sn, tx(right), ty(mid), on));
+    }
+    labels.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let gap = 2.7;
+    let mut ys: Vec<f64> = labels.iter().map(|l| l.2).collect();
+    for i in 1..ys.len() {
+        ys[i] = ys[i].max(ys[i - 1] + gap);
+    }
+    // Shift the column up when it runs off the bottom of the map.
+    let over = ys.last().map_or(0.0, |&y| y - (by + bh - 7.0)).max(0.0);
+    for y in ys.iter_mut() {
+        *y -= over;
+    }
+    let col = tx(x1) + 3.0;
+    for ((sn, rx, ry, on), y) in labels.iter().zip(&ys) {
         let _ = write!(
             s,
-            r#"<text x="{:.2}" y="{:.2}" font-size="{}" {}fill="{}">{}</text>"#,
-            tx(right) + 1.0,
-            ty(mid) + 0.9,
-            if on { 2.6 } else { 2.2 },
-            if on { r#"font-weight="bold" "# } else { "" },
-            if on { INK } else { GREY },
-            esc(&sn)
+            r#"<path d="M{:.2} {ry:.2} L{:.2} {y:.2} H{:.2}" fill="none" stroke="{}" stroke-width="0.12"/><text x="{:.2}" y="{:.2}" font-size="{}" {}fill="{}">{}</text>"#,
+            rx + 0.3,
+            col - 1.2,
+            col - 0.4,
+            if *on { INK } else { LIGHT },
+            col,
+            y + 0.8,
+            if *on { 2.5 } else { 2.2 },
+            if *on { r#"font-weight="bold" "# } else { "" },
+            if *on { INK } else { GREY },
+            esc(sn)
         );
     }
     // 1 mm bar and orientation note.
     let l = 1000.0 * sc;
-    let _ = write!(s, r#"<path d="M{:.2} {:.2} h{l:.3}" stroke="{GREY}" stroke-width="0.4"/><text x="{:.2}" y="{:.2}" font-size="2" fill="{GREY}">1 mm · SEM view · dark: this sheet · boxes: its bands</text>"#, bx + 3.0, by + bh - 3.0, bx + 4.5 + l, by + bh - 2.3);
+    let _ = write!(s, r#"<path d="M{:.2} {:.2} h{l:.3}" stroke="{GREY}" stroke-width="0.4"/><text x="{:.2}" y="{:.2}" font-size="2" fill="{GREY}">1 mm · SEM view · dark: this sheet · boxes: its bands</text>"#, bx + 3.0, by + bh - 2.2, bx + 4.5 + l, by + bh - 1.5);
 }
