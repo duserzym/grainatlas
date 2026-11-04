@@ -93,7 +93,7 @@ export interface ToneParams {
 }
 
 export interface AreaParams {
-  stitch: { coarse_factor: number; min_psr: number; max_drift_um: number; outlier_px: number; refine_full: boolean };
+  stitch: { coarse_factor: number; min_psr: number; max_drift_um: number; outlier_px: number; refine_full: boolean; consensus_px: number };
   photometric: {
     model: 'affine' | 'gain' | 'none';
     regularisation: number;
