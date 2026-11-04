@@ -74,7 +74,21 @@ The steps (`segment()`, then `second_pass`):
    quarter of it; a footprint with one grain replaces it when the detection covers
    under two thirds (the bright part of a CL-dark grain); a footprint with none is
    a new grain. Detections nested inside a larger grain are dropped.
-5. **Classification** of every grain:
+5. **Fused bubbles** (`flag_bubbles`): a round dark region inside a grain (12 µm to
+   1.2 r) is a bubble when a circle 20 µm beyond it runs mostly (≥ 45 %) through the
+   epoxy, because the bubble sticks out of the grain. A CL-dark core is ringed by its own
+   grain and stays. The bubble and its halo come off the grain, which keeps its id. Bubbles
+   are also found in a second, lower-threshold dark mask (closed and filled), so a
+   large bubble with a grey textured middle and a faint, one-sided halo is caught
+   (circularity > 0.75, solidity > 0.92).
+6. **Bridged grains** (`flag_slivers`): a grain's own outline opened at 1.65 × the seam
+   radius (6.6 µm on S) that falls apart into two or more compact parts (solidity ≥ 0.75,
+   over 0.32 r) becomes those grains. Each part grows back over the outline by up to 8 µm,
+   and the largest keeps the id. The test is geometric, so a CL-dark part splits off as
+   well as a bright one.
+7. **Classification** of every grain, after the splits, so halo pieces left beside a
+   detached bubble are flagged:
+   - `bubble`: round and dark with a bright halo ring, up to 1.5 r.
    - `halo`: centred on a bubble and not much larger; a crescent under 0.45 r
      touching a bubble; an arc on a circle (radius ≤ 0.8 r, solidity < 0.7); a round
      blob whose middle is at the epoxy level; or a crescent (solidity < 0.8,
@@ -90,6 +104,10 @@ The steps (`segment()`, then `second_pass`):
      1.8 r from every grain.
 
 `GRAINATLAS_DEBUG_SEG=1` prints every detection's measures, verdict and `r`.
+
+Split tool: a part that a cut separates from a grain is flagged as a bubble when it is
+round and below 0.7 × the epoxy level around the grain. One cut through the neck
+therefore detaches a fused bubble; "Keep as grain" undoes the flag.
 
 Validation: galleries of every flagged detection on the four Boise packages
 (Grenville S and L, Sweden S and XS) were checked by eye. On Grenville S, the

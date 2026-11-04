@@ -296,7 +296,9 @@ pub fn analyse(w: &WorkImage, p: &SegmentParams, r: f64) -> Analysis {
     let mut bubble_grains = Vec::new();
     let mut bubble_mask = vec![false; iw * ih];
     if p.flag_bubbles && p.polarity != Polarity::Dark {
-        let (lab, counts) = morph::components(&dark, iw, ih);
+        // A bubble with a grey, textured middle breaks up in the dark mask: close and fill it.
+        let solid = morph::fill_holes(&morph::close(&dark, iw, ih, ((4.0 / k).round() as usize).max(2)), iw, ih);
+        let (lab, counts) = morph::components(&solid, iw, ih);
         let gs = grains_of_labels(&lab, &counts, iw, ih, w, eqd_px(12.0, k).powi(2) * std::f64::consts::PI / 4.0, 0.8);
         let max = rel::bubble_max(r);
         let mut is_bubble = vec![false; counts.len().max(1)];
@@ -317,6 +319,34 @@ pub fn analyse(w: &WorkImage, p: &SegmentParams, r: f64) -> Analysis {
         }
         for (m, &l) in bubble_mask.iter_mut().zip(&lab) {
             *m = l > 0 && is_bubble[l as usize];
+        }
+        // Large bubbles whose middle is only somewhat below the epoxy (grey, textured): anything
+        // clearly below the epoxy level, closed and filled, that is very round and has at least a
+        // faint bright halo, from the bubble size limit up to 1.2 x the reference size.
+        let lowt = (2.5 * sigma).max(0.25 * td);
+        let low: Vec<bool> = (0..iw * ih).map(|i| w.cov[i] && dev.px[i] < -lowt).collect();
+        let low = morph::open(&low, iw, ih, 2);
+        let low = morph::fill_holes(&morph::close(&low, iw, ih, ((5.0 / k).round() as usize).max(2)), iw, ih);
+        let (lab2, counts2) = morph::components(&low, iw, ih);
+        let min2 = std::f64::consts::PI / 4.0 * (max / k).powi(2);
+        let mut extra = vec![false; counts2.len().max(1)];
+        for (l, mut g) in grains_of_labels(&lab2, &counts2, iw, ih, w, min2, 0.8) {
+            let s = shape_stats(&g, k);
+            let fresh = !bubbles.iter().any(|b| (b.c[0] - g.centroid_um[0]).hypot(b.c[1] - g.centroid_um[1]) < b.r + g.eq_diameter_um / 2.0);
+            // Rounder than the first set asks, since the halo may glow on one side only.
+            if fresh && g.eq_diameter_um <= 1.2 * r && s.circularity > 0.75 && s.solidity > 0.92 && s.aspect < 1.3 && ring_mean(&dev, &g, k, 6.0) > 0.25 * t_bright as f64 {
+                bubbles.push(Bubble { c: g.centroid_um, r: g.eq_diameter_um / 2.0 });
+                if (l as usize) < extra.len() {
+                    extra[l as usize] = true;
+                }
+                g.artifact = Some(Artifact::Bubble);
+                bubble_grains.push(g);
+            }
+        }
+        for (m, &l) in bubble_mask.iter_mut().zip(&lab2) {
+            if l > 0 && extra[l as usize] {
+                *m = true;
+            }
         }
     }
     Analysis { sigma, t_bright, t_dark: td, bubbles, bubble_grains, dev: Some(dev), dark, bubble_mask }
@@ -346,7 +376,10 @@ fn bubble_zone(an: &Analysis, iw: usize, ih: usize, k: f64) -> Vec<bool> {
     if an.bubble_mask.len() != iw * ih {
         return vec![false; iw * ih];
     }
-    morph::dilate(&an.bubble_mask, iw, ih, ((9.0 / k).round() as usize).max(3))
+    // Round, not square: a square grows into the corners of grains next to the bubble.
+    let r = (9.0 / k).max(3.0) as f32;
+    let d = morph::distance(&an.bubble_mask.iter().map(|b| !b).collect::<Vec<bool>>(), iw, ih);
+    d.iter().map(|&v| v <= r).collect()
 }
 
 /// The primary mask cleaned of artifacts before labelling, or `None` when nothing changes:
@@ -363,18 +396,24 @@ pub fn clean_mask(mask: &[bool], w: &WorkImage, p: &SegmentParams, an: &Analysis
         return None;
     }
     let mut m = mask.to_vec();
-    if bubbles {
-        let zone = bubble_zone(an, iw, ih, k);
+    let zone = if bubbles { bubble_zone(an, iw, ih, k) } else { Vec::new() };
+    let clear = |m: &mut Vec<bool>| {
         for (v, z) in m.iter_mut().zip(&zone) {
             if *z {
                 *v = false;
             }
         }
+    };
+    clear(&mut m);
+    // The opening also takes the thin remnants of a halo ring outside the zone.
+    let r_open = seam.max(if bubbles { 2 } else { 0 });
+    if r_open > 0 {
+        m = morph::open(&m, iw, ih, r_open);
     }
-    if seam > 0 {
-        m = morph::open(&m, iw, ih, seam);
-    }
-    Some(morph::fill_holes(&m, iw, ih))
+    m = morph::fill_holes(&m, iw, ih);
+    // Filling must not bring a bubble back inside a halo remnant.
+    clear(&mut m);
+    Some(m)
 }
 
 /// Grains of every label of `lab` with at least `min_px` pixels, with their label.
@@ -580,6 +619,19 @@ fn verdict(g: &Grain, p: &SegmentParams, an: &Analysis, k: f64, r: f64) -> Optio
     {
         return Some(Artifact::Halo);
     }
+    // A large bubble on its own: round, dark, and ringed by a bright halo in the epoxy (a CL-dark
+    // zircon sits in plain epoxy).
+    if p.flag_bubbles
+        && p.polarity != Polarity::Dark
+        && !bright
+        && g.eq_diameter_um <= 1.5 * r
+        && s.circularity > 0.72
+        && s.solidity > 0.88
+        && s.aspect < 1.35
+        && dev.is_some_and(|d| ring_mean(d, g, k, 8.0) > 0.5 * an.t_bright as f64)
+    {
+        return Some(Artifact::Bubble);
+    }
     let contrast = dev.map_or(1.0, |d| contrast_fraction(d, g, k, an.t_bright, an.t_dark));
     if p.flag_slivers && is_sliver(g, contrast) {
         return Some(Artifact::Sliver);
@@ -752,8 +804,11 @@ pub fn merge_footprints(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParam
     fp = morph::fill_holes(&fp, iw, ih);
     let seam = if p.flag_slivers { ((rel::seam_open(r) / k).round() as usize).max(2) } else { 2 };
     fp = morph::open(&fp, iw, ih, seam);
-    for (i, v) in fp.iter_mut().enumerate() {
-        if an.bubble_mask.get(i).copied().unwrap_or(false) {
+    // Bubbles and their halo zone stay out (filling would otherwise close the gap between a
+    // grain and a bubble's halo remnant).
+    let zone = bubble_zone(an, iw, ih, k);
+    for (v, z) in fp.iter_mut().zip(&zone) {
+        if *z {
             *v = false;
         }
     }
@@ -782,7 +837,7 @@ pub fn merge_footprints(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParam
         // unless two large ones each fill a good part of it.
         let big = ms.iter().filter(|&&i| grains[i].eq_diameter_um >= rel::fragment(r) && grains[i].area_um2 > 0.25 * shape.area_um2).count();
         let whole = match ms.len() {
-            0 => true,
+            0 => !grains.iter().any(|g| g.is_grain() && overlaps(g, shape)),
             1 => area < shape.area_um2 / 1.5,
             _ => large <= 1 || big <= 1,
         };
@@ -851,4 +906,207 @@ pub fn straight_fraction(g: &Grain, min_um: f64) -> f64 {
         }
     }
     on / total
+}
+
+/// Grain mask over its bbox grown by `pad` pixels, as (mask, w, h, origin).
+fn grain_raster(g: &Grain, k: f64, pad: usize) -> (Vec<bool>, usize, usize, (usize, usize)) {
+    shape::rasterize(g, k, pad)
+}
+
+/// Fraction of a circle (centre and radius in local pixels) that lies outside `mask`.
+fn circle_outside(mask: &[bool], bw: usize, bh: usize, c: [f64; 2], rad: f64) -> f64 {
+    let n = 72;
+    let mut out = 0;
+    for i in 0..n {
+        let a = i as f64 / n as f64 * std::f64::consts::TAU;
+        let (x, y) = (c[0] + rad * a.cos(), c[1] + rad * a.sin());
+        let inside = x >= 0.0 && y >= 0.0 && (x as usize) < bw && (y as usize) < bh && mask[y as usize * bw + x as usize];
+        if !inside {
+            out += 1;
+        }
+    }
+    out as f64 / n as f64
+}
+
+/// Cuts epoxy bubbles off the grains they fused with (Boise Sweden S Skin_felsic, AH1-gc1, many
+/// on Grenville L). A round dark region in a grain (12 um to 1.2 x the reference size,
+/// circularity > 0.7, solidity > 0.85, aspect < 1.4) is a bubble when a circle beyond its halo
+/// (radius + 20 um) runs mostly through the epoxy: the bubble sticks out of the grain. A
+/// CL-dark core is ringed by its own grain and stays. The bubble and its 9 um halo come off the
+/// grain (which keeps its id), the bubble is added as an artifact, and the analysis learns it
+/// so its halo pieces are flagged too.
+pub fn detach_bubbles(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams, an: &mut Analysis, r: f64) {
+    if !p.flag_bubbles || p.polarity == Polarity::Dark {
+        return;
+    }
+    let Some(dev) = an.dev.clone() else { return };
+    let k = w.um_per_px;
+    let halo = ((9.0 / k).round() as usize).max(3);
+    let mut found: Vec<Grain> = Vec::new();
+    for g in grains.iter_mut().filter(|g| g.is_grain() && g.eq_diameter_um > 30.0) {
+        let pad = ((16.0 / k).ceil() as usize).max(4);
+        let (mask, bw, bh, o) = grain_raster(g, k, pad);
+        let dark: Vec<bool> = (0..bw * bh)
+            .map(|i| {
+                let (x, y) = (o.0 + i % bw, o.1 + i / bw);
+                mask[i] && x < dev.w && y < dev.h && dev.px[y * dev.w + x] < -an.t_dark
+            })
+            .collect();
+        let dark = morph::open(&dark, bw, bh, 2);
+        let (lab, counts) = morph::components(&dark, bw, bh);
+        let mut cut = vec![false; bw * bh];
+        let mut bubbles_here = Vec::new();
+        for (l, &n) in counts.iter().enumerate().skip(1) {
+            let eqd = 2.0 * (n as f64 / std::f64::consts::PI).sqrt() * k;
+            if !(12.0..=1.2 * r).contains(&eqd) {
+                continue;
+            }
+            let part: Vec<bool> = lab.iter().map(|&v| v as usize == l).collect();
+            let Some(mut b) = shape::grain_from_mask(&part, bw, bh, o, w, 0.8, false) else { continue };
+            let s = shape_stats(&b, k);
+            if s.circularity <= 0.7 || s.solidity <= 0.85 || s.aspect >= 1.4 || b.area_um2 > 0.7 * g.area_um2 {
+                continue;
+            }
+            let c = [b.centroid_um[0] / k - o.0 as f64, b.centroid_um[1] / k - o.1 as f64];
+            let rad = b.eq_diameter_um / 2.0 / k + 20.0 / k;
+            if circle_outside(&mask, bw, bh, c, rad) < 0.45 {
+                continue; // ringed by the grain: a CL-dark core
+            }
+            let grown = morph::dilate(&part, bw, bh, halo);
+            // The halo is round too: cut the disc of the bubble plus its halo.
+            let rr = b.eq_diameter_um / 2.0 / k + halo as f64;
+            for y in 0..bh {
+                for x in 0..bw {
+                    let i = y * bw + x;
+                    if grown[i] || (x as f64 + 0.5 - c[0]).hypot(y as f64 + 0.5 - c[1]) <= rr {
+                        cut[i] = true;
+                    }
+                }
+            }
+            b.artifact = Some(Artifact::Bubble);
+            bubbles_here.push(b);
+        }
+        if bubbles_here.is_empty() {
+            continue;
+        }
+        let rest: Vec<bool> = mask.iter().zip(&cut).map(|(m, c)| *m && !*c).collect();
+        let rest = morph::open(&rest, bw, bh, 1);
+        let (rl, rc) = morph::components(&rest, bw, bh);
+        let Some((best, bn)) = rc.iter().copied().enumerate().skip(1).max_by_key(|&(_, n)| n) else { continue };
+        if (bn as f64) * k * k < 0.25 * g.area_um2 {
+            continue; // little left: let the classifier judge the whole
+        }
+        let keep: Vec<bool> = rl.iter().map(|&v| v as usize == best).collect();
+        if let Some(mut q) = shape::grain_from_mask(&keep, bw, bh, o, w, p.simplify_px, false) {
+            q.id = g.id;
+            q.manual = g.manual;
+            q.mean_intensity = mean_inside(&w.img, &q, k);
+            *g = q;
+            for b in &bubbles_here {
+                an.bubbles.push(Bubble { c: b.centroid_um, r: b.eq_diameter_um / 2.0 });
+            }
+            found.extend(bubbles_here);
+        }
+    }
+    grains.extend(found);
+}
+
+/// Splits grains that are several grains bridged by a seam line or by the footprint closing:
+/// the grain's own outline opened at 1.65 x the seam radius (6.6 um on the S mount) falls apart
+/// into two or more compact parts (solidity >= 0.75, over [`rel::fragment`] of the reference
+/// size); each part grows back over the outline by up to 8 um and becomes a grain, the largest
+/// keeping the id. The test is on the outline, so it works whether the parts are bright or
+/// CL-dark.
+pub fn split_bridged(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams, r: f64) {
+    if !p.flag_slivers {
+        return;
+    }
+    let k = w.um_per_px;
+    let rr = ((1.65 * rel::seam_open(r) / k).round() as usize).max(2);
+    let grow = ((8.0 / k).round() as usize).max(2);
+    let mut out: Vec<Grain> = Vec::with_capacity(grains.len());
+    for g in grains.drain(..) {
+        if !g.is_grain() || g.eq_diameter_um < 2.0 * rel::fragment(r) {
+            out.push(g);
+            continue;
+        }
+        let (mask, bw, bh, o) = grain_raster(&g, k, rr + 2);
+        let opened = morph::open(&mask, bw, bh, rr);
+        let (lab, counts) = morph::components(&opened, bw, bh);
+        let min_px = std::f64::consts::PI / 4.0 * (rel::fragment(r) / k).powi(2);
+        let parts: Vec<usize> = (1..counts.len()).filter(|&l| counts[l] as f64 >= min_px).collect();
+        if parts.len() < 2 {
+            out.push(g);
+            continue;
+        }
+        // Each pixel of the outline goes to the nearest part, within `grow`.
+        let mut owner = vec![0usize; bw * bh];
+        for (i, &l) in lab.iter().enumerate() {
+            if parts.contains(&(l as usize)) {
+                owner[i] = l as usize;
+            }
+        }
+        for _ in 0..grow {
+            let prev = owner.clone();
+            for y in 0..bh {
+                for x in 0..bw {
+                    let i = y * bw + x;
+                    if prev[i] != 0 || !mask[i] {
+                        continue;
+                    }
+                    let nb = [(x > 0).then(|| i - 1), (x + 1 < bw).then(|| i + 1), (y > 0).then(|| i - bw), (y + 1 < bh).then(|| i + bw)];
+                    if let Some(j) = nb.into_iter().flatten().find(|&j| prev[j] != 0) {
+                        owner[i] = prev[j];
+                    }
+                }
+            }
+        }
+        let mut pieces: Vec<Grain> = parts
+            .iter()
+            .filter_map(|&l| {
+                let m: Vec<bool> = owner.iter().map(|&v| v == l).collect();
+                let m = morph::fill_holes(&m, bw, bh);
+                shape::grain_from_mask(&m, bw, bh, o, w, p.simplify_px, false)
+            })
+            .filter(|q| shape_stats(q, k).solidity >= 0.75)
+            .collect();
+        if pieces.len() < 2 {
+            out.push(g);
+            continue;
+        }
+        pieces.sort_by(|a, b| b.area_um2.total_cmp(&a.area_um2));
+        pieces[0].id = g.id;
+        pieces[0].manual = g.manual;
+        for q in pieces.iter_mut() {
+            q.mean_intensity = mean_inside(&w.img, q, k);
+        }
+        out.extend(pieces);
+    }
+    *grains = out;
+}
+
+/// A part split off a grain by hand that is an epoxy bubble: round and well below the epoxy
+/// level around the grain (the Split tool flags it, so one cut detaches a bubble).
+pub fn looks_like_bubble(part: &Grain, grain: &Grain, w: &WorkImage) -> bool {
+    let k = w.um_per_px;
+    let s = shape_stats(part, k);
+    if s.circularity <= 0.7 || s.solidity <= 0.85 || s.aspect >= 1.4 || !(12.0..=300.0).contains(&part.eq_diameter_um) {
+        return false;
+    }
+    // The epoxy: a ring 6 to 14 um outside the original grain.
+    let (inner, bw, bh, o) = shape::rasterize(grain, k, ((16.0 / k).ceil() as usize).max(4));
+    let a = morph::dilate(&inner, bw, bh, ((14.0 / k).round() as usize).max(2));
+    let b = morph::dilate(&inner, bw, bh, ((6.0 / k).round() as usize).max(1));
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for y in 0..bh {
+        for x in 0..bw {
+            let i = y * bw + x;
+            let (gx, gy) = (o.0 + x, o.1 + y);
+            if a[i] && !b[i] && gx < w.img.w && gy < w.img.h && w.cov[gy * w.img.w + gx] {
+                sum += w.img.px[gy * w.img.w + gx] as f64;
+                n += 1;
+            }
+        }
+    }
+    n > 0 && mean_inside(&w.img, part, k) < 0.7 * (sum / n as f64)
 }

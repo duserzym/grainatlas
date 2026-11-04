@@ -352,7 +352,7 @@ pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grai
 /// The artifact classifier and the CL-dark supplement over the primary detections, with the
 /// sizes scaled to the reference grain size `r`.
 fn second_pass(w: &WorkImage, p: &SegmentParams, mask: &[bool], mut grains: Vec<Grain>, r: f64) -> Vec<Grain> {
-    let an = filter::analyse(w, p, r);
+    let mut an = filter::analyse(w, p, r);
     // Bubble halos out of the bright mask, seam lines cut by an opening.
     if let Some(m2) = filter::clean_mask(mask, w, p, &an, r) {
         grains = grains_of_mask(w, p, &m2);
@@ -364,6 +364,8 @@ fn second_pass(w: &WorkImage, p: &SegmentParams, mask: &[bool], mut grains: Vec<
         filter::merge_footprints(&mut grains, w, p, &an, r);
     }
     filter::drop_nested(&mut grains);
+    filter::detach_bubbles(&mut grains, w, p, &mut an, r);
+    filter::split_bridged(&mut grains, w, p, r);
     filter::classify(&mut grains, w, p, &an, r);
     // A dark round blob inside a grain is an inclusion, not a bubble.
     let inside = |b: &Grain| grains.iter().any(|g| g.is_grain() && shape::inside(&g.polygon_um, b.centroid_um[0], b.centroid_um[1]));
@@ -565,6 +567,11 @@ pub fn split_grain(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64) -
         let part: Vec<bool> = part.iter().enumerate().map(|(i, &v)| v && shape::inside_polygon_px(g, w.um_per_px, origin, i % bw, i / bw)).collect();
         if let Some(mut ng) = shape::grain_from_mask(&part, bw, bh, origin, w, simplify_px, true) {
             ng.number = 0;
+            // One cut detaches a bubble: a round part far darker than the epoxy is flagged.
+            if filter::looks_like_bubble(&ng, g, w) {
+                ng.artifact = Some(Artifact::Bubble);
+                ng.manual = false;
+            }
             out.push(ng);
         }
     }

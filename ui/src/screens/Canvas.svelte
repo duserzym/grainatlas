@@ -577,10 +577,15 @@
     const id = areaId;
     const parts = await app.run(`Splitting grain ${g.number}`, () => core!.splitGrain(id, $state.snapshot(g) as Grain, line));
     if (!parts || parts.length < 2) return;
-    const max = Math.max(0, ...grains.map((q) => q.number));
-    parts[0] = { ...parts[0], id: g.id, number: g.number };
-    for (let i = 1; i < parts.length; i++) parts[i] = { ...parts[i], number: max + i };
-    setGrains([...grains.filter((q) => q.id !== g.id), ...parts].sort((a, b) => a.number - b.number));
+    // The largest grain part keeps the grain; a part the core recognised as a bubble becomes a
+    // bubble artifact (one cut detaches a bubble), the others get new numbers.
+    const real = parts.filter((q) => !q.artifact).sort((a, b) => b.area_um2 - a.area_um2);
+    const flagged = parts.filter((q) => q.artifact).map((q) => ({ ...q, number: 0 }));
+    if (!real.length) return;
+    let max = Math.max(0, ...grains.map((q) => q.number));
+    const kept = real.map((q, i) => (i === 0 ? { ...q, id: g.id, number: g.number } : { ...q, number: ++max }));
+    setGrains([...grains.filter((q) => q.id !== g.id), ...kept, ...flagged].sort((a, b) => a.number - b.number));
+    if (flagged.length) app.notice = `Split off ${flagged.length === 1 ? 'a bubble' : `${flagged.length} bubbles`}: flagged as not a grain (Keep as grain restores it).`;
   }
 
   async function click(p: CanvasPoint) {

@@ -362,3 +362,99 @@ fn rows_chain_grains_along_x() {
     assert_eq!(rows[0].len(), 3);
     assert!(rows[0].windows(2).all(|w| w[0].centroid_um[0] < w[1].centroid_um[0]));
 }
+
+/// Epoxy (0.3, noisy) at 2 um/px with discs drawn on it.
+fn scene_with(w: usize, h: usize, draw: impl Fn(&mut Gray)) -> WorkImage {
+    let mut g = Gray::filled(w, h, 0.3);
+    draw(&mut g);
+    let mut r = Rng(5);
+    for v in g.px.iter_mut() {
+        *v += ((r.next() - 0.5) * 0.02) as f32;
+    }
+    WorkImage { img: g, cov: vec![true; w * h], um_per_px: 2.0 }
+}
+
+fn disc(g: &mut Gray, cx: f64, cy: f64, r0: f64, r1: f64, v: f32) {
+    let w = g.w;
+    for y in 0..g.h {
+        for x in 0..w {
+            let d = (x as f64 - cx).hypot(y as f64 - cy);
+            if d >= r0 && d <= r1 {
+                g.px[y * w + x] = v;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_fused_bubble_comes_off_and_a_dark_core_stays() {
+    // Left: a bright grain with an epoxy bubble (dark, bright halo) fused to its top edge.
+    // Right: a bright grain with a CL-dark core inside.
+    let w = scene_with(500, 260, |g| {
+        disc(g, 110.0, 150.0, 0.0, 45.0, 0.8);
+        disc(g, 110.0, 88.0, 0.0, 26.0, 0.85); // halo
+        disc(g, 110.0, 88.0, 0.0, 20.0, 0.03); // bubble
+        disc(g, 360.0, 130.0, 0.0, 50.0, 0.8);
+        disc(g, 362.0, 128.0, 0.0, 18.0, 0.04); // dark core
+    });
+    let gs = segment::segment(&w, &SegmentParams { work_scale: 1, polarity: Polarity::Both, ..Default::default() }, &[]);
+    let real: Vec<&Grain> = gs.iter().filter(|g| g.is_grain()).collect();
+    assert_eq!(real.len(), 2, "{:?}", gs.iter().map(|g| (g.centroid_um, g.eq_diameter_um, g.artifact)).collect::<Vec<_>>());
+    let left = real.iter().find(|g| g.centroid_um[0] < 400.0).expect("left grain");
+    assert!(!segment::shape::inside(&left.polygon_um, 220.0, 176.0), "the bubble is off the grain");
+    assert!(gs.iter().any(|g| g.artifact == Some(Artifact::Bubble) && (g.centroid_um[0] - 220.0).hypot(g.centroid_um[1] - 176.0) < 20.0), "and flagged");
+    let right = real.iter().find(|g| g.centroid_um[0] > 400.0).expect("right grain");
+    assert!(segment::shape::inside(&right.polygon_um, 724.0, 256.0), "the dark core stays in its grain");
+    assert!(right.eq_diameter_um > 180.0);
+}
+
+#[test]
+fn grains_bridged_by_a_seam_line_are_split() {
+    let w = scene_with(400, 200, |_| {});
+    // Two squares joined by a 6 um bar, as one detection.
+    let mut g = grain(0.0, 0.0, 1.0);
+    g.polygon_um = vec![[100.0, 100.0], [260.0, 100.0], [260.0, 170.0], [400.0, 170.0], [400.0, 100.0], [560.0, 100.0], [560.0, 260.0], [400.0, 260.0], [400.0, 176.0], [260.0, 176.0], [260.0, 260.0], [100.0, 260.0]];
+    g.bbox_um = [100.0, 100.0, 560.0, 260.0];
+    g.centroid_um = [330.0, 180.0];
+    g.area_um2 = 2.0 * 160.0 * 160.0;
+    g.eq_diameter_um = 255.0;
+    let id = g.id;
+    let mut gs = vec![g];
+    segment::filter::split_bridged(&mut gs, &w, &SegmentParams::default(), 110.0);
+    assert_eq!(gs.len(), 2, "{:?}", gs.iter().map(|g| (g.centroid_um, g.eq_diameter_um)).collect::<Vec<_>>());
+    assert!(gs.iter().any(|q| q.id == id), "a part keeps the id");
+    assert!(gs.iter().all(|q| (q.eq_diameter_um - 180.0).abs() < 25.0));
+}
+
+#[test]
+fn the_split_tool_flags_a_bubble_part() {
+    let w = scene_with(300, 200, |g| {
+        disc(g, 100.0, 100.0, 0.0, 40.0, 0.8);
+        disc(g, 160.0, 100.0, 0.0, 22.0, 0.03); // bubble against the grain
+    });
+    // The grain outline covering both, cut between them.
+    let mut g = grain(0.0, 0.0, 1.0);
+    g.polygon_um = (0..64)
+        .map(|i| {
+            let a = i as f64 / 64.0 * std::f64::consts::TAU;
+            [2.0 * (100.0 + 40.0 * a.cos()), 2.0 * (100.0 + 40.0 * a.sin())]
+        })
+        .collect();
+    let bubble: Vec<[f64; 2]> = (0..64)
+        .map(|i| {
+            let a = i as f64 / 64.0 * std::f64::consts::TAU;
+            [2.0 * (160.0 + 22.0 * a.cos()), 2.0 * (100.0 + 22.0 * a.sin())]
+        })
+        .collect();
+    // Union as a hull-like outline: both circles' points (convex hull).
+    let mut pts = g.polygon_um.clone();
+    pts.extend(bubble);
+    g.polygon_um = segment::filter::convex_hull(&pts);
+    g.bbox_um = [120.0, 120.0, 364.0, 280.0];
+    g.centroid_um = [230.0, 200.0];
+    let parts = segment::split_grain(&w, &g, [276.0, 100.0, 276.0, 300.0], 0.8);
+    assert_eq!(parts.len(), 2, "{:?}", parts.iter().map(|p| (p.centroid_um, p.artifact)).collect::<Vec<_>>());
+    let b = parts.iter().find(|p| p.centroid_um[0] > 276.0).expect("bubble part");
+    assert_eq!(b.artifact, Some(Artifact::Bubble));
+    assert!(parts.iter().find(|p| p.centroid_um[0] < 276.0).expect("grain part").is_grain());
+}
