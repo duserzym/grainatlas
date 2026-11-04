@@ -149,6 +149,8 @@ export interface Spot {
   y2_um: number | null;
   diameter_um: number;
   kind: SpotKind;
+  /** laicpmsdb acquisition this spot was measured as (UI-held; set by hand or by a later import). */
+  acquisition_id?: string | null;
   comment: string;
   created: string;
   created_by: string;

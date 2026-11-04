@@ -2,21 +2,18 @@
   import { onMount } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { findAllGrains, loadProjectFile, openFiles, openPath, stitchAll } from '../lib/actions';
-  import { isTauri } from '../lib/core/core';
+  import { findAllGrains, loadProjectFile, openExample, openFiles, openPath, stitchAll } from '../lib/actions';
+  import { isDesktop } from '../lib/core/core';
+  import { readRecent, type RecentEntry } from '../lib/deeplink';
 
   let over = $state(false);
   let input: HTMLInputElement;
-  let recent = $state<{ name: string; when: string; areas: number; spots: number }[]>([]);
-  const desktop = isTauri();
+  let recent = $state<RecentEntry[]>([]);
+  const desktop = isDesktop();
   let startupDone = false;
 
   onMount(() => {
-    try {
-      recent = JSON.parse(localStorage.getItem('grainatlas.recent') || '[]');
-    } catch {
-      recent = [];
-    }
+    recent = readRecent();
     if (!desktop) return;
     if (!startupDone) {
       startupDone = true;
@@ -73,11 +70,6 @@
     else app.error = 'Drop a folder (the package), not single files.';
   }
 
-  async function example() {
-    const m = await fetch('./demo/manifest.json').then((r) => r.json());
-    const files = await Promise.all(m.files.map(async (path: string) => ({ path, file: await fetch(`./demo/${path}`).then((r) => r.blob()) })));
-    await openFiles(m.name, files);
-  }
 
   async function project(e: Event) {
     const f = (e.target as HTMLInputElement).files?.[0];
@@ -86,6 +78,20 @@
 </script>
 
 <section class="open">
+  {#if app.deepLink}
+    <div class="glass panel linked" role="status" data-testid="deeplink">
+      <h2>Linked project</h2>
+      {#if app.deepLink.name}
+        <p>The link points to project <code>{app.deepLink.project}</code>{#if app.deepLink.spot}, spot <code>{app.deepLink.spot}</code>{/if}, last opened here from the package <strong>{app.deepLink.name}</strong>. Images are not kept in this page: open that package folder again and the {app.deepLink.spot ? 'spot is selected' : 'project comes back'}.</p>
+      {:else}
+        <p>Project <code>{app.deepLink.project}</code>{#if app.deepLink.spot} (spot <code>{app.deepLink.spot}</code>){/if} is not available on this computer. Open its package folder, then load the project's saved <code>project.json</code> (Project file, below) to continue.</p>
+      {/if}
+      <div class="row">
+        <button class="primary" onclick={pick} data-testid="deeplink-open">Open package…</button>
+        <button onclick={() => (app.deepLink = null)}>Dismiss</button>
+      </div>
+    </div>
+  {/if}
   <div
     class="glass drop"
     class:over
@@ -105,7 +111,7 @@
   </div>
 
   {#if !desktop}<div class="example">
-    <button onclick={example} data-testid="example">Try the example</button>
+    <button onclick={openExample} data-testid="example">Try the example</button>
     <span class="faint">one 3 × 2 TM4000 area (HJ-GC1, 150×, SE) from the test fixture</span>
   </div>{/if}
 
@@ -173,5 +179,16 @@
   }
   .small {
     font-size: 0.8rem;
+  }
+  .linked {
+    border-color: var(--accent);
+  }
+  .linked p {
+    margin: var(--space-2) 0 var(--space-3);
+    overflow-wrap: anywhere;
+  }
+  .row {
+    display: flex;
+    gap: var(--space-2);
   }
 </style>

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, type Screen } from './lib/store.svelte';
-  import { saveProject } from './lib/actions';
+  import { notify } from '@lab/bridge';
+  import { saveProject, startDeepLink } from './lib/actions';
   import Open from './screens/Open.svelte';
   import Area from './screens/Area.svelte';
   import Canvas from './screens/Canvas.svelte';
@@ -35,9 +36,28 @@
     if (location.hash !== want) history.replaceState(null, '', want);
   });
 
+  // Tell UPb Studio which spot is selected (a no-op when not hosted).
+  let lastSelected = '';
+  $effect(() => {
+    const id = app.selection.length === 1 ? app.selection[0] : null;
+    const project = app.project?.uuid;
+    const spot = id ? app.spots.find((s) => s.id === id) : null;
+    if (!project || !spot) {
+      lastSelected = '';
+      return;
+    }
+    const key = `${project}/${spot.id}`;
+    if (key === lastSelected) return;
+    lastSelected = key;
+    void notify({ type: 'grainatlas.spot.selected', project, spot: spot.id, name: spot.name });
+  });
+
   onMount(() => {
     fromHash();
+    void startDeepLink();
     window.addEventListener('hashchange', fromHash);
+    // Ctrl/Cmd 1-4, Ctrl/Cmd , and Ctrl/Cmd R belong to UPb Studio's menu when
+    // hosted (bridge README): grainatlas binds Alt 1-5 and Ctrl/Cmd S only.
     const key = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return;
