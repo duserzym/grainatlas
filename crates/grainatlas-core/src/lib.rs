@@ -13,6 +13,7 @@ pub mod image;
 pub mod laser;
 pub mod layout;
 pub mod mosaic;
+pub mod ownership;
 pub mod photometric;
 pub mod project;
 pub mod readers;

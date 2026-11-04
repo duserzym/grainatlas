@@ -5,6 +5,7 @@
 //! (DejaVu Sans) so the output is identical natively and in the browser.
 
 pub mod pdf;
+pub mod sheets;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
