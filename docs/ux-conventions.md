@@ -78,7 +78,8 @@ wheel keeps scrolling the page there, ctrl + wheel zooms.
   set exactly like a drop on its own Open screen, the one-time scale dialog
   included, and takes the files at once.
 - Opening never silently discards work: when a project is already open,
-  one dialog (Open, Cancel) asks before the new set replaces it.
+  one dialog (Open, Cancel) asks before the new set replaces it. Cancel is
+  the default button, so Enter keeps the open project.
 
 ## 5. The scale is always known, or asked once
 

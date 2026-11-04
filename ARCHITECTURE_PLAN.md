@@ -378,7 +378,7 @@ What exists (2026-11-03, ADR-0005):
   the `{ name, files }` of a drop and `openOffered` (`ui/src/lib/actions.ts`)
   opens it like one: package, area folder, or loose images with the scale
   dialog. With a project open, one dialog (Open, Cancel) asks before replacing
-  it. A `.grainatlas` project folder is refused with a hint (the wasm core
+  it; Cancel has the focus, so Enter or a stray keystroke keeps the project. A `.grainatlas` project folder is refused with a hint (the wasm core
   cannot open one). Each outcome is reported to the shell as
   `notify({ type: 'grainatlas.files.opened', kind, name, files, outcome })`.
   In the desktop shell every drop, including one on grainatlas's own drop
