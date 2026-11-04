@@ -171,3 +171,65 @@ fn beam_exposure_step_removed() {
     let rest: f32 = (200..400).map(|y| t.px[y * w + 300]).sum::<f32>() / 200.0;
     assert!((band - rest).abs() < 0.002, "{band} {rest}");
 }
+
+/// TM4000-like exposure blocks: a later tile is darker where an earlier neighbour's beam already
+/// scanned (its overlap band), and every tile of a row has a darker auto-focus window in its
+/// middle. The joint correction (default) flattens the blended background, keeps overlaps in
+/// agreement and leaves grain contrast alone; per-tile leveling does not.
+#[test]
+fn joint_removes_exposure_blocks() {
+    let (tw, th) = (300usize, 240usize);
+    let scene = Scene::new(900.0, 700.0, 12, 11);
+    let mut rng = Rng(5);
+    let mut tiles = Vec::new();
+    let mut metas = Vec::new();
+    for r in 0..2 {
+        for c in 0..3 {
+            let i = r * 3 + c;
+            let (x, y) = (10.0 + c as f64 * 220.0, 10.0 + r as f64 * 170.0);
+            let mut t = scene.tile(x, y, tw, th, 1.0 + 0.04 * (i as f64 - 2.5) / 2.5, 0.0);
+            for yy in 0..th {
+                for xx in 0..tw {
+                    let v = &mut t.px[yy * tw + xx];
+                    // Pre-exposed bands: the left overlap (with tile c-1) and the top one (row 0).
+                    if c > 0 && xx < tw - 220 {
+                        *v -= 0.012;
+                    }
+                    if r > 0 && yy < th - 170 {
+                        *v -= 0.010;
+                    }
+                    // Auto-focus window in the middle of the top-row tiles.
+                    if r == 0 && (110..190).contains(&xx) {
+                        *v -= 0.015;
+                    }
+                    *v += ((rng.next() - 0.5) * 0.01) as f32;
+                }
+            }
+            tiles.push(t);
+            metas.push(TileMeta { index: i, file: String::new(), w: tw, h: th, pos_um: [c as f64 * 220.0, r as f64 * 170.0], stage_nm: None, pixel_size_nm: 1000.0, grid: None, meta: BTreeMap::new() });
+        }
+    }
+    let area = AreaMeta { id: "s".into(), name: "s".into(), grid: None, pixel_size_nm: 1000.0, field_um: None, pitch_um: None, stage_sign: [1.0, 1.0], tiles: metas, meta: BTreeMap::new() };
+    let pl = mosaic::stitch(&area, &tiles, &StitchParams::default(), &Ctl::NONE).unwrap();
+    let flat = |p: &PhotometricParams| {
+        let (out, res) = photometric::correct(&pl, &tiles, p);
+        let (_, block) = photometric::overlap_metrics(&pl, &out, 16);
+        let (lin, cov) = grainatlas_core::blend::blend(&pl, out, &Default::default(), res.background_median, &Ctl::NONE).unwrap();
+        (photometric::joint::background_flatness(&lin, &cov, 16), block, res)
+    };
+    let joint = PhotometricParams::default();
+    assert_eq!(joint.background_params.method, background::LevelMethod::Joint);
+    let tile = PhotometricParams { background_params: background::BackgroundParams { method: background::LevelMethod::Tile, ..Default::default() }, ..Default::default() };
+    let none = PhotometricParams { model: GainModel::None, background: false, ..Default::default() };
+    let (f_none, b_none, _) = flat(&none);
+    let (f_tile, _, _) = flat(&tile);
+    let (f_joint, b_joint, res) = flat(&joint);
+    eprintln!("flatness none {f_none:.4} tile {f_tile:.4} joint {f_joint:.4}; block rms none {b_none:.4} joint {b_joint:.4}");
+    assert!(f_joint < 0.4 * f_none, "joint {f_joint} vs none {f_none}");
+    assert!(f_joint < f_tile, "joint {f_joint} vs tile {f_tile}");
+    assert!(b_joint < 0.5 * b_none, "overlaps: joint {b_joint} vs none {b_none}");
+    // Grain contrast: the correction is a gain per tile near 1 (and an additive field).
+    for g in &res.gain {
+        assert!((g - 1.0).abs() < 0.1, "gain {g}");
+    }
+}

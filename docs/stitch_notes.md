@@ -91,6 +91,62 @@ What the overlaps showed and what is now done about it:
   the near-black epoxy (8-bit JPEG quantisation of the source at about 10/255;
   invisible at normal contrast, visible only under extreme stretch).
 
+## Joint background correction (2026-11-04)
+
+On the Boise TM4000 runs (Grenville_S/L, Sweden_S/XS at 150x) Auto tone still showed
+tile blocks and exposure steps, and on some areas the correction made the overlaps worse
+(Grenville_L 001_HH3: overlap RMS 3.4 → 3.9 grey levels; Grenville_S 010_HH11 a bright
+right half). Two causes:
+
+- The per-tile leveling masked grains with a one-sided Otsu threshold (grains brighter than
+  the background). On these runs the threshold fell between the CL-dark grains and the
+  epoxy, so the background of bright-background tiles counted as grain and those tiles were
+  not leveled (`surface` returned `None`); neighbours were leveled independently of each
+  other in any case.
+- Exposure steps sit at more places than the tile borders: the part of a tile an earlier
+  neighbour's beam scanned (its overlap rectangle, with corners scanned twice), and a band
+  in the middle of each field (010_HH11: tile x 467..803 of 1280 in every top-row tile,
+  most likely the auto-focus / brightness window scanned before capture). Edges run from
+  sharp (3 to 4 px) to soft ramps of 12 to 16 px (beam blur, 8 px JPEG blocks).
+
+`photometric::joint` (the default, `background_params.method = "joint"`; `"tile"` keeps the
+old per-tile leveling) does:
+
+1. Background by level, both sides: pixels within max(4 sigma, 0.04) of the tile's histogram mode,
+   with sigma from neighbour differences, so dark and bright grains are both left out.
+2. Step lines per tile from the background's column and row profiles: two 40 px windows
+   whose means differ by at least 1 grey level and 8 noise sigma, strongest first, one per
+   40 px; position and edge width (2 to 24 px) then fitted to the profile.
+3. Overlap rectangles with neighbours, their inner edges snapped to step lines within 20 px.
+4. Stage 1, each tile alone: one constant per cell of the grid that the step lines and
+   overlap edges cut it into, plus a 2nd-order surface, fitted to 16 px background blocks
+   (residual trimming; cells seen in few blocks are pulled to no correction) and
+   subtracted, with each cut's fitted ramp.
+5. Stage 2, all tiles together: gain, offset, 2nd-order surface and one step per overlap
+   rectangle, from 32 px block means that must agree in every overlap and background
+   blocks that must sit at one level; banded Cholesky, three rounds of trimming.
+
+The correction is a gain per tile plus a piecewise-constant and smooth additive field, so
+grain CL contrast is only scaled by the tile gain (0.9 to 1.1 here).
+
+Measured with `grainatlas photometry <package> --out <dir> --variant tile=tile.json
+--variant joint` (stitch once, then each parameter set; grey levels of 255):
+overlap RMS over pixels (what the Area screen reports), over 32 px block means (blocks and
+steps, without noise), and background flatness of the blended mosaic (RMS spread of 32 px
+background block means). Means over the 32 areas of the four packages:
+
+| | overlap px | overlap block | flatness | areas worse than raw |
+| --- | --- | --- | --- | --- |
+| raw (no correction) | 2.86 | 2.11 | 1.53 | |
+| per-tile leveling (before) | 2.38 | 1.37 | 0.90 | 3 |
+| joint (now) | 2.00 | 0.71 | 0.45 | 0 |
+
+001_HH3 was 3.42 → 3.94 px and is now 3.42 → 2.06 (block 0.93, flatness 2.54 → 0.74);
+010_HH11 1.79 → 1.34, flatness 4.00 → 0.64. Joint is flatter than per-tile leveling on all
+32 areas. The correction takes at most 0.3 s per area natively. Remaining:
+residues under 1 grey level along some step edges whose ramp is asymmetric, which
+CLAHE in Auto tone can still make faintly visible.
+
 ## Loop-free pairs (2026-11-03)
 
 A single row of loose images closes no loop, so the solve's residual check

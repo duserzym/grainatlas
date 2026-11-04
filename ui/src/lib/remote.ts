@@ -8,7 +8,7 @@
 import type { RawImage } from './core/core';
 import type { LevelInfo, MosaicJson, Project, StitchSummary } from './core/types';
 import { atlasUrl, normalizeServer } from './laicpmsdb';
-import { app } from './store.svelte';
+import { current } from './store.svelte';
 import { savedProject, sameId } from './deeplink';
 import { authToken } from './atlas';
 
@@ -104,6 +104,7 @@ function mosaicOf(a: AtlasArea, tile: number): MosaicJson {
 
 /** Loads a published bundle and shows it on the Canvas, read-only; selects `spot` when given. */
 export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null) {
+  const app = current();
   const server = normalizeServer(serverIn);
   if (!server) {
     app.error = `Not a server address: ${serverIn}`;
@@ -155,6 +156,7 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
  * raw package is opened, which picks this project up by its package name.
  */
 export async function editCopy() {
+  const app = current();
   const remote = app.remote;
   const p = app.project;
   if (!remote || !p) return;

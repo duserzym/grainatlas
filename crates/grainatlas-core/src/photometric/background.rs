@@ -9,10 +9,15 @@ use crate::image::Gray;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BackgroundParams {
+    /// `joint` (default): gains, offsets, surfaces and exposure steps of all tiles in one solve
+    /// that keeps overlaps in agreement (`photometric::joint`); `tile`: each tile leveled on its
+    /// own after the gain and offset (the earlier behaviour; `model`, `smooth_cells`,
+    /// `threshold`, `dilate` and `edge_steps` apply to it).
+    pub method: LevelMethod,
     /// Surface model: a 2nd-order polynomial fitted to the cell medians (default), or the
     /// cell grid itself, filled and smoothed (follows local charging, risks following grains).
     pub model: SurfaceModel,
-    /// Grid cell size in pixels.
+    /// Grid cell size in pixels (`joint` uses blocks of half a cell).
     pub cell: usize,
     /// Gaussian smoothing of the cell grid, in cells.
     pub smooth_cells: f32,
@@ -27,8 +32,16 @@ pub struct BackgroundParams {
 
 impl Default for BackgroundParams {
     fn default() -> Self {
-        Self { model: SurfaceModel::Poly2, cell: 64, smooth_cells: 1.5, threshold: None, dilate: 6, edge_steps: true }
+        Self { method: LevelMethod::Joint, model: SurfaceModel::Poly2, cell: 64, smooth_cells: 1.5, threshold: None, dilate: 6, edge_steps: true }
     }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LevelMethod {
+    #[default]
+    Joint,
+    Tile,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]

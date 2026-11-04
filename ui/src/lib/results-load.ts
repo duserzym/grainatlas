@@ -3,10 +3,11 @@
 import { authToken } from './atlas';
 import { getResults } from './laicpmsdb';
 import { normalize, type MountResults } from './results';
-import { app } from './store.svelte';
+import { current } from './store.svelte';
 
 /** Fetches the linked mount's results again. Errors stay in `app.results.error` (the tab shows them). */
 export async function refreshResults(): Promise<void> {
+  const app = current();
   const server = app.server;
   const mount = app.mountId;
   if (!server || !mount) {
