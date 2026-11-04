@@ -351,19 +351,25 @@ fn percent_decode(s: &str) -> String {
 
 #[derive(Serialize)]
 struct Startup {
-    path: Option<String>,
+    /// A folder (package, area folder, `.grainatlas` project) or image files.
+    paths: Vec<String>,
     stitch: bool,
     segment: bool,
+    /// Scale for loose images, so they open without the dialog.
+    um_per_px: Option<f64>,
+    field_um: Option<f64>,
 }
 
-/// Command line: `grainatlas [package-folder] [--stitch] [--segment]` opens the folder and, on
-/// request, stitches every area and finds grains (batch preparation before a session).
+/// Command line: `grainatlas [folder | images…] [--um-per-px X | --field-um W] [--stitch]
+/// [--segment]` opens a package or area folder, or loose images with the given scale, and on
+/// request stitches every area and finds grains (batch preparation before a session).
 #[tauri::command]
 fn startup() -> Startup {
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
-    let path = args.iter().find(|a| !a.starts_with("--") && std::path::Path::new(a).is_dir()).cloned();
+    let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0);
+    let paths: Vec<String> = args.iter().filter(|a| !a.starts_with("--") && std::path::Path::new(a).exists()).cloned().collect();
     let segment = args.iter().any(|a| a == "--segment");
-    Startup { path, stitch: segment || args.iter().any(|a| a == "--stitch"), segment }
+    Startup { paths, stitch: segment || args.iter().any(|a| a == "--stitch"), segment, um_per_px: value("--um-per-px"), field_um: value("--field-um") }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

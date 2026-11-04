@@ -152,7 +152,8 @@ impl TM4000Package {
             }
             normalise_positions(&mut tiles);
             let pixel_size_nm = median(tiles.iter().map(|t| t.pixel_size_nm).filter(|v| *v > 0.0).collect()).unwrap_or(1000.0);
-            let area_name = ameta.get("zag.AreaName").cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| folder.clone());
+            // The .zag names the area; without it (an area folder alone) the folder `NNN_<name>` does.
+            let area_name = ameta.get("zag.AreaName").cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| strip_index(&folder).to_string());
             areas.push(AreaMeta { id: folder.clone(), name: area_name, grid, pixel_size_nm, field_um, pitch_um, stage_sign: [-1.0, -1.0], tiles, meta: ameta });
         }
         let info = PackageInfo { reader: "tm4000".into(), kind: kind.to_string(), name, areas, meta, navigation };
@@ -161,6 +162,14 @@ impl TM4000Package {
 }
 
 use super::is_image;
+
+/// `001_HJ-GC1` → `HJ-GC1` (Zigzag area folders are `<NNN>_<area name>`).
+fn strip_index(folder: &str) -> &str {
+    match folder.split_once('_') {
+        Some((n, rest)) if !rest.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => folder,
+    }
+}
 
 fn median(mut v: Vec<f64>) -> Option<f64> {
     if v.is_empty() {
