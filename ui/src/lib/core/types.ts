@@ -182,7 +182,8 @@ export interface Settings {
   spot_presets_um: number[];
   default_diameter_um: number;
   user: string;
-  theme: 'dark' | 'light';
+  /** Unused by the UI (the theme is the viewer's preference, not the project's). */
+  theme?: string;
   snap: boolean;
 }
 
