@@ -26,7 +26,7 @@ test('?server=&project=&spot= opens the published bundle read-only, selects and 
   // 20 grains with the joint background correction and the artifact classifier together (artifacts left out;
   // 21 with per-tile leveling, 25 outlines before the classifier).
   await expect(page.locator('polygon.grain:not(.artifact)')).toHaveCount(20);
-  await expect(page.getByRole('dialog', { name: 'Spot HJ-GC1-2-2' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Spot HJ-GC1-2' })).toBeVisible();
   await expect(page.locator('[data-testid=spot].sel')).toHaveCount(1);
   expect(new URL(page.url()).search).toBe('');
   await expect

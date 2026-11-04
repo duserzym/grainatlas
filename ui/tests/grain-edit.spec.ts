@@ -68,18 +68,53 @@ test('outline a grain by hand (freehand and click by click), paint with the brus
   await page.mouse.down();
   await page.mouse.move(d.x + d.width / 2 + 8, d.y + d.height / 2, { steps: 4 });
   await page.mouse.up();
-  await expect(page.locator('.toast')).toContainText(/Grew grain \d+/);
+  await expect(page.locator('.toast')).toContainText(/Grew the grain/);
   await page.keyboard.down('Alt');
   await page.mouse.move(d.x + d.width - 2, d.y + 2);
   await page.mouse.down();
   await page.mouse.move(d.x + d.width - 2, d.y + d.height / 2, { steps: 4 });
   await page.mouse.up();
   await page.keyboard.up('Alt');
-  await expect(page.locator('.toast')).toContainText(/Cut grain \d+/);
+  await expect(page.locator('.toast')).toContainText(/Cut the grain/);
   await expect(real).toHaveCount(n);
   // Two undos: the brushed grain is back to its detected outline.
   await page.keyboard.press('Meta+z');
   await page.keyboard.press('Meta+z');
   await expect(page.getByText('drawn by hand')).toHaveCount(0);
   await expect(real).toHaveCount(n);
+});
+
+test('spots are named sample-n; Next n starts a sample anywhere; a spot n can be overwritten', async ({ page }) => {
+  await page.goto('./');
+  await page.getByTestId('package-input').setInputFiles(FIXTURE);
+  await page.getByTestId('stitch').click();
+  await expect(page.getByTestId('rms')).toBeVisible();
+  await page.getByTestId('to-canvas').click();
+  await page.getByRole('button', { name: /^Grains/ }).click();
+  await page.getByTestId('find-grains').click();
+  const real = page.locator('polygon.grain:not(.artifact)');
+  await expect(real.first()).toBeVisible();
+  // No grain numbers on the canvas.
+  await expect(page.locator('text.gnum')).toHaveCount(0);
+  await page.getByRole('button', { name: /^Spots/ }).click();
+  const sample = await page.locator('input[aria-label="Sample"], .field:has-text("Sample") input').first().inputValue().catch(() => '');
+  const place = async (i: number) => {
+    const b = (await real.nth(i).boundingBox())!;
+    await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+  };
+  await page.getByTestId('tool-spot').click();
+  await place(1);
+  const names = page.locator('.list tbody tr td:first-child');
+  await expect(names.first()).toHaveText(/^.+-1$/);
+  // Others took 2..30 in between: start this sample again at 31; it counts on from there.
+  await page.getByTestId('next-n').fill('31');
+  await place(2);
+  await place(3);
+  await expect(names).toHaveText([/-1$/, /-31$/, /-32$/]);
+  // Overwrite one spot's number: the name follows.
+  await names.nth(1).click();
+  await page.getByTestId('panel-n').fill('7');
+  await page.getByTestId('panel-n').press('Enter');
+  await expect(names.nth(1)).toHaveText(/-7$/);
+  if (sample) await expect(names.first()).toHaveText(`${sample}-1`);
 });

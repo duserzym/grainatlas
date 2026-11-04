@@ -50,6 +50,13 @@
   let stroke = $state<{ pts: [number, number][]; op: EditOp } | null>(null);
   let snapEdges = $state(true);
   let brushUm = $state(20);
+  // A typed "Next n" belongs to the sample it was typed for.
+  let nextNSample: string | null = null;
+  $effect(() => {
+    const s = sample;
+    if (nextNSample !== null && s !== nextNSample) app.nextN = null;
+    nextNSample = s;
+  });
   $effect(() => {
     if (app.tool !== 'grain-outline') lasso = null;
     if (app.tool !== 'grain-brush') stroke = null;
@@ -194,7 +201,7 @@
     const id = areaId;
     const out: Grain[] = [];
     for (const g of grains.filter((g) => selGrains.includes(g.id))) {
-      const r = await app.run(`Refining grain ${g.number}`, () => core!.refineGrain(id, $state.snapshot(g) as Grain));
+      const r = await app.run('Refining grain', () => core!.refineGrain(id, $state.snapshot(g) as Grain));
       if (r) out.push(r);
     }
     setGrains(grains.map((g) => out.find((o) => o.id === g.id) ?? g));
@@ -283,7 +290,7 @@
   }
   function makeSpot(x: number, y: number, kind: SpotKind = 'spot', x2: number | null = null, y2: number | null = null): Spot {
     const g = grainAt(grains, x, y);
-    const n = app.nextN ?? nextN(app.spots);
+    const n = app.nextN ?? nextN(app.spots, sample);
     if (app.nextN != null) app.nextN = n + 1;
     return {
       id: newId(),
@@ -312,6 +319,15 @@
   function updateSpot(id: string, patch: Partial<Spot>, checkpoint = true) {
     if (checkpoint) app.checkpoint();
     app.spots = app.spots.map((s) => (s.id === id ? { ...s, ...patch } : s));
+  }
+  /** Overwrites a spot's number and renames it from the pattern; a clash in the sample is reported. */
+  function setSpotN(id: string, n: number) {
+    const s = app.spots.find((q) => q.id === id);
+    if (!s || !n) return;
+    const name = formatName(app.settings.naming_pattern, s.sample || sample, s.grain_number ?? null, n);
+    updateSpot(id, { n, name });
+    const clash = app.spots.find((q) => q.id !== id && q.sample === s.sample && q.n === n);
+    if (clash) app.notice = `${clash.name} has number ${n} too.`;
   }
   function deleteSelection() {
     if (!app.selection.length) return false;
@@ -632,7 +648,7 @@
     const g = grainAt(grains, ...mid) ?? grains.find((q) => selGrains.includes(q.id));
     if (!g) return;
     const id = areaId;
-    const parts = await app.run(`Splitting grain ${g.number}`, () => core!.splitGrain(id, $state.snapshot(g) as Grain, line));
+    const parts = await app.run('Splitting grain', () => core!.splitGrain(id, $state.snapshot(g) as Grain, line));
     if (!parts || parts.length < 2) return;
     // The largest grain part keeps the grain; a part the core recognised as a bubble becomes a
     // bubble artifact (one cut detaches a bubble), the others get new numbers.
@@ -674,7 +690,7 @@
       if (g) {
         selGrains = [g.id];
         deleteGrains();
-        app.notice = `Deleted ${g.artifact ? 'a flagged detection' : `grain ${g.number}`} (⌘Z brings it back).`;
+        app.notice = `Deleted ${g.artifact ? 'a flagged detection' : 'the grain'} (⌘Z brings it back).`;
       }
       return;
     }
@@ -756,7 +772,7 @@
     const gone = new Set(covered.map((q) => q.id));
     setGrains([...detections.filter((q) => q.id !== g.id && !gone.has(q.id)), g].sort((a, b) => a.number - b.number), true);
     selGrains = [g.id];
-    const what = eff === 'new' ? (covered.length ? `Redrew grain ${g.number}` : `New grain ${g.number}`) : eff === 'add' ? `Grew grain ${g.number}` : `Cut grain ${g.number}`;
+    const what = eff === 'new' ? (covered.length ? 'Redrew the grain' : 'New grain') : eff === 'add' ? 'Grew the grain' : 'Cut the grain';
     app.notice = `${what}${covered.length > 1 ? ` (took in ${covered.length} pieces)` : ''}. ⌘Z undoes.`;
   }
 
@@ -1090,7 +1106,7 @@
     </div>
 
     {#if panel.open && (focus || focusGrain)}
-      <FloatingPanel title={focus ? `Spot ${focus.name}` : `Grain ${focusGrain?.number}`} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}>
+      <FloatingPanel title={focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}>
           {#if focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
           <div class="resbox" data-testid="spot-results">
@@ -1111,7 +1127,10 @@
         <fieldset class="plain" disabled={ro}>
         {#if focus}
           {@const st = stageOf(app.project?.areas.find((a) => a.id === focus.area_id) ?? null, focus.x_um, focus.y_um)}
-          <label class="field">Name <input type="text" value={focus.name} onchange={(e) => updateSpot(focus.id, { name: e.currentTarget.value })} data-testid="panel-name" /></label>
+          <div class="two">
+            <label class="field">Name <input type="text" value={focus.name} onchange={(e) => updateSpot(focus.id, { name: e.currentTarget.value })} data-testid="panel-name" /></label>
+            <label class="field" title="The spot's number; the name follows the pattern">n <input type="number" min="1" value={focus.n} onchange={(e) => setSpotN(focus.id, Math.max(1, Math.round(+e.currentTarget.value)))} data-testid="panel-n" /></label>
+          </div>
           <div class="two">
             <label class="field">Diameter µm <input type="number" min="1" step="0.5" value={focus.diameter_um} onchange={(e) => updateSpot(focus.id, { diameter_um: +e.currentTarget.value })} /></label>
             <label class="field">Kind
@@ -1123,7 +1142,7 @@
           <label class="field">Comment <textarea rows="2" value={focus.comment} onchange={(e) => updateSpot(focus.id, { comment: e.currentTarget.value })}></textarea></label>
           <table class="data kv">
             <tbody>
-              <tr><td>grain</td><td>{focus.grain_number ?? '–'}</td></tr>
+              <tr><td>grain</td><td>{focus.grain_id ? 'on a grain' : 'not on a grain'}</td></tr>
               <tr><td>sample</td><td>{focus.sample}</td></tr>
               {#if laserOf(focus)}
                 {@const lf = laserOf(focus)!}
@@ -1145,7 +1164,6 @@
         {:else if focusGrain}
           <table class="data kv">
             <tbody>
-              <tr><td>number</td><td>{focusGrain.number}{focusGrain.manual ? ' (manual)' : ''}</td></tr>
               <tr><td>⌀ equivalent</td><td class="num">{fmt(focusGrain.eq_diameter_um, 1)} µm</td></tr>
               <tr><td>length × width</td><td class="num">{fmt(focusGrain.major_um, 1)} × {fmt(focusGrain.minor_um, 1)} µm</td></tr>
               <tr><td>orientation</td><td class="num">{fmt(focusGrain.orientation_deg, 0)}°</td></tr>
@@ -1208,8 +1226,8 @@
           {/each}
         </div>
         <div class="two">
-          <label class="field" title="Force the {'{n}'} of the next spot (for example the Qtegra run number of a legacy session); it then counts up">Next n
-            <input type="number" min="1" placeholder="auto ({nextN(app.spots)})" value={app.nextN ?? ''} oninput={(e) => (app.nextN = e.currentTarget.value === '' ? null : Math.max(1, Math.round(+e.currentTarget.value)))} />
+          <label class="field" title="Start this sample's next spot at this number (for example after other samples' spots took the numbers in between, or a Qtegra run number); later spots count up from it. Empty = one more than this sample's highest">Next n
+            <input type="number" min="1" placeholder="auto ({nextN(app.spots, sample)})" data-testid="next-n" value={app.nextN ?? ''} oninput={(e) => (app.nextN = e.currentTarget.value === '' ? null : Math.max(1, Math.round(+e.currentTarget.value)))} />
           </label>
           <label class="check"><input type="checkbox" bind:checked={app.settings.snap} onchange={() => app.saveSettings()} /> snap (⌥ = free)</label>
         </div>
@@ -1222,14 +1240,14 @@
         </div>
         <div class="list">
           <table class="data">
-            <thead><tr><th>Name</th><th>Grain</th><th>⌀</th></tr></thead>
+            <thead><tr><th>Name</th><th>⌀</th></tr></thead>
             <tbody>
               {#each spots as s (s.id)}
                 <tr class:selected={app.selection.includes(s.id)} onclick={(e) => { app.selection = e.shiftKey ? [...app.selection, s.id] : [s.id]; panel.open = true; centerOnUm(s.x_um, s.y_um); }}>
-                  <td>{s.name}</td><td class="num">{s.grain_number ?? '–'}</td><td class="num">{s.diameter_um}</td>
+                  <td>{s.name}</td><td class="num">{s.diameter_um}</td>
                 </tr>
               {:else}
-                <tr><td colspan="3" class="muted">Pick the Spot tool (S) and click on a grain.</td></tr>
+                <tr><td colspan="2" class="muted">Pick the Spot tool (S) and click on a grain.</td></tr>
               {/each}
             </tbody>
           </table>
@@ -1339,21 +1357,17 @@
           <button onclick={markArtifact} disabled={!selGrains.some((id) => grains.some((g) => g.id === id))} title="Not a grain: unnumbered, left off print sheets and spots" data-testid="mark-artifact">Not a grain</button>
           <button class="danger" onclick={deleteGrains} disabled={!selGrains.length}>Delete</button>
         </div>
-        <div class="row">
-          <button onclick={() => renumber(false)} disabled={!grains.length}>Renumber all</button>
-          <button onclick={() => renumber(true)} disabled={selGrains.length !== 1}>Renumber from here</button>
-        </div>
         {#if dupCount}
           <p class="muted small-text" data-testid="dup-note">{dupCount} of {grains.length} are duplicates of grains another area owns (dashed outlines; left off print sheets).</p>
         {/if}
         <div class="list">
           <table class="data">
-            <thead><tr><th>#</th><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
+            <thead><tr><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
             <tbody>
               {#each grains as g (g.id)}
                 <tr class:selected={selGrains.includes(g.id)} onclick={(e) => { selGrains = e.shiftKey ? [...selGrains, g.id] : [g.id]; app.selection = []; panel.open = true; centerOnUm(g.centroid_um[0], g.centroid_um[1], Math.max(g.bbox_um[2] - g.bbox_um[0], g.bbox_um[3] - g.bbox_um[1])); }}>
-                  <td class="num">{g.number}{g.manual ? '*' : ''}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
-                  <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)} #{app.grains[o.owner_area]?.find((q) => q.id === o.duplicate_of)?.number ?? '?'}{:else if owners.get(g.id)?.cut}cut{/if}</td>
+                  <td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
+                  <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
               {/each}
             </tbody>
