@@ -5,12 +5,26 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # grainatlas and upbstudio side by side: @lab/bridge is "file:../../upbstudio/bridge"
+    # until it is published (README, Dependencies). Private upbstudio: UPBSTUDIO_TOKEN secret.
+    defaults:
+      run:
+        working-directory: grainatlas
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: grainatlas
+      - uses: actions/checkout@v4
+        with:
+          repository: duserzym/upbstudio
+          path: upbstudio
+          token: ${{ secrets.UPBSTUDIO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: grainatlas
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -18,7 +32,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
+          cache-dependency-path: grainatlas/ui/pnpm-lock.yaml
       # The same entry points as on a laptop: core tests, wasm/native parity, Playwright.
       - run: make setup
       - run: make test
