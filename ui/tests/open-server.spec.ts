@@ -4,7 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 // spots, linked to a mount) served by the fake laicpmsdb of `pnpm preview` at
 // /fake-laicpmsdb/atlas/projects/<id>/.
 
-const FAKE = 'http://localhost:4173/fake-laicpmsdb';
+const FAKE = 'http://localhost:4173/fake-laicpmsdb/ns/open-server';
 const PROJECT = '01972c4e-0000-7000-8000-00000000a7a5';
 const SPOT2 = '01972c4e-0000-7000-8000-00000000a8a6';
 
@@ -17,9 +17,10 @@ test('?server=&project=&spot= opens the published bundle read-only, selects and 
   await request.post(`${FAKE}/_fake/reset`);
   const tiles: string[] = [];
   page.on('response', (r) => {
-    if (r.url().endsWith('.webp') && r.ok()) tiles.push(r.url());
+    if (r.url().includes('.webp') && r.ok()) tiles.push(r.url());
   });
-  await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}&spot=${SPOT2}`);
+  // `access` is laicpmsdb's signed read-only token for the project's files (from GET /v1/mounts/{id}/atlas).
+  await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}&spot=${SPOT2}&access=test-access`);
   await expect(page.getByTestId('remote-name')).toContainText('read-only');
   await expect(page.getByTestId('spot')).toHaveCount(3);
   await expect(page.locator('polygon.grain')).toHaveCount(24);
@@ -35,7 +36,8 @@ test('?server=&project=&spot= opens the published bundle read-only, selects and 
     .toBeLessThan(40);
   // Pixels come from the server's WebP tiles, drawn on the canvas.
   await expect.poll(() => tiles.length).toBeGreaterThan(0);
-  expect(tiles[0]).toContain(`/fake-laicpmsdb/atlas/projects/${PROJECT}/pyramid/001_HJ-GC1/`);
+  expect(tiles[0]).toContain(`${FAKE}/atlas/projects/${PROJECT}/pyramid/001_HJ-GC1/`);
+  expect(tiles[0]).toContain('?access=test-access');
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -80,11 +82,17 @@ test('?server=&project=&spot= opens the published bundle read-only, selects and 
   expect(saved.laicpmsdb.mount_id).toBe('01972c4e-0000-7000-8000-0000000000b1');
 });
 
-test('Settings opens a published project by id; a missing one says so', async ({ page }) => {
+test('Settings opens a published project by id with the token; without one, or a missing one, says so', async ({ page }) => {
   await page.goto('./');
   await page.getByRole('button', { name: 'Settings' }).click();
   await page.getByTestId('server').fill(FAKE);
   await page.getByTestId('server').press('Tab');
+  await page.getByTestId('open-project-id').fill(PROJECT);
+  await page.getByTestId('open-from-server').click();
+  await expect(page.getByRole('alert')).toContainText('atlas.json: 401');
+  await page.getByRole('alert').getByRole('button', { name: 'Dismiss' }).click();
+  await page.getByTestId('token').fill('test-token');
+  await page.getByTestId('token').press('Tab');
   await page.getByTestId('open-project-id').fill('01972c4e-0000-7000-8000-0000000fffff');
   await page.getByTestId('open-from-server').click();
   await expect(page.getByRole('alert')).toContainText('atlas.json: 404');

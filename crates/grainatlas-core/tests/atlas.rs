@@ -130,3 +130,24 @@ fn package_digest_is_sha256sum_of_tiles() {
     assert_eq!(d.files, 2);
     assert_eq!(d.sha256, grainatlas_core::util::sha256_hex(b"11  a.tif\n22  b.tif\n"));
 }
+
+#[test]
+fn spots_json_is_one_document_per_sample() {
+    let mut p: grainatlas_core::project::Project = serde_json::from_value(serde_json::json!({
+        "schema_version": 1, "uuid": ID, "name": "p", "created": "", "package": { "path": "", "reader": "tm4000", "name": "p" },
+        "areas": [], "settings": {}
+    }))
+    .unwrap();
+    p.name = "p".into();
+    let spot = |id: &str, area: &str, sample: &str| -> grainatlas_core::spots::Spot {
+        serde_json::from_value(serde_json::json!({ "id": id, "area_id": area, "name": format!("{sample}-{id}"), "sample": sample, "grain_id": null, "grain_number": null, "x_um": 1.0, "y_um": 2.0, "diameter_um": 25.0 })).unwrap()
+    };
+    let one = atlas::spots_document(&p, &[spot("01972c4e-0000-7000-8000-000000000201", "a", "S1")], &["a", "b"]);
+    assert_eq!(one["sample"], "S1");
+    assert_eq!(one["spots"][0]["area"], "a");
+    let two = atlas::spots_document(&p, &[spot("01972c4e-0000-7000-8000-000000000201", "a", "S1"), spot("01972c4e-0000-7000-8000-000000000202", "b", "S2")], &["a", "b"]);
+    assert_eq!(two["project_id"], ID);
+    assert_eq!(two["documents"].as_array().unwrap().len(), 2);
+    assert_eq!(two["documents"][1]["sample"], "S2");
+    assert_eq!(two["documents"][1]["spots"][0]["name"], "S2-01972c4e-0000-7000-8000-000000000202");
+}

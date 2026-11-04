@@ -1,57 +1,106 @@
 {
   "mount_id": "01972c4e-0000-7000-8000-0000000000b1",
-  "run": "preferred",
-  "generated": "2026-11-03T12:00:00Z",
   "spots": [
     {
+      "spot_id": "01972c4f-0000-7000-8000-000000000001",
       "atlas_spot_id": "01972c4e-0000-7000-8000-00000000a8a5",
-      "physical_spot_id": "01972c4f-0000-7000-8000-000000000001",
+      "atlas_project_id": "01972c4e-0000-7000-8000-00000000a7a5",
       "label": "HJ-GC1-1-1",
+      "grain_label": "1",
       "acquisition_id": "01972c4f-0000-7000-8000-0000000000a1",
       "session_id": "01972c4f-0000-7000-8000-0000000000c1",
       "session_key": "Zircon_03Nov26",
       "run_id": "01972c4f-0000-7000-8000-0000000000d1",
-      "date": { "metric": "date_206pb238u_ma", "value": 1012.4, "sigma2": 8.1, "unit": "Ma" },
-      "ratios": [
-        { "metric": "ratio_206pb238u", "value": 0.16994, "sigma2": 0.00142 },
-        { "metric": "ratio_207pb206pb", "value": 0.07312, "sigma2": 0.00061 }
-      ],
-      "concentrations": [
-        { "metric": "conc_u_ppm", "value": 412, "unit": "ppm" },
-        { "metric": "conc_th_ppm", "value": 131, "unit": "ppm" }
-      ],
+      "is_preferred": true,
+      "date": { "value": 1012.4, "two_sigma": 8.1, "metric": "preferred_date", "uncertainty_metric": "preferred_date_2e", "uncertainty_type": "2se", "method": "206Pb/238U", "passes": true, "unit": "Ma" },
+      "ratios": {
+        "206Pb/238U": { "value": 0.16994, "uncertainty": 0.00142, "uncertainty_type": "2se", "unit": "" },
+        "207Pb/206Pb": { "value": 0.07312, "uncertainty": 0.00061, "uncertainty_type": "2se", "unit": "" }
+      },
+      "concentrations": {
+        "U": { "value": 412, "uncertainty": 9, "uncertainty_type": "95ci", "unit": "ppm" },
+        "Th": { "value": 131, "uncertainty": 4, "uncertainty_type": "95ci", "unit": "ppm" }
+      },
+      "th_u": 0.32,
+      "discordance_percent": 1.2,
       "flags": []
     },
     {
+      "spot_id": "01972c4f-0000-7000-8000-000000000001",
+      "atlas_spot_id": "01972c4e-0000-7000-8000-00000000a8a5",
+      "atlas_project_id": "01972c4e-0000-7000-8000-00000000a7a5",
+      "label": "HJ-GC1-1-1",
+      "grain_label": "1",
+      "acquisition_id": "01972c4f-0000-7000-8000-0000000000a9",
+      "session_id": "01972c4f-0000-7000-8000-0000000000c2",
+      "session_key": "Zircon_old_session",
+      "run_id": "01972c4f-0000-7000-8000-0000000000d2",
+      "is_preferred": false,
+      "date": null,
+      "ratios": {},
+      "concentrations": {},
+      "th_u": null,
+      "discordance_percent": null,
+      "flags": []
+    },
+    {
+      "spot_id": "01972c4f-0000-7000-8000-000000000002",
       "atlas_spot_id": "01972c4e-0000-7000-8000-00000000a8a6",
-      "physical_spot_id": "01972c4f-0000-7000-8000-000000000002",
+      "atlas_project_id": "01972c4e-0000-7000-8000-00000000a7a5",
       "label": "HJ-GC1-2-2",
+      "grain_label": "2",
       "acquisition_id": "01972c4f-0000-7000-8000-0000000000a2",
       "session_id": "01972c4f-0000-7000-8000-0000000000c1",
       "session_key": "Zircon_03Nov26",
       "run_id": "01972c4f-0000-7000-8000-0000000000d1",
-      "date": { "metric": "date_206pb238u_ma", "value": 1488.9, "sigma2": 12.6, "unit": "Ma" },
-      "ratios": [
-        { "metric": "ratio_206pb238u", "value": 0.25981, "sigma2": 0.0023 },
-        { "metric": "ratio_207pb206pb", "value": 0.09402, "sigma2": 0.0008 }
-      ],
-      "concentrations": [
-        { "metric": "conc_u_ppm", "value": 958, "unit": "ppm" },
-        { "metric": "conc_th_ppm", "value": 77, "unit": "ppm" }
-      ],
-      "flags": ["discordant"]
+      "is_preferred": true,
+      "date": { "value": 1488.9, "two_sigma": 12.6, "metric": "preferred_date", "uncertainty_metric": "preferred_date_2e", "uncertainty_type": "2se", "method": "206Pb/238U", "passes": false, "unit": "Ma" },
+      "ratios": {
+        "206Pb/238U": { "value": 0.25981, "uncertainty": 0.0023, "uncertainty_type": "2se", "unit": "" },
+        "207Pb/206Pb": { "value": 0.09402, "uncertainty": 0.0008, "uncertainty_type": "2se", "unit": "" }
+      },
+      "concentrations": {
+        "U": { "value": 958, "uncertainty": 20, "uncertainty_type": "95ci", "unit": "ppm" },
+        "Th": { "value": 77, "uncertainty": 3, "uncertainty_type": "95ci", "unit": "ppm" }
+      },
+      "th_u": 0.08,
+      "discordance_percent": 14.5,
+      "flags": ["discordant", "high ratio scatter"]
     },
     {
+      "spot_id": "01972c4f-0000-7000-8000-000000000003",
       "atlas_spot_id": null,
-      "physical_spot_id": "01972c4f-0000-7000-8000-000000000003",
+      "atlas_project_id": null,
       "label": "HJ-GC1-0-3",
+      "grain_label": null,
       "acquisition_id": "01972c4f-0000-7000-8000-0000000000a3",
       "session_id": "01972c4f-0000-7000-8000-0000000000c1",
       "session_key": "Zircon_03Nov26",
       "run_id": "01972c4f-0000-7000-8000-0000000000d1",
-      "date": { "metric": "date_207pb206pb_ma", "value": 2011.0, "sigma2": 15.2, "unit": "Ma" },
-      "ratios": [{ "metric": "ratio_207pb206pb", "value": 0.12371, "sigma2": 0.001 }],
-      "concentrations": [{ "metric": "conc_u_ppm", "value": 233, "unit": "ppm" }],
+      "is_preferred": true,
+      "date": { "value": 2011.0, "two_sigma": 15.2, "metric": "preferred_date", "uncertainty_metric": "preferred_date_2e", "uncertainty_type": "2se", "method": "207Pb/206Pb", "passes": true, "unit": "Ma" },
+      "ratios": { "207Pb/206Pb": { "value": 0.12371, "uncertainty": 0.001, "uncertainty_type": "2se", "unit": "" } },
+      "concentrations": { "U": { "value": 233, "uncertainty": 6, "uncertainty_type": "95ci", "unit": "ppm" } },
+      "th_u": null,
+      "discordance_percent": null,
+      "flags": []
+    },
+    {
+      "spot_id": "01972c4f-0000-7000-8000-000000000004",
+      "atlas_spot_id": "01972c4e-0000-7000-8000-00000000ffff",
+      "atlas_project_id": "01972c4e-0000-7000-8000-00000000a7a5",
+      "label": "HJ-GC1-9-9",
+      "grain_label": null,
+      "acquisition_id": null,
+      "session_id": null,
+      "session_key": null,
+      "run_id": null,
+      "is_preferred": null,
+      "date": null,
+      "ratios": {},
+      "concentrations": {},
+      "th_u": null,
+      "discordance_percent": null,
       "flags": []
     }
   ]

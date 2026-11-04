@@ -7,7 +7,7 @@
 //!                                      sha256 and size of every other file
 //!   pyramid/<area>/<z>/<x>_<y>.webp    the corrected mosaic, 256 px tiles, z = 0 full resolution
 //!   grains.geojson                     grain outlines in mosaic micrometres, with labels and ids
-//!   spots.json                         the spot document of POST /v1/mounts/{id}/spots, every area
+//!   spots.json                         the spot document of POST /v1/mounts/{id}/spots (one per sample)
 //!   scalebars.json                     per-grain scale bar lengths
 //!   project.json                       the grainatlas project (parameters, never pixels)
 //! ```
@@ -116,9 +116,9 @@ impl UiParts {
     }
 }
 
-/// `spots.json`: the body of `POST /v1/mounts/{mount_id}/spots` for the whole project. Each
-/// spot also names its `sample` and `area` (a project may hold several samples); the top-level
-/// `sample` is the one sample when all spots share it, else empty.
+/// `spots.json`: the body of `POST /v1/mounts/{mount_id}/spots`. One sample: that body (each
+/// spot also names its `area`). Several samples: `{ project_id, documents: [body per sample] }`,
+/// the form laicpmsdb also accepts in bundles (its docs/workflow_api.md).
 pub fn spots_document(project: &Project, spots: &[Spot], areas: &[&str]) -> serde_json::Value {
     let spots: Vec<&Spot> = spots.iter().filter(|s| areas.contains(&s.area_id.as_str())).collect();
     let sample_of = |s: &Spot| -> String {
@@ -127,30 +127,30 @@ pub fn spots_document(project: &Project, spots: &[Spot], areas: &[&str]) -> serd
         }
         project.areas.iter().find(|a| a.id == s.area_id).map(|a| if a.sample.is_empty() { a.name.clone() } else { a.sample.clone() }).unwrap_or_default()
     };
-    let samples: std::collections::BTreeSet<String> = spots.iter().map(|s| sample_of(s)).collect();
-    let top = if samples.len() == 1 { samples.into_iter().next().unwrap_or_default() } else { String::new() };
-    let list: Vec<serde_json::Value> = spots
-        .iter()
-        .map(|s| {
-            let mut v = json!({
-                "id": s.id,
-                "name": s.name,
-                "grain": s.grain_number.map_or(String::new(), |n| n.to_string()),
-                "x_um": r3(s.x_um),
-                "y_um": r3(s.y_um),
-                "diameter_um": r3(s.diameter_um),
-                "kind": kind_name(s.kind),
-                "sample": sample_of(s),
-                "area": s.area_id,
-            });
-            if let (Some(x2), Some(y2)) = (s.x2_um, s.y2_um) {
-                v["x2_um"] = json!(r3(x2));
-                v["y2_um"] = json!(r3(y2));
-            }
-            v
-        })
-        .collect();
-    json!({ "project_id": project.uuid, "sample": top, "spots": list })
+    let mut by_sample: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for s in &spots {
+        let mut v = json!({
+            "id": s.id,
+            "name": s.name,
+            "grain": s.grain_number.map_or(String::new(), |n| n.to_string()),
+            "x_um": r3(s.x_um),
+            "y_um": r3(s.y_um),
+            "diameter_um": r3(s.diameter_um),
+            "kind": kind_name(s.kind),
+            "area": s.area_id,
+        });
+        if let (Some(x2), Some(y2)) = (s.x2_um, s.y2_um) {
+            v["x2_um"] = json!(r3(x2));
+            v["y2_um"] = json!(r3(y2));
+        }
+        by_sample.entry(sample_of(s)).or_default().push(v);
+    }
+    if by_sample.len() <= 1 {
+        let (sample, list) = by_sample.into_iter().next().unwrap_or_default();
+        return json!({ "project_id": project.uuid, "sample": sample, "spots": list });
+    }
+    let documents: Vec<serde_json::Value> = by_sample.into_iter().map(|(sample, list)| json!({ "project_id": project.uuid, "sample": sample, "spots": list })).collect();
+    json!({ "project_id": project.uuid, "documents": documents })
 }
 
 /// `grains.geojson`: one Polygon feature per grain (mosaic micrometres, x right, y down).
