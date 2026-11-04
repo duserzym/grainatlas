@@ -88,8 +88,9 @@ export interface Core {
   /** The project file `<name>.gaproj` (the project record, no pixels): desktop writes it to
    * `path`, next to the package, or where a dialog says (`ask`); the web downloads it. */
   saveProjectFile(project: Project, path: string | null, ask: boolean): Promise<string | null>;
-  /** Desktop: write the project folder (project.json, pyramid, masks, spots). */
-  saveProject(project: Project, extras: Record<string, string>): Promise<string | null>;
+  /** Desktop: write the project folder (project.json, pyramid, masks, spots): into `dir` (the
+   * folder it was opened from) when given, else `<name>.grainatlas` next to the package. */
+  saveProject(project: Project, extras: Record<string, string>, dir?: string | null): Promise<string | null>;
   /** Which area owns each detection (a grain seen in overlapping areas is kept once). */
   ownership(grains: Record<string, Grain[]>): Promise<Ownership>;
   /** Print sheets of the mount: pages (SVG), the print_sheet registration, stats and ownership. */

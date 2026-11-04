@@ -194,8 +194,8 @@ export class TauriCore implements Core {
   async saveProjectFile(project: Project, path: string | null, ask: boolean): Promise<string | null> {
     return this.call<string | null>('save_project_file', { project: JSON.stringify(project), path, ask });
   }
-  async saveProject(project: Project, _extras: Record<string, string>): Promise<string | null> {
-    return this.call<string | null>('save_project', { project: JSON.stringify(project), ask: false });
+  async saveProject(project: Project, _extras: Record<string, string>, dir: string | null = null): Promise<string | null> {
+    return this.call<string | null>('save_project', { project: JSON.stringify(project), ask: false, dir });
   }
   async ownership(grains: Record<string, Grain[]>): Promise<Ownership> {
     return JSON.parse(await this.call<string>('ownership', { grains: JSON.stringify(grains) }));
