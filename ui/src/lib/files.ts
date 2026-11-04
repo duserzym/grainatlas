@@ -65,6 +65,15 @@ export async function fromDrop(dt: DataTransfer): Promise<{ name: string; files:
   return { name: dir.name, files };
 }
 
+/**
+ * Files UPb Studio handed over (`onOpenFiles`, a drop on its window or an OS
+ * open): paths are already relative to the dropped folder, as from `fromDrop`.
+ */
+export function fromShell(set: { name: string; files: { path: string; file: File }[] }): { name: string; files: PackageFile[] } {
+  const files = set.files.filter((f) => keep(f.path)).map((f) => ({ path: f.path, file: f.file as Blob }));
+  return { name: set.name || commonStem(files.map((f) => f.path)) || 'images', files };
+}
+
 /** Skip hidden files and large files that no reader needs (Zigzag's own stitch, office files). */
 function keep(path: string): boolean {
   const n = path.split('/').pop() || '';
