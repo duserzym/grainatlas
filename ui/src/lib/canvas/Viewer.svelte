@@ -3,23 +3,19 @@
   // current zoom (or a live preview of the whole mosaic while a photometric
   // control moves), plus an SVG overlay in mosaic-pixel coordinates. Without a
   // mosaic (an area not stitched yet) only the overlay is drawn, over `extent`.
-  // Pointer-first: two-finger scroll pans, pinch (ctrl+wheel) zooms, a mouse
-  // wheel zooms, dragging empty space pans, WebKit trackpad rotation rotates,
-  // a click without movement goes to the active tool.
+  // Gestures come from ./gestures.ts, shared with every image view: mouse wheel
+  // zooms about the cursor, two-finger scroll pans, pinch zooms (ctrl+wheel in
+  // Chromium, gesture events in WebKit), drag pans, double-click fits, arrows
+  // nudge; a click without movement goes to the active tool.
   import { onMount, untrack, type Snippet } from 'svelte';
   import type { Core, RawImage } from '../core/core';
   import type { MosaicJson } from '../core/types';
   import { TileCache } from './tiles';
-  import { type View, fit, matrix, panBy, rotateAt, toMosaic, zoomAt } from './view';
+  import { type View, fit, matrix, rotateAt, toMosaic, zoomAt } from './view';
+  import { attachGestures, type ViewPoint } from './gestures';
 
-  export interface CanvasPoint {
-    /** mosaic pixels */
-    x: number;
-    y: number;
-    sx: number;
-    sy: number;
-    ev: PointerEvent | MouseEvent;
-  }
+  /** A point on the canvas: `x`, `y` in mosaic pixels, `sx`, `sy` on screen. */
+  export type CanvasPoint = ViewPoint;
 
   let {
     core,
@@ -40,6 +36,8 @@
     onclick,
     ondblclick,
     onhover,
+    canNudge,
+    rotate = true,
   }: {
     core: Core;
     areaId: string;
@@ -60,8 +58,13 @@
     ondrag?: (p: CanvasPoint) => void;
     onrelease?: (p: CanvasPoint) => void;
     onclick?: (p: CanvasPoint) => void;
-    ondblclick?: (p: CanvasPoint) => void;
+    /** Return true when handled; otherwise a double-click fits the view. */
+    ondblclick?: (p: CanvasPoint) => boolean | void;
     onhover?: (p: CanvasPoint | null) => void;
+    /** Arrow keys pan unless this returns false. */
+    canNudge?: () => boolean;
+    /** Rotation gestures (default on). */
+    rotate?: boolean;
   } = $props();
 
   let host: HTMLDivElement;
@@ -69,8 +72,6 @@
   let cache: TileCache | null = null;
   let size = $state({ w: 800, h: 600 });
   let raf = 0;
-  let spaceDown = false;
-  let gesture: { scale: number; rot: number } | null = null;
 
   const ext = $derived(mosaic ? { w: mosaic.w, h: mosaic.h } : (extent ?? { w: 1, h: 1 }));
   const v = $derived<View>(view ?? fit(size.w, size.h, ext.w, ext.h));
@@ -231,145 +232,28 @@
       if (old.w !== size.w || old.h !== size.h) schedule();
     });
     ro.observe(host);
-    const key = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !isTyping(e)) spaceDown = e.type === 'keydown';
-    };
-    window.addEventListener('keydown', key);
-    window.addEventListener('keyup', key);
-    // WebKit trackpad gestures (Safari, Tauri on macOS): pinch and rotate.
-    const gs = (e: Event) => {
-      e.preventDefault();
-      gesture = { scale: 1, rot: 0 };
-    };
-    const gc = (e: Event) => {
-      e.preventDefault();
-      const g = e as unknown as { scale: number; rotation: number; clientX: number; clientY: number };
-      if (!gesture) return;
-      const r = host.getBoundingClientRect();
-      const sx = (g.clientX ?? r.left + size.w / 2) - r.left, sy = (g.clientY ?? r.top + size.h / 2) - r.top;
-      let nv = zoomAt(v, sx, sy, g.scale / gesture.scale);
-      nv = rotateAt(nv, sx, sy, ((g.rotation - gesture.rot) * Math.PI) / 180);
-      gesture = { scale: g.scale, rot: g.rotation };
-      setView(nv);
-    };
-    const ge = (e: Event) => {
-      e.preventDefault();
-      gesture = null;
-    };
-    host.addEventListener('gesturestart', gs);
-    host.addEventListener('gesturechange', gc);
-    host.addEventListener('gestureend', ge);
+    const detach = attachGestures({
+      host,
+      getView: () => v,
+      setView,
+      fit: () => fitAll(),
+      rotate,
+      onpress: (p) => onpress?.(p) ?? false,
+      ondrag: (p) => ondrag?.(p),
+      onrelease: (p) => onrelease?.(p),
+      onclick: (p) => onclick?.(p),
+      ondblclick: (p) => ondblclick?.(p),
+      onhover: (p) => onhover?.(p),
+      canNudge: () => canNudge?.() ?? true,
+    });
     return () => {
       ro.disconnect();
-      window.removeEventListener('keydown', key);
-      window.removeEventListener('keyup', key);
+      detach();
       cancelAnimationFrame(raf);
       cache?.clear();
       previewBmp?.close();
     };
   });
-
-  function isTyping(e: Event) {
-    const t = e.target as HTMLElement | null;
-    return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
-  }
-
-  function pt(e: PointerEvent | MouseEvent): CanvasPoint {
-    const r = host.getBoundingClientRect();
-    const sx = e.clientX - r.left, sy = e.clientY - r.top;
-    const [x, y] = toMosaic(v, sx, sy);
-    return { x, y, sx, sy, ev: e };
-  }
-
-  // ---- pointer handling ---------------------------------------------------
-  let mode: 'none' | 'tool' | 'maybe' | 'pan' = 'none';
-  let start = { x: 0, y: 0 };
-  let last = { x: 0, y: 0 };
-  const touches = new Map<number, { x: number; y: number }>();
-  let pinch: { d: number; a: number } | null = null;
-
-  function down(e: PointerEvent) {
-    if ((e.target as Element).closest('[data-ui]')) return;
-    host.setPointerCapture(e.pointerId);
-    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (touches.size === 2) {
-      const [a, b] = [...touches.values()];
-      pinch = { d: Math.hypot(b.x - a.x, b.y - a.y), a: Math.atan2(b.y - a.y, b.x - a.x) };
-      mode = 'none';
-      return;
-    }
-    start = last = { x: e.clientX, y: e.clientY };
-    if (e.button === 1 || spaceDown) {
-      mode = 'pan';
-      return;
-    }
-    if (e.button !== 0) return;
-    mode = onpress?.(pt(e)) ? 'tool' : 'maybe';
-  }
-
-  function move(e: PointerEvent) {
-    if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pinch && touches.size === 2) {
-      const [a, b] = [...touches.values()];
-      const d = Math.hypot(b.x - a.x, b.y - a.y), ang = Math.atan2(b.y - a.y, b.x - a.x);
-      const r = host.getBoundingClientRect();
-      const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
-      let nv = zoomAt(v, mx, my, d / pinch.d);
-      nv = rotateAt(nv, mx, my, ang - pinch.a);
-      pinch = { d, a: ang };
-      setView(nv);
-      return;
-    }
-    if (mode === 'tool') {
-      ondrag?.(pt(e));
-    } else if (mode === 'maybe') {
-      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) mode = 'pan';
-    }
-    if (mode === 'pan') {
-      setView(panBy(v, e.clientX - last.x, e.clientY - last.y));
-    }
-    last = { x: e.clientX, y: e.clientY };
-    if (mode === 'none') onhover?.(pt(e));
-  }
-
-  function up(e: PointerEvent) {
-    touches.delete(e.pointerId);
-    if (touches.size < 2) pinch = null;
-    if (mode === 'tool') onrelease?.(pt(e));
-    else if (mode === 'maybe') onclick?.(pt(e));
-    mode = 'none';
-  }
-
-  function wheel(e: WheelEvent) {
-    e.preventDefault();
-    const r = host.getBoundingClientRect();
-    const sx = e.clientX - r.left, sy = e.clientY - r.top;
-    if (e.ctrlKey || e.metaKey) {
-      // Trackpad pinch (browsers report it as ctrl+wheel) or ctrl/cmd + mouse wheel.
-      if (gesture) return;
-      setView(zoomAt(v, sx, sy, Math.exp(-e.deltaY * 0.01)));
-      return;
-    }
-    if (e.altKey) {
-      setView(rotateAt(v, sx, sy, e.deltaY * 0.002));
-      return;
-    }
-    const lineMode = e.deltaMode === 1;
-    const mouseLike = lineMode || (e.deltaX === 0 && Math.abs(e.deltaY) >= 40 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) % 10 === 0 && !e.shiftKey);
-    if (mouseLike) {
-      // Mouse wheel: zoom about the cursor.
-      const dy = lineMode ? e.deltaY * 33 : e.deltaY;
-      setView(zoomAt(v, sx, sy, Math.exp(-dy * 0.0015)));
-    } else {
-      // Two-finger scroll: pan.
-      setView(panBy(v, -e.deltaX, -e.deltaY));
-    }
-  }
-
-  function dbl(e: MouseEvent) {
-    if ((e.target as Element).closest('[data-ui]')) return;
-    ondblclick?.(pt(e));
-  }
 
   // Public helpers for toolbars.
   export function zoomBy(f: number) {
@@ -395,13 +279,7 @@
   style:cursor
   role="application"
   aria-label="Mosaic canvas"
-  onpointerdown={down}
-  onpointermove={move}
-  onpointerup={up}
-  onpointercancel={up}
-  onpointerleave={() => onhover?.(null)}
-  onwheel={wheel}
-  ondblclick={dbl}
+  data-view
 >
   <canvas bind:this={canvas} style:width="{size.w}px" style:height="{size.h}px"></canvas>
   <svg class="overlay" width={size.w} height={size.h}>

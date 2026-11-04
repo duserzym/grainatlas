@@ -535,16 +535,21 @@
     return c;
   }
 
-  function dblclick(p: CanvasPoint) {
+  /** Double-click a spot or label to rename it; elsewhere the view fits (gestures.ts). */
+  function dblclick(p: CanvasPoint): boolean {
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const s = hitSpot(x, y) ?? null;
     if (s) {
       app.selection = [s.id];
       startEdit(s.id);
-      return;
+      return true;
     }
     const l = hitLabel(x, y);
-    if (l) startEdit(l.id);
+    if (l) {
+      startEdit(l.id);
+      return true;
+    }
+    return false;
   }
 
   function hover(p: CanvasPoint | null) {
@@ -608,9 +613,6 @@
     const kk = e.key.toLowerCase();
     if (tools[kk]) app.tool = tools[kk];
     else if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
-    else if (e.key === '+' || e.key === '=') viewer?.zoomBy(1.5);
-    else if (e.key === '-') viewer?.zoomBy(1 / 1.5);
-    else if (e.key === '0') viewer?.fitAll();
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
     else if (e.key === ']') viewer?.rotateBy(Math.PI / 12);
     else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -657,6 +659,7 @@
   <div class="canvas">
     {#key areaId}
       <Viewer bind:this={viewer} bind:view {core} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
+        preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} canNudge={() => !selSpots.length}
         onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
           <g transform="scale({1 / umPerPx})">
