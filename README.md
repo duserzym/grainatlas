@@ -169,8 +169,13 @@ builds `ui/dist` and packs it as
 The command line does batch work:
 
 ```bash
-cargo run --release -p grainatlas-cli -- stitch <package-or-area-folder> --out <name>.grainatlas --segment --print tabloid
+cargo run --release -p grainatlas-cli -- stitch <package-or-area-folder> --out <name>.grainatlas --auto --polarity both --print tabloid
 ```
+
+`--print tabloid` writes print sheets for hand spot registration: every grain of
+the package once (cross-area duplicates go to their owner area), at 1 mm = 8 µm,
+with the `print_sheet` registration sidecar; `--print-style grains` gives the
+older per-area grain layout. See [docs/print_sheets.md](docs/print_sheets.md).
 
 The desktop app also takes `grainatlas <package-or-area-folder> [--stitch] [--segment]`
 or `grainatlas <images…> --um-per-px <µm> | --field-um <µm> [--stitch]`, and

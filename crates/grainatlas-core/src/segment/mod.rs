@@ -5,6 +5,7 @@
 //! polygons and statistics, reading-order numbering that is stable across
 //! re-runs, and the manual tools (click-grow add, split, merge, renumber).
 
+pub mod filter;
 pub mod morph;
 pub mod shape;
 pub mod watershed;
@@ -23,6 +24,9 @@ pub enum Polarity {
     Bright,
     /// Grains darker than the background (transmitted light).
     Dark,
+    /// Bright grains as `Bright`, plus grains brighter or darker than the local epoxy level
+    /// that overlap none of them: CL-dark (metamict) zircons in cathodoluminescence.
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -67,6 +71,30 @@ pub struct SegmentParams {
     pub row_tolerance: f64,
     /// Work resolution: the mosaic is reduced by this factor.
     pub work_scale: usize,
+    /// `Both`: a pixel is dark when it is below the local epoxy level by this fraction of that
+    /// level (or by the noise margin, whichever is smaller).
+    pub dark_rel: f32,
+    /// Size of the running median that gives the local epoxy level (um).
+    pub background_window_um: f64,
+    /// Flag epoxy bubbles and pits (round dark blobs from 12 um to 0.68 x the reference size,
+    /// solidity > 0.88, aspect < 1.35), keep their bright halo out of the grain mask, and flag
+    /// halo crescents and bubble rims that survive.
+    pub flag_bubbles: bool,
+    /// Flag tile-seam slivers (minor axis < 15 um, or aspect > 5, minor axis < 30 um and straight
+    /// along a tile axis) and cut seam lines that bridge grains with an opening of 0.037 x the
+    /// reference size.
+    pub flag_slivers: bool,
+    /// Flag exposure-step tile blocks: weakly contrasted or box-shaped regions; blobs over 3 x the
+    /// reference size are split back into their raw parts first (real grains sit inside them).
+    pub flag_blocks: bool,
+    /// Flag specks: smaller than 0.22 x the reference size and weakly contrasted or far from
+    /// every grain.
+    pub flag_specks: bool,
+    /// Grain size the artifact sizes scale with (eq. diameter, um); 0 = the median of the area's
+    /// grains (about 110 um on the Boise S mount, 175 um on the L mount).
+    pub reference_size_um: f64,
+    /// Largest grain kept (eq. diameter, um); 0 = no limit.
+    pub max_size_um: f64,
 }
 
 impl Default for SegmentParams {
@@ -88,6 +116,46 @@ impl Default for SegmentParams {
             simplify_px: 0.8,
             row_tolerance: 0.6,
             work_scale: 2,
+            dark_rel: 0.45,
+            background_window_um: 330.0,
+            flag_bubbles: true,
+            flag_slivers: true,
+            flag_blocks: true,
+            flag_specks: true,
+            reference_size_um: 0.0,
+            max_size_um: 0.0,
+        }
+    }
+}
+
+/// Why a detection is not a grain. Artifacts stay in the grain list, unnumbered and dimmed, so
+/// the user can confirm them or keep one as a grain; sheets, spots and ownership leave them out.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Artifact {
+    /// An epoxy bubble or pit: a round dark blob.
+    Bubble,
+    /// A bubble's bright halo, a crescent of it, or a bubble rim.
+    Halo,
+    /// A tile-seam sliver or line.
+    Sliver,
+    /// An exposure-step tile block or a region of one.
+    Block,
+    /// A small, weak or isolated speck.
+    Speck,
+    /// Marked by the user.
+    Manual,
+}
+
+impl Artifact {
+    pub fn label(self) -> &'static str {
+        match self {
+            Artifact::Bubble => "bubble",
+            Artifact::Halo => "halo",
+            Artifact::Sliver => "sliver",
+            Artifact::Block => "block",
+            Artifact::Speck => "speck",
+            Artifact::Manual => "manual",
         }
     }
 }
@@ -112,6 +180,19 @@ pub struct Grain {
     pub manual: bool,
     /// Per-grain scale bar length (plan section 6.6).
     pub scale_bar_um: f64,
+    /// Not a grain, and why (`None` = a grain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<Artifact>,
+    /// The user kept this detection as a grain although it was flagged; re-runs keep it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept: bool,
+}
+
+impl Grain {
+    /// A grain, not an artifact.
+    pub fn is_grain(&self) -> bool {
+        self.artifact.is_none()
+    }
 }
 
 /// Segmentation input: the corrected mosaic reduced to work resolution.
@@ -136,7 +217,7 @@ pub fn grain_mask(w: &WorkImage, p: &SegmentParams) -> (Vec<bool>, f32) {
     let sm = gaussian_blur(&w.img, p.smooth_px);
     let thr = p.threshold.unwrap_or_else(|| auto_threshold(&sm, &w.cov, p));
     let (iw, ih) = (sm.w, sm.h);
-    let mut m: Vec<bool> = sm.px.iter().zip(&w.cov).map(|(&v, &c)| c && if p.polarity == Polarity::Bright { v > thr } else { v < thr }).collect();
+    let mut m: Vec<bool> = sm.px.iter().zip(&w.cov).map(|(&v, &c)| c && if p.polarity != Polarity::Dark { v > thr } else { v < thr }).collect();
     if p.open_px > 0 {
         m = morph::open(&m, iw, ih, p.open_px);
     }
@@ -153,7 +234,7 @@ pub fn auto_threshold(sm: &Gray, cov: &[bool], p: &SegmentParams) -> f32 {
     match p.method {
         ThresholdMethod::Otsu => otsu(vals()),
         ThresholdMethod::Background => {
-            let bright = p.polarity == Polarity::Bright;
+            let bright = p.polarity != Polarity::Dark;
             let mut h = vec![0u64; 1024];
             let mut n = 0u64;
             for v in vals() {
@@ -189,14 +270,13 @@ pub fn auto_threshold(sm: &Gray, cov: &[bool], p: &SegmentParams) -> f32 {
     }
 }
 
-/// Full automatic segmentation. `previous` grains keep their ids and numbers where they match.
-pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grain> {
-    let (mask, _) = grain_mask(w, p);
+/// Grains of a threshold mask: labels (watershed split when asked), the size limit, outlines.
+pub fn grains_of_mask(w: &WorkImage, p: &SegmentParams, mask: &[bool]) -> Vec<Grain> {
     let (iw, ih) = (w.img.w, w.img.h);
     let labels = if p.split {
-        watershed::split(&mask, iw, ih, p.split_h, p.neck_ratio)
+        watershed::split(mask, iw, ih, p.split_h, p.neck_ratio)
     } else {
-        morph::components(&mask, iw, ih).0
+        morph::components(mask, iw, ih).0
     };
     let min_px = std::f64::consts::PI / 4.0 * (p.min_size_um / w.um_per_px).powi(2);
     let n = labels.iter().copied().max().unwrap_or(0) as usize;
@@ -216,7 +296,7 @@ pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grai
         cnt[l as usize] += 1;
     }
     let keep: Vec<u32> = (1..=n as u32).filter(|&l| cnt[l as usize] as f64 >= min_px).collect();
-    let mut grains: Vec<Grain> = crate::util::par_map(keep.len(), |k| {
+    crate::util::par_map(keep.len(), |k| {
         let l = keep[k];
         let b = bb[l as usize];
         let (bw, bh) = (b[2] - b[0] + 1, b[3] - b[1] + 1);
@@ -226,19 +306,71 @@ pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grai
                 local[y * bw + x] = labels[(b[1] + y) * iw + b[0] + x] == l;
             }
         }
-        let mut origin = (b[0], b[1]);
-        if p.grabcut {
-            if let Some((m2, o2, w2, h2)) = shape::grabcut_refine(&w.img, &local, origin, bw, bh) {
-                return shape::grain_from_mask(&m2, w2, h2, o2, w, p.simplify_px, false);
-            }
-            origin = (b[0], b[1]);
+        if p.grabcut
+            && let Some((m2, o2, w2, h2)) = shape::grabcut_refine(&w.img, &local, (b[0], b[1]), bw, bh)
+        {
+            return shape::grain_from_mask(&m2, w2, h2, o2, w, p.simplify_px, false);
         }
-        shape::grain_from_mask(&local, bw, bh, origin, w, p.simplify_px, false)
+        shape::grain_from_mask(&local, bw, bh, (b[0], b[1]), w, p.simplify_px, false)
     })
     .into_iter()
     .flatten()
-    .collect();
+    .collect()
+}
+
+/// Full automatic segmentation. `previous` grains keep their ids and numbers where they match,
+/// and the user's artifact decisions (kept as a grain, or marked) carry over.
+///
+/// On top of the threshold segmentation: with `Polarity::Both` the CL-dark grains, and with the
+/// `flag_*` switches the artifact classifier ([`filter`]), whose sizes scale with the area's
+/// median grain size. Artifacts stay in the list with their reason, unnumbered.
+pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grain> {
+    let (mask, _) = grain_mask(w, p);
+    let first = grains_of_mask(w, p, &mask);
+    let flags = p.flag_bubbles || p.flag_slivers || p.flag_blocks || p.flag_specks;
+    let mut grains = first.clone();
+    if p.polarity == Polarity::Both || flags {
+        let mut r = if p.reference_size_um > 0.0 { p.reference_size_um } else { filter::reference_size(&first) };
+        // The first estimate comes from raw detections, which split zoned grains into fragments;
+        // when the whole grains found with it say otherwise, run again with theirs.
+        for pass in 0..2 {
+            grains = second_pass(w, p, &mask, first.clone(), r);
+            if p.reference_size_um > 0.0 || pass == 1 {
+                break;
+            }
+            let r2 = filter::reference_size(&grains);
+            if (r2 / r - 1.0).abs() < 0.25 {
+                break;
+            }
+            r = r2;
+        }
+    }
     number(&mut grains, previous, p.row_tolerance);
+    grains
+}
+
+/// The artifact classifier and the CL-dark supplement over the primary detections, with the
+/// sizes scaled to the reference grain size `r`.
+fn second_pass(w: &WorkImage, p: &SegmentParams, mask: &[bool], mut grains: Vec<Grain>, r: f64) -> Vec<Grain> {
+    let mut an = filter::analyse(w, p, r);
+    // Bubble halos out of the bright mask, seam lines cut by an opening.
+    if let Some(m2) = filter::clean_mask(mask, w, p, &an, r) {
+        grains = grains_of_mask(w, p, &m2);
+    }
+    if p.flag_blocks {
+        filter::split_blocks(&mut grains, w, p, &an, r);
+    }
+    if p.polarity == Polarity::Both {
+        filter::merge_footprints(&mut grains, w, p, &an, r);
+    }
+    filter::drop_nested(&mut grains);
+    filter::detach_bubbles(&mut grains, w, p, &mut an, r);
+    filter::split_bridged(&mut grains, w, p, r);
+    filter::classify(&mut grains, w, p, &an, r);
+    // A dark round blob inside a grain is an inclusion, not a bubble.
+    let inside = |b: &Grain| grains.iter().any(|g| g.is_grain() && shape::inside(&g.polygon_um, b.centroid_um[0], b.centroid_um[1]));
+    let bubbles: Vec<Grain> = an.bubble_grains.iter().filter(|b| !inside(b)).cloned().collect();
+    grains.extend(bubbles);
     grains
 }
 
@@ -261,17 +393,35 @@ pub fn number(grains: &mut [Grain], previous: &[Grain], tolerance: f64) {
             g.id = q.id;
             g.number = q.number;
             g.manual = q.manual;
+            // The user's decisions carry over: kept as a grain, or marked as an artifact.
+            if q.kept {
+                g.kept = true;
+                g.artifact = None;
+            } else if q.artifact == Some(Artifact::Manual) {
+                g.artifact = Some(Artifact::Manual);
+            }
         }
     }
-    let order = reading_order(grains, tolerance);
-    let mut next = previous.iter().map(|q| q.number).max().unwrap_or(0);
+    // Artifacts have no number; grains keep theirs, new grains continue in reading order.
+    for g in grains.iter_mut().filter(|g| !g.is_grain()) {
+        g.number = 0;
+    }
+    let real: Vec<usize> = (0..grains.len()).filter(|&i| grains[i].is_grain()).collect();
+    let sub: Vec<Grain> = real.iter().map(|&i| grains[i].clone()).collect();
+    let order: Vec<usize> = reading_order(&sub, tolerance).into_iter().map(|k| real[k]).collect();
+    let mut next = previous.iter().map(|q| q.number).max().unwrap_or(0).max(grains.iter().map(|g| g.number).max().unwrap_or(0));
     for i in order {
-        if !matched[i] {
+        if !matched[i] || grains[i].number == 0 {
             next += 1;
             grains[i].number = next;
         }
     }
-    grains.sort_by_key(|g| g.number);
+    sort_grains(grains);
+}
+
+/// Grains by number, then the artifacts (by position).
+pub fn sort_grains(grains: &mut [Grain]) {
+    grains.sort_by(|a, b| a.artifact.is_some().cmp(&b.artifact.is_some()).then(a.number.cmp(&b.number)).then(a.centroid_um[0].total_cmp(&b.centroid_um[0])));
 }
 
 /// Indices of `grains` in reading order.
@@ -310,7 +460,13 @@ pub fn reading_order(grains: &[Grain], tolerance: f64) -> Vec<usize> {
 /// Renumbers all grains in reading order from 1, or (with `from`) sets one grain's number and
 /// numbers the grains after it in reading order consecutively ("renumber from here").
 pub fn renumber(grains: &mut [Grain], tolerance: f64, from: Option<(Uuid, u32)>) {
-    let order = reading_order(grains, tolerance);
+    // Artifacts have no number and take no place in the reading order.
+    for g in grains.iter_mut().filter(|g| !g.is_grain()) {
+        g.number = 0;
+    }
+    let real: Vec<usize> = (0..grains.len()).filter(|&i| grains[i].is_grain()).collect();
+    let sub: Vec<Grain> = real.iter().map(|&i| grains[i].clone()).collect();
+    let order: Vec<usize> = reading_order(&sub, tolerance).into_iter().map(|k| real[k]).collect();
     match from {
         None => {
             for (k, i) in order.into_iter().enumerate() {
@@ -324,7 +480,7 @@ pub fn renumber(grains: &mut [Grain], tolerance: f64, from: Option<(Uuid, u32)>)
             }
         }
     }
-    grains.sort_by_key(|g| g.number);
+    sort_grains(grains);
 }
 
 /// Click-grow: the grain containing (or nearest to) a point, grown by flood fill above the
@@ -344,7 +500,7 @@ pub fn grain_at(w: &WorkImage, p: &SegmentParams, x_um: f64, y_um: f64) -> Optio
     let (sw, sh) = (sub.w, sub.h);
     let bg = otsu(w.img.px.iter().step_by(13).copied());
     let seed_v = sub.px[(cy as usize - y0) * sw + (cx as usize - x0)];
-    let bright = p.polarity == Polarity::Bright;
+    let bright = p.polarity != Polarity::Dark;
     let inside = |v: f32, t: f32| if bright { v > t } else { v < t };
     // Threshold half way between the seed and the background level; the seed must be a grain.
     let t = p.threshold.unwrap_or_else(|| {
@@ -411,6 +567,11 @@ pub fn split_grain(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64) -
         let part: Vec<bool> = part.iter().enumerate().map(|(i, &v)| v && shape::inside_polygon_px(g, w.um_per_px, origin, i % bw, i / bw)).collect();
         if let Some(mut ng) = shape::grain_from_mask(&part, bw, bh, origin, w, simplify_px, true) {
             ng.number = 0;
+            // One cut detaches a bubble: a round part far darker than the epoxy is flagged.
+            if filter::looks_like_bubble(&ng, g, w) {
+                ng.artifact = Some(Artifact::Bubble);
+                ng.manual = false;
+            }
             out.push(ng);
         }
     }
@@ -463,7 +624,7 @@ pub fn refine_grain(w: &WorkImage, g: &Grain, simplify_px: f64) -> Option<Grain>
 pub fn label_image(w: &WorkImage, grains: &[Grain]) -> Vec<u16> {
     let (iw, ih) = (w.img.w, w.img.h);
     let mut out = vec![0u16; iw * ih];
-    for g in grains {
+    for g in grains.iter().filter(|g| g.is_grain()) {
         let (mask, bw, bh, origin) = shape::rasterize(g, w.um_per_px, 0);
         for y in 0..bh {
             for x in 0..bw {
@@ -479,11 +640,11 @@ pub fn label_image(w: &WorkImage, grains: &[Grain]) -> Vec<u16> {
 
 /// Grain table CSV (with stage positions when the area has them).
 pub fn grains_csv(grains: &[Grain], stage: impl Fn(f64, f64) -> Option<[f64; 2]>, spot_counts: impl Fn(&Uuid) -> usize) -> String {
-    let mut s = String::from("number,id,x_um,y_um,area_um2,eq_diameter_um,major_um,minor_um,orientation_deg,mean_intensity,bbox_x0_um,bbox_y0_um,bbox_x1_um,bbox_y1_um,scale_bar_um,stage_x_nm,stage_y_nm,spots,manual\n");
+    let mut s = String::from("number,id,x_um,y_um,area_um2,eq_diameter_um,major_um,minor_um,orientation_deg,mean_intensity,bbox_x0_um,bbox_y0_um,bbox_x1_um,bbox_y1_um,scale_bar_um,stage_x_nm,stage_y_nm,spots,manual,artifact\n");
     for g in grains {
         let st = stage(g.centroid_um[0], g.centroid_um[1]);
         s.push_str(&format!(
-            "{},{},{:.2},{:.2},{:.1},{:.2},{:.2},{:.2},{:.1},{:.4},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{}\n",
+            "{},{},{:.2},{:.2},{:.1},{:.2},{:.2},{:.2},{:.1},{:.4},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{}\n",
             g.number,
             g.id,
             g.centroid_um[0],
@@ -502,7 +663,8 @@ pub fn grains_csv(grains: &[Grain], stage: impl Fn(f64, f64) -> Option<[f64; 2]>
             st.map_or(String::new(), |s| format!("{:.0}", s[0])),
             st.map_or(String::new(), |s| format!("{:.0}", s[1])),
             spot_counts(&g.id),
-            g.manual
+            g.manual,
+            g.artifact.map_or("", |a| a.label())
         ));
     }
     s

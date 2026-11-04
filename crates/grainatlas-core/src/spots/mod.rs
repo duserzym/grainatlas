@@ -127,7 +127,7 @@ pub fn next_n(spots: &[Spot]) -> u32 {
 
 /// The grain whose polygon contains a point.
 pub fn grain_at<'a>(grains: &'a [Grain], x: f64, y: f64) -> Option<&'a Grain> {
-    grains.iter().find(|g| x >= g.bbox_um[0] && x <= g.bbox_um[2] && y >= g.bbox_um[1] && y <= g.bbox_um[3] && crate::segment::shape::inside(&g.polygon_um, x, y))
+    grains.iter().filter(|g| g.is_grain()).find(|g| x >= g.bbox_um[0] && x <= g.bbox_um[2] && y >= g.bbox_um[1] && y <= g.bbox_um[3] && crate::segment::shape::inside(&g.polygon_um, x, y))
 }
 
 /// Creates a spot at a point, named from the pattern and linked to the grain under it.
@@ -210,7 +210,7 @@ pub fn geojson(project: &Project, grains: &BTreeMap<String, Vec<Grain>>, spots: 
     let mut features = Vec::new();
     for (area_id, gs) in grains {
         let area_uuid = project.areas.iter().find(|a| &a.id == area_id).map(|a| a.uuid.to_string());
-        for g in gs {
+        for g in gs.iter().filter(|g| g.is_grain()) {
             let mut ring: Vec<[f64; 2]> = g.polygon_um.clone();
             if let Some(f) = ring.first().copied() {
                 ring.push(f);

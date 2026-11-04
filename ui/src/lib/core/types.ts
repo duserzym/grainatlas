@@ -107,7 +107,8 @@ export interface AreaParams {
 }
 
 export interface SegmentParams {
-  polarity: 'bright' | 'dark';
+  /** 'both': bright grains plus grains brighter or darker than the local epoxy (CL-dark zircons). */
+  polarity: 'bright' | 'dark' | 'both';
   method: 'background' | 'otsu';
   noise_k: number;
   contrast_frac: number;
@@ -123,6 +124,17 @@ export interface SegmentParams {
   simplify_px: number;
   row_tolerance: number;
   work_scale: number;
+  dark_rel: number;
+  background_window_um: number;
+  /** Artifact classifier: flag (never delete) bubbles and their halos, seam slivers, tile blocks, specks. */
+  flag_bubbles: boolean;
+  flag_slivers: boolean;
+  flag_blocks: boolean;
+  flag_specks: boolean;
+  /** Grain size the artifact sizes scale with (µm); 0 = the area's median grain size. */
+  reference_size_um: number;
+  /** 0 = no limit */
+  max_size_um: number;
 }
 
 export interface PhotometricResult {
@@ -153,7 +165,22 @@ export interface Grain {
   mean_intensity: number;
   manual: boolean;
   scale_bar_um: number;
+  /** Not a grain, and why (shown dimmed, unnumbered, left off sheets and spots). */
+  artifact?: ArtifactReason;
+  /** The user kept this detection as a grain although it was flagged. */
+  kept?: boolean;
 }
+
+export type ArtifactReason = 'bubble' | 'halo' | 'sliver' | 'block' | 'speck' | 'manual';
+
+export const ARTIFACT_LABELS: Record<ArtifactReason, string> = {
+  bubble: 'epoxy bubble or pit',
+  halo: 'bubble halo or rim',
+  sliver: 'tile-seam sliver',
+  block: 'exposure-step tile block',
+  speck: 'speck',
+  manual: 'marked by you',
+};
 
 export type SpotKind = 'spot' | 'line' | 'raster';
 
@@ -243,6 +270,81 @@ export interface LayoutParams {
 }
 
 export interface LayoutResult { pages: string[]; um_per_mm: number; items: number; paper_mm: [number, number] }
+
+/** Export-only enhancement: NLM denoise, unsharp mask, background strip. */
+export interface EnhanceParams {
+  denoise: boolean;
+  denoise_h: number;
+  sharpen: boolean;
+  sharpen_radius: number;
+  sharpen_amount: number;
+  strip: boolean;
+  /** 0 black … 255 white */
+  strip_grey: number;
+  strip_margin_um: number;
+}
+
+/** Print sheets: every owned grain of the mount at a fixed scale. */
+export interface SheetParams {
+  paper: string;
+  landscape: boolean;
+  margin_mm: number;
+  um_per_mm: number;
+  pad_um: number;
+  gap_break_um: number;
+  min_grain_um: number;
+  max_grain_um: number;
+  spot_sizes_um: number[];
+  enhance: EnhanceParams;
+  title: string;
+  lab: string;
+  project: string;
+  registration_file: string;
+  printed: string;
+}
+
+export interface BandRecord {
+  sheet: number;
+  sample: string;
+  area: string;
+  row: number;
+  grains: { id: string; number: number }[];
+  sheet_rect_mm: [number, number, number, number];
+  mosaic_rect_um: [number, number, number, number];
+  background: string;
+}
+
+/** The `print_sheet` frame: paper sheet ↔ mosaic (not the laser stage registration). */
+export interface PrintRegistration {
+  frame: 'print_sheet';
+  note: string;
+  package: string;
+  project: string;
+  paper: string;
+  paper_mm: [number, number];
+  um_per_mm: number;
+  sheet_origin: string;
+  mapping: string;
+  bands: BandRecord[];
+}
+
+export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number }
+
+/** One detection and the area that owns the grain. */
+export interface GrainOwner {
+  area_id: string;
+  grain_id: string;
+  owner_area: string;
+  /** The owner's detection of the same grain, when this one is a duplicate. */
+  duplicate_of?: string;
+  cut: boolean;
+  interior_um: number;
+  stage_nm?: [number, number];
+}
+
+export interface Ownership { grains: GrainOwner[]; samples: { sample: string; areas: string[] }[] }
+
+export interface SheetResult { pages: string[]; registration: PrintRegistration; stats: SheetStats; ownership: Ownership }
 
 export interface Progress { stage: string; fraction: number }
 

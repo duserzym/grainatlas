@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onProgress?: (p: Progress) => void };
 
@@ -307,5 +307,15 @@ export class WasmCore implements Core {
   }
   async saveProject(_project: Project, _extras: Record<string, string>): Promise<string | null> {
     return null; // the web build downloads files instead (see lib/files.ts)
+  }
+
+  async ownership(grains: Record<string, Grain[]>): Promise<Ownership> {
+    await this.ready();
+    return this.call('ownership', { grains });
+  }
+
+  async printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult> {
+    await this.ready();
+    return this.call('printSheets', { params, grains, tone });
   }
 }

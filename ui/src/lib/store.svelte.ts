@@ -10,7 +10,7 @@
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
-import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
+import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
 export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'pair';
@@ -162,6 +162,9 @@ class AppState {
   tone = $state<Record<string, ToneParams>>({});
   params = $state<Record<string, AreaParams>>({});
   grains = $state<Record<string, Grain[]>>({});
+  /** Which area owns each detected grain (overlapping areas see one grain twice); null with grains in fewer than two areas. */
+  ownership = $state<Ownership | null>(null);
+  private ownershipTimer: ReturnType<typeof setTimeout> | null = null;
   spots = $state<Spot[]>([]);
   overlays = $state<Record<string, Overlay>>({});
   /** Set to force the next spot's {n} (legacy run numbers); null = continue. */
@@ -251,7 +254,7 @@ class AppState {
   deepLink = $state<(DeepLink & { name: string | null }) | null>(null);
   /** Spot the canvas should center on once its view is ready (deep links). */
   focusSpot = $state<string | null>(null);
-  layers = $state({ mosaic: true, outlines: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false, results: true });
+  layers = $state({ mosaic: true, outlines: true, artifacts: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false, results: true });
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];
   canUndo = $state(false);
@@ -393,6 +396,25 @@ class AppState {
     this.canUndo = true;
     this.canRedo = this.redoStack.length > 0;
     this.persist();
+  }
+
+  /** Recomputes cross-area ownership shortly after the grains change (in the background). */
+  refreshOwnership() {
+    if (this.ownershipTimer) clearTimeout(this.ownershipTimer);
+    this.ownershipTimer = setTimeout(async () => {
+      const grains = $state.snapshot(this.grains) as Record<string, Grain[]>;
+      if (Object.values(grains).filter((g) => g.length).length < 2 || this.readOnly) {
+        this.ownership = null;
+        return;
+      }
+      try {
+        this.ownership = await (await this.core).ownership(grains);
+      } catch (e) {
+        // Areas without stage positions have no ownership.
+        console.warn('ownership:', e);
+        this.ownership = null;
+      }
+    }, 400);
   }
 
   /** The project as saved: core record plus UI-held grains, spots, labels and settings. */
