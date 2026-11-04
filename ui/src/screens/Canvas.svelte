@@ -12,9 +12,9 @@
   import { formatName, grainAt, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
-  import { mountSpots, spotLink } from '../lib/laicpmsdb';
+  import { mountSpots, postSpots, spotLink } from '../lib/laicpmsdb';
   import MountPicker from '../components/MountPicker.svelte';
-  import { canSaveFolder, publish, saveAtlas } from '../lib/atlas';
+  import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
@@ -167,12 +167,30 @@
     const ok = await openLink(url);
     app.error = ok ? null : `UPb Studio did not open ${url}`;
   }
-  function sendSpots() {
+  /**
+   * Spot sync: with a server, a mount and a token (the shell's, or one pasted in Settings) the
+   * spots go straight to POST /v1/mounts/{mount}/spots and the acquisitions laicpmsdb matched by
+   * label come back as the spots' acquisition ids; otherwise the same body is downloaded.
+   */
+  async function sendSpots() {
     if (!app.project || !areaId) return;
     const { body, skipped } = mountSpots(app.project.uuid, sample, $state.snapshot(spots) as Spot[]);
     const mount = app.project.laicpmsdb.mount_id;
-    download(JSON.stringify(body, null, 2), `${app.pkg?.name ?? 'grainatlas'}_${areaId}_laicpmsdb-spots.json`, 'application/json');
-    app.notice = `${body.spots.length} spots for ${mount ? `mount ${mount}` : 'laicpmsdb (no mount id set)'}${skipped ? `; ${skipped} lines and rasters left out` : ''}.`;
+    const server = app.server;
+    const tok = server && mount ? await authToken() : null;
+    if (!server || !mount || !tok) {
+      download(JSON.stringify(body, null, 2), `${app.pkg?.name ?? app.project.package.name}_${areaId}_laicpmsdb-spots.json`, 'application/json');
+      app.notice = `${body.spots.length} spots for ${mount ? `mount ${mount}` : 'laicpmsdb (no mount id set)'}${skipped ? `; ${skipped} lines and rasters left out` : ''}. Downloaded: ${!server ? 'no server set' : !mount ? 'no mount linked' : 'no token'}.`;
+      return;
+    }
+    const r = await app.run(`Sending ${body.spots.length} spots`, () => postSpots(server, tok, mount, body));
+    if (!r) return;
+    const linked = new Map(r.acquisitions.filter((a) => a.atlas_spot_id).map((a) => [a.atlas_spot_id.toLowerCase(), a.id]));
+    if (linked.size) {
+      app.checkpoint();
+      app.spots = app.spots.map((s) => (linked.has(s.id.toLowerCase()) && !s.acquisition_id ? { ...s, acquisition_id: linked.get(s.id.toLowerCase())! } : s));
+    }
+    app.notice = `Sent to mount ${mount}: ${r.created} created, ${r.updated} updated, ${r.unchanged} unchanged${r.grains_created ? `, ${r.grains_created} grains created` : ''}${linked.size ? `; ${linked.size} acquisitions linked` : ''}${skipped ? `; ${skipped} lines and rasters left out` : ''}.`;
   }
 
   // ---- spots --------------------------------------------------------------------
@@ -902,7 +920,7 @@
           <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
           <button onclick={() => renameFromPattern(app.selection.length ? app.selection : spots.map((s) => s.id))} disabled={!spots.length} title="Rename the selected spots (or all in this area) from the pattern">Rename</button>
           <button onclick={sendSpots} disabled={!spots.length} data-testid="send-laicpmsdb"
-            title="Download this area's spots as the JSON body of laicpmsdb's POST /v1/mounts/{'{mount_id}'}/spots (mosaic µm)">Send spots to laicpmsdb</button>
+            title={app.server && app.project?.laicpmsdb.mount_id ? "POST this area's spots to the linked mount (with the sign-in token; downloads the JSON body when there is none)" : "Download this area's spots as the JSON body of laicpmsdb's POST /v1/mounts/{mount_id}/spots (mosaic µm)"}>Send spots to laicpmsdb</button>
         </div>
         <div class="list">
           <table class="data">

@@ -37,7 +37,7 @@ test('save the atlas bundle as a zip and publish it to a mount', async ({ page, 
   await request.post(`${FAKE}/_fake/reset`);
   await page.goto('./');
   await useFakeServer(page);
-  await page.getByRole('button', { name: 'Open' }).click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
   await page.getByTestId('example').click();
   await page.getByTestId('stitch').click();
   await expect(page.getByTestId('rms')).toBeVisible();
@@ -87,4 +87,44 @@ test('save the atlas bundle as a zip and publish it to a mount', async ({ page, 
   // Publishing again makes version 2 (append-only).
   await page.getByTestId('publish').click();
   await expect(page.locator('.toast.ok')).toContainText('Published version 2');
+});
+
+test('Send spots posts to the linked mount when a token is there, and downloads without one', async ({ page, request }) => {
+  await request.post(`${FAKE}/_fake/reset`);
+  await page.goto('./');
+  await page.getByTestId('example').click();
+  await page.getByTestId('stitch').click();
+  await expect(page.getByTestId('rms')).toBeVisible();
+  await page.getByTestId('to-canvas').click();
+  const canvas = (await page.locator('canvas').first().boundingBox())!;
+  await page.getByTestId('tool-spot').click();
+  await page.keyboard.down('Alt');
+  await page.mouse.click(canvas.x + canvas.width * 0.3, canvas.y + canvas.height * 0.4);
+  await page.mouse.click(canvas.x + canvas.width * 0.5, canvas.y + canvas.height * 0.5);
+  await page.keyboard.up('Alt');
+  await expect(page.getByTestId('spot')).toHaveCount(2);
+  // No server yet: the download, as before.
+  const dl = page.waitForEvent('download');
+  await page.getByTestId('send-laicpmsdb').click();
+  expect((await dl).suggestedFilename()).toMatch(/_laicpmsdb-spots\.json$/);
+
+  // Server and token in Settings, mount typed: a direct POST.
+  await useFakeServer(page);
+  await page.getByRole('button', { name: 'Canvas' }).click();
+  await page.getByTestId('tab-link').click();
+  await page.getByRole('button', { name: 'Type an id instead' }).click();
+  await page.getByTestId('mount-id').fill(MOUNT);
+  await page.getByTestId('mount-id').press('Tab');
+  await page.getByRole('button', { name: /^Spots/ }).click();
+  let downloaded = false;
+  page.on('download', () => (downloaded = true));
+  await page.getByTestId('send-laicpmsdb').click();
+  await expect(page.locator('.toast.ok')).toContainText(`Sent to mount ${MOUNT}: 2 created`);
+  expect(downloaded).toBe(false);
+  const state = await (await request.get(`${FAKE}/_fake/state`)).json();
+  expect(state.spots).toHaveLength(1);
+  expect(state.spots[0].mount_id).toBe(MOUNT);
+  expect(state.spots[0].doc.spots).toHaveLength(2);
+  expect(state.spots[0].doc.sample).toBe('HJ-GC1');
+  expect(state.requests.find((r: { path: string }) => r.path.endsWith('/spots')).auth).toBe('Bearer test-token');
 });
