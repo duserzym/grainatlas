@@ -6,10 +6,11 @@ import { token as shellToken } from '@lab/bridge';
 import type { BundleOptions, Project, Published } from './core/types';
 import { download } from './files';
 import { publishAtlas } from './laicpmsdb';
-import { app } from './store.svelte';
+import { current, type AppState } from './store.svelte';
 
 /** Options for the core from Settings: tile quality, the package's place on the lab storage. */
 export function bundleOptions(p: Project): BundleOptions {
+  const app = current();
   const root = app.link.nasRoot.trim().replace(/[\\/]+$/, '');
   const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
   return { quality: app.link.quality, exported: new Date().toISOString(), nas_path: root ? `${root}${sep}${p.package.name}` : null };
@@ -17,6 +18,7 @@ export function bundleOptions(p: Project): BundleOptions {
 
 /** The bearer token: the shell's when hosted, else the one pasted in Settings. */
 export async function authToken(): Promise<string | null> {
+  const app = current();
   try {
     const t = await shellToken();
     if (t) return t;
@@ -60,7 +62,7 @@ export function canSaveFolder(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
 }
 
-async function bundleZip(): Promise<{ project: Project; zip: Uint8Array } | null> {
+async function bundleZip(app: AppState): Promise<{ project: Project; zip: Uint8Array } | null> {
   const p = app.fullProject();
   if (!p) return null;
   const core = await app.core;
@@ -70,6 +72,7 @@ async function bundleZip(): Promise<{ project: Project; zip: Uint8Array } | null
 
 /** Saves the bundle: a zip, or a `<project_id>.atlas/` folder. */
 export async function saveAtlas(asZip: boolean) {
+  const app = current();
   const core = await app.core;
   const p = app.fullProject();
   if (!p) return;
@@ -78,7 +81,7 @@ export async function saveAtlas(asZip: boolean) {
     if (where) app.notice = `Saved ${where}`;
     return;
   }
-  const b = await bundleZip();
+  const b = await bundleZip(app);
   if (!b) return;
   if (asZip || !canSaveFolder()) {
     download(b.zip, `${p.uuid}.atlas.zip`, 'application/zip');
@@ -106,6 +109,7 @@ export async function saveAtlas(asZip: boolean) {
 
 /** Posts the bundle to `POST /v1/mounts/{mount_id}/atlas` and records the version in the project. */
 export async function publish() {
+  const app = current();
   const server = app.server;
   const mount = app.project?.laicpmsdb.mount_id;
   if (!server) {
@@ -116,7 +120,7 @@ export async function publish() {
     app.error = 'Link the project to a mount first.';
     return;
   }
-  const b = await bundleZip();
+  const b = await bundleZip(app);
   if (!b) return;
   const tok = await authToken();
   const res = await app.run(`Publishing to ${new URL(server).host}`, () => publishAtlas(server, tok, mount, b.project.uuid, b.zip));

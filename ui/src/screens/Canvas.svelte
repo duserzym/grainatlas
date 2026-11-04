@@ -23,7 +23,11 @@
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
   let viewer = $state<ReturnType<typeof Viewer>>();
-  let view = $state<View | undefined>(undefined);
+  // The screen is made again on a tab switch: the tab keeps its view and gets it back.
+  let view = $state<View | undefined>(app.savedView?.areaId === app.areaId ? app.savedView.view : undefined);
+  $effect(() => {
+    if (view && app.areaId) app.savedView = { areaId: app.areaId, view: $state.snapshot(view) as View };
+  });
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
   let cursorUm = $state<[number, number] | null>(null);
   let selGrains = $state<string[]>([]);

@@ -78,11 +78,14 @@ export interface Core {
   recordPublished(p: Published): Promise<void>;
   /** Desktop: the window back to its default size, centred (Reset layout); nothing in a browser. */
   resetWindow(): Promise<void>;
+  /** The project file `<name>.gaproj` (the project record, no pixels): desktop writes it to
+   * `path`, next to the package, or where a dialog says (`ask`); the web downloads it. */
+  saveProjectFile(project: Project, path: string | null, ask: boolean): Promise<string | null>;
   /** Desktop: write the project folder (project.json, pyramid, masks, spots). */
   saveProject(project: Project, extras: Record<string, string>): Promise<string | null>;
+  /** The tab closed: free the session (desktop) or the worker (web). */
+  dispose(): Promise<void>;
 }
-
-let instance: Promise<Core> | null = null;
 
 export { isHosted };
 
@@ -97,9 +100,7 @@ export function isDesktop(): boolean {
   return '__TAURI_INTERNALS__' in window;
 }
 
-export function getCore(): Promise<Core> {
-  if (!instance) {
-    instance = isDesktop() ? import('./tauri').then((m) => new m.TauriCore()) : import('./wasm').then((m) => new m.WasmCore());
-  }
-  return instance;
+/** The core of one tab: a native session keyed by `tab` in the desktop app, its own wasm worker on the web. */
+export function newCore(tab: number): Promise<Core> {
+  return isDesktop() ? import('./tauri').then((m) => new m.TauriCore(tab)) : import('./wasm').then((m) => new m.WasmCore());
 }
