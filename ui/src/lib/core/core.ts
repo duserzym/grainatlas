@@ -5,7 +5,7 @@
 import { isHosted } from '@lab/bridge';
 
 import type {
-  AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
+  AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
   Ownership, SheetParams, SheetResult,
 } from './types';
 
@@ -54,6 +54,12 @@ export interface Core {
   mergeGrains(areaId: string, grains: Grain[]): Promise<Grain>;
   /** GrabCut refinement of one grain. */
   refineGrain(areaId: string, grain: Grain): Promise<Grain>;
+  /** A drawn outline (um, closed) snapped to the mosaic's edges within `widthUm` of it. */
+  snapOutline(areaId: string, path: [number, number][], widthUm: number, contrast: number): Promise<[number, number][]>;
+  /** A grain from a drawn outline: new, or `base` grown or cut by it; null when nothing is left. */
+  outlineGrain(areaId: string, polygon: [number, number][], base: Grain | null, op: EditOp): Promise<Grain | null>;
+  /** A grain from a brush stroke (um, diameter `sizeUm`) grown to the nearby edges. */
+  brushGrain(areaId: string, stroke: [number, number][], sizeUm: number, base: Grain | null, op: EditOp): Promise<Grain | null>;
   renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]>;
   exportSpots(spots: Spot[], grains: Record<string, Grain[]>, format: 'csv' | 'geojson'): Promise<string>;
   /** laicpmsdb mount id and per-area sample names into the project record. */
