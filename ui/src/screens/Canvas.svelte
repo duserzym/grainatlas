@@ -7,7 +7,7 @@
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toScreen, type View } from '../lib/canvas/view';
   import type { Core } from '../lib/core/core';
-  import { ARTIFACT_LABELS, type ArtifactReason, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
+  import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
   import { formatName, grainAt, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
@@ -44,6 +44,16 @@
   let measure = $state<[number, number, number, number] | null>(null);
   let gesture: { mode: 'move' | 'resize'; ids: string[]; startX: number; startY: number; orig: Map<string, { x: number; y: number; x2: number | null; y2: number | null; d: number }>; dirty: boolean } | null = null;
   let editing = $state<{ id: string; text: string; sx: number; sy: number } | null>(null);
+  // Hand editing of outlines: the lasso (a freehand drag, or click by click) and the brush.
+  let lasso = $state<{ pts: [number, number][]; op: EditOp; free: boolean; clicks: number; dragged: boolean } | null>(null);
+  let lassoHover = $state<[number, number] | null>(null);
+  let stroke = $state<{ pts: [number, number][]; op: EditOp } | null>(null);
+  let snapEdges = $state(true);
+  let brushUm = $state(20);
+  $effect(() => {
+    if (app.tool !== 'grain-outline') lasso = null;
+    if (app.tool !== 'grain-brush') stroke = null;
+  });
 
   /** A bundle from a server shown read-only; `noPixels`: no stitched mosaic in the core (server tiles). */
   const ro = $derived(app.readOnly);
@@ -458,6 +468,25 @@
       splitLine = [x, y, x, y];
       return true;
     }
+    if (app.tool === 'grain-outline') {
+      if (!lasso) {
+        lasso = { pts: [[x, y]], op: ev.altKey ? 'cut' : ev.shiftKey ? 'add' : 'new', free: ev.metaKey || ev.ctrlKey, clicks: 1, dragged: false };
+      } else {
+        // Click by click: a click on the first point closes the outline.
+        const [fx, fy] = lasso.pts[0];
+        if (lasso.pts.length > 2 && Math.hypot(x - fx, y - fy) < 8 * k) {
+          void finishLasso();
+          return true;
+        }
+        lasso.pts.push([x, y]);
+        lasso.clicks += 1;
+      }
+      return true;
+    }
+    if (app.tool === 'grain-brush') {
+      stroke = { pts: [[x, y]], op: ev.altKey ? 'cut' : 'add' };
+      return true;
+    }
     if (app.tool === 'line' || app.tool === 'raster' || app.tool === 'measure') {
       const [sx, sy] = app.tool === 'measure' ? [x, y] : snapped(x, y, ev);
       drawing = { kind: app.tool === 'measure' ? 'measure' : (app.tool as SpotKind), x: sx, y: sy, x2: sx, y2: sy };
@@ -501,6 +530,19 @@
       splitLine = [splitLine[0], splitLine[1], x, y];
       return;
     }
+    if (lasso) {
+      const [lx, ly] = lasso.pts[lasso.pts.length - 1];
+      if (Math.hypot(x - lx, y - ly) >= 2 * k) {
+        lasso.pts.push([x, y]);
+        lasso.dragged = true;
+      }
+      return;
+    }
+    if (stroke) {
+      const [lx, ly] = stroke.pts[stroke.pts.length - 1];
+      if (Math.hypot(x - lx, y - ly) >= Math.max(2 * k, brushUm / 8)) stroke.pts.push([x, y]);
+      return;
+    }
     if (drawing) {
       const [sx, sy] = drawing.kind === 'measure' ? [x, y] : snapped(x, y, p.ev);
       drawing = { ...drawing, x2: sx, y2: sy };
@@ -541,6 +583,17 @@
 
   async function release() {
     snapHint = null;
+    if (lasso) {
+      // A single freehand drag closes on release; click by click it stays open.
+      if (lasso.clicks === 1 && lasso.dragged && lasso.pts.length > 4) await finishLasso();
+      return;
+    }
+    if (stroke) {
+      const st = stroke;
+      stroke = null;
+      await finishStroke(st);
+      return;
+    }
     if (splitLine) {
       const line = splitLine;
       splitLine = null;
@@ -596,6 +649,7 @@
     const ev = p.ev as MouseEvent;
     const x = p.x * umPerPx, y = p.y * umPerPx;
     if (ro && app.tool !== 'select' && app.tool !== 'measure') return;
+    if (app.tool === 'grain-outline' || app.tool === 'grain-brush') return;
     if (app.tool === 'pair') {
       await pairClick(x, y).catch((e) => (app.error = e instanceof Error ? e.message : String(e)));
       return;
@@ -648,6 +702,64 @@
     selGrains = multi ? (selGrains.includes(g.id) ? selGrains.filter((s) => s !== g.id) : [...selGrains, g.id]) : [g.id];
   }
 
+  // ---- hand-edited outlines -------------------------------------------------------------
+  async function finishLasso() {
+    const l = lasso;
+    lasso = null;
+    lassoHover = null;
+    if (!l || !core || !areaId || l.pts.length < 3) return;
+    const id = areaId;
+    let poly = $state.snapshot(l.pts) as [number, number][];
+    if (snapEdges && !l.free) {
+      // Edges within ~10 screen pixels of the drawn path pull the outline onto them.
+      const snapped = await app.run('Snapping to edges', () => core!.snapOutline(id, poly, Math.max(3, 10 * k), 0.08));
+      if (snapped && snapped.length >= 3) poly = snapped;
+    }
+    await applyEdit(l.op, poly[0], (base, op) => core!.outlineGrain(id, poly, base, op), 'Outlining grain');
+  }
+  async function finishStroke(st: { pts: [number, number][]; op: EditOp }) {
+    if (!core || !areaId) return;
+    const id = areaId;
+    const pts = $state.snapshot(st.pts) as [number, number][];
+    const size = brushUm;
+    await applyEdit(st.op, pts[0], (base, op) => core!.brushGrain(id, pts, size, base, op), st.op === 'cut' ? 'Erasing' : 'Painting grain');
+  }
+  /**
+   * Applies a drawn outline or brush stroke. The grain edited is the one under the start of the
+   * stroke, else the selected one; with neither, Add makes a new grain. A new or grown outline
+   * takes in the grains whose centres it covers (fragments of one grain), keeping the id and
+   * number of the first of them so its spots stay linked.
+   */
+  async function applyEdit(op: EditOp, at: [number, number], run: (base: Grain | null, op: EditOp) => Promise<Grain | null>, label: string) {
+    const sel = selGrains.length === 1 ? (detections.find((g) => g.id === selGrains[0]) ?? null) : null;
+    const base = op === 'new' ? null : (grainAt(detections, at[0], at[1], true) ?? sel ?? null);
+    if (op === 'cut' && !base) {
+      app.error = 'Select the grain to cut from, or start the cut on it.';
+      return;
+    }
+    const eff: EditOp = op === 'add' && !base ? 'new' : op;
+    const r = await app.run(label, () => run(base ? ($state.snapshot(base) as Grain) : null, eff));
+    if (r === undefined) return;
+    if (!r) {
+      app.notice = eff === 'cut' ? 'That cut would remove the whole grain: use Delete for that.' : 'Nothing to outline there.';
+      return;
+    }
+    const g: Grain = { ...r };
+    const covered = eff === 'cut' ? [] : detections.filter((q) => q.id !== g.id && q.id !== base?.id && inside(g.polygon_um, q.centroid_um[0], q.centroid_um[1]));
+    if (eff === 'new') {
+      const keep = covered.filter((q) => !q.artifact).sort((a, b) => a.number - b.number)[0];
+      if (keep) {
+        g.id = keep.id;
+        g.number = keep.number;
+      } else g.number = Math.max(0, ...grains.map((q) => q.number)) + 1;
+    }
+    const gone = new Set(covered.map((q) => q.id));
+    setGrains([...detections.filter((q) => q.id !== g.id && !gone.has(q.id)), g].sort((a, b) => a.number - b.number), true);
+    selGrains = [g.id];
+    const what = eff === 'new' ? (covered.length ? `Redrew grain ${g.number}` : `New grain ${g.number}`) : eff === 'add' ? `Grew grain ${g.number}` : `Cut grain ${g.number}`;
+    app.notice = `${what}${covered.length > 1 ? ` (took in ${covered.length} pieces)` : ''}. ⌘Z undoes.`;
+  }
+
   function inside(poly: [number, number][], px: number, py: number) {
     let c = false;
     for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -659,6 +771,10 @@
 
   /** Double-click a spot or label to rename it; elsewhere the view fits (gestures.ts). */
   function dblclick(p: CanvasPoint): boolean {
+    if (lasso) {
+      void finishLasso();
+      return true;
+    }
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const s = hitSpot(x, y) ?? null;
     if (s && ro) {
@@ -686,6 +802,7 @@
       return;
     }
     const x = p.x * umPerPx, y = p.y * umPerPx;
+    lassoHover = lasso ? [x, y] : null;
     hoverId = hitSpot(x, y)?.id ?? grainAt(detections, x, y, app.layers.artifacts)?.id ?? null;
     if (app.tool === 'spot' && app.settings.snap && !(p.ev as MouseEvent).altKey) {
       const prev = app.spots.filter((s) => s.area_id === areaId).at(-1) ?? null;
@@ -746,10 +863,18 @@
       app.redo();
       return;
     }
+    if (lasso && (e.key === 'Enter' || e.key === 'Escape' || e.key === 'Backspace' || e.key === 'Delete')) {
+      e.preventDefault();
+      if (e.key === 'Enter') void finishLasso();
+      else if (e.key === 'Escape') lasso = null;
+      else if (lasso.pts.length > 1) lasso.pts.pop();
+      else lasso = null;
+      return;
+    }
     if (mod || e.altKey) return;
-    const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split' };
+    const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split', o: 'grain-outline', b: 'grain-brush' };
     const kk = e.key.toLowerCase();
-    if (tools[kk] && !(noPixels && (kk === 'g' || kk === 'k'))) app.tool = tools[kk];
+    if (tools[kk] && !(noPixels && (kk === 'g' || kk === 'k' || kk === 'o' || kk === 'b'))) app.tool = tools[kk];
     else if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
     else if (e.key === ']') viewer?.rotateBy(Math.PI / 12);
@@ -902,6 +1027,16 @@
             {#if splitLine}
               <line class="splitline" x1={splitLine[0]} y1={splitLine[1]} x2={splitLine[2]} y2={splitLine[3]} />
             {/if}
+            {#if lasso}
+              <polyline class="lasso" class:cut={lasso.op === 'cut'} points={[...lasso.pts, ...(lassoHover && !(lasso.clicks === 1 && lasso.dragged) ? [lassoHover] : [])].map((q) => q.join(',')).join(' ')} data-testid="lasso" />
+              {#if lasso.pts.length > 2}<circle class="lasso-start" cx={lasso.pts[0][0]} cy={lasso.pts[0][1]} r={5 * k} />{/if}
+            {/if}
+            {#if stroke}
+              <polyline class="brushstroke" class:cut={stroke.op === 'cut'} points={stroke.pts.map((q) => q.join(',')).join(' ')} stroke-width={brushUm} />
+            {/if}
+            {#if app.tool === 'grain-brush' && cursorUm && !stroke}
+              <circle class="brushcursor" cx={cursorUm[0]} cy={cursorUm[1]} r={brushUm / 2} />
+            {/if}
           </g>
         {/snippet}
       </Viewer>
@@ -932,6 +1067,13 @@
         <span class="sep"></span>
         <button class="icon" title="Add grain: click inside it (G)" aria-pressed={app.tool === 'grain-add'} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
         <button class="icon" title="Split grain: draw a line across it (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
+        <button class="icon" title="Outline a grain (O): drag around it, or click its corners and double-click (or Enter) to close. ⇧ adds to the grain, ⌥ cuts from it, ⌘ draws without snapping" aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
+        <button class="icon" title="Grain brush (B): paint over a grain to add it (grows to its edges), ⌥ to erase" aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
+        {#if app.tool === 'grain-outline'}
+          <label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
+        {:else if app.tool === 'grain-brush'}
+          <label class="diam" title="Brush diameter (µm)">⌀ <input type="number" min="2" step="2" bind:value={brushUm} aria-label="Brush µm" />µm</label>
+        {/if}
       {/if}
       {#if !ro}
         <span class="sep"></span>
@@ -1014,6 +1156,9 @@
                 <tr><td>not a grain</td><td data-testid="artifact-reason">{ARTIFACT_LABELS[focusGrain.artifact]} <button class="link" onclick={() => keepAsGrain(focusGrain!.id)} data-testid="keep-grain">Keep as grain</button></td></tr>
               {:else if focusGrain.kept}
                 <tr><td>kept</td><td>flagged, kept by you as a grain</td></tr>
+              {/if}
+              {#if focusGrain.drawn}
+                <tr><td>outline</td><td>drawn by hand (Find again keeps it)</td></tr>
               {/if}
               {#if owners.get(focusGrain.id)}
                 {@const own = owners.get(focusGrain.id)!}
@@ -1638,6 +1783,31 @@
     stroke: var(--ov-measure);
     stroke-width: 1.6;
     stroke-dasharray: 6 4;
+  }
+  :global(.ga-root) .lasso {
+    fill: color-mix(in srgb, var(--ov-number) 10%, transparent);
+    stroke: var(--ov-number);
+    stroke-width: 1.6;
+    stroke-dasharray: 5 3;
+  }
+  :global(.ga-root) .lasso.cut,
+  :global(.ga-root) .brushstroke.cut {
+    stroke: var(--danger);
+  }
+  :global(.ga-root) .lasso-start {
+    fill: var(--ov-number);
+  }
+  :global(.ga-root) .brushstroke {
+    fill: none;
+    stroke: color-mix(in srgb, var(--ov-number) 45%, transparent);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: none;
+  }
+  :global(.ga-root) .brushcursor {
+    fill: none;
+    stroke: var(--ov-number);
+    stroke-width: 1;
   }
   :global(.ga-root) .splitline {
     stroke: var(--danger);

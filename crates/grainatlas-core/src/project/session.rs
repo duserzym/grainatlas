@@ -376,6 +376,42 @@ impl Session {
         serde_json::to_string(&out).map_err(invalid)
     }
 
+    /// A drawn outline (um, closed) snapped to the mosaic's edges within `width_um` of it.
+    pub fn snap_outline(&mut self, area_id: &str, path: &str, width_um: f64, contrast: f64) -> Result<String> {
+        let path: Vec<[f64; 2]> = serde_json::from_str(path).map_err(invalid)?;
+        let o = self.out(area_id)?;
+        let v = crate::segment::edit::View { w: o.linear.w, h: o.linear.h, px: &o.base, um_per_px: self.rec(area_id)?.um_per_px() };
+        serde_json::to_string(&crate::segment::edit::snap_outline(&v, &path, width_um, contrast as f32)).map_err(invalid)
+    }
+
+    /// A grain from a drawn outline: `op` is `new`, `add` (to `base`) or `cut` (from `base`).
+    /// `null` when nothing is left.
+    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str) -> Result<String> {
+        let poly: Vec<[f64; 2]> = serde_json::from_str(polygon).map_err(invalid)?;
+        let (base, op) = Self::edit_args(base, op)?;
+        let scale = self.seg_scale(area_id);
+        let w = self.work_for(area_id, scale)?;
+        serde_json::to_string(&crate::segment::edit::outline_grain(w, &poly, base.as_ref(), op, 0.8)).map_err(invalid)
+    }
+
+    /// A grain from a brush stroke (um, diameter `size_um`) grown to the nearby edges.
+    pub fn brush_grain(&mut self, area_id: &str, stroke: &str, size_um: f64, base: &str, op: &str) -> Result<String> {
+        let stroke: Vec<[f64; 2]> = serde_json::from_str(stroke).map_err(invalid)?;
+        let (base, op) = Self::edit_args(base, op)?;
+        let scale = self.seg_scale(area_id);
+        self.work_for(area_id, scale)?;
+        let w = &self.work.get(area_id).expect("made above").1;
+        let o = self.out(area_id)?;
+        let v = crate::segment::edit::View { w: o.linear.w, h: o.linear.h, px: &o.base, um_per_px: self.rec(area_id)?.um_per_px() };
+        serde_json::to_string(&crate::segment::edit::brush_grain(w, &v, &stroke, size_um, base.as_ref(), op, 0.8)).map_err(invalid)
+    }
+
+    fn edit_args(base: &str, op: &str) -> Result<(Option<Grain>, crate::segment::edit::Op)> {
+        let base: Option<Grain> = if base.trim().is_empty() { None } else { serde_json::from_str(base).map_err(invalid)? };
+        let op = serde_json::from_value(serde_json::Value::String(op.to_string())).map_err(invalid)?;
+        Ok((base, op))
+    }
+
     pub fn export_grains(&self, area_id: &str, grains: &str) -> Result<String> {
         let gs: Vec<Grain> = serde_json::from_str(grains).map_err(invalid)?;
         let rec = self.rec(area_id)?;

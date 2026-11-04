@@ -59,6 +59,7 @@ fn grain(x: f64, y: f64, side: f64) -> Grain {
         scale_bar_um: 20.0,
         artifact: None,
         kept: false,
+        drawn: false,
     }
 }
 

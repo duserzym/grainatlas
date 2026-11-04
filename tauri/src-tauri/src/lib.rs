@@ -293,6 +293,24 @@ async fn merge_grains(state: State<'_, AppState>, tab: u32, area_id: String, gra
 }
 
 #[tauri::command]
+async fn snap_outline(state: State<'_, AppState>, tab: u32, area_id: String, path: String, width_um: f64, contrast: f64) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().snap_outline(&area_id, &path, width_um, contrast).map_err(e)
+}
+
+#[tauri::command]
+async fn outline_grain(state: State<'_, AppState>, tab: u32, area_id: String, polygon: String, base: String, op: String) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().outline_grain(&area_id, &polygon, &base, &op).map_err(e)
+}
+
+#[tauri::command]
+async fn brush_grain(state: State<'_, AppState>, tab: u32, area_id: String, stroke: String, size_um: f64, base: String, op: String) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().brush_grain(&area_id, &stroke, size_um, &base, &op).map_err(e)
+}
+
+#[tauri::command]
 async fn refine_grain(state: State<'_, AppState>, tab: u32, area_id: String, grain: String) -> Res<String> {
     let t = state.tab(tab);
     t.lock().refine_grain(&area_id, &grain).map_err(e)
@@ -659,6 +677,9 @@ pub fn run() {
             split_grain,
             merge_grains,
             refine_grain,
+            snap_outline,
+            outline_grain,
+            brush_grain,
             renumber,
             export_grains,
             export_spots,

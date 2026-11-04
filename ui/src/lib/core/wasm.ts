@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onProgress?: (p: Progress) => void };
 
@@ -222,6 +222,21 @@ export class WasmCore implements Core {
   async refineGrain(areaId: string, grain: Grain): Promise<Grain> {
     await this.ready();
     return this.call('refineGrain', { areaId, grain });
+  }
+
+  async snapOutline(areaId: string, path: [number, number][], widthUm: number, contrast: number): Promise<[number, number][]> {
+    await this.ready();
+    return this.call('snapOutline', { areaId, path, widthUm, contrast });
+  }
+
+  async outlineGrain(areaId: string, polygon: [number, number][], base: Grain | null, op: EditOp): Promise<Grain | null> {
+    await this.ready();
+    return this.call('outlineGrain', { areaId, polygon, base, op });
+  }
+
+  async brushGrain(areaId: string, stroke: [number, number][], sizeUm: number, base: Grain | null, op: EditOp): Promise<Grain | null> {
+    await this.ready();
+    return this.call('brushGrain', { areaId, stroke, sizeUm, base, op });
   }
 
   async renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]> {

@@ -29,3 +29,57 @@ test('the Delete tool and the grain card remove a grain; undo restores it', asyn
   await page.getByTestId('card-delete-grain').click();
   await expect(real).toHaveCount(n - 1);
 });
+
+test('outline a grain by hand (freehand and click by click), paint with the brush, undo', async ({ page }) => {
+  await page.goto('./');
+  await page.getByTestId('package-input').setInputFiles(FIXTURE);
+  await page.getByTestId('stitch').click();
+  await expect(page.getByTestId('rms')).toBeVisible();
+  await page.getByTestId('to-canvas').click();
+  await page.getByRole('button', { name: /^Grains/ }).click();
+  await page.getByTestId('find-grains').click();
+  const real = page.locator('polygon.grain:not(.artifact)');
+  await expect(real.first()).toBeVisible();
+  const n = await real.count();
+
+  // Freehand: a loop a little outside a grain redraws it (same count, drawn by hand).
+  await page.getByTestId('tool-outline').click();
+  const b = (await real.nth(3).boundingBox())!;
+  const [cx, cy, rx, ry] = [b.x + b.width / 2, b.y + b.height / 2, b.width / 2 + 6, b.height / 2 + 6];
+  await page.mouse.move(cx + rx, cy);
+  await page.mouse.down();
+  for (let i = 1; i <= 40; i++) await page.mouse.move(cx + rx * Math.cos((i / 40) * 2 * Math.PI), cy + ry * Math.sin((i / 40) * 2 * Math.PI));
+  await page.mouse.up();
+  await expect(page.getByText('drawn by hand')).toBeVisible();
+  await expect(real).toHaveCount(n);
+
+  // Click by click around another grain, Enter closes.
+  const c = (await real.nth(6).boundingBox())!;
+  for (const [x, y] of [[c.x - 5, c.y - 5], [c.x + c.width + 5, c.y - 5], [c.x + c.width + 5, c.y + c.height + 5], [c.x - 5, c.y + c.height + 5]]) await page.mouse.click(x, y);
+  await expect(page.getByTestId('lasso')).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('lasso')).toHaveCount(0);
+  await expect(real).toHaveCount(n);
+
+  // Brush: painting over a grain grows it; with ⌥ it erases; undo restores.
+  await page.getByTestId('tool-brush').click();
+  const d = (await real.nth(10).boundingBox())!;
+  await page.mouse.move(d.x + d.width / 2, d.y + d.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(d.x + d.width / 2 + 8, d.y + d.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(page.locator('.toast')).toContainText(/Grew grain \d+/);
+  await page.keyboard.down('Alt');
+  await page.mouse.move(d.x + d.width - 2, d.y + 2);
+  await page.mouse.down();
+  await page.mouse.move(d.x + d.width - 2, d.y + d.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+  await expect(page.locator('.toast')).toContainText(/Cut grain \d+/);
+  await expect(real).toHaveCount(n);
+  // Two undos: the brushed grain is back to its detected outline.
+  await page.keyboard.press('Meta+z');
+  await page.keyboard.press('Meta+z');
+  await expect(page.getByText('drawn by hand')).toHaveCount(0);
+  await expect(real).toHaveCount(n);
+});

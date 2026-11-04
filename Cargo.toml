@@ -14,6 +14,7 @@ repository = "https://github.com/duserzym/grainatlas"
 grainatlas-core = { path = "crates/grainatlas-core" }
 # photocraft-algo, pinned (ADR-0002). MIT OR Apache-2.0.
 photocraft-algo = { git = "https://github.com/storytold/photocraft", rev = "81bd97376f881ee3561371b7da52780844d3dfc7" }
+photocraft-geom = { git = "https://github.com/storytold/photocraft", rev = "81bd97376f881ee3561371b7da52780844d3dfc7" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 anyhow = "1"

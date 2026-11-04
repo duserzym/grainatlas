@@ -13,7 +13,7 @@ import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsd
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
-export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'pair';
+export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'grain-outline' | 'grain-brush' | 'pair';
 
 /** A reference image (printout photo, post-laser frame) registered to an area's mosaic. */
 export interface Overlay {

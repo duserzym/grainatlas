@@ -67,6 +67,7 @@ fn square(id: u128, x0: f64, y0: f64, side: f64) -> Grain {
         scale_bar_um: 0.0,
         artifact: None,
         kept: false,
+        drawn: false,
     }
 }
 
