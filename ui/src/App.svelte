@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app, type Screen } from './lib/store.svelte';
+  import { app, current, tabs, type Screen } from './lib/store.svelte';
   import { isHosted, notify, onOpenFiles } from '@lab/bridge';
-  import { liveChanged, liveKey, openOffered, saveProject, startDeepLink } from './lib/actions';
+  import { findAllGrains, liveChanged, liveKey, openLoose, openOffered, openPathsInTabs, saveProject, saveProjectFile, startDeepLink, stitchAll } from './lib/actions';
+  import { isDesktop } from './lib/core/core';
+  import TabBar from './components/TabBar.svelte';
   import Open from './screens/Open.svelte';
   import Area from './screens/Area.svelte';
   import Canvas from './screens/Canvas.svelte';
@@ -44,10 +46,11 @@
 
   // Any change of a stitched area's correction, blending or tone parameters (from
   // any screen, Auto and Reset included) re-renders its mosaic live.
-  const liveKeys: Record<string, string> = {};
+  // (Per tab: two projects can have areas of the same id.)
   $effect(() => {
     // Pixels from a server's bundle are final: nothing to re-render.
     if (app.remote) return;
+    const liveKeys = app.liveKeys;
     for (const id of Object.keys(liveKeys)) if (!app.stitched[id]) delete liveKeys[id];
     for (const id of Object.keys(app.stitched)) {
       // First sight of a stitched area: compare with what the core used (a change made while
@@ -102,8 +105,94 @@
     };
   }
 
+  const desktop = isDesktop();
+  /** Tab keys and the menu are the desktop app's: a browser and UPb Studio keep Cmd+T/W/1-9. */
+  const tabKeys = desktop && !isHosted();
+  let tabBar = $state<ReturnType<typeof TabBar>>();
+  /** A folder dragged over the desktop window (it opens in a new tab). */
+  let dropping = $state(false);
+
+  // The window title names the active tab (desktop), and save dialogs start in its folder.
+  $effect(() => {
+    const title = `${app.title}${app.dirty && !app.readOnly ? ' •' : ''} — grainatlas`;
+    if (!desktop) {
+      document.title = tabs.list.length > 1 || app.pkg || app.remote ? title : 'grainatlas';
+      return;
+    }
+    const id = tabs.activeId;
+    void import('./lib/core/tauri').then((m) => m.setSaveTab(id));
+    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title)).catch(() => {});
+  });
+
+  // Cmd+T / Cmd+W arrive as a keydown and, from the menu bar, as a menu event: act once.
+  let lastTabCmd = { what: '', at: 0 };
+  function tabCommand(what: 'new-tab' | 'close-tab') {
+    const now = performance.now();
+    if (lastTabCmd.what === what && now - lastTabCmd.at < 400) return;
+    lastTabCmd = { what, at: now };
+    if (what === 'new-tab') tabs.add();
+    else tabBar?.requestClose(current());
+  }
+
+  /** Desktop start-up: `grainatlas A.grainatlas B.grainatlas … [--stitch] [--segment]` opens one tab per folder. */
+  async function startup() {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const s = await invoke<{ paths: string[]; stitch: boolean; segment: boolean; um_per_px: number | null; field_um: number | null }>('startup');
+    if (!s.paths.length) return;
+    const opened = await openPathsInTabs(s.paths);
+    if (opened[0]) tabs.select(opened[0].id);
+    for (const t of opened) {
+      // Loose images with a scale on the command line open without the dialog.
+      const pending = t.pendingLoose;
+      if (pending && (s.um_per_px || s.field_um)) {
+        await openLoose({ um_per_px: s.um_per_px ?? 0, ...(s.field_um ? { field_width_um: s.field_um } : {}), files: pending.images.map((i) => i.file) }, t);
+      }
+    }
+    for (const t of opened) {
+      if (!t.pkg) continue;
+      // Areas the project renders from its saved placements are not stitched again.
+      if (s.stitch) await stitchAll(t, true);
+      if (s.segment) {
+        await findAllGrains(t);
+        t.screen = 'canvas';
+      }
+    }
+  }
+
   onMount(() => {
     const unwatch = watchTheme();
+    const undo: (() => void)[] = [];
+    if (desktop) {
+      void startup();
+      // Dropped folders and files arrive as paths: a new tab unless this one is empty.
+      void import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
+        getCurrentWebview()
+          .onDragDropEvent((e) => {
+            if (e.payload.type === 'over' || e.payload.type === 'enter') dropping = true;
+            else if (e.payload.type === 'leave') dropping = false;
+            else if (e.payload.type === 'drop') {
+              dropping = false;
+              if (e.payload.paths.length) void openPathsInTabs(e.payload.paths);
+            }
+          })
+          .then((f) => undo.push(f)),
+      );
+      // Projects the OS opens (Finder double-click, Open With, the Dock icon): a tab each.
+      const takeOpened = async () => {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const paths = await invoke<string[]>('take_opened');
+        if (paths.length) {
+          const opened = await openPathsInTabs(paths);
+          if (opened[0]) tabs.select(opened[0].id);
+        }
+      };
+      void import('@tauri-apps/api/event').then(({ listen }) => listen('grainatlas://opened', () => void takeOpened()).then((f) => undo.push(f)));
+      void takeOpened();
+      if (tabKeys)
+        void import('@tauri-apps/api/event').then(({ listen }) =>
+          listen<string>('grainatlas://menu', (e) => (e.payload === 'new-tab' || e.payload === 'close-tab') && tabCommand(e.payload)).then((f) => undo.push(f)),
+        );
+    }
     // Files dropped on UPb Studio's window or opened through the OS (rule 4): the
     // bridge takes them at once (before the shell's 3 s fallback) and hands them
     // over as {path, file}; they open like a drop on the Open screen.
@@ -114,11 +203,38 @@
     // Ctrl/Cmd 1-4, Ctrl/Cmd , and Ctrl/Cmd R belong to UPb Studio's menu when
     // hosted (bridge README): grainatlas binds Alt 1-5 and Ctrl/Cmd S only.
     const key = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (tabKeys && mod && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 't' && !e.shiftKey) {
+          e.preventDefault();
+          tabCommand('new-tab');
+          return;
+        }
+        if (k === 'w' && !e.shiftKey) {
+          e.preventDefault();
+          tabCommand('close-tab');
+          return;
+        }
+        if (/^[1-9]$/.test(e.key)) {
+          e.preventDefault();
+          tabs.selectIndex(Number(e.key) - 1);
+          return;
+        }
+      }
+      // Ctrl+Tab / Ctrl+Shift+Tab: next / previous tab (desktop).
+      if (tabKeys && e.ctrlKey && e.key === 'Tab') {
+        e.preventDefault();
+        const i = tabs.list.findIndex((x) => x.id === tabs.activeId);
+        const n = tabs.list.length;
+        tabs.select(tabs.list[(i + (e.shiftKey ? n - 1 : 1)) % n].id);
+        return;
+      }
       const t = e.target as HTMLElement;
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return;
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
-        saveProject();
+        void saveProject();
         return;
       }
       if (e.altKey && /^[1-5]$/.test(e.key)) {
@@ -128,6 +244,7 @@
     };
     window.addEventListener('keydown', key);
     return () => {
+      for (const f of undo) f();
       unwatch();
       stopFiles();
       window.removeEventListener('hashchange', fromHash);
@@ -137,6 +254,8 @@
 </script>
 
 <div class="ga-root app" data-theme={app.theme}>
+  <TabBar bind:this={tabBar} shortcuts={tabKeys} />
+  {#key tabs.activeId}
   <header class="glass topbar">
     <div class="brand">
       <!-- The app icon (a light tile by design, the same in both themes). -->
@@ -157,7 +276,8 @@
       {#if app.readOnly}
         <button class="primary" onclick={editCopy} title="Make this published project a local, editable one (same project id)" data-testid="edit-copy">Edit a copy</button>
       {:else if app.project}
-        <button onclick={saveProject} title="Save project (Cmd/Ctrl+S)">Save project</button>
+        <button onclick={() => saveProject()} title="Save project (Cmd/Ctrl+S): {app.projectPath ? app.projectPath.path : desktop ? `${app.project.name}.gaproj next to the package` : 'download the project file'}" data-testid="save-project">Save project</button>
+        <button onclick={() => saveProjectFile()} title="Save a project file (.gaproj): parameters, placements, grains and spots, no pixels; it reopens with the package's images (double-click it)">Save as…</button>
       {/if}
     </div>
   </header>
@@ -191,12 +311,16 @@
       <button class="icon" onclick={() => (app.error = null)} aria-label="Dismiss">✕</button>
     </div>
   {/if}
+  {/key}
+  {#if dropping}
+    <div class="dropzone" aria-hidden="true"><span class="glass">Drop to open{app.empty ? '' : ' in a new tab'}</span></div>
+  {/if}
 </div>
 
 <style>
   .app {
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto 1fr;
     height: 100vh;
     overflow: hidden;
   }
@@ -204,7 +328,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-4);
-    margin: var(--space-2);
+    margin: 0 var(--space-2) var(--space-2);
     padding: var(--space-2) var(--space-4);
     border-radius: var(--radius);
     z-index: 5;
@@ -241,6 +365,20 @@
     position: relative;
     min-height: 0;
     overflow: hidden;
+  }
+  .dropzone {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    border: 3px dashed var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    z-index: 70;
+    pointer-events: none;
+  }
+  .dropzone span {
+    padding: var(--space-3) var(--space-4);
+    font-weight: 600;
   }
   .toast {
     position: fixed;

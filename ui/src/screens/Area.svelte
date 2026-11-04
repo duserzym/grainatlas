@@ -127,7 +127,7 @@
           </li>
         {/each}
       </ul>
-      <button class="primary wide" onclick={stitchAll} disabled={!!app.busy}>Stitch all areas</button>
+      <button class="primary wide" onclick={() => stitchAll()} disabled={!!app.busy}>Stitch all areas</button>
       {#if app.pkg.navigation}<p class="faint small">Navigation image and stage calibration found.</p>{/if}
       <p class="faint small" data-testid="open-kind">
         {#if app.pkg.kind === 'area'}One area folder; scale and stage positions from its sidecars.

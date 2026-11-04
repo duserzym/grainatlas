@@ -6,6 +6,7 @@
 pub mod background;
 pub mod grain_norm;
 pub mod hdr;
+pub mod joint;
 pub mod tone;
 
 use photocraft_algo::panorama::{RoiImage, photometric};
@@ -99,6 +100,48 @@ fn overlap_samples(pl: &Placement, tiles: &[Gray], step: usize) -> Vec<(usize, u
         }
     }
     out
+}
+
+/// Overlap disagreement of placed tiles, two ways (0..1 units): the pixel RMS the app reports, and
+/// the RMS of the difference of `block` x `block` px means, which leaves out noise and small
+/// misregistration and measures what shows as tile blocks and exposure steps.
+pub fn overlap_metrics(pl: &Placement, tiles: &[Gray], block: usize) -> (f32, f32) {
+    let px = rms(&overlap_samples(pl, tiles, 3), &vec![1.0; tiles.len()], &vec![0.0; tiles.len()]);
+    let b = block.max(4) as i64;
+    let (mut s, mut n) = (0.0f64, 0usize);
+    for p in &pl.pairs {
+        let (ta, tb) = (&pl.tiles[p.a], &pl.tiles[p.b]);
+        let x0 = ta.x.max(tb.x) + 4;
+        let y0 = ta.y.max(tb.y) + 4;
+        let x1 = (ta.x + ta.w as i64).min(tb.x + tb.w as i64) - 4;
+        let y1 = (ta.y + ta.h as i64).min(tb.y + tb.h as i64) - 4;
+        let mut by = y0;
+        while by + b <= y1 {
+            let mut bx = x0;
+            while bx + b <= x1 {
+                let (mut sa, mut sb, mut k) = (0.0f64, 0.0f64, 0usize);
+                for y in by..by + b {
+                    for x in bx..bx + b {
+                        let va = tiles[p.a].px[(y - ta.y) as usize * ta.w + (x - ta.x) as usize];
+                        let vb = tiles[p.b].px[(y - tb.y) as usize * tb.w + (x - tb.x) as usize];
+                        if (0.002..0.998).contains(&va) && (0.002..0.998).contains(&vb) {
+                            sa += va as f64;
+                            sb += vb as f64;
+                            k += 1;
+                        }
+                    }
+                }
+                if k * 2 >= (b * b) as usize {
+                    let d = (sa - sb) / k as f64;
+                    s += d * d;
+                    n += 1;
+                }
+                bx += b;
+            }
+            by += b;
+        }
+    }
+    (px, if n == 0 { 0.0 } else { (s / n as f64).sqrt() as f32 })
 }
 
 fn rms(samples: &[(usize, usize, f32, f32)], g: &[f32], o: &[f32]) -> f32 {
@@ -230,6 +273,28 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
         }
     }
     let before = rms(&samples, &vec![1.0; n], &vec![0.0; n]);
+    if p.background && p.background_params.method == background::LevelMethod::Joint {
+        let skip: Vec<bool> = (0..n).map(|i| p.overrides.iter().any(|ov| ov.index == i && ov.no_background)).collect();
+        let fixed_gain = match p.model {
+            GainModel::Affine => None,
+            _ => Some(ag.as_slice()),
+        };
+        let fixed = joint::Fixed { gain: fixed_gain, skip: &skip, regularisation: p.regularisation };
+        let overrides: Vec<(usize, Option<f32>, Option<f32>)> = p.overrides.iter().filter(|ov| ov.index < n).map(|ov| (ov.index, ov.gain, ov.offset)).collect();
+        let (out, sol, auto_gain, auto_offset) = joint::correct(pl, tiles, &p.background_params, &fixed, &overrides);
+        let after = overlap_samples(pl, &out, 3);
+        let res = PhotometricResult {
+            auto_gain,
+            auto_offset,
+            gain: sol.gain.clone(),
+            offset: sol.offset.clone(),
+            background_median: sol.level,
+            background_range: sol.range.clone(),
+            overlap_rms_before: before,
+            overlap_rms_after: rms(&after, &vec![1.0; n], &vec![0.0; n]),
+        };
+        return (out, res);
+    }
     let mut out: Vec<Gray> = tiles
         .iter()
         .enumerate()
