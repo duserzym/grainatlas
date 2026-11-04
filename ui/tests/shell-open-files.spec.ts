@@ -85,7 +85,9 @@ test('a package dropped on UPb Studio opens in the Images tab; a second one asks
   await expect(f.getByTestId('replace-dialog')).toBeVisible();
   await expect(f.getByTestId('replace-dialog')).toContainText('Open 001_HJ-GC1?');
   await expect(f.getByTestId('replace-dialog')).toContainText('Sweden_XS_150X');
-  await f.getByTestId('replace-cancel').click();
+  // Cancel is the default: Enter (or a stray keystroke) keeps the open project.
+  await expect(f.getByTestId('replace-cancel')).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(f.getByTestId('replace-dialog')).toHaveCount(0);
   await expect(f.locator('.pkgname')).toHaveText('Sweden_XS_150X');
   expect(await taken(page)).toHaveLength(2);

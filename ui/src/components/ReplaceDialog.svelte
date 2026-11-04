@@ -1,14 +1,15 @@
 <script lang="ts">
   // UPb Studio handed over files while a project is open: ask once before
-  // replacing it (Open, Cancel). The open project is saved first, so nothing
-  // of the user's work is lost either way.
+  // replacing it (Open, Cancel). Cancel has the focus, so Enter or a stray
+  // keystroke keeps the open project; replacing it takes a click on Open (or
+  // Tab, Enter). The open project is saved before it is replaced.
   import { app } from '../lib/store.svelte';
   import { answerOffer } from '../lib/actions';
 
   const offer = $derived(app.offer!);
   const current = app.pkg?.name ?? (app.remote ? 'the project from the server' : 'the open project');
-  let openBtn: HTMLButtonElement;
-  $effect(() => openBtn?.focus());
+  let cancelBtn: HTMLButtonElement;
+  $effect(() => cancelBtn?.focus());
 
   function open() {
     app.persist();
@@ -28,8 +29,8 @@
       {#if app.remote}Open the project from its link again to come back to it.{:else}Its grains, spots and parameters stay saved in this browser: open the same package again to continue (stitched mosaics are rebuilt).{/if}
     </p>
     <div class="row">
-      <button type="button" onclick={() => answerOffer(false)} data-testid="replace-cancel">Cancel</button>
-      <button type="button" class="primary" bind:this={openBtn} onclick={open} data-testid="replace-open">Open</button>
+      <button type="button" bind:this={cancelBtn} onclick={() => answerOffer(false)} data-testid="replace-cancel">Cancel</button>
+      <button type="button" class="primary" onclick={open} data-testid="replace-open">Open</button>
     </div>
   </div>
 </div>
