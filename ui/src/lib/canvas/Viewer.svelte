@@ -1,11 +1,13 @@
 <script lang="ts">
   // The infinite canvas: a 2D canvas drawing the pyramid level closest to the
-  // current zoom, plus an SVG overlay in mosaic-pixel coordinates.
+  // current zoom (or a live preview of the whole mosaic while a photometric
+  // control moves), plus an SVG overlay in mosaic-pixel coordinates. Without a
+  // mosaic (an area not stitched yet) only the overlay is drawn, over `extent`.
   // Pointer-first: two-finger scroll pans, pinch (ctrl+wheel) zooms, a mouse
   // wheel zooms, dragging empty space pans, WebKit trackpad rotation rotates,
   // a click without movement goes to the active tool.
   import { onMount, untrack, type Snippet } from 'svelte';
-  import type { Core } from '../core/core';
+  import type { Core, RawImage } from '../core/core';
   import type { MosaicJson } from '../core/types';
   import { TileCache } from './tiles';
   import { type View, fit, matrix, panBy, rotateAt, toMosaic, zoomAt } from './view';
@@ -23,8 +25,11 @@
     core,
     areaId,
     mosaic,
+    extent,
     lut,
     version = 0,
+    preview = null,
+    onlevel,
     view = $bindable(),
     cursor = 'default',
     overlay,
@@ -38,9 +43,15 @@
   }: {
     core: Core;
     areaId: string;
-    mosaic: MosaicJson;
+    mosaic: MosaicJson | null;
+    /** Size in mosaic pixels when there is no mosaic. */
+    extent?: { w: number; h: number };
     lut: Uint8Array;
     version?: number;
+    /** Live preview: the whole mosaic at pyramid `level`; drawn instead of the tiles while `over === version`. */
+    preview?: { level: number; img: RawImage; over: number } | null;
+    /** The pyramid level drawn (on change). */
+    onlevel?: (level: number) => void;
     view?: View;
     cursor?: string;
     overlay?: Snippet<[View]>;
@@ -61,7 +72,41 @@
   let spaceDown = false;
   let gesture: { scale: number; rot: number } | null = null;
 
-  const v = $derived<View>(view ?? fit(size.w, size.h, mosaic.w, mosaic.h));
+  const ext = $derived(mosaic ? { w: mosaic.w, h: mosaic.h } : (extent ?? { w: 1, h: 1 }));
+  const v = $derived<View>(view ?? fit(size.w, size.h, ext.w, ext.h));
+  let previewBmp: ImageBitmap | null = null;
+  let previewFor: unknown = null;
+  let lastLevel = -1;
+
+  // The preview as a bitmap through the display LUT (rebuilt when either changes).
+  $effect(() => {
+    const p = preview, l = lut;
+    if (!p) {
+      previewBmp?.close();
+      previewBmp = null;
+      previewFor = null;
+      schedule();
+      return;
+    }
+    const tag = {};
+    previewFor = tag;
+    const rgba = new Uint8ClampedArray(p.img.w * p.img.h * 4);
+    const d = p.img.data;
+    for (let i = 0, j = 0; i < d.length; i++, j += 4) {
+      const g = l[d[i]];
+      rgba[j] = rgba[j + 1] = rgba[j + 2] = g;
+      rgba[j + 3] = 255;
+    }
+    createImageBitmap(new ImageData(rgba, p.img.w, p.img.h)).then((b) => {
+      if (previewFor !== tag) {
+        b.close();
+        return;
+      }
+      previewBmp?.close();
+      previewBmp = b;
+      schedule();
+    });
+  });
   const m = $derived(matrix(v));
 
   function setView(nv: View) {
@@ -85,14 +130,27 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = getComputedStyle(host).getPropertyValue('--image-bg').trim() || '#05070b';
     ctx.fillRect(0, 0, W, H);
+    if (!mosaic) return;
     const levels = mosaic.levels;
     if (!levels.length) return;
     const vv = v;
     const maxL = levels.length - 1;
     const L = Math.max(0, Math.min(maxL, Math.floor(Math.log2(1 / (vv.zoom * dpr)))));
+    if (L !== lastLevel) {
+      lastLevel = L;
+      onlevel?.(L);
+    }
     ctx.setTransform(...matrix(vv, dpr));
     ctx.imageSmoothingEnabled = vv.zoom * dpr < 1;
     ctx.imageSmoothingQuality = 'high';
+    // Live preview: alone while it is newer than the tiles, else as a backdrop while they load.
+    if (previewBmp && preview) {
+      const f = 1 << preview.level;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(previewBmp, 0, 0, previewBmp.width * f, previewBmp.height * f);
+      ctx.imageSmoothingEnabled = vv.zoom * dpr < 1;
+      if (preview.over === version) return;
+    }
     // Visible mosaic bounds.
     const corners = [toMosaic(vv, 0, 0), toMosaic(vv, size.w, 0), toMosaic(vv, 0, size.h), toMosaic(vv, size.w, size.h)];
     const x0 = Math.max(0, Math.min(...corners.map((c) => c[0])));
@@ -159,7 +217,7 @@
       const old = size;
       size = { w: Math.max(1, r.width), h: Math.max(1, r.height) };
       if (view) view = { ...view, w: size.w, h: size.h };
-      else view = fit(size.w, size.h, mosaic.w, mosaic.h);
+      else view = fit(size.w, size.h, ext.w, ext.h);
       if (old.w !== size.w || old.h !== size.h) schedule();
     });
     ro.observe(host);
@@ -197,6 +255,7 @@
       window.removeEventListener('keyup', key);
       cancelAnimationFrame(raf);
       cache?.clear();
+      previewBmp?.close();
     };
   });
 
@@ -310,7 +369,7 @@
     setView(rotateAt(v, size.w / 2, size.h / 2, rad));
   }
   export function fitAll() {
-    setView(fit(size.w, size.h, mosaic.w, mosaic.h, 0));
+    setView(fit(size.w, size.h, ext.w, ext.h, 0));
   }
   export function centerOn(x: number, y: number, zoom?: number) {
     setView({ ...v, cx: x, cy: y, zoom: zoom ?? v.zoom });

@@ -34,6 +34,9 @@ const ops: Record<string, Handler> = {
   tileThumb: ({ area, tile, max }) => img(s().tile_thumb(area, tile, max)),
   stitch: ({ areaId, params }, id) =>
     JSON.parse(s().stitch(areaId, JSON.stringify(params), (stage: string, fraction: number) => post({ id, progress: { stage, fraction } }), () => false)),
+  recompute: ({ areaId, params }, id) =>
+    JSON.parse(s().recompute(areaId, JSON.stringify(params), (stage: string, fraction: number) => post({ id, progress: { stage, fraction } }), () => false)),
+  preview: ({ areaId, params, level }) => img(s().preview(areaId, JSON.stringify(params), level)),
   pyramidTile: ({ areaId, level, col, row }) => img(s().pyramid_tile(areaId, level, col, row)),
   histogram: ({ areaId }) => s().histogram(areaId),
   retone: ({ areaId, tone }) => JSON.parse(s().retone(areaId, JSON.stringify(tone))),

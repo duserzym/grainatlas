@@ -43,8 +43,15 @@ pub fn read_tiles(pkg: &dyn Package, area: usize, rec: &mut AreaRecord) -> crate
     Ok(tiles)
 }
 
-/// Runs the whole pipeline on decoded tiles.
-pub fn run(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
+/// The images the stitcher and the photometric steps see: one per field (exposures of the same
+/// field HDR-merged), with their metadata.
+pub struct Inputs {
+    pub imgs: Vec<Gray>,
+    pub meta: crate::readers::AreaMeta,
+}
+
+/// Groups the decoded tiles into fields (HDR merge of repeated exposures).
+pub fn inputs(rec: &AreaRecord, tiles: &[Tile]) -> Inputs {
     let meta = crate::readers::AreaMeta {
         id: rec.id.clone(),
         name: rec.name.clone(),
@@ -76,17 +83,29 @@ pub fn run(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, ctl: &Ctl,
     } else {
         (tiles.iter().map(|t| t.image.clone()).collect(), meta)
     };
+    Inputs { imgs, meta }
+}
+
+/// Runs the whole pipeline on decoded tiles.
+pub fn run(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
+    let Inputs { imgs, meta } = inputs(rec, tiles);
+    let t0 = clock();
+    ctl.report("stitch", 0.0);
+    let placement = mosaic::stitch(&meta, &imgs, &params.stitch, ctl)?;
+    timings.steps.push(("stitch".into(), clock() - t0));
+    ctl.check()?;
+    finish(rec, imgs, placement, params, ctl, clock, timings)
+}
+
+/// Everything after the stitch, on a solved placement: photometric correction, blend, tone,
+/// pyramid. A change of correction, blending or tone re-runs only this (no re-stitch).
+pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, params: &AreaParams, ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
     let mut t0 = clock();
     let mut lap = |name: &str, timings: &mut Timings| {
         let t = clock();
         timings.steps.push((name.to_string(), t - t0));
         t0 = t;
     };
-    ctl.report("stitch", 0.0);
-    let placement = mosaic::stitch(&meta, &imgs, &params.stitch, ctl)?;
-    lap("stitch", timings);
-    ctl.check()?;
-
     ctl.report("photometric", 0.0);
     let (corrected, photo) = crate::photometric::correct(&placement, &imgs, &params.photometric);
     drop(imgs);
@@ -129,6 +148,54 @@ pub fn tone_base(linear: &Gray, coverage: &[f32], p: &crate::photometric::TonePa
         crate::photometric::tone::clahe(&mut g, p.clahe_tile, p.clahe_clip);
     }
     g.to_u8()
+}
+
+/// A low-resolution render of the whole area (downsampled `factor` times) with `params`, for a
+/// live preview while a control moves: correction, blend and tone run on downsampled inputs and
+/// a scaled placement, with pixel-sized parameters scaled to match. Returns (w, h, 8-bit pixels).
+pub fn preview(small: &[Gray], placement: &Placement, params: &AreaParams, factor: usize) -> (usize, usize, Vec<u8>) {
+    let k = factor.max(1);
+    let pl = scale_placement(placement, small, k);
+    let mut p = params.clone();
+    let bp = &mut p.photometric.background_params;
+    bp.cell = (bp.cell / k).max(8);
+    bp.dilate = bp.dilate.div_ceil(k);
+    p.blend.seam_factor = (p.blend.seam_factor / k).max(1);
+    p.tone.clahe_tile = (p.tone.clahe_tile / k).max(8);
+    let (corrected, photo) = crate::photometric::correct(&pl, small, &p.photometric);
+    let fill = if p.photometric.background { photo.background_median } else { median_of(&corrected) };
+    let Ok((linear, coverage)) = crate::blend::blend(&pl, corrected, &p.blend, fill, &Ctl::NONE) else {
+        return (0, 0, Vec::new());
+    };
+    let base = tone_base(&linear, &coverage, &p.tone);
+    (linear.w, linear.h, base)
+}
+
+/// Tone-only preview from an existing output: the linear mosaic downsampled, then tone.
+pub fn preview_tone(out: &AreaOutput, tone: &crate::photometric::ToneParams, factor: usize) -> (usize, usize, Vec<u8>) {
+    let k = factor.max(1);
+    let lin = out.linear.downsample(k);
+    let cov = Gray { w: out.linear.w, h: out.linear.h, px: out.coverage.clone() }.downsample(k).px;
+    let mut t = tone.clone();
+    t.clahe_tile = (t.clahe_tile / k).max(8);
+    (lin.w, lin.h, tone_base(&lin, &cov, &t))
+}
+
+/// The placement of `pl` for inputs downsampled `k` times (sizes from the small images).
+pub fn scale_placement(pl: &Placement, small: &[Gray], k: usize) -> Placement {
+    let kf = k as f64;
+    let mut out = pl.clone();
+    for (t, g) in out.tiles.iter_mut().zip(small) {
+        t.x = (t.x as f64 / kf).round() as i64;
+        t.y = (t.y as f64 / kf).round() as i64;
+        t.w = g.w;
+        t.h = g.h;
+        t.pos = [t.pos[0] / kf, t.pos[1] / kf];
+        t.prior = [t.prior[0] / kf, t.prior[1] / kf];
+    }
+    out.width = out.tiles.iter().map(|t| (t.x.max(0) as usize) + t.w).max().unwrap_or(1);
+    out.height = out.tiles.iter().map(|t| (t.y.max(0) as usize) + t.h).max().unwrap_or(1);
+    out
 }
 
 /// Rebuilds base, pyramid and mosaic.json after a tone change (no re-stitch).

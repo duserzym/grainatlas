@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { app, type Screen } from './lib/store.svelte';
   import { isHosted, notify } from '@lab/bridge';
-  import { saveProject, startDeepLink } from './lib/actions';
+  import { liveChanged, liveKey, saveProject, startDeepLink } from './lib/actions';
   import Open from './screens/Open.svelte';
   import Area from './screens/Area.svelte';
   import Canvas from './screens/Canvas.svelte';
@@ -36,6 +36,26 @@
   $effect(() => {
     const want = `#/${app.screen}`;
     if (location.hash !== want) history.replaceState(null, '', want);
+  });
+
+  // Any change of a stitched area's correction, blending or tone parameters (from
+  // any screen, Auto and Reset included) re-renders its mosaic live.
+  const liveKeys: Record<string, string> = {};
+  $effect(() => {
+    for (const id of Object.keys(liveKeys)) if (!app.stitched[id]) delete liveKeys[id];
+    for (const id of Object.keys(app.stitched)) {
+      // First sight of a stitched area: compare with what the core used (a change made while
+      // the stitch ran must not be lost).
+      if (liveKeys[id] === undefined) {
+        const used = app.project?.areas.find((a) => a.id === id)?.params;
+        liveKeys[id] = used ? liveKey(used, used.tone) : '';
+      }
+      const key = liveKey(app.params[id], app.tone[id]);
+      if (key !== liveKeys[id]) {
+        liveKeys[id] = key;
+        liveChanged(id);
+      }
+    }
   });
 
   // Tell UPb Studio which spot is selected (a no-op when not hosted).

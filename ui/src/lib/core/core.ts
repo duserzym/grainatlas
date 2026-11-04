@@ -27,6 +27,10 @@ export interface Core {
   navigation(): Promise<RawImage | null>;
   tileThumb(area: number, tile: number, max: number): Promise<RawImage>;
   stitch(areaId: string, params: AreaParams, onProgress?: (p: Progress) => void): Promise<StitchSummary>;
+  /** New parameters on a stitched area (re-tone, re-correct from the solved placement, or re-stitch). */
+  recompute(areaId: string, params: AreaParams, onProgress?: (p: Progress) => void): Promise<StitchSummary>;
+  /** The whole mosaic at pyramid `level` with `params`, for a live preview while a control moves. */
+  preview(areaId: string, params: AreaParams, level: number): Promise<RawImage>;
   /** Stops the running step (the area stays unstitched). */
   cancel(): void;
   pyramidTile(areaId: string, level: number, col: number, row: number): Promise<RawImage>;

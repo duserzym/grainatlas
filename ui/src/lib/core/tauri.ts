@@ -59,6 +59,17 @@ export class TauriCore implements Core {
       this.onProgress = null;
     }
   }
+  async recompute(areaId: string, params: AreaParams, onProgress?: (p: Progress) => void): Promise<StitchSummary> {
+    this.onProgress = onProgress ?? null;
+    try {
+      return JSON.parse(await invoke<string>('recompute', { areaId, params: JSON.stringify(params) }));
+    } finally {
+      this.onProgress = null;
+    }
+  }
+  async preview(areaId: string, params: AreaParams, level: number): Promise<RawImage> {
+    return img(await invoke<ArrayBuffer>('preview', { areaId, params: JSON.stringify(params), level }))!;
+  }
   cancel() {
     invoke('cancel');
   }
