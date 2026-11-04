@@ -185,14 +185,17 @@ impl Session {
     /// parameters → full stitch. Returns the same summary as `stitch`.
     pub fn recompute(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock) -> Result<String> {
         let p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
-        let (Some(rec), true) = (self.project.as_ref().and_then(|pr| pr.areas.iter().find(|a| a.id == area_id)), self.outputs.contains_key(area_id)) else {
+        let Some(rec) = self.project.as_ref().and_then(|pr| pr.areas.iter().find(|a| a.id == area_id)) else {
             return self.stitch(area_id, params, ctl, clock);
         };
+        // A placement saved in the project (reopened, nothing rendered yet) is used as it is: the
+        // area is rendered from it without stitching again.
         if rec.placement.is_none() || rec.params.stitch != p.stitch {
             return self.stitch(area_id, params, ctl, clock);
         }
+        let rendered = self.outputs.contains_key(area_id);
         let mut timings = Timings::default();
-        if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
+        if rendered && rec.params.photometric == p.photometric && rec.params.blend == p.blend {
             let t0 = clock();
             self.retone(area_id, &serde_json::to_string(&p.tone).map_err(invalid)?)?;
             timings.steps.push(("tone".into(), clock() - t0));

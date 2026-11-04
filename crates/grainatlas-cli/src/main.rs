@@ -51,6 +51,22 @@ enum Cmd {
         #[arg(long)]
         exported: Option<String>,
     },
+    /// Photometric report: stitch every area once, then correct and blend it with each parameter
+    /// set, print the overlap RMS (pixel and block-mean, grey levels) and write Auto-toned mosaics
+    /// reduced by SCALE to OUT/<area>_<variant>.png.
+    Photometry {
+        folder: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Parameter sets as NAME=FILE.json (AreaParams); `default` = the defaults.
+        #[arg(long = "variant", value_name = "NAME=FILE")]
+        variants: Vec<String>,
+        #[arg(long, default_value_t = 4)]
+        scale: usize,
+        /// Only this area id.
+        #[arg(long)]
+        area: Option<String>,
+    },
     /// Stitch one area folder (or every area of a package folder) into a project folder.
     Stitch {
         /// An area folder (e.g. Sweden_XS_150X/005_AH1-GC1) or a package folder.
@@ -204,6 +220,53 @@ fn main() -> Result<()> {
                 eprintln!("{}: {} files", dir.display(), files.len());
             }
             println!("{id}");
+        }
+        Cmd::Photometry { folder, out, variants, scale, area } => {
+            let (pkg, only, _) = open(&folder)?;
+            let only = area.or(only);
+            let mut sets: Vec<(String, AreaParams)> = Vec::new();
+            for v in if variants.is_empty() { vec!["default".to_string()] } else { variants } {
+                let (name, file) = v.split_once('=').unwrap_or((v.as_str(), ""));
+                let p = if file.is_empty() { AreaParams::default() } else { serde_json::from_str(&std::fs::read_to_string(file)?)? };
+                sets.push((name.to_string(), p));
+            }
+            let mut project = Project::new(pkg.info(), "photometry", EPOCH);
+            std::fs::create_dir_all(&out)?;
+            let mut rows = Vec::new();
+            for (ai, a) in pkg.info().areas.iter().enumerate() {
+                if only.as_ref().is_some_and(|o| o != &a.id) {
+                    continue;
+                }
+                let rec = project.area_mut(&a.id).expect("area");
+                let tiles = pipeline::read_tiles(pkg.as_ref(), ai, rec)?;
+                let inputs = pipeline::inputs(rec, &tiles);
+                let placement = grainatlas_core::mosaic::stitch(&inputs.meta, &inputs.imgs, &sets[0].1.stitch, &Ctl::NONE)?;
+                write(&out.join(format!("{}_placement.json", a.id)), serde_json::to_string(&placement)?.as_bytes())?;
+                let (raw_px, raw_blk) = grainatlas_core::photometric::overlap_metrics(&placement, &inputs.imgs, 32);
+                let mut row = serde_json::json!({ "area": a.id, "tiles": inputs.imgs.len(), "raw_px": raw_px * 255.0, "raw_block": raw_blk * 255.0 });
+                for (name, p) in &sets {
+                    let t = Instant::now();
+                    let (corrected, photo) = grainatlas_core::photometric::correct(&placement, &inputs.imgs, &p.photometric);
+                    let (px, blk) = grainatlas_core::photometric::overlap_metrics(&placement, &corrected, 32);
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    let fill = if p.photometric.background { photo.background_median } else { 0.0 };
+                    let (linear, cov) = grainatlas_core::blend::blend(&placement, corrected, &p.blend, fill, &Ctl::NONE)?;
+                    let tone = grainatlas_core::photometric::tone::auto(&linear, Some(&cov), 1.0, &p.tone);
+                    let flatness = grainatlas_core::photometric::joint::background_flatness(&linear, &cov, 32);
+                    let small = linear.downsample(scale.max(1));
+                    let scov: Vec<f32> = grainatlas_core::image::Gray { w: linear.w, h: linear.h, px: cov }.downsample(scale.max(1)).px;
+                    let base = pipeline::tone_base(&small, &scov, &tone);
+                    write(&out.join(format!("{}_{name}.png", a.id)), &grainatlas_core::image::encode_png_gray(small.w, small.h, &base))?;
+                    // The same stretch without CLAHE: what the correction did, before local contrast.
+                    let flat = grainatlas_core::photometric::ToneParams { clahe: false, ..tone.clone() };
+                    let base = pipeline::tone_base(&small, &scov, &flat);
+                    write(&out.join(format!("{}_{name}_stretch.png", a.id)), &grainatlas_core::image::encode_png_gray(small.w, small.h, &base))?;
+                    row[name] = serde_json::json!({ "px": px * 255.0, "block": blk * 255.0, "app_before": photo.overlap_rms_before * 255.0, "app_after": photo.overlap_rms_after * 255.0, "flat": flatness * 255.0, "ms": ms });
+                }
+                eprintln!("{row}");
+                rows.push(row);
+            }
+            println!("{}", serde_json::to_string_pretty(&rows)?);
         }
         Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, print_style, scale, no_denoise, no_sharpen, strip_bg, title, lab, sample, auto, polarity } => {
             let sheets = print.is_some() && print_style != "grains";

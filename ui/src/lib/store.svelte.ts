@@ -1,7 +1,13 @@
 // Application state (Svelte 5 runes). The core holds pixels; the UI holds the
 // project record, grains, spots and labels, and an undo history of edits.
+//
+// A window holds several projects as tabs. Each tab is an `AppState` with its own core (a
+// native session in the desktop app, a wasm worker on the web); what belongs to the viewer
+// rather than a project (theme, panel layout, laicpmsdb link) is shared by all tabs. `app` is
+// the active tab: components read it as before and follow a tab switch. Code that awaits takes
+// its tab once (`current()`) so a result lands in the tab that started the work.
 
-import { getCore, type Core, type PackageFile, type RawImage } from './core/core';
+import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
@@ -98,6 +104,29 @@ function loadLayout(): LayoutPrefs {
   }
 }
 
+/** What belongs to the viewer, not to a project: the same in every tab. */
+class Shared {
+  /** Remembered panel geometry (Settings → Reset layout puts it back). */
+  layout = $state<LayoutPrefs>(loadLayout());
+  /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
+  link = $state<LinkSettings>(loadLink());
+  /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
+  serverOverride = $state<string | null>(null);
+  theme0 = loadTheme();
+  themePref = $state<ThemePref>(this.theme0.pref);
+  /** False until the viewer picks a theme (or the address names one). */
+  themeChosen = $state(this.theme0.chosen);
+  systemDark = $state(systemDark());
+  /** `data-theme` the UPb Studio shell put on this page's <html>, when hosted. */
+  hostTheme = $state<'light' | 'dark' | null>(null);
+  /** True when hosted: with nothing chosen here, follow the system like the shell's "system". */
+  hosted = $state(false);
+}
+export const shared = new Shared();
+
+/** Live re-rendering bookkeeping of one area (actions.ts). */
+export interface LiveState { seq: number; settled: number; timer: number; previewing: boolean; again: boolean; settling: Promise<void> | null }
+
 interface Snapshot {
   spots: Spot[];
   labels: Label[];
@@ -149,12 +178,24 @@ class AppState {
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
   settings = $state<Settings>(loadSettings());
-  /** Remembered panel geometry (Settings → Reset layout puts it back). */
-  layout = $state<LayoutPrefs>(loadLayout());
-  /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
-  link = $state<LinkSettings>(loadLink());
-  /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
-  serverOverride = $state<string | null>(null);
+  get layout(): LayoutPrefs {
+    return shared.layout;
+  }
+  set layout(v: LayoutPrefs) {
+    shared.layout = v;
+  }
+  get link(): LinkSettings {
+    return shared.link;
+  }
+  set link(v: LinkSettings) {
+    shared.link = v;
+  }
+  get serverOverride(): string | null {
+    return shared.serverOverride;
+  }
+  set serverOverride(v: string | null) {
+    shared.serverOverride = v;
+  }
   /** Results of the linked mount (GET /v1/mounts/{id}/results), in memory only, never saved. */
   results = $state<{ key: string; data: import('./results').MountResults | null; at: string | null; error: string | null; loading: boolean } | null>(null);
   /** The results layer colours spots by this: 'date' (preferred) or a metric code. */
@@ -168,15 +209,30 @@ class AppState {
   }
   /** The last publish of this session, with the server's full answer. */
   lastPublish = $state<(import('./core/types').Published & { response: Record<string, unknown> }) | null>(null);
-  private theme0 = loadTheme();
-  themePref = $state<ThemePref>(this.theme0.pref);
-  /** False until the viewer picks a theme (or the address names one). */
-  themeChosen = $state(this.theme0.chosen);
-  systemDark = $state(systemDark());
-  /** `data-theme` the UPb Studio shell put on this page's <html>, when hosted. */
-  hostTheme = $state<'light' | 'dark' | null>(null);
-  /** True when hosted: with nothing chosen here, follow the system like the shell's "system". */
-  hosted = $state(false);
+  get themePref(): ThemePref {
+    return shared.themePref;
+  }
+  get themeChosen(): boolean {
+    return shared.themeChosen;
+  }
+  get systemDark(): boolean {
+    return shared.systemDark;
+  }
+  set systemDark(v: boolean) {
+    shared.systemDark = v;
+  }
+  get hostTheme(): 'light' | 'dark' | null {
+    return shared.hostTheme;
+  }
+  set hostTheme(v: 'light' | 'dark' | null) {
+    shared.hostTheme = v;
+  }
+  get hosted(): boolean {
+    return shared.hosted;
+  }
+  set hosted(v: boolean) {
+    shared.hosted = v;
+  }
 
   /** The theme in effect: the shell's when it sets one, else the choice here, else light (system when hosted). */
   get theme(): 'light' | 'dark' {
@@ -186,8 +242,8 @@ class AppState {
   }
 
   setTheme(p: ThemePref) {
-    this.themePref = p;
-    this.themeChosen = true;
+    shared.themePref = p;
+    shared.themeChosen = true;
     try {
       localStorage.setItem(THEME_KEY, p);
     } catch {
@@ -203,7 +259,36 @@ class AppState {
   private redoStack: Snapshot[] = [];
   canUndo = $state(false);
   canRedo = $state(false);
-  core: Promise<Core> = getCore();
+  /** This tab's number (the desktop session is keyed by it). */
+  readonly id: number;
+  core: Promise<Core>;
+  /** Where the project of this tab lives on disk (desktop): a `.gaproj` file or a
+   * `.grainatlas/` folder; Save writes there. Null for a package opened on its own. */
+  projectPath = $state<{ kind: 'file' | 'folder'; path: string } | null>(null);
+  /** Changes since the project was opened or last saved (the tab's dot). */
+  dirty = $state(false);
+  /** Live re-rendering per area, grains last handed to the core, and the live keys App.svelte
+   * compares (actions.ts, App.svelte): per tab, since two projects can have the same area ids. */
+  live: Record<string, LiveState> = {};
+  syncedGrains: Record<string, string> = {};
+  liveKeys: Record<string, string> = {};
+  /** The Canvas view of this tab (restored when the tab is shown again). */
+  savedView: { areaId: string; view: import('./canvas/view').View } | null = null;
+
+  constructor(id: number) {
+    this.id = id;
+    this.core = newCore(id);
+  }
+
+  /** The tab's name: the project, else the package or the published bundle. */
+  get title(): string {
+    return this.remote?.atlas.name || this.project?.name || this.pkg?.name || this.pendingLoose?.name || 'New tab';
+  }
+
+  /** Nothing open: a drop or a command-line path may open here instead of in a new tab. */
+  get empty(): boolean {
+    return !this.pkg && !this.project && !this.remote && !this.pendingLoose && !this.busy;
+  }
 
   get area(): AreaRecord | null {
     return this.project?.areas.find((a) => a.id === this.areaId) ?? null;
@@ -346,6 +431,7 @@ class AppState {
   persist() {
     // A bundle shown read-only from a server is not this browser's project.
     if (this.readOnly) return;
+    this.dirty = true;
     queueMicrotask(() => {
       const p = this.fullProject();
       if (!p) return;
@@ -373,4 +459,90 @@ class AppState {
   }
 }
 
-export const app = new AppState();
+export type { AppState };
+
+/** The tabs of this window, in their order, and the active one. */
+class Tabs {
+  list = $state.raw<AppState[]>([]);
+  activeId = $state(0);
+  private next = 1;
+
+  constructor() {
+    this.add();
+  }
+
+  get active(): AppState {
+    return this.list.find((t) => t.id === this.activeId) ?? this.list[0];
+  }
+
+  /** A new, empty tab after the active one (or at the end), made active. */
+  add(): AppState {
+    const t = new AppState(this.next++);
+    const i = this.list.findIndex((x) => x.id === this.activeId);
+    const list = [...this.list];
+    list.splice(i < 0 ? list.length : i + 1, 0, t);
+    this.list = list;
+    this.activeId = t.id;
+    return t;
+  }
+
+  select(id: number) {
+    if (this.list.some((t) => t.id === id)) this.activeId = id;
+  }
+
+  /** Cmd+1..8 select that tab, Cmd+9 the last (as in browsers). */
+  selectIndex(i: number) {
+    const t = i >= 8 ? this.list[this.list.length - 1] : this.list[i];
+    if (t) this.activeId = t.id;
+  }
+
+  /** Moves a tab to position `to` (drag and drop in the tab bar). */
+  move(id: number, to: number) {
+    const list = this.list.filter((t) => t.id !== id);
+    const t = this.list.find((x) => x.id === id);
+    if (!t) return;
+    list.splice(Math.max(0, Math.min(to, list.length)), 0, t);
+    this.list = list;
+  }
+
+  /** Drops a tab and its core (the caller asked about unsaved changes). The last tab is replaced
+   * by an empty one: the window always has a tab. */
+  remove(id: number) {
+    const i = this.list.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    const [t] = this.list.slice(i, i + 1);
+    const list = this.list.filter((x) => x.id !== id);
+    this.list = list;
+    if (this.activeId === id) {
+      if (list.length) this.activeId = list[Math.min(i, list.length - 1)].id;
+      else this.add();
+    }
+    void t.core.then((c) => c.dispose()).catch(() => {});
+  }
+}
+
+export const tabs = new Tabs();
+
+/** The active tab, read once: what an action that awaits keeps working on. */
+export function current(): AppState {
+  return tabs.active;
+}
+
+/**
+ * The active tab, followed live: every property read goes to the tab active at that moment (and
+ * Svelte tracks the switch), methods run on that tab.
+ */
+export const app: AppState = new Proxy({} as AppState, {
+  get(_, k) {
+    const t = tabs.active;
+    const v = Reflect.get(t, k, t);
+    return typeof v === 'function' ? v.bind(t) : v;
+  },
+  set(_, k, v) {
+    const t = tabs.active;
+    return Reflect.set(t, k, v, t);
+  },
+  has(_, k) {
+    return k in tabs.active;
+  },
+});

@@ -56,6 +56,13 @@ export class WasmCore implements Core {
     if (this.restoring) await this.restoring;
   }
 
+  async dispose(): Promise<void> {
+    this.worker.terminate();
+    for (const p of this.pending.values()) p.reject(new Error('cancelled'));
+    this.pending.clear();
+    this.opened = null;
+  }
+
   cancel() {
     this.worker.terminate();
     for (const p of this.pending.values()) p.reject(new Error('cancelled'));
@@ -293,6 +300,11 @@ export class WasmCore implements Core {
     /* the browser owns the window */
   }
 
+  async saveProjectFile(project: Project): Promise<string | null> {
+    const { download } = await import('../files');
+    download(JSON.stringify(project, null, 2), `${project.name || project.package.name}.gaproj`, 'application/json');
+    return null;
+  }
   async saveProject(_project: Project, _extras: Record<string, string>): Promise<string | null> {
     return null; // the web build downloads files instead (see lib/files.ts)
   }
