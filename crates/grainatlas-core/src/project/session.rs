@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::pipeline::{self, AreaOutput, Clock, Timings};
 use super::{AreaParams, Project};
 use crate::photometric::ToneParams;
+use crate::readers::loose::{LoosePackage, LooseSpec};
 use crate::readers::{self, Package};
 use crate::segment::{Grain, SegmentParams, WorkImage};
 use crate::source::{MemSource, Source};
@@ -38,11 +39,15 @@ pub struct Session {
     pub project: Option<Project>,
     pub outputs: BTreeMap<String, AreaOutput>,
     work: BTreeMap<String, (usize, WorkImage)>,
+    /// Absolute paths of loose files opened by path (desktop), recorded in the project.
+    pub origin_files: Vec<String>,
+    /// Path recorded for a source opened with `open_source` (kept for `open_loose`).
+    path: String,
 }
 
 impl Session {
     pub fn new(name: &str) -> Session {
-        Session { mem: MemSource::new(name), src: None, pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new() }
+        Session { mem: MemSource::new(name), src: None, pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new(), origin_files: Vec::new(), path: String::new() }
     }
 
     pub fn add_file(&mut self, path: &str, bytes: Vec<u8>) {
@@ -56,18 +61,52 @@ impl Session {
     }
 
     /// Opens any source (a directory on desktop). `path` is recorded in the project.
+    /// Returns a `readers::Probe` as JSON: `{"status":"opened","info":…}` for a package or an area
+    /// folder, `{"status":"needs_scale","name":…,"images":[…]}` for images without calibration
+    /// (then call [`Session::open_loose`] with the scale the user gave).
     pub fn open_source(&mut self, src: Arc<dyn Source>, path: &str, created: &str) -> Result<String> {
-        let pkg = readers::open(src.clone())?;
-        let info = serde_json::to_string(pkg.info()).map_err(invalid)?;
-        let keep = self.project.as_ref().is_some_and(|p| p.package.name == pkg.info().name);
-        if !keep {
-            self.project = Some(Project::new(pkg.info(), path, created));
-        }
+        let (probe, pkg) = readers::probe(src.clone())?;
         self.outputs.clear();
         self.work.clear();
         self.src = Some(src);
-        self.pkg = Some(pkg);
+        self.path = path.to_string();
+        self.pkg = None;
+        if let Some(pkg) = pkg {
+            self.adopt(pkg, None, created);
+        }
+        serde_json::to_string(&probe).map_err(invalid)
+    }
+
+    /// Opens the images of the last `open_source` as loose files with the user's scale
+    /// (`spec` = [`LooseSpec`] JSON). Returns the PackageInfo JSON.
+    pub fn open_loose(&mut self, spec: &str, created: &str) -> Result<String> {
+        let spec: LooseSpec = serde_json::from_str(spec).map_err(invalid)?;
+        let src = self.src.clone().ok_or_else(|| Error::Invalid("nothing opened".into()))?;
+        let pkg = LoosePackage::open(src, &spec)?;
+        let info = serde_json::to_string(pkg.info()).map_err(invalid)?;
+        self.outputs.clear();
+        self.work.clear();
+        self.adopt(Box::new(pkg), Some(spec), created);
         Ok(info)
+    }
+
+    /// Makes `pkg` current; keeps a loaded project of the same package (same name, kind and
+    /// areas), else starts a new one, and records how the package was opened.
+    fn adopt(&mut self, pkg: Box<dyn Package>, loose: Option<LooseSpec>, created: &str) {
+        let info = pkg.info();
+        let ids: Vec<&str> = info.areas.iter().map(|a| a.id.as_str()).collect();
+        let keep = self.project.as_ref().is_some_and(|p| {
+            p.package.name == info.name && p.package.kind == info.kind && (info.kind != readers::kind::LOOSE || p.areas.iter().map(|a| a.id.as_str()).eq(ids.iter().copied()))
+        });
+        if !keep {
+            self.project = Some(Project::new(info, &self.path, created));
+        }
+        if let Some(p) = self.project.as_mut() {
+            p.package.kind = info.kind.clone();
+            p.package.loose = loose;
+            p.package.files = if info.kind == readers::kind::LOOSE { self.origin_files.clone() } else { Vec::new() };
+        }
+        self.pkg = Some(pkg);
     }
 
     pub fn load_project(&mut self, json: &str) -> Result<()> {

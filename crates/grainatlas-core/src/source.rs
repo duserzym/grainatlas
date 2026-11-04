@@ -93,6 +93,55 @@ impl Source for DirSource {
     }
 }
 
+/// Files chosen one by one on disk (native targets only), addressed by file name; names that
+/// repeat get their parent folder in front.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct FileListSource {
+    name: String,
+    files: BTreeMap<String, std::path::PathBuf>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FileListSource {
+    pub fn new(paths: &[std::path::PathBuf]) -> Result<Self> {
+        let mut files = BTreeMap::new();
+        for p in paths {
+            if !p.is_file() {
+                return Err(Error::NotFound(p.display().to_string()));
+            }
+            let base = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let key = if files.contains_key(&base) {
+                let dir = p.parent().and_then(|d| d.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                format!("{dir}/{base}")
+            } else {
+                base
+            };
+            files.insert(key, p.clone());
+        }
+        let name = paths
+            .first()
+            .and_then(|p| p.parent())
+            .and_then(|d| d.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "images".into());
+        Ok(Self { name, files })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Source for FileListSource {
+    fn list(&self) -> Vec<String> {
+        self.files.keys().cloned().collect()
+    }
+    fn read(&self, path: &str) -> Result<Vec<u8>> {
+        let p = self.files.get(path).ok_or_else(|| Error::NotFound(path.to_string()))?;
+        std::fs::read(p).map_err(|e| Error::Read(path.to_string(), e.to_string()))
+    }
+    fn root_name(&self) -> String {
+        self.name.clone()
+    }
+}
+
 /// Last path component.
 pub fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)

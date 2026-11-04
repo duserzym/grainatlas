@@ -9,6 +9,7 @@
   import Layout from './screens/Layout.svelte';
   import Settings from './screens/Settings.svelte';
   import Busy from './components/Busy.svelte';
+  import ScaleDialog from './components/ScaleDialog.svelte';
 
   const screens: { id: Screen; label: string; key: string; needs?: 'pkg' | 'mosaic' }[] = [
     { id: 'open', label: 'Open', key: '1' },
@@ -112,6 +113,7 @@
     {/if}
   </main>
 
+  {#if app.pendingLoose}<ScaleDialog />{/if}
   {#if app.busy}<Busy />{/if}
   {#if app.notice}
     <div class="glass toast ok" role="status">

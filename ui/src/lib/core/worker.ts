@@ -27,6 +27,7 @@ const ops: Record<string, Handler> = {
     }
     return JSON.parse(session.open_package());
   },
+  openLoose: ({ spec }) => JSON.parse(s().open_loose(JSON.stringify(spec))),
   loadProject: ({ json }) => s().load_project(json),
   projectJson: () => s().project_json(),
   navigation: () => img(s().navigation()),

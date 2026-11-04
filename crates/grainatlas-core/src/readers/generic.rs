@@ -54,7 +54,7 @@ impl GenericPackage {
             let id = if dir.is_empty() { src.root_name() } else { file_name(&dir).to_string() };
             areas.push(AreaMeta { id: id.clone(), name: id, grid: None, pixel_size_nm, field_um: None, pitch_um: None, stage_sign: [1.0, 1.0], tiles, meta: BTreeMap::new() });
         }
-        let info = PackageInfo { reader: "generic".into(), name: src.root_name(), areas, meta: BTreeMap::new(), navigation: None };
+        let info = PackageInfo { reader: "generic".into(), kind: super::kind::PACKAGE.into(), name: src.root_name(), areas, meta: BTreeMap::new(), navigation: None };
         Ok(Self { src, info })
     }
 }

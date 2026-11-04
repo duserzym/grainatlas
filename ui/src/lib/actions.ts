@@ -1,34 +1,103 @@
 // Actions shared by the screens: open, stitch, tone, project save/load.
 
 import type { PackageFile } from './core/core';
-import type { AreaParams, Project, ToneParams } from './core/types';
+import type { AreaParams, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
 import { app } from './store.svelte';
 import { download } from './files';
 import { packageNameFor, parseDeepLink, sameId, savedProject } from './deeplink';
 
+/** Web: a package folder, an area folder or loose images, handed over as files. */
 export async function openFiles(name: string, files: PackageFile[]) {
   const core = await app.core;
-  const info = await app.run(`Reading ${name}`, (p) => core.openFiles(name, files, p));
-  if (!info) return;
-  await adoptPackage(info);
+  const r = await app.run(`Reading ${name}`, (p) => core.openFiles(name, files, p));
+  if (r) await opened(r);
 }
 
-export async function openPath(path: string) {
+/** Desktop: one folder (package, area folder, `.grainatlas` project) or a set of files, by path. */
+export async function openPaths(paths: string[]) {
   const core = await app.core;
-  if (/\.grainatlas\/?$/.test(path)) {
-    const r = await app.run(`Opening ${path}`, () => core.openProject(path));
+  if (paths.length === 1 && /\.grainatlas\/?$/.test(paths[0])) {
+    const r = await app.run(`Opening ${paths[0]}`, () => core.openProject(paths[0]));
     if (!r) return;
     await adoptPackage(r.info, r.project);
     return;
   }
-  const info = await app.run(`Reading ${path}`, () => core.openPath(path));
-  if (!info) return;
-  await adoptPackage(info);
+  const label = paths.length === 1 ? paths[0] : `${paths.length} files`;
+  const r = await app.run(`Reading ${label}`, () => core.openPaths(paths));
+  if (r) await opened(r);
 }
 
-async function adoptPackage(info: import('./core/types').PackageInfo, fromFolder: Project | null = null) {
+const SCALE_KEY = 'grainatlas.looseScale';
+
+/** The last scale typed for loose images in this session (the dialog's default). */
+export function rememberedScale(): { mode: 'um_per_px' | 'field_width'; um_per_px: number; field_width_um: number } | null {
+  try {
+    const s = sessionStorage.getItem(SCALE_KEY);
+    return s ? JSON.parse(s) : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameFiles(a: string[] | undefined, images: ImageEntry[]) {
+  if (!a?.length) return false;
+  const b = images.map((i) => i.file);
+  return a.length === b.length && [...a].sort().every((f, i) => f === [...b].sort()[i]);
+}
+
+async function opened(r: OpenResult) {
+  if (r.status === 'opened') {
+    await adoptPackage(r.info);
+    return;
+  }
+  // Images without calibration. A project saved for this same set knows its scale.
+  const saved = savedProject(r.name);
+  const spec = saved?.package.kind === 'loose' ? saved.package.loose : undefined;
+  if (spec && sameFiles(spec.files, r.images)) {
+    await openLoose(spec);
+    if (app.pkg) app.notice = `Reopened ${r.images.length} images with the project's scale (${scaleText(spec)}).`;
+    return;
+  }
+  app.pendingLoose = { name: r.name, images: r.images, spec: null };
+}
+
+export function scaleText(spec: LooseSpec) {
+  return spec.field_width_um ? `field width ${spec.field_width_um} µm` : `${spec.um_per_px} µm per pixel`;
+}
+
+/** Opens the pending images with the scale (and optional grid) the user gave. */
+export async function openLoose(spec: LooseSpec) {
+  const core = await app.core;
+  app.pendingLoose = null;
+  try {
+    sessionStorage.setItem(SCALE_KEY, JSON.stringify({ mode: spec.field_width_um ? 'field_width' : 'um_per_px', um_per_px: spec.um_per_px, field_width_um: spec.field_width_um ?? 0 }));
+  } catch {
+    /* storage may be unavailable */
+  }
+  const info = await app.run('Opening images', () => core.openLoose(spec));
+  if (info) await adoptPackage(info);
+}
+
+/** Loose images: ask for the scale again (re-opens the same files; stitched areas are dropped). */
+export function changeScale() {
+  const p = app.pkg;
+  if (!p || p.kind !== 'loose') return;
+  const images = p.areas.flatMap((a) => a.tiles.map((t) => ({ file: t.file, w: t.w, h: t.h })));
+  app.pendingLoose = { name: p.name, images, spec: (app.project?.package.loose as LooseSpec | undefined) ?? null };
+}
+
+/** A saved project fits an opened package when it was opened the same way, with the same areas. */
+function fits(saved: Project, info: PackageInfo) {
+  if ((saved.package.kind ?? 'package') !== info.kind) return false;
+  if (info.kind !== 'loose') return true;
+  const ids = info.areas.map((a) => a.id);
+  return saved.areas.length === ids.length && saved.areas.every((a, i) => a.id === ids[i]);
+}
+
+async function adoptPackage(info: PackageInfo, fromFolder: Project | null = null) {
   const core = await app.core;
   app.pkg = info;
+  app.params = {};
   app.stitched = {};
   app.grains = {};
   app.spots = [];
@@ -37,6 +106,7 @@ async function adoptPackage(info: import('./core/types').PackageInfo, fromFolder
   app.tone = {};
   // A project saved earlier for this package (browser storage) is picked up again.
   let saved: Project | null = fromFolder ?? savedProject(info.name);
+  if (saved && !fromFolder && !fits(saved, info)) saved = null;
   if (saved) {
     try {
       await core.loadProject(JSON.stringify(stripUi(saved)));

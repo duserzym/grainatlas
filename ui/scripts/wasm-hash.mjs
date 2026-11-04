@@ -15,7 +15,9 @@ const walk = (d) => {
   }
 };
 walk(root);
-const info = JSON.parse(s.open_package());
+const opened = JSON.parse(s.open_package());
+if (opened.status !== 'opened') throw new Error(`not a package: ${opened.status}`);
+const info = opened.info;
 for (const a of info.areas) {
   const r = JSON.parse(s.stitch(a.id, '', () => {}, () => false));
   console.log(`${a.id} ${r.mosaic.sha256}`);

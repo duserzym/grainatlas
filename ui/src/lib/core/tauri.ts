@@ -4,7 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, Grain, LayoutParams, LayoutResult, MosaicJson, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, Grain, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
 
 function img(buf: ArrayBuffer | Uint8Array | number[]): RawImage | null {
   const b = buf instanceof Uint8Array ? buf : buf instanceof ArrayBuffer ? new Uint8Array(buf) : Uint8Array.from(buf);
@@ -25,11 +25,14 @@ export class TauriCore implements Core {
     listen<Progress>('grainatlas://progress', (e) => this.onProgress?.(e.payload));
   }
 
-  async openFiles(_name: string, _files: PackageFile[]): Promise<PackageInfo> {
-    throw new Error('In the desktop app, choose or drop the package folder (it is read from disk).');
+  async openFiles(_name: string, _files: PackageFile[]): Promise<OpenResult> {
+    throw new Error('In the desktop app, choose or drop the folder or files (they are read from disk).');
   }
-  async openPath(path: string): Promise<PackageInfo> {
-    return JSON.parse(await invoke<string>('open_path', { path }));
+  async openPaths(paths: string[]): Promise<OpenResult> {
+    return JSON.parse(await invoke<string>('open_paths', { paths }));
+  }
+  async openLoose(spec: LooseSpec): Promise<PackageInfo> {
+    return JSON.parse(await invoke<string>('open_loose', { spec: JSON.stringify(spec) }));
   }
   async openProject(path: string): Promise<{ info: PackageInfo; project: Project }> {
     return JSON.parse(await invoke<string>('open_project', { path }));

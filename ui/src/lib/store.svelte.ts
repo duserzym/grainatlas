@@ -3,7 +3,7 @@
 
 import { getCore, type Core } from './core/core';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
-import type { AreaParams, AreaRecord, Grain, Label, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
+import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
 export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'pair';
@@ -53,6 +53,8 @@ interface Snapshot {
 class AppState {
   screen = $state<Screen>('open');
   pkg = $state<PackageInfo | null>(null);
+  /** Loose images waiting for a scale (the scale dialog is open while set). */
+  pendingLoose = $state<{ name: string; images: ImageEntry[]; spec: LooseSpec | null } | null>(null);
   project = $state<Project | null>(null);
   areaId = $state<string | null>(null);
   stitched = $state<Record<string, StitchSummary>>({});

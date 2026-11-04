@@ -24,12 +24,31 @@ export interface AreaMeta {
   meta: Record<string, string>;
 }
 
+/** How a package was opened: an instrument package folder, one area folder alone, or loose images with a stated scale. */
+export type OpenKind = 'package' | 'area' | 'loose';
+
 export interface PackageInfo {
   reader: string;
+  kind: OpenKind;
   name: string;
   areas: AreaMeta[];
   meta: Record<string, string>;
   navigation: { file: string; top_left_nm: [number, number]; bottom_right_nm: [number, number] } | null;
+}
+
+export interface ImageEntry { file: string; w: number; h: number }
+
+/** Result of opening a folder or files: a package, or images that need a scale first. */
+export type OpenResult = { status: 'opened'; info: PackageInfo } | { status: 'needs_scale'; name: string; images: ImageEntry[] };
+
+export type GridOrder = 'rows' | 'snake' | 'columns';
+
+/** Scale and arrangement for loose images (core `readers::loose::LooseSpec`). */
+export interface LooseSpec {
+  um_per_px: number;
+  field_width_um?: number;
+  grid?: { cols: number; rows: number; overlap_pct: number; order: GridOrder; name: string };
+  files: string[];
 }
 
 export interface LevelInfo { level: number; w: number; h: number; cols: number; rows: number; scale: number }
@@ -172,7 +191,7 @@ export interface Project {
   uuid: string;
   name: string;
   created: string;
-  package: { path: string; reader: string; name: string; meta: Record<string, string> };
+  package: { path: string; reader: string; name: string; kind: OpenKind; loose?: LooseSpec; files?: string[]; meta: Record<string, string> };
   laicpmsdb: { mount_id: string | null };
   areas: AreaRecord[];
   settings: Settings;

@@ -94,10 +94,12 @@ impl TM4000Package {
             return Err(Error::Invalid("no TM4000 tiles (<area>_NNNN.jpg with .txt sidecar) found".into()));
         }
 
+        // No .zag and the tiles at the top: one area folder opened on its own.
+        let kind = if zag_areas.is_empty() && meta.is_empty() && folders.len() == 1 && folders.contains_key("") { super::kind::AREA } else { super::kind::PACKAGE };
         let mut areas = Vec::new();
         for (dir, mut list) in folders {
             list.sort();
-            let folder = file_name(&dir).to_string();
+            let folder = if dir.is_empty() { src.root_name() } else { file_name(&dir).to_string() };
             let mut ameta: BTreeMap<String, String> = BTreeMap::new();
             if let Some(z) = zag_areas.get(&folder) {
                 for (k, v) in z {
@@ -153,15 +155,12 @@ impl TM4000Package {
             let area_name = ameta.get("zag.AreaName").cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| folder.clone());
             areas.push(AreaMeta { id: folder.clone(), name: area_name, grid, pixel_size_nm, field_um, pitch_um, stage_sign: [-1.0, -1.0], tiles, meta: ameta });
         }
-        let info = PackageInfo { reader: "tm4000".into(), name, areas, meta, navigation };
+        let info = PackageInfo { reader: "tm4000".into(), kind: kind.to_string(), name, areas, meta, navigation };
         Ok(Self { src, info })
     }
 }
 
-fn is_image(f: &str) -> bool {
-    let l = f.to_ascii_lowercase();
-    [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"].iter().any(|e| l.ends_with(e))
-}
+use super::is_image;
 
 fn median(mut v: Vec<f64>) -> Option<f64> {
     if v.is_empty() {

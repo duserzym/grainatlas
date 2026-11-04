@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, Grain, LayoutParams, LayoutResult, MosaicJson, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, Grain, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Project, SegmentParams, Spot, Label, StitchSummary, ToneParams } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onProgress?: (p: Progress) => void };
 
@@ -14,6 +14,7 @@ export class WasmCore implements Core {
   private seq = 0;
   private pending = new Map<number, Pending>();
   private opened: { name: string; files: PackageFile[] } | null = null;
+  private loose: LooseSpec | null = null;
   private project: string | null = null;
   private stitched = new Map<string, AreaParams>();
   private restoring: Promise<void> | null = null;
@@ -65,6 +66,7 @@ export class WasmCore implements Core {
     this.restoring = (async () => {
       if (!opened) return;
       await this.call('open', opened);
+      if (this.loose) await this.call('openLoose', { spec: this.loose });
       if (project) await this.call('loadProject', { json: project });
       for (const [areaId, params] of redo) await this.call('stitch', { areaId, params });
     })().finally(() => {
@@ -72,15 +74,25 @@ export class WasmCore implements Core {
     });
   }
 
-  async openFiles(name: string, files: PackageFile[], onProgress?: (p: Progress) => void): Promise<PackageInfo> {
+  async openFiles(name: string, files: PackageFile[], onProgress?: (p: Progress) => void): Promise<OpenResult> {
     this.opened = { name, files };
+    this.loose = null;
     this.project = null;
     this.stitched.clear();
     return this.call('open', { name, files }, onProgress);
   }
 
-  async openPath(): Promise<PackageInfo> {
-    throw new Error('opening by path needs the desktop app; choose the folder instead');
+  async openPaths(): Promise<OpenResult> {
+    throw new Error('opening by path needs the desktop app; choose the folder or files instead');
+  }
+
+  async openLoose(spec: LooseSpec): Promise<PackageInfo> {
+    await this.ready();
+    const info = await this.call<PackageInfo>('openLoose', { spec });
+    this.loose = spec;
+    this.project = null;
+    this.stitched.clear();
+    return info;
   }
 
   async openProject(): Promise<{ info: PackageInfo; project: Project }> {

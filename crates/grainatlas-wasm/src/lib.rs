@@ -35,8 +35,13 @@ impl Session {
     pub fn file_count(&self) -> usize {
         self.0.mem.files.len()
     }
+    /// `{"status":"opened","info":…}` or `{"status":"needs_scale","name":…,"images":[…]}`.
     pub fn open_package(&mut self) -> Result<String, JsError> {
         self.0.open_mem(&iso_now()).map_err(err)
+    }
+    /// Opens the added images as loose files with the user's scale (LooseSpec JSON).
+    pub fn open_loose(&mut self, spec: &str) -> Result<String, JsError> {
+        self.0.open_loose(spec, &iso_now()).map_err(err)
     }
     pub fn load_project(&mut self, json: &str) -> Result<(), JsError> {
         self.0.load_project(json).map_err(err)

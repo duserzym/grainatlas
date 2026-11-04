@@ -53,6 +53,16 @@ pub struct PackageRef {
     pub path: String,
     pub reader: String,
     pub name: String,
+    /// How it was opened: "package" (instrument folder), "area" (one area folder on its own) or
+    /// "loose" (images without sidecars, scale from `loose`).
+    #[serde(default = "crate::readers::default_kind")]
+    pub kind: String,
+    /// Scale and arrangement the user gave for loose images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loose: Option<crate::readers::loose::LooseSpec>,
+    /// Loose images opened by path (desktop): the absolute path of each, so the project reopens.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
     #[serde(default)]
     pub meta: BTreeMap<String, String>,
 }
@@ -108,7 +118,15 @@ impl Project {
             uuid: new_id(),
             name: info.name.clone(),
             created: created.to_string(),
-            package: PackageRef { path: path.to_string(), reader: info.reader.clone(), name: info.name.clone(), meta: info.meta.clone() },
+            package: PackageRef {
+                path: path.to_string(),
+                reader: info.reader.clone(),
+                name: info.name.clone(),
+                kind: info.kind.clone(),
+                loose: None,
+                files: Vec::new(),
+                meta: info.meta.clone(),
+            },
             laicpmsdb: LaicpmsdbLink::default(),
             areas: info.areas.iter().map(AreaRecord::from_meta).collect(),
             settings: Settings::default(),
