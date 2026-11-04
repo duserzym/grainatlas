@@ -25,7 +25,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            naming_pattern: "{sample}-{grain}-{n}".into(),
+            naming_pattern: "{sample}-{n}".into(),
             spot_presets_um: vec![15.0, 20.0, 25.0, 30.0, 35.0, 50.0],
             default_diameter_um: 25.0,
             user: String::new(),
@@ -120,9 +120,10 @@ pub fn format_name(pattern: &str, sample: &str, grain: Option<u32>, n: u32) -> S
     out
 }
 
-/// The next `{n}`: one more than the highest in the project.
-pub fn next_n(spots: &[Spot]) -> u32 {
-    spots.iter().map(|s| s.n).max().unwrap_or(0) + 1
+/// The next `{n}` of a sample: one more than the highest of its spots. Each sample counts on
+/// its own (HH3-1, HH3-2, ..., AH1-1); a number typed in by hand moves the count on from there.
+pub fn next_n(spots: &[Spot], sample: &str) -> u32 {
+    spots.iter().filter(|s| s.sample == sample).map(|s| s.n).max().unwrap_or(0) + 1
 }
 
 /// The grain whose polygon contains a point.
@@ -134,7 +135,7 @@ pub fn grain_at<'a>(grains: &'a [Grain], x: f64, y: f64) -> Option<&'a Grain> {
 #[allow(clippy::too_many_arguments)]
 pub fn new_spot(area_id: &str, sample: &str, grains: &[Grain], existing: &[Spot], settings: &Settings, x_um: f64, y_um: f64, diameter_um: f64, created: &str) -> Spot {
     let g = grain_at(grains, x_um, y_um);
-    let n = next_n(existing);
+    let n = next_n(existing, sample);
     Spot {
         id: crate::project::new_id(),
         area_id: area_id.to_string(),
