@@ -1,0 +1,96 @@
+# UX conventions (grainatlas, laicpmsdb, UPb Studio)
+
+Five rules, applied in grainatlas on 2026-11-03, for the three apps of the
+lab workflow to adopt. Each says what to do and where grainatlas does it.
+
+## 1. Light by default, with dark and system
+
+- A three-way switch, **Light / Dark / System**, in the top bar and in
+  Settings (`ui/src/components/ThemeSwitch.svelte`). Nothing stored means
+  **light**.
+- The choice is the viewer's, kept in their own storage
+  (`localStorage['grainatlas.theme']`), never in a project file or shared
+  record: opening someone else's project must not change your theme.
+- Tokens: the light set is the base; `[data-theme='dark']` overrides it
+  (`ui/src/app.css`). Chrome follows the theme; **image surfaces stay dark in
+  both** (`--image-bg`), and overlay colours on images are one bright,
+  colour-blind-safe set in both. Glass floating over an image uses a denser
+  token (`--glass-on-image`) so text stays readable in light.
+- Hosted in UPb Studio: the shell's theme wins while it passes one, as
+  `?theme=light|dark` in the module URL or `data-theme` on the module's
+  `<html>`; with nothing passed and nothing chosen in the module, follow the
+  system (`prefers-color-scheme`).
+
+## 2. One gesture module for every image view
+
+Every view that shows an image (mosaic, tiles, page preview, thumbnails)
+uses one module with one set of constants
+(`ui/src/lib/canvas/gestures.ts`), so all feel the same:
+
+| Input | Does |
+| --- | --- |
+| mouse wheel | zoom about the cursor (`exp(-dy * 0.0015)`) |
+| trackpad two-finger scroll | pan |
+| trackpad pinch, ctrl/cmd + wheel | zoom about the fingers / cursor |
+| drag on empty space, middle drag, Space + drag | pan |
+| two touch points | pinch zoom (rotate where the view allows it) |
+| double-click on empty space | fit |
+| arrows (Shift: more), `+` `-` `0` | nudge 60 / 240 px, zoom 1.5×, fit |
+
+Engines differ, so classify each wheel event: Chromium (and WebView2)
+report a pinch as `ctrlKey` + small `deltaY`; WebKit (Safari, WKWebView in
+Tauri on macOS) sends `gesturestart/change/end` instead; a trackpad scroll
+has `wheelDeltaY === -3 * deltaY` in both, a mouse notch a multiple of 120;
+Firefox has no `wheelDeltaY` and reports notches with `deltaMode` 1. Plots
+inside a scrolling page (laicpmsdb's timeline) are not image views: plain
+wheel keeps scrolling the page there, ctrl + wheel zooms.
+
+## 3. One click for a good result; every control still there; Reset
+
+- An **Auto** button gives a result that is hard to get wrong, computed from
+  the data (grainatlas: leveling on, a stretch that clips almost nothing,
+  CLAHE with a clip limit from the histogram). It is deterministic and
+  idempotent: a second click changes nothing.
+- **Before / After** swaps the Auto result with what was there; every manual
+  control stays visible and editable; an explicit **Reset** returns the
+  defaults.
+- Every control acts at once: a low-resolution preview while it moves, the
+  full result when it settles. No control may silently wait for another
+  button ("applies on stitch"); if one truly needs a heavy step, its label
+  says so.
+- Results are parameters in the project file, never baked pixels; native
+  and browser builds give identical results (parity hash in `make test`).
+
+## 4. Open anything, from a whole folder down to loose files
+
+- One Open screen and drag-drop accept a whole instrument package, one
+  sub-folder of it on its own, or loose files; the app detects which and
+  never asks the user to say what they dropped.
+- Missing information is asked for once, in one dialog, then the file set
+  opens like any other (grainatlas: `Session::open_source` returns
+  `opened` or `needs_scale`, ADR-0006).
+- The project records how it was opened (`package.kind`: `package`,
+  `area`, `loose`, plus what was asked), so reopening rebuilds it the same
+  way without asking again.
+
+## 5. The scale is always known, or asked once
+
+- Take the scale from the files when they carry it (TM4000 `PixelSize` in
+  the `.txt` sidecars). Never guess a scale silently.
+- Otherwise ask once per set: µm per pixel, or the field width in µm. The
+  last value typed is the default for the rest of the session
+  (`sessionStorage`), the answer is stored in the project, shown where it is
+  used, and can be changed later ("Change…" on the Area screen).
+
+## What the other apps need to change
+
+- **UPb Studio shell**: default theme is dark (`ui/src/lib/settings.svelte.ts`);
+  make it light. Pass the theme to module tabs (append `?theme=` to the
+  module URL, or set `data-theme` on the module document from the host;
+  a bridge `theme` event would cover live changes). Settings says "module
+  tabs keep their own theme settings for now".
+- **laicpmsdb**: default theme is `system` (`ui/src/lib/theme.svelte.ts`);
+  make nothing-stored mean light, keep the three-way choice, and when
+  hosted read `?theme=` before its own stored choice. It writes
+  `data-theme` on its own `<html>`, so the shell should use `?theme=` for
+  it. Any image view it adds uses the gesture table above.
