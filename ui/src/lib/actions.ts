@@ -217,8 +217,15 @@ export async function stitch(areaId: string) {
   const params = $snapshotParams(areaId);
   const r = await app.run(`Stitching ${areaId}`, (p) => core.stitch(areaId, params, p));
   if (!r) return false;
-  app.stitched = { ...app.stitched, [areaId]: r };
+  const l = live[areaId];
+  if (l) {
+    clearTimeout(l.timer);
+    l.settled = l.seq;
+  }
+  // The project first: it records the parameters this stitch used (App.svelte compares them).
   app.project = JSON.parse(await core.projectJson());
+  app.stitched = { ...app.stitched, [areaId]: r };
+  app.preview = { ...app.preview, [areaId]: null };
   app.pixelsVersion++;
   app.persist();
   return true;
@@ -236,14 +243,96 @@ function $snapshotParams(areaId: string): AreaParams {
   return p;
 }
 
-/** Stretch percentiles and CLAHE change pixels in the core; black/white/gamma are a display LUT. */
-export async function retone(areaId: string, tone: ToneParams) {
+// ---- live rendering --------------------------------------------------------
+// Every photometric control (correction, background leveling, blending, stretch,
+// CLAHE, per-tile gain and offset) re-renders a stitched area promptly: a
+// low-resolution preview of the whole mosaic while the control moves, and a
+// full-resolution recompute from the solved placement once it settles.
+// Black / white / gamma need neither: they are the display LUT.
+
+const PREVIEW_PIXELS = 1.5e6;
+const live: Record<string, { seq: number; settled: number; timer: number; previewing: boolean; again: boolean; settling: Promise<void> | null }> = {};
+
+/** The parameters that change pixels after the stitch (black / white / gamma excluded). */
+export function liveKey(p: AreaParams | undefined, t: ToneParams | undefined): string {
+  if (!p) return '';
+  const { black: _b, white: _w, gamma: _g, ...tone } = (t ?? p.tone) as ToneParams;
+  return JSON.stringify([p.photometric, p.blend, tone]);
+}
+
+/** Call after a photometric parameter of a stitched area changed. */
+export function liveChanged(areaId: string, settleMs = 450) {
+  if (!app.stitched[areaId]) return;
+  const l = (live[areaId] ??= { seq: 0, settled: 0, timer: 0, previewing: false, again: false, settling: null });
+  l.seq++;
+  void livePreview(areaId);
+  clearTimeout(l.timer);
+  l.timer = window.setTimeout(() => void settle(areaId), settleMs);
+}
+
+function previewLevel(areaId: string) {
+  const levels = app.stitched[areaId].mosaic.levels;
+  let L = Math.min(Math.max(0, app.drawLevel), levels.length - 1);
+  while (L < levels.length - 1 && levels[L].w * levels[L].h > PREVIEW_PIXELS) L++;
+  return L;
+}
+
+async function livePreview(areaId: string) {
+  const l = live[areaId];
+  if (l.previewing) {
+    l.again = true;
+    return;
+  }
+  l.previewing = true;
   const core = await app.core;
-  const r = await app.run('Applying tone', () => core.retone(areaId, tone));
-  if (!r) return;
-  const s = app.stitched[areaId];
-  if (s) app.stitched = { ...app.stitched, [areaId]: { ...s, mosaic: r } };
-  app.pixelsVersion++;
+  try {
+    do {
+      l.again = false;
+      const seq = l.seq;
+      const level = previewLevel(areaId);
+      const img = await core.preview(areaId, $snapshotParams(areaId), level);
+      if (seq > l.settled && img) app.preview = { ...app.preview, [areaId]: { level, img, over: app.pixelsVersion } };
+    } while (l.again);
+  } catch {
+    /* a preview is best effort; the settle reports errors */
+  } finally {
+    l.previewing = false;
+  }
+}
+
+async function settle(areaId: string) {
+  const l = live[areaId];
+  if (l.settling) await l.settling;
+  const seq = l.seq;
+  if (seq <= l.settled) return;
+  const run = (async () => {
+    const core = await app.core;
+    app.rendering++;
+    try {
+      const r = await core.recompute(areaId, $snapshotParams(areaId));
+      l.settled = Math.max(l.settled, seq);
+      app.project = JSON.parse(await core.projectJson());
+      app.stitched = { ...app.stitched, [areaId]: r };
+      app.pixelsVersion++;
+      app.persist();
+    } catch (e) {
+      app.error = e instanceof Error ? e.message : String(e);
+    } finally {
+      app.rendering--;
+    }
+  })();
+  l.settling = run;
+  await run;
+  if (l.settling === run) l.settling = null;
+}
+
+/** Waits until no live re-render of `areaId` is pending (tests, exports). */
+export async function liveIdle(areaId: string) {
+  const l = live[areaId];
+  while (l && (l.settling || l.seq > l.settled)) {
+    if (l.settling) await l.settling;
+    else await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 export async function saveProject() {

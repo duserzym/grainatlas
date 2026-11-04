@@ -130,6 +130,19 @@ export class WasmCore implements Core {
     return r;
   }
 
+  async recompute(areaId: string, params: AreaParams, onProgress?: (p: Progress) => void): Promise<StitchSummary> {
+    await this.ready();
+    const r = await this.call<StitchSummary>('recompute', { areaId, params }, onProgress);
+    this.stitched.set(areaId, params);
+    this.project = await this.call<string>('projectJson');
+    return r;
+  }
+
+  async preview(areaId: string, params: AreaParams, level: number): Promise<RawImage> {
+    await this.ready();
+    return this.call('preview', { areaId, params, level });
+  }
+
   async pyramidTile(areaId: string, level: number, col: number, row: number): Promise<RawImage> {
     await this.ready();
     return this.call('pyramidTile', { areaId, level, col, row });

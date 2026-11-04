@@ -1,16 +1,27 @@
 <script lang="ts">
-  // Area screen: tile grid preview, metadata, stitch and correction controls
-  // with a live histogram, per-tile overrides and the residual map.
+  // Area screen: the area in the shared image view (tile thumbnails at their
+  // stage positions before stitching, the mosaic after), metadata, stitch and
+  // correction controls with a live histogram, per-tile overrides and the
+  // residual map. Every correction and tone control re-renders the mosaic live
+  // (App.svelte watches the parameters; lib/actions.ts liveChanged).
   import { app } from '../lib/store.svelte';
-  import { changeScale, exportPng, retone, scaleText, stitch, stitchAll } from '../lib/actions';
+  import { changeScale, exportPng, scaleText, stitch, stitchAll } from '../lib/actions';
   import { rawToCanvas } from '../lib/files';
   import Histogram from '../components/Histogram.svelte';
+  import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
+  import type { Core } from '../lib/core/core';
   import type { TileOverride } from '../lib/core/types';
+
+  let core = $state<Core | null>(null);
+  app.core.then((c) => (core = c));
+  let viewer = $state<ReturnType<typeof Viewer>>();
+  let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
 
   let thumbs = $state<Record<string, string>>({});
   let tileSel = $state<number | null>(null);
   let hist = $state<Uint32Array | null>(null);
   let showResiduals = $state(true);
+  let showTiles = $state(false);
 
   const meta = $derived(app.areaMeta);
   const areaIdx = $derived(app.pkg?.areas.findIndex((a) => a.id === app.areaId) ?? -1);
@@ -20,20 +31,33 @@
   const placement = $derived(summary?.placement ?? null);
   const umPerPx = $derived((meta?.pixel_size_nm ?? 1000) / 1000);
 
-  // Preview frame in micrometres: solved placement if stitched, else the prior.
+  // Tile frames in mosaic pixels: the solved placement if stitched, else the prior.
   const boxes = $derived.by(() => {
     if (!meta) return [];
     return meta.tiles.map((t, i) => {
       const p = placement?.tiles[i];
-      const x = p ? p.pos[0] * umPerPx : t.pos_um[0];
-      const y = p ? p.pos[1] * umPerPx : t.pos_um[1];
-      return { i, x, y, w: (p?.w ?? t.w) * umPerPx || (meta.field_um?.[0] ?? 100), h: (p?.h ?? t.h) * umPerPx || (meta.field_um?.[1] ?? 100) };
+      if (p) return { i, x: p.x, y: p.y, w: p.w, h: p.h };
+      const w = t.w || (meta.field_um?.[0] ?? 100) / umPerPx;
+      const h = t.h || (meta.field_um?.[1] ?? 100) / umPerPx;
+      return { i, x: t.pos_um[0] / umPerPx, y: t.pos_um[1] / umPerPx, w, h };
     });
   });
   const frame = $derived.by(() => {
+    if (summary) return { w: summary.mosaic.w, h: summary.mosaic.h };
     if (!boxes.length) return { w: 1, h: 1 };
     return { w: Math.max(...boxes.map((b) => b.x + b.w)), h: Math.max(...boxes.map((b) => b.y + b.h)) };
   });
+
+  $effect(() => {
+    const t = tone;
+    if (!t || !core) return;
+    core.toneLut($state.snapshot(t)).then((l) => (lut = l));
+  });
+
+  function tileClick(p: CanvasPoint) {
+    const b = [...boxes].reverse().find((q) => p.x >= q.x && p.x <= q.x + q.w && p.y >= q.y && p.y <= q.y + q.h);
+    tileSel = b ? b.i : null;
+  }
 
   $effect(() => {
     const m = meta, idx = areaIdx;
@@ -78,14 +102,6 @@
     params.photometric.overrides = params.photometric.overrides.filter((o) => o.index !== i);
   }
 
-  let toneTimer = 0;
-  function toneCoreChanged() {
-    clearTimeout(toneTimer);
-    const id = app.areaId;
-    if (!id || !app.stitched[id]) return;
-    toneTimer = window.setTimeout(() => retone(id, $state.snapshot(app.tone[id])), 250);
-  }
-
   function residualColor(r: number, used: boolean) {
     if (!used) return 'var(--text-faint)';
     return r < 0.5 ? 'var(--ok)' : r < 1 ? 'var(--warning)' : 'var(--danger)';
@@ -122,32 +138,46 @@
       <div class="head">
         <h2>{meta.name} <span class="muted mono">{meta.id}</span></h2>
         <div class="actions">
+          <label class="check"><input type="checkbox" bind:checked={showTiles} /> tiles</label>
           <label class="check"><input type="checkbox" bind:checked={showResiduals} /> residuals</label>
           <button class="primary" onclick={() => stitch(meta.id)} disabled={!!app.busy} data-testid="stitch">{summary ? 'Re-stitch' : 'Stitch'}</button>
           <button onclick={() => (app.screen = 'canvas')} disabled={!summary} data-testid="to-canvas">Open canvas</button>
         </div>
       </div>
-      <div class="grid surface-opaque">
-        <svg viewBox="-20 -20 {frame.w + 40} {frame.h + 40}" preserveAspectRatio="xMidYMid meet">
-          {#each boxes as b (b.i)}
-            <g class="tile" class:sel={tileSel === b.i} onclick={() => (tileSel = b.i)} role="button" tabindex="-1" onkeydown={() => {}}>
-              {#if thumbs[`${meta.id}/${b.i}`]}
-                <image href={thumbs[`${meta.id}/${b.i}`]} x={b.x} y={b.y} width={b.w} height={b.h} opacity="0.92" />
-              {/if}
-              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" />
-              <text x={b.x + 12} y={b.y + 40} font-size={Math.max(24, b.h / 12)}>{b.i}</text>
-            </g>
-          {/each}
-          {#if showResiduals && placement}
-            {#each placement.pairs as p, k (k)}
-              {@const A = boxes[p.a]}
-              {@const B = boxes[p.b]}
-              <line x1={A.x + A.w / 2} y1={A.y + A.h / 2} x2={B.x + B.w / 2} y2={B.y + B.h / 2} stroke={residualColor(p.residual, p.used)} stroke-width="8" stroke-dasharray={p.used ? '' : '18 14'} opacity="0.9">
-                <title>{p.a}–{p.b}: {p.used ? `residual ${fmt(p.residual)} px, PSR ${fmt(p.psr, 0)}` : `prior (PSR ${fmt(p.psr, 0)})`}</title>
-              </line>
-            {/each}
-          {/if}
-        </svg>
+      <div class="grid" data-testid="area-view">
+        {#if core}
+          {#key `${meta.id}/${summary ? 'mosaic' : 'tiles'}`}
+            <Viewer bind:this={viewer} {core} areaId={meta.id} mosaic={summary?.mosaic ?? null} extent={frame} {lut} version={app.pixelsVersion}
+              preview={app.preview[meta.id] ?? null} onlevel={(l) => (app.drawLevel = l)} onclick={tileClick}>
+              {#snippet overlay(v)}
+                {#each boxes as b (b.i)}
+                  <g class="tile" class:sel={tileSel === b.i}>
+                    {#if !summary && thumbs[`${meta.id}/${b.i}`]}
+                      <image href={thumbs[`${meta.id}/${b.i}`]} x={b.x} y={b.y} width={b.w} height={b.h} opacity="0.92" />
+                    {/if}
+                    {#if showTiles || !summary}<rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" />{/if}
+                    {#if showTiles || !summary}<text x={b.x + 8 / v.zoom} y={b.y + 18 / v.zoom} font-size={13 / v.zoom}>{b.i}</text>{/if}
+                  </g>
+                {/each}
+                {#if showResiduals && placement}
+                  {#each placement.pairs as p, k (k)}
+                    {@const A = boxes[p.a]}
+                    {@const B = boxes[p.b]}
+                    <line x1={A.x + A.w / 2} y1={A.y + A.h / 2} x2={B.x + B.w / 2} y2={B.y + B.h / 2} stroke={residualColor(p.residual, p.used)} stroke-width="3" stroke-dasharray={p.used ? '' : '8 6'} opacity="0.9">
+                      <title>{p.a}–{p.b}: {p.used ? `residual ${fmt(p.residual)} px, PSR ${fmt(p.psr, 0)}` : `prior (PSR ${fmt(p.psr, 0)})`}</title>
+                    </line>
+                  {/each}
+                {/if}
+              {/snippet}
+            </Viewer>
+          {/key}
+        {/if}
+        {#if app.rendering}<span class="pill rendering" role="status">rendering…</span>{/if}
+        <div class="viewbtns glass" data-ui>
+          <button class="icon" title="Zoom in" onclick={() => viewer?.zoomBy(1.5)}>+</button>
+          <button class="icon" title="Zoom out" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
+          <button class="icon" title="Fit (double-click)" onclick={() => viewer?.fitAll()}>Fit</button>
+        </div>
       </div>
       {#if summary}
         <div class="stats">
@@ -171,21 +201,21 @@
         </div>
         <label class="field">Gamma <input type="range" min="0.2" max="3" step="0.01" bind:value={tone.gamma} /></label>
         <div class="row3">
-          <label class="field">Low % <input type="number" step="0.1" min="0" max="50" bind:value={tone.low_pct} onchange={toneCoreChanged} /></label>
-          <label class="field">High % <input type="number" step="0.1" min="50" max="100" bind:value={tone.high_pct} onchange={toneCoreChanged} /></label>
-          <label class="check"><input type="checkbox" bind:checked={tone.clahe} onchange={toneCoreChanged} /> CLAHE</label>
+          <label class="field">Low % <input type="number" step="0.1" min="0" max="50" bind:value={tone.low_pct} data-testid="low-pct" /></label>
+          <label class="field">High % <input type="number" step="0.1" min="50" max="100" bind:value={tone.high_pct} /></label>
+          <label class="check"><input type="checkbox" bind:checked={tone.clahe} data-testid="clahe" /> CLAHE</label>
         </div>
         {#if tone.clahe}
           <div class="row3">
-            <label class="field">Tile px <input type="number" min="16" step="16" bind:value={tone.clahe_tile} onchange={toneCoreChanged} /></label>
-            <label class="field">Clip <input type="number" min="1" step="0.5" bind:value={tone.clahe_clip} onchange={toneCoreChanged} /></label>
+            <label class="field">Tile px <input type="number" min="16" step="16" bind:value={tone.clahe_tile} /></label>
+            <label class="field">Clip <input type="number" min="1" step="0.5" bind:value={tone.clahe_clip} /></label>
           </div>
         {/if}
         <button onclick={() => Object.assign(tone, { black: 0, white: 1, gamma: 1 })}>Reset levels</button>
       </section>
 
       <section>
-        <h3>Correction <span class="faint">(applies on stitch)</span></h3>
+        <h3>Correction</h3>
         <label class="field">Gain / offset
           <select bind:value={params.photometric.model}>
             <option value="affine">gain and offset (SE, CL)</option>
@@ -193,7 +223,7 @@
             <option value="none">none</option>
           </select>
         </label>
-        <label class="check"><input type="checkbox" bind:checked={params.photometric.background} /> background leveling</label>
+        <label class="check"><input type="checkbox" bind:checked={params.photometric.background} data-testid="background" /> background leveling</label>
         <label class="check"><input type="checkbox" bind:checked={params.photometric.background_params.edge_steps} /> remove beam-exposure steps</label>
         <label class="field">Blending
           <select bind:value={params.blend.mode}>
@@ -201,6 +231,7 @@
             <option value="feather">feather (fast preview)</option>
           </select>
         </label>
+        <h3>Stitching <span class="faint">(Re-stitch to apply)</span></h3>
         <label class="field">Min. peak-to-sidelobe <input type="number" step="0.5" bind:value={params.stitch.min_psr} /></label>
       </section>
 
@@ -225,7 +256,6 @@
               <input type="range" min="-0.2" max="0.2" step="0.002" value={o?.offset ?? summary.photometric.offset[tileSel]} oninput={(e) => setOverride(tileSel!, { offset: +e.currentTarget.value })} /></label>
             <div class="row3">
               <button onclick={() => matchNeighbours(tileSel!)} disabled={!o}>Match neighbours</button>
-              <button onclick={() => stitch(meta.id)}>Apply</button>
             </div>
           {/if}
           <details>
@@ -233,7 +263,7 @@
             <table class="data kv"><tbody>{#each Object.entries(t.meta) as [k, v] (k)}<tr><td>{k}</td><td class="mono">{v}</td></tr>{/each}</tbody></table>
           </details>
         {:else}
-          <p class="muted small">Click a tile in the preview for its metadata and manual gain and offset.</p>
+          <p class="muted small">Click a tile in the view for its metadata and manual gain and offset.</p>
           <details>
             <summary class="muted">Area metadata ({Object.keys(meta.meta).length})</summary>
             <table class="data kv"><tbody>{#each Object.entries(meta.meta) as [k, v] (k)}<tr><td>{k}</td><td class="mono">{v}</td></tr>{/each}</tbody></table>
@@ -297,31 +327,39 @@
     align-items: center;
   }
   .grid {
+    position: relative;
     min-height: 0;
     overflow: hidden;
+    border-radius: var(--radius-sm);
     background: var(--image-bg);
   }
-  .grid svg {
-    width: 100%;
-    height: 100%;
+  .grid :global(.tile rect) {
+    stroke: var(--ov-outline);
+    stroke-width: 1.5;
+    opacity: 0.7;
   }
-  .tile rect {
-    stroke: var(--accent);
-    stroke-width: 3;
-    vector-effect: non-scaling-stroke;
-    opacity: 0.55;
-  }
-  .tile.sel rect {
+  .grid :global(.tile.sel rect) {
     stroke: var(--ov-number);
-    stroke-width: 3;
+    stroke-width: 2.5;
     opacity: 1;
   }
-  .tile text {
+  .grid :global(.tile text) {
     fill: var(--ov-number);
     font-family: var(--font-mono);
   }
-  .tile {
-    cursor: pointer;
+  .viewbtns {
+    position: absolute;
+    right: var(--space-2);
+    bottom: var(--space-2);
+    display: flex;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+  }
+  .rendering {
+    position: absolute;
+    left: var(--space-2);
+    top: var(--space-2);
   }
   .stats {
     display: flex;

@@ -43,11 +43,13 @@ pub struct Session {
     pub origin_files: Vec<String>,
     /// Path recorded for a source opened with `open_source` (kept for `open_loose`).
     path: String,
+    /// Downsampled stitch inputs per (area, factor), for live previews.
+    small: BTreeMap<(String, usize), Vec<crate::image::Gray>>,
 }
 
 impl Session {
     pub fn new(name: &str) -> Session {
-        Session { mem: MemSource::new(name), src: None, pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new(), origin_files: Vec::new(), path: String::new() }
+        Session { mem: MemSource::new(name), src: None, pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new(), origin_files: Vec::new(), path: String::new(), small: BTreeMap::new() }
     }
 
     pub fn add_file(&mut self, path: &str, bytes: Vec<u8>) {
@@ -68,6 +70,7 @@ impl Session {
         let (probe, pkg) = readers::probe(src.clone())?;
         self.outputs.clear();
         self.work.clear();
+        self.small.clear();
         self.src = Some(src);
         self.path = path.to_string();
         self.pkg = None;
@@ -86,6 +89,7 @@ impl Session {
         let info = serde_json::to_string(pkg.info()).map_err(invalid)?;
         self.outputs.clear();
         self.work.clear();
+        self.small.clear();
         self.adopt(Box::new(pkg), Some(spec), created);
         Ok(info)
     }
@@ -167,7 +171,71 @@ impl Session {
         });
         self.outputs.insert(area_id.to_string(), out);
         self.work.remove(area_id);
+        self.small.retain(|(a, _), _| a != area_id);
         Ok(summary.to_string())
+    }
+
+    /// Applies new parameters to a stitched area with as little work as possible: tone only →
+    /// re-tone; correction or blending → re-run from the solved placement (no re-stitch); stitch
+    /// parameters → full stitch. Returns the same summary as `stitch`.
+    pub fn recompute(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock) -> Result<String> {
+        let p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
+        let (Some(rec), true) = (self.project.as_ref().and_then(|pr| pr.areas.iter().find(|a| a.id == area_id)), self.outputs.contains_key(area_id)) else {
+            return self.stitch(area_id, params, ctl, clock);
+        };
+        if rec.placement.is_none() || rec.params.stitch != p.stitch {
+            return self.stitch(area_id, params, ctl, clock);
+        }
+        let mut timings = Timings::default();
+        if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
+            let t0 = clock();
+            self.retone(area_id, &serde_json::to_string(&p.tone).map_err(invalid)?)?;
+            timings.steps.push(("tone".into(), clock() - t0));
+        } else {
+            let pkg = self.pkg.as_deref().ok_or_else(|| Error::Invalid("no package".into()))?;
+            let ai = pkg.info().areas.iter().position(|a| a.id == area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
+            let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
+            let rec = project.area_mut(area_id).expect("area");
+            let t0 = clock();
+            ctl.report("read", 0.0);
+            let tiles = pipeline::read_tiles(pkg, ai, rec)?;
+            let inputs = pipeline::inputs(rec, &tiles);
+            drop(tiles);
+            timings.steps.push(("read".into(), clock() - t0));
+            let placement = rec.placement.clone().expect("placement");
+            let out = pipeline::finish(rec, inputs.imgs, placement, &p, ctl, clock, &mut timings)?;
+            self.outputs.insert(area_id.to_string(), out);
+            self.work.remove(area_id);
+        }
+        let rec = self.rec(area_id)?;
+        let o = self.out(area_id)?;
+        Ok(serde_json::json!({ "mosaic": o.mosaic_json, "placement": o.placement, "photometric": rec.photometric, "timings": timings.steps }).to_string())
+    }
+
+    /// A live preview of `params` on a stitched area, downsampled `2^level` times (an 8-byte
+    /// w/h header, then 8-bit pixels): the whole mosaic at that pyramid level.
+    pub fn preview(&mut self, area_id: &str, params: &str, level: usize) -> Result<Vec<u8>> {
+        let p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
+        let k = 1usize << level.min(12);
+        let rec = self.rec(area_id)?.clone();
+        let placement = rec.placement.clone().ok_or_else(|| Error::Invalid(format!("{area_id} is not stitched")))?;
+        let o = self.out(area_id)?;
+        if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
+            let (w, h, px) = pipeline::preview_tone(o, &p.tone, k);
+            return Ok(with_header(w, h, &px));
+        }
+        let key = (area_id.to_string(), k);
+        if !self.small.contains_key(&key) {
+            let pkg = self.pkg()?;
+            let ai = pkg.info().areas.iter().position(|a| a.id == area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
+            let tiles = pkg.tiles(ai)?;
+            let inputs = pipeline::inputs(&rec, &tiles);
+            let small: Vec<crate::image::Gray> = inputs.imgs.iter().map(|g| g.downsample(k)).collect();
+            self.small.retain(|(a, _), _| a != area_id);
+            self.small.insert(key.clone(), small);
+        }
+        let (w, h, px) = pipeline::preview(&self.small[&key], &placement, &p, k);
+        Ok(with_header(w, h, &px))
     }
 
     fn out(&self, area_id: &str) -> Result<&AreaOutput> {

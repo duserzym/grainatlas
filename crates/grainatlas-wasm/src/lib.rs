@@ -64,6 +64,20 @@ impl Session {
         let ctl = Ctl { cancel: &canc, progress: &prog };
         self.0.stitch(area_id, params, &ctl, &now_ms).map_err(err)
     }
+    /// New parameters on a stitched area: re-tone, or re-run from the solved placement, or
+    /// re-stitch when stitch parameters changed. Same summary JSON as `stitch`.
+    pub fn recompute(&mut self, area_id: &str, params: &str, progress: &js_sys::Function, cancel: &js_sys::Function) -> Result<String, JsError> {
+        let prog = |stage: &str, f: f32| {
+            let _ = progress.call2(&JsValue::NULL, &JsValue::from_str(stage), &JsValue::from_f64(f as f64));
+        };
+        let canc = || cancel.call0(&JsValue::NULL).ok().and_then(|v| v.as_bool()).unwrap_or(false);
+        let ctl = Ctl { cancel: &canc, progress: &prog };
+        self.0.recompute(area_id, params, &ctl, &now_ms).map_err(err)
+    }
+    /// The whole mosaic at pyramid `level` with `params` (live preview while a control moves).
+    pub fn preview(&mut self, area_id: &str, params: &str, level: usize) -> Result<Vec<u8>, JsError> {
+        self.0.preview(area_id, params, level).map_err(err)
+    }
     pub fn has_mosaic(&self, area_id: &str) -> bool {
         self.0.outputs.contains_key(area_id)
     }

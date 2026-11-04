@@ -1,6 +1,8 @@
 // Pyramid tile cache: raw grey tiles from the core, display bitmaps with the
 // black / white / gamma LUT applied. LUT changes re-map cached raw tiles
-// without another trip to the core.
+// without another trip to the core. `clear()` starts a new generation: a
+// request still in flight from before (old pixels) is dropped when it lands,
+// so a re-tone can never leave stale tiles behind.
 
 import type { Core, RawImage } from '../core/core';
 
@@ -12,6 +14,7 @@ export class TileCache {
   private inflight = new Map<string, Promise<void>>();
   private lut: Uint8Array = identity();
   private lutKey = 'id';
+  private gen = 0;
   onLoad: () => void = () => {};
 
   constructor(private core: Core) {}
@@ -27,6 +30,7 @@ export class TileCache {
   }
 
   clear() {
+    this.gen++;
     for (const b of this.bmp.values()) b.close();
     this.bmp.clear();
     this.raw.clear();
@@ -43,13 +47,16 @@ export class TileCache {
       return b;
     }
     if (!this.inflight.has(k)) {
-      const p = this.load(k, area, level, col, row).finally(() => this.inflight.delete(k));
+      const p: Promise<void> = this.load(k, area, level, col, row).finally(() => {
+        if (this.inflight.get(k) === p) this.inflight.delete(k);
+      });
       this.inflight.set(k, p);
     }
     return null;
   }
 
   private async load(k: string, area: string, level: number, col: number, row: number) {
+    const gen = this.gen;
     let r = this.raw.get(k);
     if (!r) {
       try {
@@ -57,6 +64,7 @@ export class TileCache {
       } catch {
         return;
       }
+      if (gen !== this.gen) return;
       this.raw.set(k, r);
     }
     const lut = this.lut;
@@ -70,7 +78,7 @@ export class TileCache {
       rgba[j + 3] = 255;
     }
     const bmp = await createImageBitmap(new ImageData(rgba, r.w, r.h));
-    if (lut !== this.lut) {
+    if (lut !== this.lut || gen !== this.gen) {
       bmp.close();
       return;
     }

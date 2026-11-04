@@ -156,6 +156,25 @@ async fn stitch(app: AppHandle, state: State<'_, AppState>, area_id: String, par
 }
 
 #[tauri::command]
+async fn recompute(app: AppHandle, state: State<'_, AppState>, area_id: String, params: String) -> Res<String> {
+    state.cancel.store(false, Ordering::SeqCst);
+    let cancel = state.cancel.clone();
+    let start = Instant::now();
+    let prog = |stage: &str, fraction: f32| {
+        let _ = app.emit("grainatlas://progress", Progress { stage: stage.to_string(), fraction });
+    };
+    let canc = || cancel.load(Ordering::SeqCst);
+    let clock = || start.elapsed().as_secs_f64() * 1000.0;
+    let ctl = Ctl { cancel: &canc, progress: &prog };
+    lock(&state).recompute(&area_id, &params, &ctl, &clock).map_err(e)
+}
+
+#[tauri::command]
+async fn preview(state: State<'_, AppState>, area_id: String, params: String, level: usize) -> Res<Response> {
+    lock(&state).preview(&area_id, &params, level).map(Response::new).map_err(e)
+}
+
+#[tauri::command]
 fn cancel(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
@@ -348,6 +367,8 @@ pub fn run() {
             navigation,
             tile_thumb,
             stitch,
+            recompute,
+            preview,
             cancel,
             pyramid_tile,
             histogram,
