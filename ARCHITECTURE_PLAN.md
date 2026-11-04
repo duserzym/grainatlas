@@ -363,6 +363,27 @@ Letter, Tabloid 11x17 (the lab's default), A4, A3, custom.
   build, the grainatlas web build and UPbRPy Studio; nothing in grainatlas may
   assume it is the only app in the window (no global CSS, no `window.name`).
 
+What exists (2026-11-03, ADR-0005):
+
+- The shell is UPb Studio (`../upbstudio`); grainatlas is its Images tab and
+  uses `@lab/bridge` (sibling-checkout dependency until published). Hosted, it
+  runs the wasm core with the web file input and drag-drop.
+- Deep links into grainatlas: `index.html?project=<uuid>&spot=<uuid>`, which
+  the shell produces from `grainatlas://project/<uuid>/spot/<uuid>`. Projects
+  are found by uuid in `grainatlas.recent`; the package is read again (the
+  example by itself), then the spot is selected and centered.
+- Links out: the spot panel's "Open in laicpmsdb" (`laicpmsdb://acquisition/<id>`
+  when the spot has an acquisition id, else `laicpmsdb://search?label=<name>`,
+  which the shell does not route yet); `grainatlas.spot.selected` events.
+- Spot sync: "Send spots to laicpmsdb" downloads the `POST
+  /v1/mounts/{mount_id}/spots` body; the direct POST with the shell's
+  `token()` comes with the shell's phase 3.
+- Release: `make release-web` and `.github/workflows/release.yml` make
+  `grainatlas-web-<version>.tar.gz` for the shell's `modules.lock.json`.
+- Not yet: the standalone desktop app's own `grainatlas://` handler
+  (`tauri-plugin-deep-link`, single-instance on Windows; needs a bundled build
+  to test and a rule for machines where the shell also claims the scheme).
+
 ## 8. Roadmap
 
 | Phase | Scope | Done when |
