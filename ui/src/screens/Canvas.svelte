@@ -1068,20 +1068,20 @@
     font-size: 0.8rem;
     margin: 0;
   }
-  :global(.gm-root) .refimg {
+  :global(.ga-root) .refimg {
     vector-effect: none;
   }
-  :global(.gm-root) .pairmark line {
+  :global(.ga-root) .pairmark line {
     stroke: var(--ov-measure);
     stroke-width: 1;
     stroke-dasharray: 3 3;
   }
-  :global(.gm-root) .pairmark circle {
+  :global(.ga-root) .pairmark circle {
     fill: none;
     stroke: var(--ov-measure);
     stroke-width: 1.5;
   }
-  :global(.gm-root) .pairmark text {
+  :global(.ga-root) .pairmark text {
     fill: var(--ov-measure);
     font: 600 12px var(--font-sans);
   }
@@ -1102,94 +1102,94 @@
     width: 12rem;
     font-family: var(--font-mono);
   }
-  :global(.gm-root) .grain {
+  :global(.ga-root) .grain {
     fill: none;
     stroke: var(--ov-outline);
     stroke-width: 1.4;
     opacity: 0.85;
   }
-  :global(.gm-root) .grain.hov {
+  :global(.ga-root) .grain.hov {
     opacity: 1;
     stroke-width: 2;
   }
-  :global(.gm-root) .grain.sel {
+  :global(.ga-root) .grain.sel {
     stroke: var(--ov-number);
     stroke-width: 2.4;
     fill: color-mix(in srgb, var(--ov-number) 12%, transparent);
   }
-  :global(.gm-root) .gnum {
+  :global(.ga-root) .gnum {
     fill: var(--ov-number);
     font: 600 13px var(--font-sans);
     paint-order: stroke;
     stroke: rgba(0, 0, 0, 0.75);
     stroke-width: 3px;
   }
-  :global(.gm-root) .gbar line {
+  :global(.ga-root) .gbar line {
     stroke: var(--ov-label);
     stroke-width: 2;
   }
-  :global(.gm-root) .gbar text,
-  :global(.gm-root) .spot text,
-  :global(.gm-root) .flabel,
-  :global(.gm-root) .mlabel {
+  :global(.ga-root) .gbar text,
+  :global(.ga-root) .spot text,
+  :global(.ga-root) .flabel,
+  :global(.ga-root) .mlabel {
     fill: var(--ov-label);
     font: 12px var(--font-sans);
     paint-order: stroke;
     stroke: rgba(0, 0, 0, 0.8);
     stroke-width: 3px;
   }
-  :global(.gm-root) .spot circle,
-  :global(.gm-root) .spot rect {
+  :global(.ga-root) .spot circle,
+  :global(.ga-root) .spot rect {
     fill: color-mix(in srgb, var(--ov-spot) 14%, transparent);
     stroke: var(--ov-spot);
     stroke-width: 1.6;
   }
-  :global(.gm-root) .spot .dot {
+  :global(.ga-root) .spot .dot {
     fill: var(--ov-spot);
     stroke: none;
   }
-  :global(.gm-root) .spot.raster rect {
+  :global(.ga-root) .spot.raster rect {
     stroke: var(--ov-raster);
     fill: color-mix(in srgb, var(--ov-raster) 14%, transparent);
   }
-  :global(.gm-root) .spot .swath {
+  :global(.ga-root) .spot .swath {
     stroke: color-mix(in srgb, var(--ov-line) 35%, transparent);
     vector-effect: none;
     stroke-linecap: round;
   }
-  :global(.gm-root) .spot .axis {
+  :global(.ga-root) .spot .axis {
     stroke: var(--ov-line);
     stroke-width: 1.4;
   }
-  :global(.gm-root) .spot.hov circle,
-  :global(.gm-root) .spot.hov rect {
+  :global(.ga-root) .spot.hov circle,
+  :global(.ga-root) .spot.hov rect {
     stroke-width: 2.4;
   }
-  :global(.gm-root) .spot.sel circle,
-  :global(.gm-root) .spot.sel rect,
-  :global(.gm-root) .spot.sel .axis {
+  :global(.ga-root) .spot.sel circle,
+  :global(.ga-root) .spot.sel rect,
+  :global(.ga-root) .spot.sel .axis {
     stroke: var(--ov-spot-selected);
     stroke-width: 2.4;
   }
-  :global(.gm-root) .spot.sel text {
+  :global(.ga-root) .spot.sel text {
     font-weight: 700;
   }
-  :global(.gm-root) .spot .handle {
+  :global(.ga-root) .spot .handle {
     fill: var(--ov-spot-selected);
     stroke: var(--ov-spot);
     stroke-width: 1.5;
     cursor: nwse-resize;
   }
-  :global(.gm-root) .flabel.sel {
+  :global(.ga-root) .flabel.sel {
     fill: var(--accent);
   }
-  :global(.gm-root) .snap circle,
-  :global(.gm-root) .snap line {
+  :global(.ga-root) .snap circle,
+  :global(.ga-root) .snap line {
     fill: none;
     stroke: var(--accent);
     stroke-width: 1.5;
   }
-  :global(.gm-root) .ghost {
+  :global(.ga-root) .ghost {
     fill: none;
     stroke: var(--ov-spot);
     stroke-dasharray: 4 3;
@@ -1197,14 +1197,14 @@
     opacity: 0.8;
     pointer-events: none;
   }
-  :global(.gm-root) .drawing,
-  :global(.gm-root) .measure {
+  :global(.ga-root) .drawing,
+  :global(.ga-root) .measure {
     fill: color-mix(in srgb, var(--ov-measure) 12%, transparent);
     stroke: var(--ov-measure);
     stroke-width: 1.6;
     stroke-dasharray: 6 4;
   }
-  :global(.gm-root) .splitline {
+  :global(.ga-root) .splitline {
     stroke: var(--danger);
     stroke-width: 2;
     stroke-dasharray: 6 4;

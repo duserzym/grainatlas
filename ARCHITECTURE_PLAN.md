@@ -25,8 +25,7 @@ matter of identifiers, not of re-architecture (section 7).
 
 ## 2. Decisions
 
-1. **Name:** `grainatlas`, chosen over the working name `grainmap` on
-   2026-11-03. Free on GitHub under both `duserzym` and
+1. **Name:** `grainatlas` (2026-11-03). Free on GitHub under both `duserzym` and
    `Swanson-Hysell-Group` (checked 2026-11-03); the user picks the owner at
    publish time.
 2. **One Rust core, two front ends.** Every pixel operation (reading, stitching,

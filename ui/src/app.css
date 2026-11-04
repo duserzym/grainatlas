@@ -1,10 +1,10 @@
 /* grainatlas design tokens, copied from laicpmsdb/ui/src/app.css (glass design
-   language) so the two apps look like one. Scoped to .gm-root, never :root, so
+   language) so the two apps look like one. Scoped to .ga-root, never :root, so
    grainatlas can live in a tab of the unified shell (plan section 7). Dark is the
    default (CL work); [data-theme='light'] switches. Glass is for chrome only;
    the image surface is opaque. */
 
-.gm-root {
+.ga-root {
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
 
@@ -69,7 +69,7 @@
   -webkit-font-smoothing: antialiased;
 }
 
-.gm-root[data-theme='light'] {
+.ga-root[data-theme='light'] {
   --wallpaper:
     radial-gradient(60rem 40rem at 10% -10%, #c9dbff 0%, transparent 60%),
     radial-gradient(50rem 36rem at 100% 0%, #c7f0e6 0%, transparent 55%),
@@ -103,21 +103,21 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .gm-root { --motion: 0ms; }
+  .ga-root { --motion: 0ms; }
 }
 
-.gm-root *, .gm-root *::before, .gm-root *::after { box-sizing: border-box; }
+.ga-root *, .ga-root *::before, .ga-root *::after { box-sizing: border-box; }
 
-.gm-root a { color: var(--accent); text-decoration: none; }
-.gm-root a:hover { text-decoration: underline; }
-.gm-root h1, .gm-root h2, .gm-root h3 { margin: 0; line-height: 1.2; letter-spacing: -0.01em; }
-.gm-root h1 { font-size: 1.6rem; font-weight: 650; }
-.gm-root h2 { font-size: 1.15rem; font-weight: 620; }
-.gm-root h3 { font-size: 0.95rem; font-weight: 600; }
-.gm-root code, .gm-root .mono { font-family: var(--font-mono); font-size: 0.9em; }
+.ga-root a { color: var(--accent); text-decoration: none; }
+.ga-root a:hover { text-decoration: underline; }
+.ga-root h1, .ga-root h2, .ga-root h3 { margin: 0; line-height: 1.2; letter-spacing: -0.01em; }
+.ga-root h1 { font-size: 1.6rem; font-weight: 650; }
+.ga-root h2 { font-size: 1.15rem; font-weight: 620; }
+.ga-root h3 { font-size: 0.95rem; font-weight: 600; }
+.ga-root code, .ga-root .mono { font-family: var(--font-mono); font-size: 0.9em; }
 
 /* ---- glass primitives ---------------------------------------------------- */
-.gm-root .glass {
+.ga-root .glass {
   background: var(--glass);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-border);
@@ -126,16 +126,16 @@
   backdrop-filter: blur(var(--blur)) saturate(140%);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .gm-root .glass { background: var(--glass-strong); }
+  .ga-root .glass { background: var(--glass-strong); }
 }
-.gm-root .panel { padding: var(--space-4) var(--space-6); }
-.gm-root .surface-opaque { background: var(--plot-bg); border: 1px solid var(--hairline); border-radius: var(--radius-sm); }
-.gm-root .muted { color: var(--text-muted); }
-.gm-root .faint { color: var(--text-faint); }
-.gm-root .num { font-variant-numeric: tabular-nums; }
+.ga-root .panel { padding: var(--space-4) var(--space-6); }
+.ga-root .surface-opaque { background: var(--plot-bg); border: 1px solid var(--hairline); border-radius: var(--radius-sm); }
+.ga-root .muted { color: var(--text-muted); }
+.ga-root .faint { color: var(--text-faint); }
+.ga-root .num { font-variant-numeric: tabular-nums; }
 
 /* ---- controls ------------------------------------------------------------ */
-.gm-root button, .gm-root .btn {
+.ga-root button, .ga-root .btn {
   font: inherit;
   font-size: 0.9rem;
   color: var(--text);
@@ -146,16 +146,16 @@
   cursor: pointer;
   transition: background var(--motion), border-color var(--motion);
 }
-.gm-root button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
-.gm-root button:disabled { opacity: 0.45; cursor: default; }
-.gm-root button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); font-weight: 600; }
-.gm-root button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
-.gm-root button.danger { color: var(--danger); }
-.gm-root button.icon { padding: 0.3rem 0.5rem; min-width: 2rem; }
-.gm-root button[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-.gm-root :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ga-root button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.ga-root button:disabled { opacity: 0.45; cursor: default; }
+.ga-root button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); font-weight: 600; }
+.ga-root button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.ga-root button.danger { color: var(--danger); }
+.ga-root button.icon { padding: 0.3rem 0.5rem; min-width: 2rem; }
+.ga-root button[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.ga-root :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.gm-root input[type='text'], .gm-root input[type='number'], .gm-root select, .gm-root textarea {
+.ga-root input[type='text'], .ga-root input[type='number'], .ga-root select, .ga-root textarea {
   font: inherit;
   font-size: 0.9rem;
   color: var(--text);
@@ -165,22 +165,22 @@
   padding: 0.3rem 0.5rem;
   min-width: 0;
 }
-.gm-root select option { background: var(--bg); color: var(--text); }
-.gm-root input[type='range'] { accent-color: var(--accent); width: 100%; }
-.gm-root input[type='checkbox'] { accent-color: var(--accent); }
-.gm-root label.field { display: grid; gap: 0.15rem; font-size: 0.82rem; color: var(--text-muted); }
-.gm-root label.check { display: flex; gap: 0.4rem; align-items: center; font-size: 0.88rem; }
+.ga-root select option { background: var(--bg); color: var(--text); }
+.ga-root input[type='range'] { accent-color: var(--accent); width: 100%; }
+.ga-root input[type='checkbox'] { accent-color: var(--accent); }
+.ga-root label.field { display: grid; gap: 0.15rem; font-size: 0.82rem; color: var(--text-muted); }
+.ga-root label.check { display: flex; gap: 0.4rem; align-items: center; font-size: 0.88rem; }
 
-.gm-root table.data { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
-.gm-root table.data th { text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--hairline); padding: 0.3rem 0.5rem; position: sticky; top: 0; background: var(--glass-strong); }
-.gm-root table.data td { border-bottom: 1px solid var(--hairline); padding: 0.25rem 0.5rem; }
-.gm-root table.data tr:hover td { background: var(--row-hover); }
-.gm-root table.data tr.selected td { background: var(--accent-soft); }
+.ga-root table.data { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.ga-root table.data th { text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--hairline); padding: 0.3rem 0.5rem; position: sticky; top: 0; background: var(--glass-strong); }
+.ga-root table.data td { border-bottom: 1px solid var(--hairline); padding: 0.25rem 0.5rem; }
+.ga-root table.data tr:hover td { background: var(--row-hover); }
+.ga-root table.data tr.selected td { background: var(--accent-soft); }
 
-.gm-root .kbd { font-family: var(--font-mono); font-size: 0.75rem; border: 1px solid var(--hairline); border-radius: 4px; padding: 0 0.3rem; color: var(--text-muted); }
-.gm-root .pill { display: inline-block; font-size: 0.75rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
-.gm-root .pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
-.gm-root .pill.warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
+.ga-root .kbd { font-family: var(--font-mono); font-size: 0.75rem; border: 1px solid var(--hairline); border-radius: 4px; padding: 0 0.3rem; color: var(--text-muted); }
+.ga-root .pill { display: inline-block; font-size: 0.75rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.ga-root .pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.ga-root .pill.warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
 
 /* the host page: only the body margin, nothing else global */
 body:has(> #grainatlas) { margin: 0; background: #0c111b; }

@@ -79,7 +79,7 @@
   });
 </script>
 
-<div class="gm-root app" data-theme={app.settings.theme}>
+<div class="ga-root app" data-theme={app.settings.theme}>
   <header class="glass topbar">
     <div class="brand">
       <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M10 8l5-2 4 3-1 6-5 3-4-3z" fill="currentColor" /><path d="M19 17l4-1 3 4-2 5-4 0-2-4z" fill="currentColor" opacity="0.6" /><circle cx="13" cy="11" r="2" fill="none" stroke="var(--accent)" stroke-width="1.4" /></svg>
