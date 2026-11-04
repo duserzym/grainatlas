@@ -6,9 +6,12 @@ One Rust core, delivered as a static web page (wasm in a Web Worker) and as a
 desktop app (Tauri 2, native multithreaded core) from the same Svelte
 interface. Companion to [laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
 
-Status: roadmap phases 1–7 of `ARCHITECTURE_PLAN.md` are implemented (readers
+Status: roadmap phases 1–11 of `ARCHITECTURE_PLAN.md` are implemented (readers
 and stitching, photometric correction, web UI, segmentation and scale, spots,
-print layout, desktop). Phase 8 (laicpmsdb link, second instrument) is next.
+print layout, desktop, the laicpmsdb link, atlas bundles, results overlay and
+laser registration), except a reader for a second instrument (phase 8, waiting
+for example files) and an adapter for the lab's laser software (phase 11,
+waiting for its name and an example file).
 
 ## What it does
 
@@ -38,6 +41,10 @@ print layout, desktop). Phase 8 (laicpmsdb link, second instrument) is next.
 6. Registers reference images (photos of annotated printouts, post-laser
    frames) to the mosaic by point pairs, to recover spots of legacy sessions
    (`docs/legacy_workflow.md`).
+7. Writes **atlas bundles** (`upbstudio/docs/WORKFLOW.md` section 3.1) and
+   publishes them to laicpmsdb; opens published ones from a server; shows
+   laicpmsdb's results on the spots; registers the laser stage and writes the
+   spot list (see "laicpmsdb and the laser" below).
 
 ## Quick start
 
@@ -85,12 +92,54 @@ cd ui && pnpm add ./lab-bridge-0.1.0.tgz
 - A spot's panel has "Open in laicpmsdb" (`laicpmsdb://acquisition/<id>` when
   the spot has an acquisition id, else `laicpmsdb://search?label=<name>`);
   selecting a spot sends `grainatlas.spot.selected` to the shell.
-- "Send spots to laicpmsdb" on the Spots tab downloads the JSON body of
+- "Send spots to laicpmsdb" on the Spots tab posts the spots with the shell's
+  `token()` when a server and a mount are set, else downloads the JSON body of
   laicpmsdb's `POST /v1/mounts/{mount_id}/spots`.
 - Storage keys all start with `grainatlas.` (the desktop shell shares one
   origin between its pages).
 
 See `docs/decisions/ADR-0005-hosted-module.md`.
+
+## laicpmsdb and the laser
+
+All of this is optional; without a server grainatlas works as before.
+
+- **Settings → laicpmsdb**: the server (`http://host:8000`), a token when
+  grainatlas runs on its own (inside UPb Studio the shell's sign-in is used),
+  the atlas tile quality (lossless WebP, or near-lossless at 97 or 92) and the
+  folder where SEM packages live on the lab storage. A `?server=` in the page
+  address wins for that page load; served by laicpmsdb under `/atlas/`,
+  grainatlas uses its own origin.
+- **Atlas bundle** (Canvas → laicpmsdb tab): `<project_id>.atlas/` with
+  `atlas.json` (format `grainatlas-atlas` v1, ids, mount, scale, areas and
+  levels, the raw package's content hash and storage path, sha256 and size of
+  every file), `pyramid/<area>/<z>/<x>_<y>.webp` (256 px tiles, z = 0 full
+  resolution), `grains.geojson`, `spots.json`, `scalebars.json` and
+  `project.json`. Save it as a folder (desktop, or Chromium) or a zip, or
+  **Publish** it: a multipart `POST /v1/mounts/{mount}/atlas` (field
+  `bundle`); each publish is recorded in `project.json`
+  (`laicpmsdb.published`). The mount comes from `GET /v1/mounts` when the
+  server answers, else it is typed. `grainatlas atlas <package> --out <dir or
+  .zip>` writes the same bundle from the command line, and native and browser
+  builds write identical bytes (`make parity`).
+- **Open from server**: `index.html?server=<base>&project=<id>[&spot=<id>]`,
+  or Settings → "Open a published project", reads
+  `<base>/atlas/projects/<id>/` and shows the bundle read-only (tiles straight
+  from the server, nothing stitched). **Edit a copy** makes it a local
+  project with the same id; opening the raw package later picks it up.
+- **Results**: with a server and a linked mount, `GET /v1/mounts/{id}/results`
+  fills the spot panel (preferred date ± 2σ, ratios, concentrations, flags,
+  "Open acquisition") and a coloured results layer with a legend. Results are
+  never saved in the project.
+- **Laser** (Canvas → Laser tab): three or more fiducial spots with the stage
+  coordinates read off the laser give an affine map (least squares, residuals
+  in µm, a warning above 5 µm); "Export spot list" writes the generic CSV in
+  the laser's units. Adding the lab's laser software: `docs/laser-adapters.md`.
+- **Developing without laicpmsdb**: `pnpm dev` and `pnpm preview` mount a fake
+  laicpmsdb at `/fake-laicpmsdb` (`ui/scripts/fake-laicpmsdb.mjs`, token
+  `test-token`) with atlas upload and serving, mounts, spot upload and
+  `ui/tests/fixtures/mount-results.json` as the results; `make atlas-fixture`
+  writes the fixture bundle it serves. Never part of a build.
 
 ## Release asset for UPb Studio
 
@@ -127,13 +176,13 @@ opens saved `<name>.grainatlas` folders.
 ## Layout
 
 ```text
-crates/grainatlas-core   all pixel operations (readers, mosaic, photometric, blend, segment, scale, spots, layout, project)
+crates/grainatlas-core   all pixel operations (readers, mosaic, photometric, blend, segment, scale, spots, layout, project, atlas, laser)
 crates/grainatlas-wasm   the core for the browser (wasm-bindgen)
 crates/grainatlas-cli    `grainatlas` command line
 ui/                    Svelte 5 + TypeScript + Vite; src/lib/core/{wasm,tauri}.ts implement the Core interface
 tauri/                 Tauri 2 desktop shell (src-tauri)
 tests/fixtures/        one TM4000 area (6 tiles) for tests; tests/golden/ the fixture mosaic hash
-docs/                  ADRs, stitch notes, legacy workflow
+docs/                  ADRs, stitch notes, legacy workflow, UX conventions, laser adapters
 ```
 
 Code only lives here. Image data stays on the lab NAS or your laptop; the only
@@ -141,4 +190,6 @@ images in this repository are the small test fixture under `tests/fixtures/`.
 
 License: MIT. Image algorithms reused from
 [storytold/photocraft](https://github.com/storytold/photocraft) (MIT OR
+Apache-2.0) and the lossless WebP encoder of
+[image-rs/image-webp](https://github.com/image-rs/image-webp) (MIT OR
 Apache-2.0); see `ATTRIBUTION.md`.

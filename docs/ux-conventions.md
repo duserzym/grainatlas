@@ -1,6 +1,6 @@
 # UX conventions (grainatlas, laicpmsdb, UPb Studio)
 
-Five rules, applied in grainatlas on 2026-11-03, for the three apps of the
+Six rules, applied in grainatlas on 2026-11-03, for the three apps of the
 lab workflow to adopt. Each says what to do and where grainatlas does it.
 
 ## 1. Light by default, with dark and system
@@ -81,6 +81,28 @@ wheel keeps scrolling the page there, ctrl + wheel zooms.
   last value typed is the default for the rest of the session
   (`sessionStorage`), the answer is stored in the project, shown where it is
   used, and can be changed later ("Change…" on the Area screen).
+
+## 6. Server features are additive, and say where data comes from
+
+- Everything that needs laicpmsdb sits behind one Settings entry (the
+  server) and works the same without it; a missing server, mount or token
+  turns a server action into its file equivalent (grainatlas: "Send spots"
+  downloads the body, the atlas bundle saves as a folder or zip) and the
+  message says which was missing.
+- Sign-in: the shell's `token()` when hosted; standalone, a token pasted in
+  Settings, kept until the tab closes unless "remember" is ticked. Never in
+  a project file or a URL.
+- Something opened from a server is **read-only** until the user asks for a
+  copy ("Edit a copy" in the top bar); the top bar names the server, and a
+  line in the side panel says why nothing can be edited. A read-only view
+  writes nothing to local storage.
+- Values read from the server (results) are shown, never written into the
+  project; the panel says so and has a Refresh button. Errors from the server
+  stay next to the feature (status line) instead of a toast that hides the
+  work.
+- Server image tiles go through the same viewer and gesture module as local
+  pixels (rule 2); overlays on images use the colour-blind-safe set (the
+  results layer: viridis, flags as a dashed ring).
 
 ## What the other apps need to change
 
