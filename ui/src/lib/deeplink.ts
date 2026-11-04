@@ -1,4 +1,5 @@
-// Deep links: `?project=<id>&spot=<id>` in the page URL. UPb Studio maps
+// Deep links: `?project=<id>&spot=<id>` in the page URL, and `?server=<base>&project=<id>&spot=<id>`
+// for a bundle published to laicpmsdb (opened read-only from `<base>/atlas/projects/<id>/`). UPb Studio maps
 // `grainatlas://project/<id>/spot/<id>` to `index.html?project=<id>&spot=<id>`
 // (its docs/deep-links.md). The browser keeps projects without pixels in
 // localStorage under `grainatlas.project.<package name>`; this file finds the
@@ -9,6 +10,8 @@ import type { Project } from './core/types';
 export interface DeepLink {
   project: string;
   spot: string | null;
+  /** `?server=<base>`: open the project's published bundle from that laicpmsdb server. */
+  server?: string | null;
 }
 
 export interface RecentEntry {
@@ -28,7 +31,8 @@ export function parseDeepLink(search: string): DeepLink | null {
   const project = q.get('project');
   if (!project || !ID.test(project)) return null;
   const spot = q.get('spot');
-  return { project, spot: spot && ID.test(spot) ? spot : null };
+  const server = q.get('server');
+  return { project, spot: spot && ID.test(spot) ? spot : null, server: server && /^https?:\/\//i.test(server) ? server : null };
 }
 
 /** Ids compare case-insensitively (a UUID may arrive upper-case from another tool). */

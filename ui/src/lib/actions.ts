@@ -96,6 +96,8 @@ function fits(saved: Project, info: PackageInfo) {
 
 async function adoptPackage(info: PackageInfo, fromFolder: Project | null = null) {
   const core = await app.core;
+  app.remote = null;
+  app.remoteTiles = null;
   app.pkg = info;
   app.params = {};
   app.stitched = {};
@@ -146,7 +148,8 @@ export async function openExample() {
 }
 
 /**
- * Start-up: `?project=<id>&spot=<id>` (from UPb Studio, or typed). The query is
+ * Start-up: `?project=<id>&spot=<id>` (from UPb Studio, or typed); with `&server=<base>` the
+ * project's published bundle opens read-only from that server instead (laicpmsdb's links). The query is
  * dropped from the address afterwards so a reload does not repeat it. The
  * browser keeps no pixels, so the package must be opened again: the bundled
  * example opens by itself, any other package waits for the user on the Open
@@ -159,6 +162,13 @@ export async function startDeepLink(search = location.search) {
     history.replaceState(null, '', location.pathname + location.hash);
   } catch {
     /* some file:// pages refuse */
+  }
+  if (link.server) {
+    // A published bundle: everything comes from the server, no package needed.
+    app.serverOverride = link.server;
+    const { openFromServer } = await import('./remote');
+    await openFromServer(link.server, link.project, link.spot);
+    return;
   }
   app.deepLink = { ...link, name: packageNameFor(link.project) };
   if (sameId(app.project?.uuid, link.project)) {

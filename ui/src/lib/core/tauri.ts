@@ -37,6 +37,9 @@ export class TauriCore implements Core {
   async openProject(path: string): Promise<{ info: PackageInfo; project: Project }> {
     return JSON.parse(await invoke<string>('open_project', { path }));
   }
+  async blank(name: string): Promise<void> {
+    await invoke('blank', { name });
+  }
   async loadProject(json: string) {
     await invoke('load_project', { json });
   }

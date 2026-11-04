@@ -374,6 +374,13 @@ async fn save_atlas(app: AppHandle, state: State<'_, AppState>, project: String,
     Ok(Some(dir.display().to_string()))
 }
 
+/// Drops the open package and project (a project opened from a server becomes a local copy).
+#[tauri::command]
+fn blank(state: State<'_, AppState>, name: String) {
+    *lock(&state) = Session::new(&name);
+    *state.package_path.lock().unwrap_or_else(|x| x.into_inner()) = None;
+}
+
 #[tauri::command]
 fn record_published(state: State<'_, AppState>, published: String) -> Res<()> {
     lock(&state).record_published(&published).map_err(e)
@@ -464,6 +471,7 @@ pub fn run() {
             atlas_zip,
             save_atlas,
             record_published,
+            blank,
         ])
         .run(tauri::generate_context!())
         .expect("error while running grainatlas");
