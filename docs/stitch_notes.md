@@ -90,3 +90,18 @@ What the overlaps showed and what is now done about it:
 - Remaining: in a few places a 1 grey-level contour follows a tile border in
   the near-black epoxy (8-bit JPEG quantisation of the source at about 10/255;
   invisible at normal contrast, visible only under extreme stretch).
+
+## Loop-free pairs (2026-11-03)
+
+A single row of loose images closes no loop, so the solve's residual check
+cannot see a false peak. In the fixture's bottom row as a loose 3 × 1 grid,
+the 4-5 overlap (mostly empty resin) correlated at PSR 13.6 to an offset
+about 41 px from where the stage and the package's loops put it, and the row
+came out that much short. `mosaic::consensus` now takes, per direction, the
+PSR-weighted median deviation of the measured pairs from the prior; a pair
+that closes no loop, lies more than `consensus_px` (20 px) from it and has a
+PSR below 3 × `min_psr` is dropped, and every pair's prior in that direction
+is corrected by the consensus. The dropped step then lands 7 px from the
+package's placement, within the spread of the stage's own left-right steps
+(up to ~10 px here). Pairs inside loops are untouched (the fixture mosaic
+hash did not change).

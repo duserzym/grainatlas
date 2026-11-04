@@ -147,3 +147,37 @@ fn reopening_with_the_saved_project_keeps_it() {
     t.open_loose(r#"{"um_per_px":0.66,"grid":{"cols":3,"rows":1,"overlap_pct":20}}"#, "now").unwrap();
     assert_ne!(Project::from_json(&t.project_json().unwrap()).unwrap().uuid, uuid);
 }
+
+/// Bottom row (tiles 3, 4, 5) as a loose 3 × 1 grid: the 4-5 overlap is mostly empty resin and
+/// correlates to a false peak (PSR ~14). A single row closes no loop, so only the direction
+/// consensus can reject it; the tiles must land where the package (stage + loops) puts them.
+#[test]
+fn loose_single_row_rejects_a_false_peak_and_matches_the_package() {
+    let mut whole = Session::new("t");
+    opened(&whole.open_source(Arc::new(DirSource::new(package()).unwrap()), "pkg", "now").unwrap());
+    let full = stitch(&mut whole, "001_HJ-GC1");
+    let pos = |r: &serde_json::Value, i: usize| [r["placement"]["tiles"][i]["pos"][0].as_f64().unwrap(), r["placement"]["tiles"][i]["pos"][1].as_f64().unwrap()];
+
+    let mut m = MemSource::new("images");
+    for i in 3..6 {
+        let f = format!("001_HJ-GC1_000{i}.jpg");
+        m.insert(&f, std::fs::read(package().join("001_HJ-GC1").join(&f)).unwrap());
+    }
+    let mut s = Session::new("images");
+    s.open_source(Arc::new(m), "images", "now").unwrap();
+    s.open_loose(r#"{"um_per_px":0.6614583,"grid":{"cols":3,"rows":1,"overlap_pct":20,"name":"row"}}"#, "now").unwrap();
+    let r = stitch(&mut s, "row");
+    let pairs = r["placement"]["pairs"].as_array().unwrap();
+    let weak = pairs.iter().find(|p| p["a"] == 1 && p["b"] == 2).unwrap();
+    assert_eq!(weak["used"], false, "the false 4-5 peak is not used: {weak}");
+    for (k, (a, b)) in [(0usize, 1usize), (1, 2)].into_iter().enumerate() {
+        let (pa, pb) = (pos(&r, a), pos(&r, b));
+        let (qa, qb) = (pos(&full, 3 + a), pos(&full, 3 + b));
+        let err = ((pb[0] - pa[0]) - (qb[0] - qa[0])).hypot((pb[1] - pa[1]) - (qb[1] - qa[1]));
+        // The measured step matches closely; the rejected one follows the consensus of the row,
+        // which is as exact as the stage is regular (the package's own left-right steps differ
+        // by up to ~10 px). The false peak put it ~41 px off.
+        let bound = if k == 0 { 3.0 } else { 10.0 };
+        assert!(err < bound, "step {k}: {err:.1} px from the package placement");
+    }
+}
