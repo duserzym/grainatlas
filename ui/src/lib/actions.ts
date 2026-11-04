@@ -2,16 +2,40 @@
 
 import type { PackageFile } from './core/core';
 import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
-import { app } from './store.svelte';
+import { current, tabs, type AppState, type LiveState } from './store.svelte';
 import { notify, type OpenedFiles } from '@lab/bridge';
 import { download, fromShell } from './files';
 import { packageNameFor, parseDeepLink, sameId, savedProject } from './deeplink';
 
+/** Where something newly opened goes: the active tab when nothing is open there, else a new tab
+ * (opening never replaces the project of a tab). */
+export function targetTab(): AppState {
+  const t = current();
+  return t.empty ? t : tabs.add();
+}
+
+/**
+ * Desktop: command-line or dropped paths. Folders (packages, area folders, `.grainatlas`
+ * projects) open one tab each; loose files open together in one. Returns the tabs opened.
+ */
+export async function openPathsInTabs(paths: string[]): Promise<AppState[]> {
+  const isFile = (p: string) => /\.[a-z0-9]{2,5}$/i.test(p) && !PROJECT_PATH.test(p);
+  const files = paths.filter(isFile);
+  const groups = [...paths.filter((p) => !isFile(p)).map((p) => [p]), ...(files.length ? [files] : [])];
+  // Every tab first (in order), then all of them open and render at once: each has its own core.
+  const opened: AppState[] = groups.map((_, i) => (i === 0 ? targetTab() : tabs.add()));
+  await Promise.all(groups.map((g, i) => openPaths(g, opened[i])));
+  return opened;
+}
+
+/** A saved project: a `.grainatlas/` folder or a `.gaproj` file. */
+const PROJECT_PATH = /\.(grainatlas\/?|gaproj)$/i;
+
 /** Web: a package folder, an area folder or loose images, handed over as files. */
-export async function openFiles(name: string, files: PackageFile[]) {
+export async function openFiles(name: string, files: PackageFile[], app: AppState = current()) {
   const core = await app.core;
   const r = await app.run(`Reading ${name}`, (p) => core.openFiles(name, files, p));
-  if (r) await opened(r);
+  if (r) await opened(app, r);
 }
 
 /**
@@ -21,6 +45,7 @@ export async function openFiles(name: string, files: PackageFile[]) {
  * a project open, the replace dialog asks first.
  */
 export async function openOffered(set: OpenedFiles) {
+  const app = current();
   const told = (outcome: string) => void notify({ type: 'grainatlas.files.opened', kind: set.kind, name: set.name, files: set.files.length, outcome });
   if (set.kind === 'project') {
     app.error = `${set.name} is a saved project folder: it opens in the grainatlas desktop app. Here, open its package folder, then load its project.json (Open screen, Project file).`;
@@ -38,7 +63,7 @@ export async function openOffered(set: OpenedFiles) {
     told(`asked: replace ${app.pkg?.name ?? 'the project from the server'}`);
     return;
   }
-  await openFiles(s.name, s.files);
+  await openFiles(s.name, s.files, app);
   // Read again: the open just changed it (TypeScript still has it narrowed to null).
   const pkg = app.pkg as PackageInfo | null;
   told(app.pendingLoose ? 'asked: scale' : pkg ? `opened: ${pkg.kind}, ${pkg.areas.length} area(s)` : `failed: ${app.error ?? 'not opened'}`);
@@ -46,25 +71,28 @@ export async function openOffered(set: OpenedFiles) {
 
 /** The replace dialog: Open replaces the open project with the offered files, Cancel keeps it. */
 export async function answerOffer(open: boolean) {
+  const app = current();
   const s = app.offer;
   app.offer = null;
   if (!s) return;
   void notify({ type: 'grainatlas.files.opened', name: s.name, files: s.files.length, outcome: open ? 'replaced' : 'kept the open project' });
-  if (open) await openFiles(s.name, s.files);
+  if (open) await openFiles(s.name, s.files, app);
 }
 
 /** Desktop: one folder (package, area folder, `.grainatlas` project) or a set of files, by path. */
-export async function openPaths(paths: string[]) {
+export async function openPaths(paths: string[], app: AppState = current()) {
   const core = await app.core;
-  if (paths.length === 1 && /\.grainatlas\/?$/.test(paths[0])) {
+  if (paths.length === 1 && PROJECT_PATH.test(paths[0])) {
     const r = await app.run(`Opening ${paths[0]}`, () => core.openProject(paths[0]));
     if (!r) return;
-    await adoptPackage(r.info, r.project);
+    await adoptPackage(app, r.info, r.project);
+    app.projectPath = { kind: /\.gaproj$/i.test(paths[0]) ? 'file' : 'folder', path: paths[0].replace(/\/$/, '') };
+    await restoreAreas(app);
     return;
   }
   const label = paths.length === 1 ? paths[0] : `${paths.length} files`;
   const r = await app.run(`Reading ${label}`, () => core.openPaths(paths));
-  if (r) await opened(r);
+  if (r) await opened(app, r);
 }
 
 const SCALE_KEY = 'grainatlas.looseScale';
@@ -85,16 +113,16 @@ function sameFiles(a: string[] | undefined, images: ImageEntry[]) {
   return a.length === b.length && [...a].sort().every((f, i) => f === [...b].sort()[i]);
 }
 
-async function opened(r: OpenResult) {
+async function opened(app: AppState, r: OpenResult) {
   if (r.status === 'opened') {
-    await adoptPackage(r.info);
+    await adoptPackage(app, r.info);
     return;
   }
   // Images without calibration. A project saved for this same set knows its scale.
   const saved = savedProject(r.name);
   const spec = saved?.package.kind === 'loose' ? saved.package.loose : undefined;
   if (spec && sameFiles(spec.files, r.images)) {
-    await openLoose(spec);
+    await openLoose(spec, app);
     if (app.pkg) app.notice = `Reopened ${r.images.length} images with the project's scale (${scaleText(spec)}).`;
     return;
   }
@@ -106,7 +134,7 @@ export function scaleText(spec: LooseSpec) {
 }
 
 /** Opens the pending images with the scale (and optional grid) the user gave. */
-export async function openLoose(spec: LooseSpec) {
+export async function openLoose(spec: LooseSpec, app: AppState = current()) {
   const core = await app.core;
   app.pendingLoose = null;
   try {
@@ -115,11 +143,12 @@ export async function openLoose(spec: LooseSpec) {
     /* storage may be unavailable */
   }
   const info = await app.run('Opening images', () => core.openLoose(spec));
-  if (info) await adoptPackage(info);
+  if (info) await adoptPackage(app, info);
 }
 
 /** Loose images: ask for the scale again (re-opens the same files; stitched areas are dropped). */
 export function changeScale() {
+  const app = current();
   const p = app.pkg;
   if (!p || p.kind !== 'loose') return;
   const images = p.areas.flatMap((a) => a.tiles.map((t) => ({ file: t.file, w: t.w, h: t.h })));
@@ -134,8 +163,9 @@ function fits(saved: Project, info: PackageInfo) {
   return saved.areas.length === ids.length && saved.areas.every((a, i) => a.id === ids[i]);
 }
 
-async function adoptPackage(info: PackageInfo, fromFolder: Project | null = null) {
+async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Project | null = null) {
   const core = await app.core;
+  app.projectPath = null;
   app.remote = null;
   app.remoteTiles = null;
   app.pkg = info;
@@ -161,10 +191,11 @@ async function adoptPackage(info: PackageInfo, fromFolder: Project | null = null
     app.adopt(saved);
     app.settings = { ...app.settings, ...(saved.settings ?? {}) };
   }
-  fillParams();
+  fillParams(app);
   app.areaId = info.areas[0]?.id ?? null;
   app.screen = 'area';
-  await resolveDeepLink();
+  app.dirty = false;
+  await resolveDeepLink(app);
 }
 
 /** The example package bundled with the web build (the test fixture), or null when absent. */
@@ -177,14 +208,14 @@ async function exampleManifest(): Promise<{ name: string; files: string[] } | nu
   }
 }
 
-export async function openExample() {
+export async function openExample(app: AppState = current()) {
   const m = await exampleManifest();
   if (!m) {
     app.error = 'This build has no example package.';
     return;
   }
   const files = await Promise.all(m.files.map(async (path: string) => ({ path, file: await fetch(`./demo/${path}`).then((r) => r.blob()) })));
-  await openFiles(m.name, files);
+  await openFiles(m.name, files, app);
 }
 
 /**
@@ -196,6 +227,7 @@ export async function openExample() {
  * screen, which names the project. Without the parameters nothing happens.
  */
 export async function startDeepLink(search = location.search) {
+  const app = current();
   const link = parseDeepLink(search);
   if (!link) return;
   try {
@@ -212,16 +244,16 @@ export async function startDeepLink(search = location.search) {
   }
   app.deepLink = { ...link, name: packageNameFor(link.project) };
   if (sameId(app.project?.uuid, link.project)) {
-    await resolveDeepLink();
+    await resolveDeepLink(app);
     return;
   }
   app.screen = 'open';
   const name = app.deepLink.name;
-  if (name && (await exampleManifest())?.name === name) await openExample();
+  if (name && (await exampleManifest())?.name === name) await openExample(app);
 }
 
 /** After a package opened: if a deep link waits for this project, select its spot and center the canvas on it. */
-async function resolveDeepLink() {
+async function resolveDeepLink(app: AppState) {
   const link = app.deepLink;
   if (!link || !app.project) return;
   if (!sameId(app.project.uuid, link.project)) {
@@ -236,7 +268,7 @@ async function resolveDeepLink() {
     app.notice = `Spot ${link.spot} is not in project ${app.project.name || app.project.uuid}.`;
     return;
   }
-  if (!app.stitched[spot.area_id] && !(await stitch(spot.area_id))) return;
+  if (!app.stitched[spot.area_id] && !(await stitch(spot.area_id, app))) return;
   app.areaId = spot.area_id;
   app.selection = [spot.id];
   app.focusSpot = spot.id;
@@ -244,6 +276,7 @@ async function resolveDeepLink() {
 }
 
 export async function loadProjectFile(file: File) {
+  const app = current();
   const text = await file.text();
   const p = JSON.parse(text) as Project;
   const core = await app.core;
@@ -251,18 +284,30 @@ export async function loadProjectFile(file: File) {
   app.project = JSON.parse(await core.projectJson());
   app.adopt(p);
   app.settings = { ...app.settings, ...(p.settings ?? {}) };
-  fillParams();
-  await resolveDeepLink();
+  fillParams(app);
+  app.dirty = false;
+  await restoreAreas(app);
+  await resolveDeepLink(app);
 }
 
-/** UI-held parameters from older saves lack newer fields: fill them from the core's record. */
-function fillParams() {
+/** `base` with the values of `over` (objects merged at every depth, in `base`'s key order). */
+function deepFill<T>(base: T, over: unknown): T {
+  if (!over || typeof over !== 'object' || Array.isArray(over) || !base || typeof base !== 'object' || Array.isArray(base)) return (over ?? base) as T;
+  const out: Record<string, unknown> = {};
+  const o = over as Record<string, unknown>;
+  for (const [k, v] of Object.entries(base as Record<string, unknown>)) out[k] = k in o ? deepFill(v, o[k]) : v;
+  for (const [k, v] of Object.entries(o)) if (!(k in out)) out[k] = v;
+  return out as T;
+}
+
+/** UI-held parameters from older saves lack newer fields (at any depth): fill them from the
+ * core's record, so what the UI holds is what the core renders. */
+function fillParams(app: AppState) {
   for (const a of app.project?.areas ?? []) {
     const base = a.params;
-    const p = app.params[a.id] ?? base;
-    const t = app.tone[a.id] ?? p.tone ?? base.tone;
-    const tone = { ...base.tone, ...t, grain_norm: { ...base.tone.grain_norm, ...(t.grain_norm ?? {}) } };
-    app.params[a.id] = { ...base, ...p, tone };
+    const p = deepFill(base, app.params[a.id] ?? base);
+    const tone = deepFill(base.tone, app.tone[a.id] ?? p.tone);
+    app.params[a.id] = { ...p, tone };
     app.tone[a.id] = tone;
   }
 }
@@ -272,13 +317,13 @@ function stripUi(p: Project): Project {
   return rest as Project;
 }
 
-export async function stitch(areaId: string) {
+export async function stitch(areaId: string, app: AppState = current()) {
   const core = await app.core;
-  const params = $snapshotParams(areaId);
-  await syncGrains(areaId);
+  const params = $snapshotParams(app, areaId);
+  await syncGrains(app, areaId);
   const r = await app.run(`Stitching ${areaId}`, (p) => core.stitch(areaId, params, p));
   if (!r) return false;
-  const l = live[areaId];
+  const l = app.live[areaId];
   if (l) {
     clearTimeout(l.timer);
     l.settled = l.seq;
@@ -293,13 +338,41 @@ export async function stitch(areaId: string) {
   return true;
 }
 
-export async function stitchAll() {
-  for (const a of app.pkg?.areas ?? []) {
-    if (!(await stitch(a.id))) return;
+/**
+ * Renders every area the project has a solved placement for, from that placement (no
+ * re-stitch): a reopened project comes back as it was saved, grains and spots on the mosaics.
+ * Areas whose placement no longer fits (another stitch setting) are left for Stitch.
+ */
+export async function restoreAreas(app: AppState = current()) {
+  const core = await app.core;
+  const todo = (app.project?.areas ?? []).filter((a) => a.placement && !app.stitched[a.id] && app.pkg?.areas.some((m) => m.id === a.id));
+  for (const [k, a] of todo.entries()) {
+    // The placement was solved with the recorded stitch settings: render with exactly those (the
+    // UI's copy can differ in key order or in fields added since), so the core never re-stitches.
+    app.params = { ...app.params, [a.id]: { ...app.params[a.id], stitch: a.params.stitch } };
+    const params = $snapshotParams(app, a.id);
+    await syncGrains(app, a.id);
+    const r = await app.run(`Rendering ${a.id} (${k + 1} of ${todo.length})`, (p) => core.recompute(a.id, params, p));
+    if (!r) return;
+    app.stitched = { ...app.stitched, [a.id]: r };
+    app.preview = { ...app.preview, [a.id]: null };
+    app.pixelsVersion++;
+  }
+  if (todo.length) {
+    app.project = JSON.parse(await core.projectJson());
+    if (app.screen === 'area' && Object.keys(app.stitched).length) app.screen = 'canvas';
   }
 }
 
-function $snapshotParams(areaId: string): AreaParams {
+/** Stitches every area; with `missing`, only those not rendered yet (command-line `--stitch`). */
+export async function stitchAll(app: AppState = current(), missing = false) {
+  for (const a of app.pkg?.areas ?? []) {
+    if (missing && app.stitched[a.id]) continue;
+    if (!(await stitch(a.id, app))) return;
+  }
+}
+
+function $snapshotParams(app: AppState, areaId: string): AreaParams {
   const p = JSON.parse(JSON.stringify(app.params[areaId])) as AreaParams;
   p.tone = JSON.parse(JSON.stringify(app.tone[areaId] ?? p.tone));
   return p;
@@ -313,52 +386,54 @@ function $snapshotParams(areaId: string): AreaParams {
 // Black / white / gamma need neither: they are the display LUT.
 
 const PREVIEW_PIXELS = 1.5e6;
-const live: Record<string, { seq: number; settled: number; timer: number; previewing: boolean; again: boolean; settling: Promise<void> | null }> = {};
 
 /** The parameters that change pixels after the stitch (black / white / gamma excluded), and the
  * grains when per-grain normalisation is on. */
 export function liveKey(p: AreaParams | undefined, t: ToneParams | undefined, grains?: Grain[]): string {
   if (!p) return '';
   const { black: _b, white: _w, gamma: _g, ...tone } = (t ?? p.tone) as ToneParams;
-  return JSON.stringify([p.photometric, p.blend, tone, tone.grain_norm?.enabled ? grainsKey(grains) : null]);
+  return canonical([p.photometric, p.blend, tone, tone.grain_norm?.enabled ? grainsKey(grains) : null]);
+}
+
+/** JSON with object keys sorted (the same parameters give the same key whatever their order). */
+function canonical(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 }
 
 function grainsKey(grains: Grain[] | undefined) {
   return (grains ?? []).map((g) => `${g.id}:${g.polygon_um.length}:${g.bbox_um.map((v) => v.toFixed(1)).join(',')}`).join(';');
 }
 
-const syncedGrains: Record<string, string> = {};
-
 /** Hands the area's current grains to the core when per-grain normalisation needs them. */
-async function syncGrains(areaId: string) {
+async function syncGrains(app: AppState, areaId: string) {
   const grains = app.grains[areaId] ?? [];
   const key = grainsKey(grains);
-  if (syncedGrains[areaId] === key) return;
+  if (app.syncedGrains[areaId] === key) return;
   const core = await app.core;
   await core.setGrains(areaId, JSON.parse(JSON.stringify(grains)) as Grain[]);
-  syncedGrains[areaId] = key;
+  app.syncedGrains[areaId] = key;
 }
 
 /** Call after a photometric parameter of a stitched area changed. */
-export function liveChanged(areaId: string, settleMs = 450) {
+export function liveChanged(areaId: string, settleMs = 450, app: AppState = current()) {
   if (!app.stitched[areaId]) return;
-  const l = (live[areaId] ??= { seq: 0, settled: 0, timer: 0, previewing: false, again: false, settling: null });
+  const l: LiveState = (app.live[areaId] ??= { seq: 0, settled: 0, timer: 0, previewing: false, again: false, settling: null });
   l.seq++;
   if (!app.liveBusy[areaId]) app.liveBusy = { ...app.liveBusy, [areaId]: true };
-  void livePreview(areaId);
+  void livePreview(app, areaId);
   clearTimeout(l.timer);
-  l.timer = window.setTimeout(() => void settle(areaId), settleMs);
+  l.timer = window.setTimeout(() => void settle(app, areaId), settleMs);
 }
 
-function previewLevel(areaId: string) {
+function previewLevel(app: AppState, areaId: string) {
   const levels = app.stitched[areaId].mosaic.levels;
   let L = Math.min(Math.max(0, app.drawLevel), levels.length - 1);
   while (L < levels.length - 1 && levels[L].w * levels[L].h > PREVIEW_PIXELS) L++;
   return L;
 }
 
-async function livePreview(areaId: string) {
-  const l = live[areaId];
+async function livePreview(app: AppState, areaId: string) {
+  const l = app.live[areaId];
   if (l.previewing) {
     l.again = true;
     return;
@@ -369,9 +444,9 @@ async function livePreview(areaId: string) {
     do {
       l.again = false;
       const seq = l.seq;
-      const level = previewLevel(areaId);
-      await syncGrains(areaId);
-      const img = await core.preview(areaId, $snapshotParams(areaId), level);
+      const level = previewLevel(app, areaId);
+      await syncGrains(app, areaId);
+      const img = await core.preview(areaId, $snapshotParams(app, areaId), level);
       if (seq > l.settled && img) app.preview = { ...app.preview, [areaId]: { level, img, over: app.pixelsVersion } };
     } while (l.again);
   } catch {
@@ -381,8 +456,8 @@ async function livePreview(areaId: string) {
   }
 }
 
-async function settle(areaId: string) {
-  const l = live[areaId];
+async function settle(app: AppState, areaId: string) {
+  const l = app.live[areaId];
   if (l.settling) await l.settling;
   const seq = l.seq;
   if (seq <= l.settled) return;
@@ -390,8 +465,8 @@ async function settle(areaId: string) {
     const core = await app.core;
     app.rendering++;
     try {
-      await syncGrains(areaId);
-      const r = await core.recompute(areaId, $snapshotParams(areaId));
+      await syncGrains(app, areaId);
+      const r = await core.recompute(areaId, $snapshotParams(app, areaId));
       l.settled = Math.max(l.settled, seq);
       app.project = JSON.parse(await core.projectJson());
       app.stitched = { ...app.stitched, [areaId]: r };
@@ -411,8 +486,8 @@ async function settle(areaId: string) {
 }
 
 /** Waits until no live re-render of `areaId` is pending (tests, exports). */
-export async function liveIdle(areaId: string) {
-  const l = live[areaId];
+export async function liveIdle(areaId: string, app: AppState = current()) {
+  const l = app.live[areaId];
   while (l && (l.settling || l.seq > l.settled)) {
     if (l.settling) await l.settling;
     else await new Promise((r) => setTimeout(r, 50));
@@ -424,53 +499,83 @@ export async function liveIdle(areaId: string) {
 /** Auto: background leveling on, stretch and CLAHE from the histogram. Remembers what was there
  * for Before / After; every manual control stays editable. */
 export async function autoTone(areaId: string) {
+  const app = current();
   const core = await app.core;
   if (!app.stitched[areaId]) return;
-  const before = $snapshotParams(areaId);
+  const before = $snapshotParams(app, areaId);
   const auto = await app.run('Auto tone', () => core.autoParams(areaId, before));
   if (!auto) return;
   app.compare = { ...app.compare, [areaId]: { other: before, showing: 'after' } };
-  applyParams(areaId, auto);
+  applyParams(app, areaId, auto);
 }
 
 /** Swaps between the parameters before Auto and the current ones. */
 export function toggleBeforeAfter(areaId: string) {
+  const app = current();
   const c = app.compare[areaId];
   if (!c) return;
-  const now = $snapshotParams(areaId);
+  const now = $snapshotParams(app, areaId);
   app.compare = { ...app.compare, [areaId]: { other: now, showing: c.showing === 'after' ? 'before' : 'after' } };
-  applyParams(areaId, c.other);
+  applyParams(app, areaId, c.other);
 }
 
 /** Back to the defaults for correction, blending and tone (stitch and segmentation are kept). */
 export async function resetTone(areaId: string) {
+  const app = current();
   const core = await app.core;
   const d = await core.defaultParams();
-  const cur = $snapshotParams(areaId);
+  const cur = $snapshotParams(app, areaId);
   app.compare = { ...app.compare, [areaId]: null };
-  applyParams(areaId, { ...cur, photometric: d.photometric, blend: d.blend, tone: d.tone });
+  applyParams(app, areaId, { ...cur, photometric: d.photometric, blend: d.blend, tone: d.tone });
 }
 
-function applyParams(areaId: string, p: AreaParams) {
+function applyParams(app: AppState, areaId: string, p: AreaParams) {
   const cur = app.params[areaId];
   app.params = { ...app.params, [areaId]: { ...cur, photometric: p.photometric, blend: p.blend, tone: p.tone } };
   app.tone = { ...app.tone, [areaId]: p.tone };
 }
 
-export async function saveProject() {
+/**
+ * Save (Cmd/Ctrl+S): where the tab's project came from, a `.grainatlas/` folder (rewritten with
+ * its pyramid, as before) or a `.gaproj` file; a package opened on its own gets a `<name>.gaproj`
+ * project file next to it. The web build downloads the project file.
+ */
+export async function saveProject(app: AppState = current()) {
   const p = app.fullProject();
   if (!p) return;
   const core = await app.core;
-  if (core.kind === 'tauri') {
+  if (core.kind === 'tauri' && app.projectPath?.kind === 'folder') {
     const where = await app.run('Saving project', () => core.saveProject(p, {}));
-    if (where) app.notice = `Saved ${where}`;
+    if (where) {
+      app.notice = `Saved ${where}`;
+      app.dirty = false;
+    }
     return where;
   }
-  download(JSON.stringify(p, null, 2), `${p.package.name}.grainatlas.project.json`, 'application/json');
-  return null;
+  return saveProjectFile(app, false);
+}
+
+/** Saves the lightweight project file (`.gaproj`): `ask` = Save As (a dialog on the desktop). */
+export async function saveProjectFile(app: AppState = current(), ask = true) {
+  const p = app.fullProject();
+  if (!p) return;
+  const core = await app.core;
+  const prev = app.projectPath?.kind === 'file' ? app.projectPath.path : null;
+  const where = await app.run('Saving project file', () => core.saveProjectFile(p, prev, ask));
+  if (core.kind !== 'tauri') {
+    app.dirty = false;
+    return null;
+  }
+  if (where) {
+    app.projectPath = { kind: 'file', path: where };
+    app.notice = `Saved ${where}`;
+    app.dirty = false;
+  }
+  return where;
 }
 
 export async function exportPng(areaId: string) {
+  const app = current();
   const core = await app.core;
   const tone = app.tone[areaId];
   const png = await app.run('Exporting PNG', () => core.exportPng(areaId, tone));
@@ -478,7 +583,7 @@ export async function exportPng(areaId: string) {
 }
 
 /** Finds grains in every stitched area (keeps ids and numbers of grains found before). */
-export async function findAllGrains() {
+export async function findAllGrains(app: AppState = current()) {
   const core = await app.core;
   for (const id of Object.keys(app.stitched)) {
     const params = JSON.parse(JSON.stringify(app.params[id].segment));

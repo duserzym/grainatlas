@@ -22,7 +22,8 @@ waiting for its name and an example file).
    scale typed once (each image an area, or one grid); see ADR-0006.
 2. Stitches by stage prior, phase correlation with a Lucas-Kanade refinement
    and a global least-squares solve; corrects per-tile gain and offset, beam
-   exposure steps and background; blends with seams and multiband
+   exposure steps and background in one joint solve over all tiles (overlaps agree,
+   background flat; `docs/stitch_notes.md`); blends with seams and multiband
    (photocraft-algo). The 4 x 8 example area (32 tiles, 28 Mpx) takes 0.6 s
    natively and 8 s in the browser; see `docs/stitch_notes.md`. Tone is one
    click (Auto: leveling, stretch, CLAHE from the histogram, with Before /
@@ -178,7 +179,29 @@ older per-area grain layout. See [docs/print_sheets.md](docs/print_sheets.md).
 
 The desktop app also takes `grainatlas <package-or-area-folder> [--stitch] [--segment]`
 or `grainatlas <images…> --um-per-px <µm> | --field-um <µm> [--stitch]`, and
-opens saved `<name>.grainatlas` folders.
+opens saved `<name>.grainatlas` folders and `<name>.gaproj` project files.
+
+### Tabs and project files
+
+One window holds several projects as tabs (desktop and web): **+** or Cmd/Ctrl+T for a new
+tab, × or Cmd/Ctrl+W to close (a dot marks unsaved changes and closing asks), Cmd/Ctrl+1..9
+and Ctrl+Tab to switch, drag to reorder. Each tab has its own session (package, mosaics,
+grains, spots, undo); a stitch keeps running in its tab while you work in another. Opening
+or dropping something while a project is open makes a new tab; several folders on the
+command line open one tab each:
+
+```bash
+open -a grainatlas --args A.grainatlas B.grainatlas C.gaproj --stitch
+```
+
+**Save project** (Cmd/Ctrl+S) writes `<name>.gaproj` next to the package, or back to the
+`.gaproj` file or `.grainatlas` folder the tab came from; **Save as…** writes a `.gaproj`
+where you choose. A `.gaproj` is the project record alone (parameters, solved placements,
+photometric results, grains, spots, labels, the laicpmsdb link; about 1-2 MB, no pixels).
+Double-clicking one opens it as a tab: the package's own images are read from the recorded
+path and every stitched area is rendered from its saved placement, without stitching again
+(`--stitch` stitches only areas that have none). In the web build Save downloads the
+`.gaproj`, and the Open screen's Project file loads one onto an opened package.
 
 ## Layout
 

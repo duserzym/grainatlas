@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { findAllGrains, loadProjectFile, openExample, openFiles, openLoose, openPaths, stitchAll } from '../lib/actions';
+  import { loadProjectFile, openExample, openFiles, openPaths, targetTab } from '../lib/actions';
   import { isDesktop } from '../lib/core/core';
   import { readRecent, type RecentEntry } from '../lib/deeplink';
 
@@ -12,52 +12,17 @@
   const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp'];
   let recent = $state<RecentEntry[]>([]);
   const desktop = isDesktop();
-  let startupDone = false;
 
+  // Desktop: the command line and dropped folders are handled for the whole window (App.svelte).
   onMount(() => {
     recent = readRecent();
-    if (!desktop) return;
-    if (!startupDone) {
-      startupDone = true;
-      import('@tauri-apps/api/core').then(async ({ invoke }) => {
-        const s = await invoke<{ paths: string[]; stitch: boolean; segment: boolean; um_per_px: number | null; field_um: number | null }>('startup');
-        if (!s.paths.length) return;
-        await openPaths(s.paths);
-        // Loose images with a scale on the command line open without the dialog.
-        const pending = app.pendingLoose;
-        if (pending && (s.um_per_px || s.field_um)) {
-          await openLoose({ um_per_px: s.um_per_px ?? 0, ...(s.field_um ? { field_width_um: s.field_um } : {}), files: pending.images.map((i) => i.file) });
-        }
-        if (!app.pkg) return;
-        if (s.stitch) await stitchAll();
-        if (s.segment) {
-          await findAllGrains();
-          app.screen = 'canvas';
-        }
-      });
-    }
-    // Desktop: dropped folders arrive as paths through Tauri.
-    let un: (() => void) | undefined;
-    import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
-      getCurrentWebview()
-        .onDragDropEvent((e) => {
-          if (e.payload.type === 'over') over = true;
-          else if (e.payload.type === 'leave') over = false;
-          else if (e.payload.type === 'drop') {
-            over = false;
-            if (e.payload.paths.length) openPaths(e.payload.paths);
-          }
-        })
-        .then((f) => (un = f)),
-    );
-    return () => un?.();
   });
 
   async function pick() {
     if (desktop) {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const p = await open({ directory: true, multiple: false, title: 'Choose a package or area folder' });
-      if (typeof p === 'string') openPaths([p]);
+      if (typeof p === 'string') openPaths([p], targetTab());
     } else input.click();
   }
 
@@ -65,8 +30,8 @@
     if (desktop) {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const p = await open({ directory: false, multiple: true, title: 'Choose images', filters: [{ name: 'Images', extensions: IMAGE_EXT }] });
-      if (Array.isArray(p) && p.length) openPaths(p);
-      else if (typeof p === 'string') openPaths([p]);
+      if (Array.isArray(p) && p.length) openPaths(p, targetTab());
+      else if (typeof p === 'string') openPaths([p], targetTab());
     } else imagesInput.click();
   }
 
@@ -74,7 +39,7 @@
     if (!el.files?.length) return;
     const { name, files } = fromInput(el.files);
     el.value = '';
-    await openFiles(name, files);
+    await openFiles(name, files, targetTab());
   }
 
   async function drop(e: DragEvent) {
@@ -82,7 +47,7 @@
     over = false;
     if (desktop || !e.dataTransfer) return;
     const r = await fromDrop(e.dataTransfer);
-    if (r) await openFiles(r.name, r.files);
+    if (r) await openFiles(r.name, r.files, targetTab());
     else app.error = 'Drop a package folder, an area folder or image files.';
   }
 
@@ -137,7 +102,7 @@
   </div>
 
   {#if !desktop}<div class="example">
-    <button onclick={openExample} data-testid="example">Try the example</button>
+    <button onclick={() => openExample(targetTab())} data-testid="example">Try the example</button>
     <span class="faint">one 3 × 2 TM4000 area (HJ-GC1, 150×, SE) from the test fixture</span>
   </div>{/if}
 
@@ -161,7 +126,7 @@
     <div class="glass panel">
       <h2>Project file</h2>
       <p class="muted">After opening the package, load a saved <code>project.json</code> to restore its parameters, grains and spots.</p>
-      <input type="file" accept=".json,application/json" onchange={project} disabled={!app.pkg} />
+      <input type="file" accept=".json,.gaproj,application/json" onchange={project} disabled={!app.pkg} />
     </div>
   </div>
 </section>
