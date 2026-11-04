@@ -76,6 +76,8 @@ export interface Core {
   laserExport(spots: Spot[], areaId: string, adapter?: string): Promise<string>;
   /** Records a publish in the project's laicpmsdb link. */
   recordPublished(p: Published): Promise<void>;
+  /** Desktop: the window back to its default size, centred (Reset layout); nothing in a browser. */
+  resetWindow(): Promise<void>;
   /** Desktop: write the project folder (project.json, pyramid, masks, spots). */
   saveProject(project: Project, extras: Record<string, string>): Promise<string | null>;
 }

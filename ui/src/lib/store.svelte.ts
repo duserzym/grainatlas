@@ -78,6 +78,26 @@ function systemDark() {
   }
 }
 
+/** Panel geometry and open states of this viewer (ux-conventions rule 7), never in a project. */
+export interface LayoutPrefs {
+  /** The floating spot / grain panel's position on the Canvas, px from the canvas's top-left. */
+  panel: { x: number; y: number };
+  /** The Canvas side panel folded to a strip. */
+  sideCollapsed: boolean;
+  layersOpen: boolean;
+}
+const LAYOUT_KEY = 'grainatlas.layout';
+export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, layersOpen: false };
+
+function loadLayout(): LayoutPrefs {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
+    return { ...DEFAULT_LAYOUT, ...v, panel: { ...DEFAULT_LAYOUT.panel, ...(v.panel ?? {}) } };
+  } catch {
+    return structuredClone(DEFAULT_LAYOUT);
+  }
+}
+
 interface Snapshot {
   spots: Spot[];
   labels: Label[];
@@ -124,6 +144,8 @@ class AppState {
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
   settings = $state<Settings>(loadSettings());
+  /** Remembered panel geometry (Settings → Reset layout puts it back). */
+  layout = $state<LayoutPrefs>(loadLayout());
   /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
   link = $state<LinkSettings>(loadLink());
   /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
@@ -189,6 +211,25 @@ class AppState {
   /** The laicpmsdb server in effect, or null. */
   get server(): string | null {
     return resolveServer(this.serverOverride, this.link.server);
+  }
+
+  saveLayout() {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify($state.snapshot(this.layout)));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Forgets panel positions and open states; the desktop window goes back to 1280 x 800, centred. */
+  async resetLayout() {
+    try {
+      localStorage.removeItem(LAYOUT_KEY);
+    } catch {
+      /* ignore */
+    }
+    this.layout = structuredClone(DEFAULT_LAYOUT);
+    await (await this.core).resetWindow();
   }
 
   saveLink() {
