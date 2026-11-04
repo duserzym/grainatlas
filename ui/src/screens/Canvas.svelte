@@ -158,7 +158,8 @@
   const hosted = isHosted();
   async function openInLaicpmsdb(s: Spot) {
     const url = spotLink(s);
-    if (!(await openLink(url))) app.error = `UPb Studio did not open ${url}`;
+    const ok = await openLink(url);
+    app.error = ok ? null : `UPb Studio did not open ${url}`;
   }
   function sendSpots() {
     if (!app.project || !areaId) return;

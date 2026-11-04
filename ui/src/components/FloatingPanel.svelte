@@ -17,7 +17,7 @@
   }
 </script>
 
-<div class="glass floating" style:left="{x}px" style:top="{y}px" data-ui role="dialog" aria-label={title}>
+<div class="glass floating" style:left="{x}px" style:top="{y}px" style:max-height="calc(100% - {y + 8}px)" data-ui role="dialog" aria-label={title}>
   <header role="toolbar" tabindex="-1" onpointerdown={down} onpointermove={move} onpointerup={() => (drag = null)}>
     <span class="grip" aria-hidden="true">⠿</span>
     <strong>{title}</strong>
@@ -32,6 +32,9 @@
     width: 19rem;
     z-index: 20;
     background: var(--glass-strong);
+    display: flex;
+    flex-direction: column;
+    min-height: 8rem;
   }
   header {
     display: flex;
@@ -59,5 +62,7 @@
     display: grid;
     gap: var(--space-2);
     font-size: 0.88rem;
+    overflow: auto;
+    min-height: 0;
   }
 </style>
