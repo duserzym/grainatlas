@@ -10,6 +10,7 @@ import type { LevelInfo, MosaicJson, Project, StitchSummary } from './core/types
 import { atlasUrl, normalizeServer } from './laicpmsdb';
 import { app } from './store.svelte';
 import { savedProject, sameId } from './deeplink';
+import { authToken } from './atlas';
 
 export interface AtlasArea {
   id: string;
@@ -46,6 +47,17 @@ export interface Remote {
   projectId: string;
   atlas: AtlasJson;
   readOnly: boolean;
+  /** laicpmsdb serves bundles to a bearer token or a signed read-only `access` token (12 h). */
+  token: string | null;
+  access: string | null;
+  /** The mount the server says the project is published on (`?mount=`), when given. */
+  mount: string | null;
+}
+
+/** URL and headers for one file of the remote bundle. */
+function fileRequest(r: Pick<Remote, 'server' | 'projectId' | 'token' | 'access'>, path: string): [string, RequestInit] {
+  const url = atlasUrl(r.server, r.projectId, path) + (r.access ? `?access=${encodeURIComponent(r.access)}` : '');
+  return [url, { cache: 'no-cache', headers: r.token ? { Authorization: `Bearer ${r.token}` } : {} }];
 }
 
 /** The pyramid tiles of a published bundle, decoded to grey like the core's tiles. */
@@ -56,7 +68,7 @@ export class RemoteTiles {
   async pyramidTile(areaId: string, level: number, col: number, row: number): Promise<RawImage> {
     const area = this.r.atlas.areas.find((a) => a.id === areaId);
     if (!area) throw new Error(`no area ${areaId}`);
-    const res = await fetch(atlasUrl(this.r.server, this.r.projectId, `${area.path}/${level}/${col}_${row}.webp`));
+    const res = await fetch(...fileRequest(this.r, `${area.path}/${level}/${col}_${row}.webp`));
     if (!res.ok) throw new Error(`tile ${level}/${col}_${row}: ${res.status}`);
     const bmp = await createImageBitmap(await res.blob());
     const { width: w, height: h } = bmp;
@@ -73,14 +85,15 @@ export class RemoteTiles {
   }
 }
 
-async function getJson<T>(url: string, what: string): Promise<T> {
+async function getJson<T>([url, init]: [string, RequestInit], what: string): Promise<T> {
   let r: Response;
   try {
-    r = await fetch(url, { cache: 'no-cache' });
+    r = await fetch(url, init);
   } catch (e) {
-    throw new Error(`${what}: cannot reach ${url} (${e instanceof Error ? e.message : e})`);
+    throw new Error(`${what}: cannot reach ${url.split('?')[0]} (${e instanceof Error ? e.message : e})`);
   }
-  if (!r.ok) throw new Error(`${what}: ${r.status} ${r.statusText} at ${url}`);
+  const hint = r.status === 401 ? ' (sign in, paste a token in Settings, or use a link with ?access=)' : r.status === 404 ? ' (not published, or not visible to you)' : '';
+  if (!r.ok) throw new Error(`${what}: ${r.status} ${r.statusText}${hint} at ${url.split('?')[0]}`);
   return (await r.json()) as T;
 }
 
@@ -90,21 +103,23 @@ function mosaicOf(a: AtlasArea, tile: number): MosaicJson {
 }
 
 /** Loads a published bundle and shows it on the Canvas, read-only; selects `spot` when given. */
-export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null) {
+export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null) {
   const server = normalizeServer(serverIn);
   if (!server) {
     app.error = `Not a server address: ${serverIn}`;
     return false;
   }
+  const token = await authToken();
+  const at = { server, projectId, token, access };
   const r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
-    const atlas = await getJson<AtlasJson>(atlasUrl(server, projectId, 'atlas.json'), 'atlas.json');
+    const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json');
     if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
     if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
-    const project = await getJson<Project>(atlasUrl(server, projectId, 'project.json'), 'project.json');
+    const project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json');
     return { atlas, project };
   });
   if (!r) return false;
-  const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true };
+  const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true, token, access, mount };
   app.remote = remote;
   app.remoteTiles = new RemoteTiles(remote);
   app.pkg = null;

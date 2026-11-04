@@ -14,8 +14,9 @@
       {
         "label": "main",
         "title": "grainatlas",
-        "width": 1440,
-        "height": 900,
+        "width": 1280,
+        "height": 800,
+        "center": true,
         "minWidth": 1024,
         "minHeight": 640,
         "dragDropEnabled": true,

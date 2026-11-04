@@ -57,16 +57,17 @@ const THEME_KEY = 'grainatlas.theme';
  * UPb Studio (its module webviews cannot see the shell's choice yet). A
  * `?theme=light|dark` in the address wins for this page load.
  */
-function loadTheme(): { pref: ThemePref; stored: boolean } {
+function loadTheme(): { pref: ThemePref; chosen: boolean } {
   try {
+    // The address counts as a choice (UPb Studio passes its theme this way), but is not stored.
     const q = new URLSearchParams(location.search).get('theme');
-    if (q === 'light' || q === 'dark' || q === 'system') return { pref: q, stored: false };
+    if (q === 'light' || q === 'dark' || q === 'system') return { pref: q, chosen: true };
     const s = localStorage.getItem(THEME_KEY);
-    if (s === 'light' || s === 'dark' || s === 'system') return { pref: s, stored: true };
+    if (s === 'light' || s === 'dark' || s === 'system') return { pref: s, chosen: true };
   } catch {
     /* storage may be unavailable */
   }
-  return { pref: 'light', stored: false };
+  return { pref: 'light', chosen: false };
 }
 
 function systemDark() {
@@ -74,6 +75,26 @@ function systemDark() {
     return matchMedia('(prefers-color-scheme: dark)').matches;
   } catch {
     return false;
+  }
+}
+
+/** Panel geometry and open states of this viewer (ux-conventions rule 7), never in a project. */
+export interface LayoutPrefs {
+  /** The floating spot / grain panel's position on the Canvas, px from the canvas's top-left. */
+  panel: { x: number; y: number };
+  /** The Canvas side panel folded to a strip. */
+  sideCollapsed: boolean;
+  layersOpen: boolean;
+}
+const LAYOUT_KEY = 'grainatlas.layout';
+export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, layersOpen: false };
+
+function loadLayout(): LayoutPrefs {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
+    return { ...DEFAULT_LAYOUT, ...v, panel: { ...DEFAULT_LAYOUT.panel, ...(v.panel ?? {}) } };
+  } catch {
+    return structuredClone(DEFAULT_LAYOUT);
   }
 }
 
@@ -126,6 +147,8 @@ class AppState {
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
   settings = $state<Settings>(loadSettings());
+  /** Remembered panel geometry (Settings → Reset layout puts it back). */
+  layout = $state<LayoutPrefs>(loadLayout());
   /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
   link = $state<LinkSettings>(loadLink());
   /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
@@ -146,7 +169,7 @@ class AppState {
   private theme0 = loadTheme();
   themePref = $state<ThemePref>(this.theme0.pref);
   /** False until the viewer picks a theme (or the address names one). */
-  themeChosen = $state(this.theme0.stored);
+  themeChosen = $state(this.theme0.chosen);
   systemDark = $state(systemDark());
   /** `data-theme` the UPb Studio shell put on this page's <html>, when hosted. */
   hostTheme = $state<'light' | 'dark' | null>(null);
@@ -188,9 +211,34 @@ class AppState {
     return this.pkg?.areas.find((a) => a.id === this.areaId) ?? null;
   }
 
+  /** The mount whose results are shown: the one the server named for a published bundle
+   * (`?mount=`), else the project's link. */
+  get mountId(): string | null {
+    return this.remote?.mount ?? this.project?.laicpmsdb.mount_id ?? null;
+  }
+
   /** The laicpmsdb server in effect, or null. */
   get server(): string | null {
     return resolveServer(this.serverOverride, this.link.server);
+  }
+
+  saveLayout() {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify($state.snapshot(this.layout)));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Forgets panel positions and open states; the desktop window goes back to 1280 x 800, centred. */
+  async resetLayout() {
+    try {
+      localStorage.removeItem(LAYOUT_KEY);
+    } catch {
+      /* ignore */
+    }
+    this.layout = structuredClone(DEFAULT_LAYOUT);
+    await (await this.core).resetWindow();
   }
 
   saveLink() {

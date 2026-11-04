@@ -16,7 +16,8 @@
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
-  import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, refreshResults, valueOf, type SpotResult } from '../lib/results';
+  import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
+  import { refreshResults } from '../lib/results-load';
   import { acquisitionPage } from '../lib/laicpmsdb';
 
   let core = $state<Core | null>(null);
@@ -29,7 +30,8 @@
   let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser'>('spots');
   let pairPending = $state<[number, number] | null>(null);
   let overlayInput = $state<HTMLInputElement>();
-  let panel = $state({ x: 16, y: 150, open: true });
+  // Open state per visit; the position is remembered (app.layout, ux-conventions rule 7).
+  let panel = $state({ open: true });
   let hoverId = $state<string | null>(null);
   let snapHint = $state<SnapTarget | null>(null);
   // In-progress gestures.
@@ -83,7 +85,7 @@
     return app.spots.find((s) => s.id === id) ?? null;
   });
   // ---- results overlay (GET /v1/mounts/{id}/results; memory only) ------------------------------
-  const mountId = $derived(app.project?.laicpmsdb.mount_id ?? null);
+  const mountId = $derived(app.mountId);
   const resultsBy = $derived<Record<string, SpotResult>>(app.results?.data ? matchResults(app.spots, app.results.data) : {});
   const metrics = $derived(app.results?.data ? metricsOf(app.results.data.spots) : ['date']);
   const shown = $derived(spots.filter((s) => resultsBy[s.id]).map((s) => ({ s, r: resultsBy[s.id], v: valueOf(resultsBy[s.id], app.colourBy) })));
@@ -758,7 +760,7 @@
 <svelte:window onkeydown={key} />
 
 {#if core && tiles && areaId && mosaic}
-  <div class="canvas">
+  <div class="canvas" class:folded={app.layout.sideCollapsed}>
     {#key areaId}
       <Viewer bind:this={viewer} bind:view core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
         preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} canNudge={() => !selSpots.length}
@@ -907,16 +909,16 @@
     </div>
 
     {#if panel.open && (focus || focusGrain)}
-      <FloatingPanel title={focus ? `Spot ${focus.name}` : `Grain ${focusGrain?.number}`} bind:x={panel.x} bind:y={panel.y} onclose={() => (panel.open = false)}>
+      <FloatingPanel title={focus ? `Spot ${focus.name}` : `Grain ${focusGrain?.number}`} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}>
           {#if focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
           <div class="resbox" data-testid="spot-results">
-            <div class="resdate"><span class="num">{fmtValue(r.date)}</span> <span class="faint">{r.date?.metric ?? 'no date'} · 2σ</span></div>
+            <div class="resdate"><span class="num">{fmtValue(r.date)}</span> <span class="faint">{r.date ? `${r.date.method ?? r.date.metric} · ${r.date.utype ?? '2σ'}${r.date.passes === false ? ' · fails filters' : ''}` : 'no date yet'}</span></div>
             {#if r.flags.length}<div class="flags">{#each r.flags as f (f)}<span class="flag">{f}</span>{/each}</div>{/if}
             <table class="data kv">
               <tbody>
-                {#each r.ratios as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v)}</td></tr>{/each}
-                {#each r.concentrations as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v, 0)}</td></tr>{/each}
+                {#each r.ratios as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v)}{v.utype ? ` (${v.utype})` : ''}</td></tr>{/each}
+                {#each r.concentrations as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v, Math.abs(v.value) >= 100 ? 0 : 1)}</td></tr>{/each}
                 {#if r.session_key}<tr><td>session</td><td>{r.session_key}</td></tr>{/if}
               </tbody>
             </table>
@@ -981,6 +983,11 @@
       </FloatingPanel>
     {/if}
 
+    {#if app.layout.sideCollapsed}
+      <aside class="glass side-mini" data-ui>
+        <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" data-testid="side-expand">«</button>
+      </aside>
+    {:else}
     <aside class="glass side" data-ui>
       <div class="tabs">
         <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
@@ -988,6 +995,7 @@
         <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
         <button aria-pressed={tab === 'laser'} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
         <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to laicpmsdb" data-testid="tab-link">laicpmsdb</button>
+        <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away (more room for the image)" aria-label="Fold the side panel" data-testid="side-collapse">»</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Read-only: published on {app.remote ? new URL(app.remote.server).host : ''}. “Edit a copy” in the top bar makes it yours to change.</p>{/if}
@@ -1152,7 +1160,7 @@
         </div>
       {/if}
       </fieldset>
-      <details class="layers">
+      <details class="layers" open={app.layout.layersOpen} ontoggle={(e) => { app.layout.layersOpen = e.currentTarget.open; app.saveLayout(); }}>
         <summary>Layers</summary>
         <div class="two">
           <label class="check"><input type="checkbox" bind:checked={app.layers.outlines} /> outlines</label>
@@ -1165,6 +1173,7 @@
         </div>
       </details>
     </aside>
+    {/if}
 
     {#if app.layers.results && range}
       <div class="glass legend" data-ui data-testid="results-legend">
@@ -1200,6 +1209,21 @@
     gap: var(--space-1);
     padding: var(--space-2);
     align-items: center;
+  }
+  .folded .toolbar {
+    max-width: calc(100% - 5rem);
+  }
+  .folded .legend {
+    right: calc(3rem + 2 * var(--space-2));
+  }
+  .side-mini {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    padding: var(--space-1);
+  }
+  .fold {
+    margin-left: auto;
   }
   .sep {
     width: 1px;
@@ -1292,6 +1316,20 @@
     padding: 0;
     min-width: 0;
     display: contents;
+  }
+  /* The side panel's tab body scrolls on its own, so the tabs and Layers stay in reach on a
+     laptop screen; lists inside keep at least a few rows. */
+  fieldset.tabbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+  fieldset.tabbody .list {
+    flex: 1 0 auto;
+    max-height: 60vh;
   }
   .legend {
     position: absolute;

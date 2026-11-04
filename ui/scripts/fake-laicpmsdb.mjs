@@ -7,11 +7,15 @@
 //   GET  /v1/mounts                       MountOut list (Bearer token required)
 //   POST /v1/mounts/{id}/spots            SpotImportOut (Bearer)
 //   POST /v1/mounts/{id}/atlas            multipart `bundle` = the zip; checks every hash in
-//                                         atlas.json; 201 { mount_id, project_id, version, sha256, url, files }
+//                                         atlas.json; 201 (200 for the same zip again) with
+//                                         laicpmsdb's AtlasUploadOut fields
 //   GET  /v1/mounts/{id}/results          tests/fixtures/mount-results.json (Bearer)
 //   GET  /atlas/projects/<id>/<path>      the latest published bundle, else a bundle folder
-//                                         preloaded from ../target/atlas-fixture/
+//                                         preloaded from ../target/atlas-fixture/; Bearer token
+//                                         or ?access=test-access, as laicpmsdb
 //   GET  /_fake/state, POST /_fake/reset  what was received (tests)
+//
+// `/fake-laicpmsdb/ns/<name>/…` is the same fake with its own state (parallel tests).
 //
 // The token is `test-token`. CORS is open so a page on another origin can use it.
 
@@ -21,6 +25,7 @@ import { join } from 'node:path';
 
 export const PREFIX = '/fake-laicpmsdb';
 export const TOKEN = 'test-token';
+export const ACCESS = 'test-access';
 const FIXTURES = new URL('../tests/fixtures/', import.meta.url).pathname;
 const PRELOAD = new URL('../../target/atlas-fixture/', import.meta.url).pathname;
 
@@ -74,11 +79,8 @@ function loadPreloaded() {
 }
 
 export function createFake() {
-  let state;
-  const reset = () => {
-    state = { atlases: loadPreloaded(), published: [], spots: [], requests: [] };
-  };
-  reset();
+  const states = new Map();
+  const fresh = () => ({ atlases: loadPreloaded(), published: [], spots: [], requests: [] });
 
   const send = (res, status, body, type = 'application/json') => {
     res.statusCode = status;
@@ -97,20 +99,27 @@ export function createFake() {
   return async function handle(req, res, next) {
     const url = new URL(req.url || '/', 'http://x');
     if (!url.pathname.startsWith(PREFIX + '/')) return next();
-    const path = decodeURIComponent(url.pathname.slice(PREFIX.length));
+    let path = decodeURIComponent(url.pathname.slice(PREFIX.length));
+    let ns = '';
+    const nm = path.match(/^\/ns\/([^/]+)(\/.*)$/);
+    if (nm) [, ns, path] = nm;
+    if (!states.has(ns)) states.set(ns, fresh());
+    let state = states.get(ns);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain');
-    state.requests.push({ method: req.method, path, auth: req.headers.authorization ?? null });
+    state.requests.push({ method: req.method, path, auth: req.headers.authorization ?? null, access: url.searchParams.has('access') });
     let m;
     try {
       if (path === '/_fake/state') return send(res, 200, { published: state.published, spots: state.spots, requests: state.requests, atlases: [...state.atlases.keys()] });
       if (path === '/_fake/reset' && req.method === 'POST') {
-        reset();
+        state = fresh();
+        states.set(ns, state);
         return send(res, 200, { ok: true });
       }
       if ((m = path.match(/^\/atlas\/projects\/([^/]+)\/(.+)$/)) && req.method === 'GET') {
+        if (!authed(req) && url.searchParams.get('access') !== ACCESS) return send(res, 401, { detail: 'Unauthorized' });
         const a = state.atlases.get(m[1]);
         const f = a?.files.get(m[2]);
         if (!f) return send(res, 404, { detail: 'not found' });
@@ -144,14 +153,30 @@ export function createFake() {
           if (!b || b.length !== f.size || sha(b) !== f.sha256) return send(res, 422, { detail: `${f.path} does not match atlas.json` });
         }
         const prev = state.atlases.get(atlas.project_id);
+        const zsha = sha(zip);
+        const again = state.published.find((p) => p.project_id === atlas.project_id && p.sha256 === zsha);
+        if (again) return send(res, 200, { ...again, created: false });
         const version = (prev?.version ?? 0) + 1;
         state.atlases.set(atlas.project_id, { files, version });
-        const rec = { mount_id: m[1], project_id: atlas.project_id, version, sha256: sha(zip), url: `/atlas/projects/${atlas.project_id}/`, files: files.size, filename: file.name };
+        const doc = JSON.parse(files.get('spots.json')?.toString('utf8') ?? '{}');
+        const docs = Array.isArray(doc.documents) ? doc.documents : [doc];
+        const n = docs.reduce((k, d) => k + (Array.isArray(d.spots) ? d.spots.length : 0), 0);
+        const base = `/atlas/projects/${atlas.project_id}/`;
+        const rec = {
+          mount_id: m[1], project_id: atlas.project_id, version, sha256: zsha, url: `http://${req.headers.host}${PREFIX}${ns ? `/ns/${ns}` : ''}${base}`,
+          created: true, is_current: true, file_count: files.size, total_bytes: zip.length, base_url: base, warnings: [],
+          spots: { created: n, updated: 0, unchanged: 0, grains_created: 0, mount_id: m[1], project_id: atlas.project_id, acquisitions: [] },
+          filename: file.name,
+        };
         state.published.push(rec);
         return send(res, 201, rec);
       }
       if ((m = path.match(/^\/v1\/mounts\/([^/]+)\/results$/)) && req.method === 'GET') {
-        if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
+        // As laicpmsdb 1bf6ad4: the viewer's access token reads the results of the mount its
+        // project is published on (the fixture's), 404 for any other mount.
+        const viaAccess = !authed(req) && url.searchParams.get('access') === ACCESS;
+        if (!authed(req) && !viaAccess) return send(res, 401, { detail: 'Unauthorized' });
+        if (viaAccess && m[1] !== MOUNTS[0].id) return send(res, 404, { detail: 'Not Found' });
         const r = JSON.parse(readFileSync(join(FIXTURES, 'mount-results.json'), 'utf8'));
         return send(res, 200, { ...r, mount_id: m[1] });
       }

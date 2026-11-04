@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 // Atlas bundles (WORKFLOW.md 3.1): save, publish to laicpmsdb. The server is the fake under
 // /fake-laicpmsdb (scripts/fake-laicpmsdb.mjs) that `pnpm preview` mounts; token test-token.
 
-const FAKE = 'http://localhost:4173/fake-laicpmsdb';
+const FAKE = 'http://localhost:4173/fake-laicpmsdb/ns/atlas';
 const MOUNT = '01972c4e-0000-7000-8000-0000000000b1';
 
 export async function useFakeServer(page: Page) {

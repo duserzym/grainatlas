@@ -135,5 +135,14 @@ export async function publish() {
   app.project = JSON.parse(await core.projectJson());
   app.persist();
   app.lastPublish = { ...rec, response: res };
-  app.notice = `Published${rec.version != null ? ` version ${rec.version}` : ''} to mount ${mount} on ${new URL(server).host}.`;
+  // laicpmsdb also upserts spots.json and answers with the acquisitions it matched by label.
+  const sp = res.spots as { created?: number; updated?: number; acquisitions?: { id: string; atlas_spot_id?: string | null }[] } | null | undefined;
+  const linked = new Map((sp?.acquisitions ?? []).filter((a) => a && a.atlas_spot_id).map((a) => [a.atlas_spot_id!.toLowerCase(), a.id]));
+  if (linked.size) app.spots = app.spots.map((s) => (linked.has(s.id.toLowerCase()) && !s.acquisition_id ? { ...s, acquisition_id: linked.get(s.id.toLowerCase())! } : s));
+  const warnings = Array.isArray(res.warnings) ? (res.warnings as unknown[]).map(String) : [];
+  const again = res.created === false;
+  app.notice =
+    `${again ? 'Already published as' : 'Published'}${rec.version != null ? ` version ${rec.version}` : ''} to mount ${mount} on ${new URL(server).host}` +
+    `${sp && (sp.created || sp.updated) ? `; spots ${sp.created ?? 0} created, ${sp.updated ?? 0} updated` : ''}${linked.size ? `, ${linked.size} acquisitions linked` : ''}` +
+    `${warnings.length ? `. Server notes: ${warnings.join('; ')}` : '.'}`;
 }

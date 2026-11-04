@@ -374,9 +374,10 @@ What exists (2026-11-03, ADR-0005):
 - Links out: the spot panel's "Open in laicpmsdb" (`laicpmsdb://acquisition/<id>`
   when the spot has an acquisition id, else `laicpmsdb://search?label=<name>`,
   which the shell does not route yet); `grainatlas.spot.selected` events.
-- Spot sync: "Send spots to laicpmsdb" downloads the `POST
-  /v1/mounts/{mount_id}/spots` body; the direct POST with the shell's
-  `token()` comes with the shell's phase 3.
+- Spot sync: "Send spots to laicpmsdb" posts the `POST
+  /v1/mounts/{mount_id}/spots` body with the bridge `token()` (or a token
+  pasted in Settings) when a server and a mount are set, and takes back the
+  acquisition ids laicpmsdb matched; otherwise it downloads the body.
 - Release: `make release-web` and `.github/workflows/release.yml` make
   `grainatlas-web-<version>.tar.gz` for the shell's `modules.lock.json`.
 - Not yet: the standalone desktop app's own `grainatlas://` handler
@@ -406,6 +407,69 @@ stages 2 and 3 of the lab workflow and gains three hand-offs:
   control software, added when the lab names its software and supplies an
   example file. Spot names are the labels the operator types into Qtegra.
 
+Workflow v1 as built (2026-11-03, phases 9 to 11; code in
+`crates/grainatlas-core/src/{atlas,laser}/`, `ui/src/lib/{atlas,remote,results,laicpmsdb}.ts`):
+
+- **Bundle layout.** `atlas.json` first, then by path:
+  `pyramid/<area>/<z>/<x>_<y>.webp` (256 px grey tiles, z = 0 full
+  resolution, down to one tile; the display tone of the area applied),
+  `grains.geojson` (Polygon per grain, properties `id`, `label` = grain
+  number as text, `number`, `area`, `sample`, statistics), `spots.json`
+  (the `POST /v1/mounts/{id}/spots` body, each spot also naming its `area`;
+  with several samples `{ project_id, documents: [one body per sample] }`,
+  which laicpmsdb accepts),
+  `scalebars.json` (per grain `length_um` and an anchor; one bar per area),
+  `project.json` (the full project with `grainatlas_ui`). `atlas.json`:
+  `format`, `version`, `project_id`, `name`, `mount_id`, `opened_from`,
+  `scale_um_per_px`, `tile_size`, `tile_format`, `tile_encoding`,
+  `tile_quality`, `levels`, `areas[]` (id, uuid, name, sample, path, w, h,
+  um_per_px, origin_um, levels with z/w/h/cols/rows/scale, counts,
+  mosaic_sha256), `package` (name, reader, kind, path as opened, `nas_path`,
+  `content_sha256`, `content_files`), `grainatlas_version`, `exported`, and
+  `files[]` (path, size, sha256 of every other file). The zip stores every
+  entry uncompressed under `<project_id>.atlas/` with a fixed timestamp.
+  Fixture (one area, 3327 x 1796 px, 24 grains, 3 spots): 148 files,
+  143 tiles in 5 levels, 1.8 MB, lossless.
+- **Identical native and wasm bundles.** `grainatlas hash` and
+  `ui/scripts/wasm-hash.mjs` print `bundle <sha256 of atlas.json>` and
+  `bundle.zip <sha256>` for the fixture with pinned ids. Two things were
+  needed: the VP8L encoder of `image-webp` copied with a stable sort (its
+  unstable sort ordered equal frequencies differently on wasm32), and the
+  JSON files written with floats at 9 significant digits and integral
+  values as integers (placement and grain statistics differ in the last
+  bits between the platforms' maths).
+- **Endpoints** (`ui/src/lib/laicpmsdb.ts`, laicpmsdb `docs/workflow_api.md`
+  as of its ff8c070): `GET /v1/mounts`; `POST /v1/mounts/{id}/spots`;
+  `POST /v1/mounts/{id}/atlas`, multipart field `bundle` (201 new version,
+  200 the same zip again; `version`, `sha256`, `url`, `warnings` and the
+  `spots` upsert summary are read, matched acquisitions become the spots'
+  acquisition ids); `GET /atlas/projects/<id>/<path>` with the bearer token
+  or `?access=` (taken from the page link; laicpmsdb's `viewer_url` is
+  `/atlas/?server=&project=&mount=&access=`); `GET /v1/mounts/{id}/results`
+  with the bearer token, else `?access=` for the mount named by `?mount=`,
+  one entry per spot and acquisition with `date` (`value`, `two_sigma`,
+  `uncertainty_type`, `method`, `passes`, `unit`), `ratios` and
+  `concentrations` as maps by name, `th_u`, `discordance_percent`, `flags`;
+  grainatlas keeps per spot the entry with a date from a preferred run,
+  matched by `atlas_spot_id`, else by label, and skips spots without values
+  (`ui/src/lib/results.ts` also reads the list form it was first written
+  against). Bearer token from the bridge, else from Settings. `pnpm dev` and
+  `pnpm preview` mount a fake with the same shapes at `/fake-laicpmsdb`
+  (`ui/scripts/fake-laicpmsdb.mjs`) for the tests.
+- **Deviations from WORKFLOW.md v1.** (1) `spots.json` uses laicpmsdb's
+  `documents` form for a project with several samples, and each spot carries
+  an extra `area` key. (2)
+  "q ≥ 90" is near-lossless (values rounded to 2 or 4 grey levels before
+  the lossless encoder), not lossy VP8: no lossy encoder runs identically
+  in both builds. (3) The NAS path is `<storage root from Settings>/<package
+  name>`, null when unset: the NAS layout has no place for SEM packages
+  yet. (4) The generic laser CSV appends `x2_stage, y2_stage` (line ends,
+  raster corners) after the nine contract columns.
+- **Open from server** is read-only; "Edit a copy" keeps the project id
+  (a re-publish is the next version) and needs the raw package for new
+  pixels or a publish. Results are memory only. Laser registrations are per
+  area in `project.json` → `laser.areas`.
+
 ## 8. Roadmap
 
 | Phase | Scope | Done when |
@@ -422,6 +486,13 @@ stages 2 and 3 of the lab workflow and gains three hand-offs:
 | 9 | publish | atlas bundle export (`.atlas` folder, zip) with hashes; publish over the bridge token; open-from-server mode on `/atlas/projects/<id>/`; the fixture mount round-trips through a local laicpmsdb |
 | 10 | results | results layer and spot-panel values from `GET /v1/mounts/{id}/results`, preferred run by default, link to the acquisition |
 | 11 | laser | stage registration from fiducials, generic spot-list CSV, one adapter per named laser software with an example file |
+
+Phases 9 to 11 are built (2026-11-03) as section 7 describes. The fixture
+bundle round-trips through a local laicpmsdb (`make dev`, its ff8c070):
+publish 201, files served with the token and with `?access=`, spots upserted,
+the bundle opened by its hosted viewer at `/atlas/`, results read, also in
+that viewer with its `access` token alone (laicpmsdb 1bf6ad4). Open: the
+adapter for the lab's laser software.
 
 ## 9. Verification
 
