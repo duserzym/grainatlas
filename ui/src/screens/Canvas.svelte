@@ -11,6 +11,8 @@
   import { download } from '../lib/files';
   import { formatName, grainAt, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
+  import { isHosted, open as openLink } from '@lab/bridge';
+  import { mountSpots, spotLink } from '../lib/laicpmsdb';
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
@@ -139,6 +141,31 @@
   }
   function centerOnUm(x: number, y: number, wUm = 200) {
     if (view) viewer?.centerOn(x / umPerPx, y / umPerPx, Math.max(view.zoom, Math.min(view.w, view.h) / (wUm / umPerPx) / 3));
+  }
+
+  // A deep link asked for a spot: center on it once the viewer has a size.
+  $effect(() => {
+    const id = app.focusSpot;
+    if (!id || !view || !viewer) return;
+    const s = app.spots.find((x) => x.id === id);
+    if (!s || s.area_id !== areaId) return;
+    app.focusSpot = null;
+    panel.open = true;
+    centerOnUm(s.x_um, s.y_um);
+  });
+
+  // ---- laicpmsdb (through UPb Studio) -------------------------------------------
+  const hosted = isHosted();
+  async function openInLaicpmsdb(s: Spot) {
+    const url = spotLink(s);
+    if (!(await openLink(url))) app.error = `UPb Studio did not open ${url}`;
+  }
+  function sendSpots() {
+    if (!app.project || !areaId) return;
+    const { body, skipped } = mountSpots(app.project.uuid, sample, $state.snapshot(spots) as Spot[]);
+    const mount = app.project.laicpmsdb.mount_id;
+    download(JSON.stringify(body, null, 2), `${app.pkg?.name ?? 'grainatlas'}_${areaId}_laicpmsdb-spots.json`, 'application/json');
+    app.notice = `${body.spots.length} spots for ${mount ? `mount ${mount}` : 'laicpmsdb (no mount id set)'}${skipped ? `; ${skipped} lines and rasters left out` : ''}.`;
   }
 
   // ---- spots --------------------------------------------------------------------
@@ -779,6 +806,9 @@
               <tr><td>id</td><td class="mono small">{focus.id}</td></tr>
             </tbody>
           </table>
+          <label class="field">laicpmsdb acquisition <input type="text" placeholder="id (optional)" value={focus.acquisition_id ?? ''} onchange={(e) => updateSpot(focus.id, { acquisition_id: e.currentTarget.value.trim() || null })} data-testid="panel-acquisition" /></label>
+          <button class="linkout" onclick={() => openInLaicpmsdb(focus)} disabled={!hosted} data-testid="open-laicpmsdb"
+            title={hosted ? (focus.acquisition_id ? 'Open this acquisition in the Sessions tab' : `Search laicpmsdb for the label ${focus.name}`) : 'Available when grainatlas runs inside UPb Studio'}>Open in laicpmsdb</button>
           <div class="two">
             <button onclick={() => renameFromPattern([focus.id])}>Rename from pattern</button>
             <button class="danger" onclick={() => { app.selection = [focus.id]; deleteSelection(); }}>Delete</button>
@@ -827,6 +857,8 @@
           <button onclick={() => exportSpots('csv')} disabled={!app.spots.length} data-testid="export-csv">Spots CSV</button>
           <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
           <button onclick={() => renameFromPattern(app.selection.length ? app.selection : spots.map((s) => s.id))} disabled={!spots.length} title="Rename the selected spots (or all in this area) from the pattern">Rename</button>
+          <button onclick={sendSpots} disabled={!spots.length} data-testid="send-laicpmsdb"
+            title="Download this area's spots as the JSON body of laicpmsdb's POST /v1/mounts/{'{mount_id}'}/spots (mosaic µm)">Send spots to laicpmsdb</button>
         </div>
         <div class="list">
           <table class="data">

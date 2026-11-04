@@ -1,5 +1,8 @@
 // The one interface the UI talks to. Two implementations: the wasm core in a
-// Web Worker (static web page) and the native core through Tauri commands.
+// Web Worker (static web page, and the page hosted by UPb Studio) and the native
+// core through grainatlas's own Tauri commands (desktop app).
+
+import { isHosted } from '@lab/bridge';
 
 import type {
   AreaParams, Grain, LayoutParams, LayoutResult, MosaicJson, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
@@ -52,13 +55,22 @@ export interface Core {
 
 let instance: Promise<Core> | null = null;
 
-export function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+export { isHosted };
+
+/**
+ * True only in grainatlas's own desktop app, where its Tauri commands exist.
+ * Ask the bridge first: UPb Studio hosts this page in a Tauri webview too
+ * (`__TAURI_INTERNALS__` is present there), but only the bridge commands are
+ * allowed in it, so a hosted page uses the wasm core and the web file paths.
+ */
+export function isDesktop(): boolean {
+  if (typeof window === 'undefined' || isHosted()) return false;
+  return '__TAURI_INTERNALS__' in window;
 }
 
 export function getCore(): Promise<Core> {
   if (!instance) {
-    instance = isTauri() ? import('./tauri').then((m) => new m.TauriCore()) : import('./wasm').then((m) => new m.WasmCore());
+    instance = isDesktop() ? import('./tauri').then((m) => new m.TauriCore()) : import('./wasm').then((m) => new m.WasmCore());
   }
   return instance;
 }

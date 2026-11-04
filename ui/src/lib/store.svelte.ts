@@ -2,6 +2,7 @@
 // project record, grains, spots and labels, and an undo history of edits.
 
 import { getCore, type Core } from './core/core';
+import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
 import type { AreaParams, AreaRecord, Grain, Label, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
@@ -73,6 +74,10 @@ class AppState {
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
   settings = $state<Settings>(loadSettings());
+  /** A deep link (`?project=&spot=`) waiting for its package to be opened; `name` is the package, null when unknown here. */
+  deepLink = $state<(DeepLink & { name: string | null }) | null>(null);
+  /** Spot the canvas should center on once its view is ready (deep links). */
+  focusSpot = $state<string | null>(null);
   layers = $state({ mosaic: true, outlines: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false });
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];
@@ -170,10 +175,11 @@ class AppState {
       const p = this.fullProject();
       if (!p) return;
       try {
-        localStorage.setItem(`grainatlas.project.${p.package.name}`, JSON.stringify(p));
-        const recent: { name: string; when: string; areas: number; spots: number }[] = JSON.parse(localStorage.getItem('grainatlas.recent') || '[]').filter((r: { name: string }) => r.name !== p.package.name);
-        recent.unshift({ name: p.package.name, when: new Date().toISOString(), areas: p.areas.length, spots: this.spots.length });
-        localStorage.setItem('grainatlas.recent', JSON.stringify(recent.slice(0, 12)));
+        localStorage.setItem(PROJECT_PREFIX + p.package.name, JSON.stringify(p));
+        // The id lets a deep link (?project=<uuid>) find the package name.
+        const recent = readRecent().filter((r) => r.name !== p.package.name);
+        recent.unshift({ id: p.uuid, name: p.package.name, when: new Date().toISOString(), areas: p.areas.length, spots: this.spots.length });
+        localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, 12)));
       } catch {
         /* quota or private mode */
       }
