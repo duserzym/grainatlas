@@ -73,16 +73,45 @@ enum Cmd {
         /// Also segment grains (masks/<area>/, exports/<area>_grains.csv).
         #[arg(long)]
         segment: bool,
-        /// Also print grain maps to exports/<area>_grains.pdf and .svg pages (implies --segment).
-        /// Paper: letter, tabloid (default), a4, a3.
+        /// Also print (implies --segment). Paper: tabloid (default), letter, a4, a3.
+        /// Sheets (default): every owned grain of the package on landscape sheets at a fixed scale,
+        /// exports/<package>_grain_sheets_<paper>.pdf with <package>_print_registration.json
+        /// (frame print_sheet). With --print-style grains: one packed grain map per area,
+        /// exports/<area>_grains.pdf.
         #[arg(long, value_name = "PAPER", num_args = 0..=1, default_missing_value = "tabloid")]
         print: Option<String>,
-        /// Print scale in um of sample per mm of paper (0 = fit).
+        /// sheets (default) or grains.
+        #[arg(long, default_value = "sheets")]
+        print_style: String,
+        /// Print scale in um of sample per mm of paper (sheets: default 8; grains: 0 = fit).
         #[arg(long, default_value_t = 0.0)]
         scale: f64,
+        /// Sheets: no non-local means denoising of the bands.
+        #[arg(long)]
+        no_denoise: bool,
+        /// Sheets: no unsharp mask.
+        #[arg(long)]
+        no_sharpen: bool,
+        /// Sheets: make everything outside the dilated grain outlines this grey (0 to 255),
+        /// where every grain in a band has a closed outline and nothing else stands out.
+        #[arg(long, value_name = "GREY", num_args = 0..=1, default_missing_value = "22")]
+        strip_bg: Option<u8>,
+        /// Sheets: title (default: the package name).
+        #[arg(long)]
+        title: Option<String>,
+        /// Sheets: lab and operator line of the header.
+        #[arg(long)]
+        lab: Option<String>,
         /// Sample name for spot names (`{sample}`) of the stitched area(s).
         #[arg(long)]
         sample: Option<String>,
+        /// One-click Auto tone (background leveling, stretch, CLAHE) on every area, as in the app.
+        #[arg(long)]
+        auto: bool,
+        /// Grain polarity: bright (default), dark (transmitted light) or both (bright grains plus
+        /// CL-dark grains relative to the local epoxy level).
+        #[arg(long)]
+        polarity: Option<String>,
     },
 }
 
@@ -176,7 +205,11 @@ fn main() -> Result<()> {
             }
             println!("{id}");
         }
-        Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, scale, sample } => {
+        Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, print_style, scale, no_denoise, no_sharpen, strip_bg, title, lab, sample, auto, polarity } => {
+            let sheets = print.is_some() && print_style != "grains";
+            if !matches!(print_style.as_str(), "sheets" | "grains") {
+                bail!("--print-style {print_style}: sheets or grains");
+            }
             let (pkg, only, root) = open(&folder)?;
             let mut params: AreaParams = match params {
                 Some(p) => serde_json::from_str(&std::fs::read_to_string(&p)?)?,
@@ -184,6 +217,12 @@ fn main() -> Result<()> {
             };
             if fast {
                 params.blend.mode = grainatlas_core::blend::BlendMode::Feather;
+            }
+            if let Some(pol) = &polarity {
+                params.segment.polarity = serde_json::from_value(serde_json::json!(pol)).with_context(|| format!("--polarity {pol}: bright, dark or both"))?;
+            }
+            if auto {
+                params.photometric.background = true;
             }
             let pj = out.join("project.json");
             let mut project = if pj.exists() {
@@ -194,6 +233,9 @@ fn main() -> Result<()> {
             let start = Instant::now();
             let clock = || start.elapsed().as_secs_f64() * 1000.0;
             let mut summary = Vec::new();
+            // Kept for the sheets: each area's toned mosaic and grains.
+            let mut kept: Vec<(String, usize, usize, Vec<u8>)> = Vec::new();
+            let mut all_grains: std::collections::BTreeMap<String, Vec<grainatlas_core::segment::Grain>> = Default::default();
             for (ai, area) in pkg.info().areas.iter().enumerate() {
                 if only.as_ref().is_some_and(|o| o != &area.id) {
                     continue;
@@ -209,7 +251,11 @@ fn main() -> Result<()> {
                 let t0 = clock();
                 let tiles = pipeline::read_tiles(pkg.as_ref(), ai, rec)?;
                 timings.steps.push(("read".into(), clock() - t0));
-                let o = pipeline::run(rec, &tiles, &params, &Ctl::NONE, &clock, &mut timings)?;
+                let mut o = pipeline::run(rec, &tiles, &params, &Ctl::NONE, &clock, &mut timings)?;
+                if auto {
+                    let tone = grainatlas_core::photometric::tone::auto(&o.linear, Some(&o.coverage), rec.um_per_px(), &params.tone);
+                    pipeline::retone(rec, &mut o, &tone, &[]);
+                }
                 let total: f64 = timings.steps.iter().map(|s| s.1).sum();
                 let pairs_used = o.placement.pairs.iter().filter(|p| p.used).count();
                 eprintln!(
@@ -251,10 +297,13 @@ fn main() -> Result<()> {
                     // The UI keeps grains under `grainatlas_ui` in project.json.
                     let ui = project.extra.entry("grainatlas_ui".into()).or_insert_with(|| serde_json::json!({}));
                     ui["grains"][&area.id] = serde_json::to_value(&grains)?;
-                    if let Some(paper) = &print {
+                    if sheets {
+                        kept.push((area.id.clone(), o.linear.w, o.linear.h, o.base.clone()));
+                        all_grains.insert(area.id.clone(), grains.clone());
+                    } else if let Some(paper) = &print {
                         let t = clock();
                         let rec = project.areas.iter().find(|a| a.id == area.id).expect("area");
-                        let img = pipeline::area_image(rec, &o, &params.tone);
+                        let img = pipeline::area_image(rec, &o, &rec.params.tone);
                         let mut gmap = std::collections::BTreeMap::new();
                         gmap.insert(rec.id.clone(), grains.clone());
                         let lp = grainatlas_core::layout::LayoutParams { paper: paper.clone(), um_per_mm: scale, title: format!("{} · {}", pkg.info().name, rec.name), ..Default::default() };
@@ -281,6 +330,62 @@ fn main() -> Result<()> {
             }
             if summary.is_empty() {
                 bail!("no area matched {}", folder.display());
+            }
+            if sheets {
+                let t = clock();
+                let paper = print.clone().unwrap_or_else(|| "tabloid".into());
+                let own = grainatlas_core::ownership::assign(&project.areas, &all_grains, &Default::default());
+                let name = pkg.info().name.clone();
+                let reg_file = format!("{name}_print_registration.json");
+                let sp = grainatlas_core::layout::sheets::SheetParams {
+                    paper: paper.clone(),
+                    um_per_mm: if scale > 0.0 { scale } else { 8.0 },
+                    enhance: grainatlas_core::photometric::enhance::EnhanceParams {
+                        denoise: !no_denoise,
+                        sharpen: !no_sharpen,
+                        strip: strip_bg.is_some(),
+                        strip_grey: strip_bg.unwrap_or(22),
+                        ..Default::default()
+                    },
+                    title: title.clone().unwrap_or_default(),
+                    lab: lab.clone().unwrap_or_default(),
+                    project: out.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
+                    registration_file: reg_file.clone(),
+                    printed: now_rfc3339().replace('T', " ").trim_end_matches('Z').chars().take(16).collect::<String>() + " UTC",
+                    ..Default::default()
+                };
+                let areas: Vec<grainatlas_core::layout::sheets::SheetArea> = kept
+                    .iter()
+                    .filter_map(|(id, w, h, base)| {
+                        let rec = project.areas.iter().find(|a| &a.id == id)?;
+                        Some(grainatlas_core::layout::sheets::SheetArea {
+                            rec,
+                            img: grainatlas_core::layout::AreaImage {
+                                id: &rec.id,
+                                name: &rec.name,
+                                sample: if rec.sample.is_empty() { &rec.name } else { &rec.sample },
+                                w: *w,
+                                h: *h,
+                                px: base,
+                                lut: grainatlas_core::photometric::tone::lut(&rec.params.tone),
+                                um_per_px: rec.um_per_px(),
+                            },
+                        })
+                    })
+                    .collect();
+                let meta = grainatlas_core::layout::sheets::sheet_meta(pkg.info());
+                let r = grainatlas_core::layout::sheets::sheets(&sp, &areas, &all_grains, &own, &meta);
+                let pdf = grainatlas_core::layout::pdf::pdf_from_svgs(&r.pages)?;
+                write(&out.join(format!("exports/{name}_grain_sheets_{paper}.pdf")), &pdf)?;
+                write(&out.join(format!("exports/{reg_file}")), &serde_json::to_vec_pretty(&r.registration)?)?;
+                write(&out.join("exports/ownership.json"), &serde_json::to_vec_pretty(&own)?)?;
+                let s = &r.stats;
+                eprintln!(
+                    "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} outside the size limits, background stripped in {} bands, kept in {} for safety) in {:.0} ms",
+                    s.sheets, s.bands, s.grains, s.duplicates, s.filtered, s.stripped, s.strip_refused, clock() - t
+                );
+                let ui = project.extra.entry("grainatlas_ui".into()).or_insert_with(|| serde_json::json!({}));
+                ui["ownership"] = serde_json::to_value(&own)?;
             }
             write(&pj, project.to_json().as_bytes())?;
             println!("{}", serde_json::to_string_pretty(&summary)?);

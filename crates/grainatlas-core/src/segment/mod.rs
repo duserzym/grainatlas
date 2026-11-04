@@ -5,6 +5,7 @@
 //! polygons and statistics, reading-order numbering that is stable across
 //! re-runs, and the manual tools (click-grow add, split, merge, renumber).
 
+pub mod filter;
 pub mod morph;
 pub mod shape;
 pub mod watershed;
@@ -23,6 +24,9 @@ pub enum Polarity {
     Bright,
     /// Grains darker than the background (transmitted light).
     Dark,
+    /// Bright grains as `Bright`, plus grains brighter or darker than the local epoxy level
+    /// that overlap none of them: CL-dark (metamict) zircons in cathodoluminescence.
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -67,6 +71,22 @@ pub struct SegmentParams {
     pub row_tolerance: f64,
     /// Work resolution: the mosaic is reduced by this factor.
     pub work_scale: usize,
+    /// `Both`: a pixel is dark when it is below the local epoxy level by this fraction of that
+    /// level (or by the noise margin, whichever is smaller).
+    pub dark_rel: f32,
+    /// Size of the running median that gives the local epoxy level (um).
+    pub background_window_um: f64,
+    /// Drop epoxy bubbles: round dark blobs 12 to 75 um (solidity > 0.88, aspect < 1.35) and the
+    /// bright halo around them.
+    pub reject_bubbles: bool,
+    /// Drop tile-seam slivers: minor axis < 15 um, or aspect > 5 with minor axis < 30 um and
+    /// straight along a tile axis.
+    pub reject_slivers: bool,
+    /// Drop bright exposure-step tile blocks: regions with almost no pixels that stand out from
+    /// the local epoxy level, and anything larger than `max_size_um`.
+    pub reject_blocks: bool,
+    /// Largest grain kept (eq. diameter, um); 0 = no limit.
+    pub max_size_um: f64,
 }
 
 impl Default for SegmentParams {
@@ -88,6 +108,12 @@ impl Default for SegmentParams {
             simplify_px: 0.8,
             row_tolerance: 0.6,
             work_scale: 2,
+            dark_rel: 0.45,
+            background_window_um: 330.0,
+            reject_bubbles: true,
+            reject_slivers: true,
+            reject_blocks: true,
+            max_size_um: 0.0,
         }
     }
 }
@@ -136,7 +162,7 @@ pub fn grain_mask(w: &WorkImage, p: &SegmentParams) -> (Vec<bool>, f32) {
     let sm = gaussian_blur(&w.img, p.smooth_px);
     let thr = p.threshold.unwrap_or_else(|| auto_threshold(&sm, &w.cov, p));
     let (iw, ih) = (sm.w, sm.h);
-    let mut m: Vec<bool> = sm.px.iter().zip(&w.cov).map(|(&v, &c)| c && if p.polarity == Polarity::Bright { v > thr } else { v < thr }).collect();
+    let mut m: Vec<bool> = sm.px.iter().zip(&w.cov).map(|(&v, &c)| c && if p.polarity != Polarity::Dark { v > thr } else { v < thr }).collect();
     if p.open_px > 0 {
         m = morph::open(&m, iw, ih, p.open_px);
     }
@@ -153,7 +179,7 @@ pub fn auto_threshold(sm: &Gray, cov: &[bool], p: &SegmentParams) -> f32 {
     match p.method {
         ThresholdMethod::Otsu => otsu(vals()),
         ThresholdMethod::Background => {
-            let bright = p.polarity == Polarity::Bright;
+            let bright = p.polarity != Polarity::Dark;
             let mut h = vec![0u64; 1024];
             let mut n = 0u64;
             for v in vals() {
@@ -238,6 +264,15 @@ pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grai
     .into_iter()
     .flatten()
     .collect();
+    if p.polarity == Polarity::Both || p.reject_bubbles || p.reject_slivers || p.reject_blocks {
+        // Bubbles are dark blobs in bright-grain images; in transmitted light the grains are.
+        let bubbles = p.reject_bubbles && p.polarity != Polarity::Dark;
+        let an = if p.polarity == Polarity::Both || bubbles || p.reject_blocks { filter::analyse(w, &SegmentParams { reject_bubbles: bubbles, ..p.clone() }) } else { filter::Analysis::default() };
+        filter::reject(&mut grains, p, &an, w.um_per_px);
+        if p.polarity == Polarity::Both {
+            filter::merge_supplement(&mut grains, filter::supplement(w, p, &an));
+        }
+    }
     number(&mut grains, previous, p.row_tolerance);
     grains
 }
@@ -344,7 +379,7 @@ pub fn grain_at(w: &WorkImage, p: &SegmentParams, x_um: f64, y_um: f64) -> Optio
     let (sw, sh) = (sub.w, sub.h);
     let bg = otsu(w.img.px.iter().step_by(13).copied());
     let seed_v = sub.px[(cy as usize - y0) * sw + (cx as usize - x0)];
-    let bright = p.polarity == Polarity::Bright;
+    let bright = p.polarity != Polarity::Dark;
     let inside = |v: f32, t: f32| if bright { v > t } else { v < t };
     // Threshold half way between the seed and the background level; the seed must be a grain.
     let t = p.threshold.unwrap_or_else(|| {

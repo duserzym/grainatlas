@@ -6,6 +6,8 @@
 //! Image buffers start with an 8-byte header: width and height as
 //! little-endian u32.
 
+mod sheets;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
