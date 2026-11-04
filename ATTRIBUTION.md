@@ -21,6 +21,15 @@
 - `svg2pdf` and `pdf-writer` (typst project, MIT OR Apache-2.0) convert the
   SVG print pages to PDF (`crates/grainatlas-core/src/layout/pdf.rs`).
 
+- `image-webp` 0.2.4 (https://github.com/image-rs/image-webp, the image-rs
+  developers, MIT OR Apache-2.0): its lossless WebP (VP8L) encoder,
+  `src/encoder.rs`, is copied into
+  `crates/grainatlas-core/src/atlas/vp8l.rs` for the atlas bundle tiles, with
+  two changes marked in the file: a plain error enum instead of `quick_error`,
+  and a stable sort when code lengths are limited (the unstable sort ordered
+  equal frequencies differently on wasm32, so native and browser tiles
+  differed). The crate itself is a test dependency (decoding).
+
 ## Icon
 
 - The application icon (`tauri/assets-icon.svg`, `ui/public/favicon.svg`) draws

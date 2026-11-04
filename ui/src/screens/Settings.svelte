@@ -1,6 +1,17 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
   import ThemeSwitch from '../components/ThemeSwitch.svelte';
+  import { normalizeServer } from '../lib/laicpmsdb';
+
+  const hosted = app.hosted;
+  let serverText = $state(app.link.server);
+  const serverBad = $derived(serverText.trim() !== '' && !normalizeServer(serverText));
+  function saveServer() {
+    if (serverBad) return;
+    app.link.server = normalizeServer(serverText) ?? '';
+    serverText = app.link.server;
+    app.saveLink();
+  }
 
   let presets = $state(app.settings.spot_presets_um.join(', '));
   function save() {
@@ -26,6 +37,34 @@
     <label class="field">Your name (created_by)
       <input type="text" bind:value={app.settings.user} onchange={save} />
     </label>
+  </div>
+  <div class="glass panel">
+    <h2>laicpmsdb</h2>
+    <label class="field">Server
+      <input type="url" placeholder="http://localhost:8000" bind:value={serverText} onchange={saveServer} aria-invalid={serverBad} data-testid="server" />
+    </label>
+    <p class="faint small">
+      {#if app.serverOverride}This page was opened for {app.serverOverride}, which is used until it is reloaded without <code>?server=</code>.{:else if !app.link.server && app.server}grainatlas is served by {app.server} and uses it.{:else}The laicpmsdb service that receives atlas bundles and spots and gives results. Empty = none; grainatlas works the same without it.{/if}
+    </p>
+    {#if hosted}
+      <p class="faint small">In UPb Studio the shell's sign-in is used (no token needed here).</p>
+    {:else}
+      <label class="field">Token
+        <input type="password" autocomplete="off" placeholder="bearer token from laicpmsdb" bind:value={app.link.token} onchange={() => app.saveLink()} data-testid="token" />
+      </label>
+      <label class="check"><input type="checkbox" bind:checked={app.link.rememberToken} onchange={() => app.saveLink()} /> remember the token on this computer (else until this tab closes)</label>
+    {/if}
+    <label class="field">Atlas tiles
+      <select bind:value={app.link.quality} onchange={() => app.saveLink()} data-testid="quality">
+        <option value={100}>lossless WebP</option>
+        <option value={97}>near-lossless, quality 97 (±1 grey level)</option>
+        <option value={92}>near-lossless, quality 92 (±2 grey levels)</option>
+      </select>
+    </label>
+    <label class="field">SEM packages on the lab storage
+      <input type="text" placeholder="e.g. /laicpmsdb/sem or \\nas\sem" bind:value={app.link.nasRoot} onchange={() => app.saveLink()} />
+    </label>
+    <p class="faint small">Bundles record the raw package as <code>&lt;this folder&gt;/&lt;package name&gt;</code> and its content hash; the package itself is never uploaded.</p>
   </div>
   <div class="glass panel">
     <h2>Appearance</h2>

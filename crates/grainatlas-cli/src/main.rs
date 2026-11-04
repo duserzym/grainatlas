@@ -28,6 +28,29 @@ enum Cmd {
     /// `<area>+auto+grains <sha256>` after Auto tone and per-grain normalisation on the default
     /// segmentation (the native half of the wasm/native parity check).
     Hash { folder: PathBuf },
+    /// Write the atlas bundle of a package (every area stitched with defaults, grains found,
+    /// Auto tone): a `<project_id>.atlas/` folder in OUT, or a zip when OUT ends in `.zip`.
+    Atlas {
+        folder: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Fixed project id (areas get the following ids); a new UUIDv7 otherwise.
+        #[arg(long)]
+        project_id: Option<String>,
+        /// laicpmsdb mount the project is linked to.
+        #[arg(long)]
+        mount_id: Option<String>,
+        /// 100 = lossless WebP tiles, 90 to 99 = near-lossless.
+        #[arg(long, default_value_t = 100)]
+        quality: u8,
+        /// Place this many spots at the first grains' centroids (ids follow the project id + 0x100):
+        /// test fixtures.
+        #[arg(long, default_value_t = 0)]
+        demo_spots: usize,
+        /// `exported` time in atlas.json (default now).
+        #[arg(long)]
+        exported: Option<String>,
+    },
     /// Stitch one area folder (or every area of a package folder) into a project folder.
     Stitch {
         /// An area folder (e.g. Sweden_XS_150X/005_AH1-GC1) or a package folder.
@@ -85,12 +108,73 @@ fn main() -> Result<()> {
             // The same steps as ui/scripts/wasm-hash.mjs, through the Session both front ends use.
             let mut s = Session::new("hash");
             s.open_source(Arc::new(DirSource::new(&folder)?), "hash", "1970-01-01T00:00:00Z")?;
+            s.pin_identity(PARITY_ID, EPOCH)?;
+            let mut grains = serde_json::Map::new();
             for area in &pkg.info().areas {
                 if only.as_ref().is_some_and(|o| o != &area.id) {
                     continue;
                 }
-                println!("{}+auto+grains {}", area.id, auto_grains_hash(&mut s, &area.id)?);
+                let (hash, mut g) = auto_grains(&mut s, &area.id)?;
+                println!("{}+auto+grains {hash}", area.id);
+                pin_grain_ids(&mut g, PARITY_ID.parse()?, grains.values().map(|v| v.as_array().map_or(0, |a| a.len())).sum());
+                grains.insert(area.id.clone(), g);
             }
+            // The atlas bundle of that state (ui/scripts/wasm-hash.mjs does the same).
+            let full = full_project(&s, serde_json::Value::Object(grains), serde_json::json!([]))?;
+            let opts = serde_json::json!({ "quality": 100, "exported": EPOCH }).to_string();
+            let files = s.atlas_files(&full, &opts)?;
+            println!("bundle {}", grainatlas_core::util::sha256_hex(&files[0].1));
+            println!("bundle.zip {}", grainatlas_core::util::sha256_hex(&grainatlas_core::atlas::zip(PARITY_ID, &files)?));
+        }
+        Cmd::Atlas { folder, out, project_id, mount_id, quality, demo_spots, exported } => {
+            let (pkg, only, root) = open(&folder)?;
+            let mut s = Session::new("atlas");
+            s.open_source(Arc::new(DirSource::new(&root)?), &abs(&root), &now_rfc3339())?;
+            if let Some(id) = &project_id {
+                s.pin_identity(id, EPOCH)?;
+            }
+            if let Some(m) = &mount_id {
+                s.set_link(m, "")?;
+            }
+            let mut grains = serde_json::Map::new();
+            let mut spots = Vec::new();
+            for area in &pkg.info().areas {
+                if only.as_ref().is_some_and(|o| o != &area.id) {
+                    continue;
+                }
+                let (_, mut g) = auto_grains(&mut s, &area.id)?;
+                if project_id.is_some() {
+                    let base = s.project.as_ref().expect("project").uuid;
+                    pin_grain_ids(&mut g, base, grains.values().map(|v| v.as_array().map_or(0, |a| a.len())).sum());
+                }
+                let gs: Vec<grainatlas_core::segment::Grain> = serde_json::from_value(g.clone())?;
+                let project = s.project.as_ref().expect("project");
+                let rec = project.areas.iter().find(|a| a.id == area.id).expect("area");
+                for g in gs.iter().take(demo_spots.saturating_sub(spots.len())) {
+                    let mut sp = grainatlas_core::spots::new_spot(&rec.id, &rec.sample, &gs, &spots, &project.settings, g.centroid_um[0], g.centroid_um[1], 25.0, EPOCH);
+                    sp.id = uuid_after(project.uuid, 0x100 + spots.len() as u128);
+                    spots.push(sp);
+                }
+                grains.insert(area.id.clone(), g);
+            }
+            let full = full_project(&s, serde_json::Value::Object(grains), serde_json::to_value(&spots)?)?;
+            let opts = serde_json::json!({ "quality": quality, "exported": exported.unwrap_or_else(now_rfc3339) }).to_string();
+            let files = s.atlas_files(&full, &opts)?;
+            let id = s.project.as_ref().expect("project").uuid.to_string();
+            if out.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip")) {
+                write(&out, &grainatlas_core::atlas::zip(&id, &files)?)?;
+                eprintln!("{}: {} files", out.display(), files.len());
+            } else {
+                let dir = out.join(format!("{id}.atlas"));
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)?;
+                }
+                for (rel, bytes) in &files {
+                    write(&dir.join(rel), bytes)?;
+                }
+                eprintln!("{}: {} files", dir.display(), files.len());
+            }
+            println!("{id}");
         }
         Cmd::Stitch { folder, out, params, fast, no_pyramid, png, segment, print, scale, sample } => {
             let (pkg, only, root) = open(&folder)?;
@@ -224,9 +308,31 @@ fn open(folder: &Path) -> Result<(Box<dyn Package>, Option<String>, PathBuf)> {
     Ok((pkg, None, folder))
 }
 
+const EPOCH: &str = "1970-01-01T00:00:00Z";
+/// Project id of the parity bundle (`grainatlas hash`, ui/scripts/wasm-hash.mjs).
+const PARITY_ID: &str = "00000000-0000-7000-8000-000000000000";
+
+fn uuid_after(id: uuid::Uuid, k: u128) -> uuid::Uuid {
+    uuid::Uuid::from_u128(id.as_u128().wrapping_add(k))
+}
+
+/// Grain ids are new UUIDv7s on every run; reproducible bundles number them from `base + 0x1000`.
+fn pin_grain_ids(grains: &mut serde_json::Value, base: uuid::Uuid, first: usize) {
+    for (i, g) in grains.as_array_mut().into_iter().flatten().enumerate() {
+        g["id"] = serde_json::json!(uuid_after(base, 0x1000 + (first + i) as u128));
+    }
+}
+
+/// The session's project with the UI-held parts the bundle reads (`grainatlas_ui`).
+fn full_project(s: &Session, grains: serde_json::Value, spots: serde_json::Value) -> Result<String> {
+    let mut v: serde_json::Value = serde_json::from_str(&s.project_json()?)?;
+    v["grainatlas_ui"] = serde_json::json!({ "grains": grains, "spots": spots, "labels": [] });
+    Ok(v.to_string())
+}
+
 /// Stitch with defaults, find grains, apply Auto and per-grain normalisation (strength 0.8, area
-/// reference), and return the base mosaic's sha256.
-fn auto_grains_hash(s: &mut Session, id: &str) -> Result<String> {
+/// reference); returns the base mosaic's sha256 and the grains (JSON).
+fn auto_grains(s: &mut Session, id: &str) -> Result<(String, serde_json::Value)> {
     let defaults = serde_json::to_string(&AreaParams::default())?;
     s.stitch(id, &defaults, &Ctl::NONE, &|| 0.0)?;
     let grains = s.segment(id, &serde_json::to_string(&grainatlas_core::segment::SegmentParams::default())?, "")?;
@@ -234,7 +340,7 @@ fn auto_grains_hash(s: &mut Session, id: &str) -> Result<String> {
     let mut p: AreaParams = serde_json::from_str(&s.auto_params(id, &defaults)?)?;
     p.tone.grain_norm.enabled = true;
     let r: serde_json::Value = serde_json::from_str(&s.recompute(id, &serde_json::to_string(&p)?, &Ctl::NONE, &|| 0.0)?)?;
-    Ok(r["mosaic"]["sha256"].as_str().unwrap_or_default().to_string())
+    Ok((r["mosaic"]["sha256"].as_str().unwrap_or_default().to_string(), serde_json::from_str(&grains)?))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {

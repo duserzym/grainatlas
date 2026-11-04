@@ -128,6 +128,19 @@ impl Session {
     pub fn set_link(&mut self, mount_id: &str, samples: &str) -> Result<(), JsError> {
         self.0.set_link(mount_id, samples).map_err(err)
     }
+    /// The atlas bundle as a zip (`<project_id>.atlas/…`) for a full project JSON and
+    /// BundleOptions JSON.
+    pub fn atlas_zip(&self, project: &str, options: &str) -> Result<Vec<u8>, JsError> {
+        self.0.atlas_zip(project, options).map_err(err)
+    }
+    /// Records a publish (Published JSON) in the project.
+    pub fn record_published(&mut self, published: &str) -> Result<(), JsError> {
+        self.0.record_published(published).map_err(err)
+    }
+    /// Fixed project and area ids, `created` and package path (parity checks).
+    pub fn pin_identity(&mut self, project_id: &str, created: &str) -> Result<(), JsError> {
+        self.0.pin_identity(project_id, created).map_err(err)
+    }
     pub fn layout(&self, params: &str, grains: &str, spots: &str, labels: &str, tone: &str) -> Result<String, JsError> {
         self.0.layout(params, grains, spots, labels, tone).map_err(err)
     }

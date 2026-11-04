@@ -45,6 +45,24 @@ pub struct Project {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct LaicpmsdbLink {
     pub mount_id: Option<Uuid>,
+    /// Atlas bundles published to laicpmsdb, oldest first (append-only on the server).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published: Vec<Published>,
+}
+
+/// One publish of the atlas bundle (`POST /v1/mounts/{mount_id}/atlas`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Published {
+    pub server: String,
+    pub mount_id: Option<Uuid>,
+    /// The version number the server gave this bundle, when it gave one.
+    pub version: Option<u64>,
+    /// sha256 of `atlas.json` (which carries the hash of every other file).
+    pub atlas_sha256: String,
+    /// sha256 of the zip that was posted.
+    pub zip_sha256: String,
+    pub at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

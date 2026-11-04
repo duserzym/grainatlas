@@ -1,5 +1,5 @@
-//! Image pyramid of 512 px tiles: level 0 is full resolution, each next level
-//! halves it, down to a single tile.
+//! Image pyramid of square tiles (512 px in the app, 256 px in atlas bundles):
+//! level 0 is full resolution, each next level halves it, down to a single tile.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,15 +35,23 @@ pub struct MosaicJson {
 #[derive(Clone, Debug)]
 pub struct Pyramid {
     pub levels: Vec<(LevelInfo, Vec<u8>)>,
+    /// Tile edge in pixels.
+    pub tile: usize,
 }
 
 impl Pyramid {
     pub fn build(w: usize, h: usize, px: Vec<u8>) -> Pyramid {
+        Pyramid::build_tiled(w, h, px, TILE)
+    }
+
+    /// A pyramid of `tile`-pixel tiles.
+    pub fn build_tiled(w: usize, h: usize, px: Vec<u8>, tile: usize) -> Pyramid {
+        let tile = tile.max(1);
         let mut levels = Vec::new();
         let (mut cw, mut ch, mut cur) = (w, h, px);
         let mut l = 0;
         loop {
-            let info = LevelInfo { level: l, w: cw, h: ch, cols: cw.div_ceil(TILE).max(1), rows: ch.div_ceil(TILE).max(1), scale: 1 << l };
+            let info = LevelInfo { level: l, w: cw, h: ch, cols: cw.div_ceil(tile).max(1), rows: ch.div_ceil(tile).max(1), scale: 1 << l };
             let last = info.cols == 1 && info.rows == 1;
             let next = if last { None } else { Some(half_u8(cw, ch, &cur)) };
             levels.push((info, cur));
@@ -57,7 +65,7 @@ impl Pyramid {
                 None => break,
             }
         }
-        Pyramid { levels }
+        Pyramid { levels, tile }
     }
 
     pub fn infos(&self) -> Vec<LevelInfo> {
@@ -70,10 +78,10 @@ impl Pyramid {
         if col >= info.cols || row >= info.rows {
             return None;
         }
-        let x0 = col * TILE;
-        let y0 = row * TILE;
-        let tw = TILE.min(info.w - x0);
-        let th = TILE.min(info.h - y0);
+        let x0 = col * self.tile;
+        let y0 = row * self.tile;
+        let tw = self.tile.min(info.w - x0);
+        let th = self.tile.min(info.h - y0);
         let mut out = Vec::with_capacity(tw * th);
         for y in y0..y0 + th {
             out.extend_from_slice(&px[y * info.w + x0..y * info.w + x0 + tw]);

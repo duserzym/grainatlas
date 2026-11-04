@@ -58,6 +58,8 @@ const ops: Record<string, Handler> = {
     JSON.parse(s().layout(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(spots), JSON.stringify(labels), JSON.stringify(tone))),
   pdf: ({ pages }) => wasm.pdf_from_svgs(JSON.stringify(pages)),
   register: ({ pairs }) => JSON.parse(wasm.register(JSON.stringify(pairs))),
+  atlasZip: ({ project, options }) => s().atlas_zip(JSON.stringify(project), JSON.stringify(options)),
+  recordPublished: ({ published }) => s().record_published(JSON.stringify(published)),
 };
 
 function s(): wasm.Session {

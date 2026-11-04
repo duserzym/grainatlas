@@ -3,7 +3,7 @@ SHELL := /bin/bash
 WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>/dev/null | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
 WASM_OUT := ui/src/lib/core/pkg
 
-.PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web
+.PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upbstudio/bridge".
@@ -61,7 +61,14 @@ parity: wasm
 	node ui/scripts/wasm-hash.mjs tests/fixtures/tm4000/Sweden_XS_150X > target/wasm.hash
 	diff target/native.hash target/wasm.hash && echo "parity ok: $$(cat target/native.hash)"
 
-e2e: ui-build
+# The fixture's atlas bundle (fixed ids, three spots, linked to a mount), served by the fake
+# laicpmsdb of `pnpm preview` for the open-from-server and results tests.
+ATLAS_FIXTURE_ID := 01972c4e-0000-7000-8000-00000000a7a5
+atlas-fixture:
+	cargo run --release -q -p grainatlas-cli -- atlas tests/fixtures/tm4000/Sweden_XS_150X --out target/atlas-fixture \
+		--project-id $(ATLAS_FIXTURE_ID) --mount-id 01972c4e-0000-7000-8000-0000000000b1 --demo-spots 3 --exported 2026-11-03T00:00:00Z
+
+e2e: ui-build atlas-fixture
 	cd ui && pnpm exec playwright test
 
 test: core-test parity e2e
