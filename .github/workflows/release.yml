@@ -1,0 +1,61 @@
+name: release
+# On a v* tag: build the static web build and attach it to a draft release as
+# grainatlas-web-<version>.tar.gz (index.html at the top) plus its .sha256.
+# UPb Studio pins that asset in its modules.lock.json (url + sha256).
+#
+# @lab/bridge is a sibling-checkout dependency until it is published, so the
+# job checks out grainatlas and upbstudio side by side (ui/package.json has
+# "file:../../upbstudio/bridge"). If duserzym/upbstudio is private, add a
+# read-only token as the UPBSTUDIO_TOKEN secret.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: grainatlas
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: grainatlas
+      - uses: actions/checkout@v4
+        with:
+          repository: duserzym/upbstudio
+          path: upbstudio
+          token: ${{ secrets.UPBSTUDIO_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: grainatlas
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tag matches ui/package.json
+        run: |
+          V=$(node -p "require('./ui/package.json').version")
+          test "v$V" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME but ui/package.json is $V"; exit 1; }
+      - name: Tools and dependencies
+        run: |
+          V=$(grep -A1 'name = "wasm-bindgen"$' Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
+          cargo install --locked wasm-bindgen-cli --version "$V"
+          make bridge
+          cd ui && pnpm install --frozen-lockfile
+      - name: Web build archive
+        run: make release-web
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            grainatlas/target/release-web/grainatlas-web-*.tar.gz
+            grainatlas/target/release-web/grainatlas-web-*.tar.gz.sha256
