@@ -65,11 +65,20 @@ test('results of the linked mount in the spot panel and as a coloured layer', as
   await expect(legend).toHaveCount(0);
 });
 
-test('without a token the results say so and nothing is drawn', async ({ page, request }) => {
+test("laicpmsdb's viewer link: results with the access token alone, for the published mount only", async ({ page, request }) => {
+  // viewer_url as laicpmsdb 1bf6ad4 frames it: /atlas/?server=&project=&mount=&access=; no bearer token.
   await request.post(`${FAKE}/_fake/reset`);
-  await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}&access=test-access`);
+  await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}&mount=01972c4e-0000-7000-8000-0000000000b1&access=test-access`);
+  await expect(page.getByTestId('spot')).toHaveCount(3);
+  await expect(page.getByTestId('result-dot')).toHaveCount(3);
+  const st = await (await request.get(`${FAKE}/_fake/state`)).json();
+  const call = st.requests.find((r: { path: string }) => r.path.endsWith('/results'));
+  expect(call).toMatchObject({ path: '/v1/mounts/01972c4e-0000-7000-8000-0000000000b1/results', auth: null, access: true });
+
+  // A mount the token's project is not published on: 404, shown next to the feature, nothing drawn.
+  await page.goto(`./?server=${encodeURIComponent(FAKE)}&project=${PROJECT}&mount=01972c4e-0000-7000-8000-0000000000b2&access=test-access`);
   await expect(page.getByTestId('spot')).toHaveCount(3);
   await page.getByTestId('tab-link').click();
-  await expect(page.getByTestId('results-status')).toContainText('401');
+  await expect(page.getByTestId('results-status')).toContainText('404');
   await expect(page.getByTestId('result-dot')).toHaveCount(0);
 });

@@ -444,7 +444,9 @@ Workflow v1 as built (2026-11-03, phases 9 to 11; code in
   200 the same zip again; `version`, `sha256`, `url`, `warnings` and the
   `spots` upsert summary are read, matched acquisitions become the spots'
   acquisition ids); `GET /atlas/projects/<id>/<path>` with the bearer token
-  or `?access=` (taken from the page link); `GET /v1/mounts/{id}/results`,
+  or `?access=` (taken from the page link; laicpmsdb's `viewer_url` is
+  `/atlas/?server=&project=&mount=&access=`); `GET /v1/mounts/{id}/results`
+  with the bearer token, else `?access=` for the mount named by `?mount=`,
   one entry per spot and acquisition with `date` (`value`, `two_sigma`,
   `uncertainty_type`, `method`, `passes`, `unit`), `ratios` and
   `concentrations` as maps by name, `th_u`, `discordance_percent`, `flags`;
@@ -488,9 +490,9 @@ Workflow v1 as built (2026-11-03, phases 9 to 11; code in
 Phases 9 to 11 are built (2026-11-03) as section 7 describes. The fixture
 bundle round-trips through a local laicpmsdb (`make dev`, its ff8c070):
 publish 201, files served with the token and with `?access=`, spots upserted,
-the bundle opened by its hosted viewer at `/atlas/`, results read. Open: the
-adapter for the lab's laser software, and results inside laicpmsdb's own
-viewer page, which has a file `access` token but no API token.
+the bundle opened by its hosted viewer at `/atlas/`, results read, also in
+that viewer with its `access` token alone (laicpmsdb 1bf6ad4). Open: the
+adapter for the lab's laser software.
 
 ## 9. Verification
 

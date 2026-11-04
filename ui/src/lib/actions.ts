@@ -167,7 +167,7 @@ export async function startDeepLink(search = location.search) {
     // A published bundle: everything comes from the server, no package needed.
     app.serverOverride = link.server;
     const { openFromServer } = await import('./remote');
-    await openFromServer(link.server, link.project, link.spot, link.access ?? null);
+    await openFromServer(link.server, link.project, link.spot, link.access ?? null, link.mount ?? null);
     return;
   }
   app.deepLink = { ...link, name: packageNameFor(link.project) };

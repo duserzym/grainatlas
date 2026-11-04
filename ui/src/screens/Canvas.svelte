@@ -64,7 +64,7 @@
     return app.spots.find((s) => s.id === id) ?? null;
   });
   // ---- results overlay (GET /v1/mounts/{id}/results; memory only) ------------------------------
-  const mountId = $derived(app.project?.laicpmsdb.mount_id ?? null);
+  const mountId = $derived(app.mountId);
   const resultsBy = $derived<Record<string, SpotResult>>(app.results?.data ? matchResults(app.spots, app.results.data) : {});
   const metrics = $derived(app.results?.data ? metricsOf(app.results.data.spots) : ['date']);
   const shown = $derived(spots.filter((s) => resultsBy[s.id]).map((s) => ({ s, r: resultsBy[s.id], v: valueOf(resultsBy[s.id], app.colourBy) })));

@@ -214,8 +214,10 @@ export function atlasUrl(base: string, projectId: string, path = ''): string {
   return `${base}/atlas/projects/${encodeURIComponent(projectId)}/${path}`;
 }
 
-export function getResults(base: string, token: string | null, mountId: string): Promise<import('./results').MountResults> {
-  return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/results`, token, { method: 'GET' }, 'Mount results');
+/** With no bearer token, laicpmsdb's viewer `access` token (read-only, that project's mount only) works too. */
+export function getResults(base: string, token: string | null, mountId: string, access: string | null = null): Promise<import('./results').MountResults> {
+  const q = !token && access ? `?access=${encodeURIComponent(access)}` : '';
+  return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/results${q}`, token, { method: 'GET' }, 'Mount results');
 }
 
 /** laicpmsdb's own page for an acquisition (when the shell cannot route a laicpmsdb:// link). */
