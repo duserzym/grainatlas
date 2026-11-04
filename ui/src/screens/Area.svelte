@@ -2,7 +2,7 @@
   // Area screen: tile grid preview, metadata, stitch and correction controls
   // with a live histogram, per-tile overrides and the residual map.
   import { app } from '../lib/store.svelte';
-  import { exportPng, retone, stitch, stitchAll } from '../lib/actions';
+  import { changeScale, exportPng, retone, scaleText, stitch, stitchAll } from '../lib/actions';
   import { rawToCanvas } from '../lib/files';
   import Histogram from '../components/Histogram.svelte';
   import type { TileOverride } from '../lib/core/types';
@@ -111,6 +111,11 @@
       </ul>
       <button class="primary wide" onclick={stitchAll} disabled={!!app.busy}>Stitch all areas</button>
       {#if app.pkg.navigation}<p class="faint small">Navigation image and stage calibration found.</p>{/if}
+      <p class="faint small" data-testid="open-kind">
+        {#if app.pkg.kind === 'area'}One area folder; scale and stage positions from its sidecars.
+        {:else if app.pkg.kind === 'loose'}Loose images{app.project?.package.loose ? `, ${scaleText(app.project.package.loose)}` : ''}. <button class="link" onclick={changeScale} disabled={!!app.busy}>Change…</button>
+        {:else}Package ({app.pkg.reader}).{/if}
+      </p>
     </aside>
 
     <section class="glass preview">
@@ -346,5 +351,12 @@
   }
   .small {
     font-size: 0.8rem;
+  }
+  .link {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font-size: inherit;
   }
 </style>

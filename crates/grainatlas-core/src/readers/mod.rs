@@ -2,6 +2,7 @@
 //! unknown metadata is kept as a string map.
 
 pub mod generic;
+pub mod loose;
 pub mod tm4000;
 
 use std::collections::BTreeMap;
@@ -48,10 +49,27 @@ pub struct AreaMeta {
     pub meta: BTreeMap<String, String>,
 }
 
+/// How a package was opened (recorded in `project.json` as `package.kind`).
+pub mod kind {
+    /// A whole instrument package (TM4000 `.zag` folder, or a folder with `positions.csv`).
+    pub const PACKAGE: &str = "package";
+    /// One TM4000 area folder on its own (`.ini`, tiles and `.txt` sidecars, no `.zag` above it).
+    pub const AREA: &str = "area";
+    /// Loose images without sidecars; the scale was given by the user ([`super::loose::LooseSpec`]).
+    pub const LOOSE: &str = "loose";
+}
+
+pub fn default_kind() -> String {
+    kind::PACKAGE.to_string()
+}
+
 /// A whole package as shown on the Open screen.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PackageInfo {
     pub reader: String,
+    /// [`kind::PACKAGE`], [`kind::AREA`] or [`kind::LOOSE`].
+    #[serde(default = "default_kind")]
+    pub kind: String,
     pub name: String,
     pub areas: Vec<AreaMeta>,
     pub meta: BTreeMap<String, String>,
@@ -109,7 +127,39 @@ pub fn open(src: Arc<dyn Source>) -> Result<Box<dyn Package>> {
     if generic::GenericPackage::detect(src.as_ref()) {
         return Ok(Box::new(generic::GenericPackage::open(src)?));
     }
-    Err(Error::Unsupported("no reader recognises this folder (expected a TM4000 Zigzag package or images with positions.csv)".into()))
+    Err(Error::Unsupported("no reader recognises this folder (expected a TM4000 Zigzag package or area folder, images with positions.csv, or plain images)".into()))
+}
+
+/// What opening a source found: a package the readers understand, or images that need a scale.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Probe {
+    /// A reader recognised the source.
+    Opened { info: PackageInfo },
+    /// Plain images with no calibration: ask the user once for a scale ([`loose::LooseSpec`]).
+    NeedsScale { name: String, images: Vec<loose::ImageEntry> },
+}
+
+/// Opens a source if a reader recognises it; otherwise lists its images (loose files).
+pub fn probe(src: Arc<dyn Source>) -> Result<(Probe, Option<Box<dyn Package>>)> {
+    match open(src.clone()) {
+        Ok(pkg) => Ok((Probe::Opened { info: pkg.info().clone() }, Some(pkg))),
+        Err(Error::Unsupported(msg)) => {
+            let images = loose::list_images(src.as_ref());
+            if images.is_empty() {
+                return Err(Error::Unsupported(msg));
+            }
+            let name = loose::set_name(&images.iter().map(|i| i.file.clone()).collect::<Vec<_>>(), &src.root_name());
+            Ok((Probe::NeedsScale { name, images }, None))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// True for the image types the readers decode.
+pub fn is_image(f: &str) -> bool {
+    let l = f.to_ascii_lowercase();
+    [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"].iter().any(|e| l.ends_with(e))
 }
 
 /// Moves positions so the smallest x and y are zero.

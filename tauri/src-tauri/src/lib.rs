@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use grainatlas_core::Ctl;
 use grainatlas_core::project::session::{self, Session};
-use grainatlas_core::source::DirSource;
+use grainatlas_core::source::{DirSource, FileListSource, Source};
 use serde::Serialize;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, State};
@@ -53,13 +53,37 @@ struct Progress {
     fraction: f32,
 }
 
+/// Opens one folder (a package or an area folder) or a set of files (loose images, or the
+/// files of an area). Returns the core's probe JSON: opened, or needs a scale.
+#[tauri::command]
+async fn open_paths(state: State<'_, AppState>, paths: Vec<String>) -> Res<String> {
+    let ps: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let (src, path, files): (Arc<dyn Source>, PathBuf, Vec<String>) = match ps.as_slice() {
+        [one] if one.is_dir() => (Arc::new(DirSource::new(one).map_err(e)?), one.clone(), Vec::new()),
+        [] => return Err("nothing chosen".into()),
+        _ => {
+            let dir = ps[0].parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            (Arc::new(FileListSource::new(&ps).map_err(e)?), dir, paths.clone())
+        }
+    };
+    let out = {
+        let mut s = lock(&state);
+        s.origin_files = files;
+        s.open_source(src, &path.display().to_string(), &now_iso()).map_err(e)?
+    };
+    *state.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(path);
+    Ok(out)
+}
+
 #[tauri::command]
 async fn open_path(state: State<'_, AppState>, path: String) -> Res<String> {
-    let p = PathBuf::from(&path);
-    let src = DirSource::new(&p).map_err(e)?;
-    let info = lock(&state).open_source(Arc::new(src), &path, &now_iso()).map_err(e)?;
-    *state.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(p);
-    Ok(info)
+    open_paths(state, vec![path]).await
+}
+
+/// Loose images of the last open, with the scale the user gave (LooseSpec JSON).
+#[tauri::command]
+async fn open_loose(state: State<'_, AppState>, spec: String) -> Res<String> {
+    lock(&state).open_loose(&spec, &now_iso()).map_err(e)
 }
 
 /// Opens a `<name>.grainatlas/` project folder: its package (by the recorded path) and its
@@ -69,11 +93,29 @@ async fn open_project(state: State<'_, AppState>, path: String) -> Res<String> {
     let pj = std::fs::read_to_string(PathBuf::from(&path).join("project.json")).map_err(|x| format!("{path}: {x}"))?;
     let v: serde_json::Value = serde_json::from_str(&pj).map_err(e)?;
     let pkg = v["package"]["path"].as_str().ok_or("project.json has no package path")?.to_string();
-    let src = DirSource::new(&pkg).map_err(|x| format!("package {pkg}: {x}"))?;
+    // Loose images reopen from their recorded paths with the recorded scale.
+    let loose_files: Vec<PathBuf> = v["package"]["files"].as_array().map(|a| a.iter().filter_map(|f| f.as_str().map(PathBuf::from)).collect()).unwrap_or_default();
+    let is_loose = v["package"]["kind"] == "loose";
+    let src: Arc<dyn Source> = if is_loose && !loose_files.is_empty() {
+        Arc::new(FileListSource::new(&loose_files).map_err(|x| format!("images of {pkg}: {x}"))?)
+    } else {
+        Arc::new(DirSource::new(&pkg).map_err(|x| format!("package {pkg}: {x}"))?)
+    };
     let info = {
         let mut s = lock(&state);
         s.load_project(&pj).map_err(e)?;
-        s.open_source(Arc::new(src), &pkg, &now_iso()).map_err(e)?
+        s.origin_files = if is_loose { loose_files.iter().map(|p| p.display().to_string()).collect() } else { Vec::new() };
+        let probe = s.open_source(src, &pkg, &now_iso()).map_err(e)?;
+        if is_loose {
+            let spec = serde_json::to_string(&v["package"]["loose"]).map_err(e)?;
+            s.open_loose(&spec, &now_iso()).map_err(e)?
+        } else {
+            let p: serde_json::Value = serde_json::from_str(&probe).map_err(e)?;
+            if p["status"] != "opened" {
+                return Err(format!("{pkg} is not a package any more"));
+            }
+            p["info"].to_string()
+        }
     };
     *state.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(PathBuf::from(&pkg));
     Ok(serde_json::json!({ "info": serde_json::from_str::<serde_json::Value>(&info).map_err(e)?, "project": v }).to_string())
@@ -298,6 +340,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             startup,
             open_path,
+            open_paths,
+            open_loose,
             open_project,
             load_project,
             project_json,

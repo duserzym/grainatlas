@@ -1,11 +1,17 @@
-// Getting package folders in (input, drag and drop) and files out (downloads).
+// Getting packages in (input, drag and drop) and files out (downloads). What
+// comes in is a package folder, one area folder, or loose files; the core
+// decides which (and asks for a scale when images have no calibration).
 
 import { isDesktop, type PackageFile } from './core/core';
 
-/** Files from an <input type=file webkitdirectory>: paths relative to the chosen folder. */
+/**
+ * Files from an <input type=file> (a folder with webkitdirectory, or chosen
+ * files): paths relative to the chosen folder; loose files are named after
+ * their common stem.
+ */
 export function fromInput(list: FileList): { name: string; files: PackageFile[] } {
   const files: PackageFile[] = [];
-  let name = 'package';
+  let name = '';
   for (const f of Array.from(list)) {
     const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
     const parts = rel.split('/');
@@ -13,14 +19,34 @@ export function fromInput(list: FileList): { name: string; files: PackageFile[] 
     const path = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
     if (keep(path)) files.push({ path, file: f });
   }
-  return { name, files };
+  return { name: name || commonStem(files.map((f) => f.path)) || 'images', files };
 }
 
-/** Files from a dropped folder (DataTransferItem.webkitGetAsEntry). */
+/** Common stem of file names without a half-cut running number or trailing separators (core `loose::set_name`). */
+export function commonStem(names: string[]): string {
+  const stems = names.map((n) => (n.split('/').pop() ?? n).replace(/\.[^.]*$/, ''));
+  if (!stems.length) return '';
+  if (stems.length === 1) return stems[0];
+  let n = stems[0].length;
+  for (const s of stems.slice(1)) {
+    let k = 0;
+    while (k < n && k < s.length && s[k] === stems[0][k]) k++;
+    n = k;
+  }
+  let p = stems[0].slice(0, n);
+  if (/^\d/.test(stems[0].slice(n))) p = p.replace(/\d+$/, '');
+  p = p.replace(/[_\- .]+$/, '');
+  return p.length >= 3 ? p : '';
+}
+
+/** A dropped folder (DataTransferItem.webkitGetAsEntry), or dropped files. */
 export async function fromDrop(dt: DataTransfer): Promise<{ name: string; files: PackageFile[] } | null> {
   const items = Array.from(dt.items).map((i) => i.webkitGetAsEntry?.()).filter(Boolean) as FileSystemEntry[];
   const dir = items.find((e) => e.isDirectory) as FileSystemDirectoryEntry | undefined;
-  if (!dir) return null;
+  if (!dir) {
+    const loose = Array.from(dt.files).filter((f) => keep(f.name)).map((f) => ({ path: f.name, file: f as Blob }));
+    return loose.length ? { name: commonStem(loose.map((f) => f.path)) || 'images', files: loose } : null;
+  }
   const files: PackageFile[] = [];
   async function walk(d: FileSystemDirectoryEntry, prefix: string, depth: number) {
     if (depth > 3) return;

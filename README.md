@@ -12,9 +12,11 @@ print layout, desktop). Phase 8 (laicpmsdb link, second instrument) is next.
 
 ## What it does
 
-1. Reads a Hitachi TM4000 Zigzag package (`.zag`, UTF-16LE `.ini` and per-tile
-   `.txt`, unknown keys kept) or any folder of images with `positions.csv`
-   (`file,x_um,y_um,pixel_size_nm`).
+1. Opens a Hitachi TM4000 Zigzag package (`.zag`, UTF-16LE `.ini` and per-tile
+   `.txt`, unknown keys kept), one TM4000 area folder on its own (scale and
+   stage positions from its sidecars), any folder of images with
+   `positions.csv` (`file,x_um,y_um,pixel_size_nm`), or loose images with a
+   scale typed once (each image an area, or one grid); see ADR-0006.
 2. Stitches by stage prior, phase correlation with a Lucas-Kanade refinement
    and a global least-squares solve; corrects per-tile gain and offset, beam
    exposure steps and background; blends with seams and multiband

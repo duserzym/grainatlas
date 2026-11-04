@@ -2,12 +2,14 @@
   import { onMount } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { findAllGrains, loadProjectFile, openExample, openFiles, openPath, stitchAll } from '../lib/actions';
+  import { findAllGrains, loadProjectFile, openExample, openFiles, openPaths, stitchAll } from '../lib/actions';
   import { isDesktop } from '../lib/core/core';
   import { readRecent, type RecentEntry } from '../lib/deeplink';
 
   let over = $state(false);
   let input: HTMLInputElement;
+  let imagesInput: HTMLInputElement;
+  const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp'];
   let recent = $state<RecentEntry[]>([]);
   const desktop = isDesktop();
   let startupDone = false;
@@ -20,7 +22,7 @@
       import('@tauri-apps/api/core').then(async ({ invoke }) => {
         const s = await invoke<{ path: string | null; stitch: boolean; segment: boolean }>('startup');
         if (!s.path) return;
-        await openPath(s.path);
+        await openPaths([s.path]);
         if (s.stitch) await stitchAll();
         if (s.segment) {
           await findAllGrains();
@@ -37,8 +39,7 @@
           else if (e.payload.type === 'leave') over = false;
           else if (e.payload.type === 'drop') {
             over = false;
-            const p = e.payload.paths[0];
-            if (p) openPath(p);
+            if (e.payload.paths.length) openPaths(e.payload.paths);
           }
         })
         .then((f) => (un = f)),
@@ -49,15 +50,24 @@
   async function pick() {
     if (desktop) {
       const { open } = await import('@tauri-apps/plugin-dialog');
-      const p = await open({ directory: true, multiple: false, title: 'Choose a package folder' });
-      if (typeof p === 'string') openPath(p);
+      const p = await open({ directory: true, multiple: false, title: 'Choose a package or area folder' });
+      if (typeof p === 'string') openPaths([p]);
     } else input.click();
   }
 
-  async function chosen() {
-    if (!input.files?.length) return;
-    const { name, files } = fromInput(input.files);
-    input.value = '';
+  async function pickImages() {
+    if (desktop) {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const p = await open({ directory: false, multiple: true, title: 'Choose images', filters: [{ name: 'Images', extensions: IMAGE_EXT }] });
+      if (Array.isArray(p) && p.length) openPaths(p);
+      else if (typeof p === 'string') openPaths([p]);
+    } else imagesInput.click();
+  }
+
+  async function chosen(el: HTMLInputElement) {
+    if (!el.files?.length) return;
+    const { name, files } = fromInput(el.files);
+    el.value = '';
     await openFiles(name, files);
   }
 
@@ -67,7 +77,7 @@
     if (desktop || !e.dataTransfer) return;
     const r = await fromDrop(e.dataTransfer);
     if (r) await openFiles(r.name, r.files);
-    else app.error = 'Drop a folder (the package), not single files.';
+    else app.error = 'Drop a package folder, an area folder or image files.';
   }
 
 
@@ -97,17 +107,27 @@
     class:over
     role="button"
     tabindex="0"
-    aria-label="Open a package folder"
+    aria-label="Open a package folder, an area folder or images"
     ondragover={(e) => { e.preventDefault(); over = true; }}
     ondragleave={() => (over = false)}
     ondrop={drop}
     onclick={pick}
     onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && pick()}
   >
-    <h1>Open a package</h1>
-    <p class="muted">Drop a folder here or click to choose one: a Hitachi TM4000 Zigzag package (the folder with the <code>.zag</code> and one subfolder per area) or any folder of images with a <code>positions.csv</code> (<code>file,x_um,y_um,pixel_size_nm</code>).</p>
+    <h1>Open images</h1>
+    <p class="muted">Drop a folder or image files here, or click to choose a folder. Any of these opens:</p>
+    <ul class="kinds">
+      <li><b>A package</b>: a Hitachi TM4000 Zigzag folder (the <code>.zag</code> and one subfolder per area), or images with a <code>positions.csv</code> (<code>file,x_um,y_um,pixel_size_nm</code>).</li>
+      <li><b>One area folder</b> on its own (<code>001_name/</code> with its <code>.ini</code>, tiles and <code>.txt</code> sidecars): the scale comes from the sidecars.</li>
+      <li><b>Loose images</b> with no sidecars: you give the scale once (µm per pixel or field width); each image is an area, or they form one grid.</li>
+    </ul>
     <p class="faint">Nothing leaves this computer: the files are read in this page{desktop ? ' (desktop app)' : ''}.</p>
-    <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={chosen} data-testid="package-input" />
+    <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={() => chosen(input)} data-testid="package-input" />
+    <input bind:this={imagesInput} type="file" multiple accept=".jpg,.jpeg,.png,.tif,.tiff,.bmp,image/*" hidden onchange={() => chosen(imagesInput)} data-testid="images-input" />
+  </div>
+  <div class="example">
+    <button onclick={pick} data-testid="choose-folder">Choose folder…</button>
+    <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
   </div>
 
   {#if !desktop}<div class="example">
@@ -165,6 +185,15 @@
   .drop p {
     max-width: 44rem;
     margin: var(--space-3) auto 0;
+  }
+  .kinds {
+    max-width: 44rem;
+    margin: var(--space-3) auto 0;
+    text-align: left;
+    display: grid;
+    gap: var(--space-1);
+    color: var(--text-muted);
+    font-size: 0.92rem;
   }
   .example {
     display: flex;

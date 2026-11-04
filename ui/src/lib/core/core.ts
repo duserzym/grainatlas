@@ -5,7 +5,7 @@
 import { isHosted } from '@lab/bridge';
 
 import type {
-  AreaParams, Grain, LayoutParams, LayoutResult, MosaicJson, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
+  AreaParams, Grain, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
 } from './types';
 
 export interface RawImage { w: number; h: number; data: Uint8Array }
@@ -14,10 +14,12 @@ export interface PackageFile { path: string; file: Blob }
 
 export interface Core {
   readonly kind: 'wasm' | 'tauri';
-  /** Web: hand over the files of a package folder. */
-  openFiles(name: string, files: PackageFile[], onProgress?: (p: Progress) => void): Promise<PackageInfo>;
-  /** Desktop: open a package folder by path. */
-  openPath(path: string): Promise<PackageInfo>;
+  /** Web: hand over the files of a package folder, an area folder or loose images. */
+  openFiles(name: string, files: PackageFile[], onProgress?: (p: Progress) => void): Promise<OpenResult>;
+  /** Desktop: open one folder, or a set of files, by path. */
+  openPaths(paths: string[]): Promise<OpenResult>;
+  /** After `needs_scale`: open the same images as loose files with the user's scale. */
+  openLoose(spec: LooseSpec): Promise<PackageInfo>;
   /** Desktop: open a saved `<name>.grainatlas/` folder (its package and project). */
   openProject(path: string): Promise<{ info: PackageInfo; project: Project }>;
   loadProject(json: string): Promise<void>;
