@@ -141,6 +141,19 @@ impl Session {
     pub fn laser_export(&self, spots: &str, area_id: &str, adapter: &str) -> Result<String, JsError> {
         self.0.laser_export(spots, area_id, adapter).map_err(err)
     }
+    /// Which area owns each detection (`{area_id: [Grain]}` JSON; OwnershipParams JSON or "").
+    pub fn ownership(&self, grains: &str, params: &str) -> Result<String, JsError> {
+        self.0.ownership(grains, params).map_err(err)
+    }
+    /// Print sheets of the mount (SheetParams, grains and tone JSON): pages, the print_sheet
+    /// registration, stats and ownership.
+    pub fn print_sheets(&self, params: &str, grains: &str, tone: &str) -> Result<String, JsError> {
+        self.0.print_sheets(params, grains, tone).map_err(err)
+    }
+    /// Header metadata of the open package for print sheets.
+    pub fn sheet_meta(&self) -> Result<String, JsError> {
+        self.0.sheet_meta().map_err(err)
+    }
     /// Records a publish (Published JSON) in the project.
     pub fn record_published(&mut self, published: &str) -> Result<(), JsError> {
         self.0.record_published(published).map_err(err)

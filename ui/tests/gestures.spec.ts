@@ -160,6 +160,7 @@ test('the Area view, the Canvas and the Layout preview pan and zoom the same way
   const r2 = await exercise(page, canvas);
 
   await page.getByRole('button', { name: 'Layout' }).click();
+  await page.getByTestId('style-layout').check();
   await page.getByTestId('layout').click();
   const layout = '[data-testid=layout-view] [data-view]';
   await expect(page.locator(layout)).toBeVisible();

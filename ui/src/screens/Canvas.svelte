@@ -7,7 +7,7 @@
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toScreen, type View } from '../lib/canvas/view';
   import type { Core } from '../lib/core/core';
-  import type { Grain, Label, SegmentParams, Spot, SpotKind } from '../lib/core/types';
+  import type { Grain, GrainOwner, Label, SegmentParams, Spot, SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
   import { formatName, grainAt, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
@@ -51,6 +51,27 @@
   const spots = $derived(app.spots.filter((s) => s.area_id === areaId));
   const labels = $derived(app.labels.filter((l) => l.area_id === areaId));
   const segParams = $derived(areaId ? app.params[areaId]?.segment : null);
+  /** Owner of each detection here: a grain also seen in an overlapping area belongs to the area it lies deepest in. */
+  const owners = $derived.by(() => {
+    const m = new Map<string, GrainOwner>();
+    for (const o of app.ownership?.grains ?? []) if (o.area_id === areaId) m.set(o.grain_id, o);
+    return m;
+  });
+  const dupCount = $derived(grains.filter((g) => owners.get(g.id)?.duplicate_of).length);
+  $effect(() => {
+    void app.grains;
+    app.refreshOwnership();
+  });
+  function areaLabel(id: string) {
+    return app.pkg?.areas.find((a) => a.id === id)?.name ?? id;
+  }
+  /** "duplicate of HH4 #12" for a grain owned by another area. */
+  function ownerNote(g: Grain): string {
+    const o = owners.get(g.id);
+    if (!o?.duplicate_of) return '';
+    const og = app.grains[o.owner_area]?.find((q) => q.id === o.duplicate_of);
+    return `duplicate of ${areaLabel(o.owner_area)} #${og?.number ?? '?'}`;
+  }
   const sample = $derived(area?.sample || area?.name || '');
   const refOverlay = $derived(areaId ? (app.overlays[areaId] ?? null) : null);
   /** screen px → um at the current zoom */
@@ -758,7 +779,8 @@
             {/if}
             {#if app.layers.outlines}
               {#each grains as g (g.id)}
-                <polygon class="grain" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} points={g.polygon_um.map((p) => p.join(',')).join(' ')} />
+                {@const own = owners.get(g.id)}
+                <polygon class="grain" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined}><title>{own?.duplicate_of ? ownerNote(g) : own?.cut ? 'owned here, cut by the area edge' : own ? 'owned by this area' : ''}</title></polygon>
               {/each}
             {/if}
             {#if app.layers.scalebars}
@@ -947,6 +969,10 @@
               <tr><td>area</td><td class="num">{fmt(focusGrain.area_um2, 0)} µm²</td></tr>
               <tr><td>centroid</td><td class="num">{fmt(focusGrain.centroid_um[0], 1)}, {fmt(focusGrain.centroid_um[1], 1)} µm</td></tr>
               <tr><td>spots</td><td>{app.spots.filter((s) => s.grain_id === focusGrain.id).map((s) => s.name).join(', ') || '–'}</td></tr>
+              {#if owners.get(focusGrain.id)}
+                {@const own = owners.get(focusGrain.id)!}
+                <tr><td>owner area</td><td data-testid="owner-area">{own.duplicate_of ? ownerNote(focusGrain) : `this area${own.cut ? ' (cut by its edge)' : ''}`}</td></tr>
+              {/if}
               <tr><td>id</td><td class="mono small">{focusGrain.id}</td></tr>
             </tbody>
           </table>
@@ -1076,8 +1102,15 @@
         <details class="params">
           <summary>Segmentation</summary>
           <label class="field">Grains are
-            <select bind:value={segParams.polarity}><option value="bright">brighter than the epoxy</option><option value="dark">darker (transmitted light)</option></select>
+            <select bind:value={segParams.polarity} data-testid="polarity"><option value="bright">brighter than the epoxy</option><option value="both">brighter or darker (CL: also CL-dark grains)</option><option value="dark">darker (transmitted light)</option></select>
           </label>
+          {#if segParams.polarity === 'both'}
+            <label class="field">Dark below the local epoxy level by (fraction) <input type="number" step="0.05" min="0.05" max="0.95" bind:value={segParams.dark_rel} /></label>
+          {/if}
+          <label class="check"><input type="checkbox" bind:checked={segParams.reject_bubbles} /> drop epoxy bubbles and their bright rims</label>
+          <label class="check"><input type="checkbox" bind:checked={segParams.reject_slivers} /> drop tile-seam slivers</label>
+          <label class="check"><input type="checkbox" bind:checked={segParams.reject_blocks} /> drop exposure-step tile blocks</label>
+          <label class="field">Maximum size (µm, 0 = none) <input type="number" min="0" bind:value={segParams.max_size_um} /></label>
           <label class="field">Threshold
             <select bind:value={segParams.method}><option value="background">background + margin</option><option value="otsu">Otsu</option></select>
           </label>
@@ -1101,13 +1134,17 @@
           <button onclick={() => renumber(false)} disabled={!grains.length}>Renumber all</button>
           <button onclick={() => renumber(true)} disabled={selGrains.length !== 1}>Renumber from here</button>
         </div>
+        {#if dupCount}
+          <p class="muted small-text" data-testid="dup-note">{dupCount} of {grains.length} are duplicates of grains another area owns (dashed outlines; left off print sheets).</p>
+        {/if}
         <div class="list">
           <table class="data">
-            <thead><tr><th>#</th><th>⌀ µm</th><th>L × W µm</th><th>spots</th></tr></thead>
+            <thead><tr><th>#</th><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
             <tbody>
               {#each grains as g (g.id)}
                 <tr class:selected={selGrains.includes(g.id)} onclick={(e) => { selGrains = e.shiftKey ? [...selGrains, g.id] : [g.id]; app.selection = []; panel.open = true; centerOnUm(g.centroid_um[0], g.centroid_um[1], Math.max(g.bbox_um[2] - g.bbox_um[0], g.bbox_um[3] - g.bbox_um[1])); }}>
                   <td class="num">{g.number}{g.manual ? '*' : ''}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
+                  <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)} #{app.grains[o.owner_area]?.find((q) => q.id === o.duplicate_of)?.number ?? '?'}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
               {/each}
             </tbody>
@@ -1364,6 +1401,18 @@
     stroke: var(--ov-outline);
     stroke-width: 1.4;
     opacity: 0.85;
+  }
+  :global(.ga-root) .grain.dup {
+    stroke-dasharray: 6 4;
+    opacity: 0.5;
+  }
+  :global(.ga-root) .grain.cut {
+    stroke-dasharray: 2 3;
+  }
+  .owner {
+    font-size: 0.8em;
+    white-space: nowrap;
+    color: var(--text-muted, inherit);
   }
   :global(.ga-root) .grain.hov {
     opacity: 1;

@@ -6,6 +6,7 @@ import { isHosted } from '@lab/bridge';
 
 import type {
   AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
+  Ownership, SheetParams, SheetResult,
 } from './types';
 
 export interface RawImage { w: number; h: number; data: Uint8Array }
@@ -78,6 +79,10 @@ export interface Core {
   recordPublished(p: Published): Promise<void>;
   /** Desktop: write the project folder (project.json, pyramid, masks, spots). */
   saveProject(project: Project, extras: Record<string, string>): Promise<string | null>;
+  /** Which area owns each detection (a grain seen in overlapping areas is kept once). */
+  ownership(grains: Record<string, Grain[]>): Promise<Ownership>;
+  /** Print sheets of the mount: pages (SVG), the print_sheet registration, stats and ownership. */
+  printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult>;
 }
 
 let instance: Promise<Core> | null = null;

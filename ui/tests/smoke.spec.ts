@@ -56,6 +56,7 @@ test('open the fixture, stitch, find grains, place three spots, export CSV, prin
 
   // Print one page of grains on Letter and export the PDF.
   await page.getByRole('button', { name: 'Layout' }).click();
+  await page.getByTestId('style-layout').check();
   await page.getByTestId('paper').selectOption('letter');
   await page.getByTestId('scale').fill('10');
   await page.getByTestId('layout').click();
