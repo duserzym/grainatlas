@@ -3,7 +3,7 @@ SHELL := /bin/bash
 WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>/dev/null | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
 WASM_OUT := ui/src/lib/core/pkg
 
-.PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture
+.PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture screenshots site
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upbstudio/bridge".
@@ -80,3 +80,18 @@ release-web: ui-build
 	mkdir -p $(RELEASE_DIR)
 	cd ui/dist && COPYFILE_DISABLE=1 tar -czf ../../$(RELEASE_DIR)/$(RELEASE_ASSET) $$(ls -A)
 	cd $(RELEASE_DIR) && $(SHA256) $(RELEASE_ASSET) | tee $(RELEASE_ASSET).sha256
+
+# README and site screenshots: one pass through the workflow on the test fixture (Playwright).
+# PNGs land in target/screenshots, WebP copies (cwebp; `brew install webp`) in docs/images.
+screenshots: ui-build
+	mkdir -p target/screenshots docs/images
+	cd ui && pnpm exec playwright test -c playwright.screenshots.config.ts
+	for f in target/screenshots/*.png; do cwebp -quiet -q 86 -m 6 "$$f" -o docs/images/$$(basename "$${f%.png}").webp; done
+
+# The project website, assembled in target/site (site/ plus the docs/images screenshots).
+# Preview: `python3 -m http.server -d target/site 8000`. Publishing is by hand (pages.yml).
+site:
+	mkdir -p target/site/images
+	cp -R site/. target/site/
+	cp docs/images/*.webp target/site/images/
+	cp ui/public/favicon.svg target/site/
