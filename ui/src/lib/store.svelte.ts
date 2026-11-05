@@ -38,6 +38,8 @@ export const DEFAULT_SETTINGS: Settings = {
   default_diameter_um: 25,
   user: '',
   snap: true,
+  outline_margin_um: 4,
+  outline_smooth: false,
 };
 
 function loadSettings(): Settings {

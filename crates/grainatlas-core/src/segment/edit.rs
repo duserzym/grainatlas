@@ -261,6 +261,20 @@ pub fn outline_grain(w: &WorkImage, poly_um: &[[f64; 2]], base: Option<&Grain>, 
     apply(w, &polygon_mask(w, poly_um), base, op, simplify_px)
 }
 
+/// Pads the newly drawn region before adding it, so the existing part of a grain stays put.
+/// Cuts and disabled padding use the original editing path exactly.
+pub fn outline_grain_padded(w: &WorkImage, poly_um: &[[f64; 2]], base: Option<&Grain>, op: Op, simplify_px: f64, outline: super::OutlinePad) -> Option<Grain> {
+    if op == Op::Cut || outline.margin_um <= 0.0 && !outline.smooth {
+        return outline_grain(w, poly_um, base, op, simplify_px);
+    }
+    if poly_um.len() < 3 {
+        return None;
+    }
+    let stroke = polygon_mask(w, poly_um);
+    let padded = super::pad::pad_mask(w, &stroke.m, stroke.w, stroke.h, stroke.origin, outline);
+    apply(w, &Local { m: padded.mask, w: padded.w, h: padded.h, origin: padded.origin }, base, op, simplify_px)
+}
+
 /// A grain from a brush stroke (um, brush diameter `size_um`) grown to the edges near it.
 pub fn brush_grain(w: &WorkImage, v: &View, stroke_um: &[[f64; 2]], size_um: f64, base: Option<&Grain>, op: Op, simplify_px: f64) -> Option<Grain> {
     if stroke_um.is_empty() || size_um <= 0.0 {
@@ -323,6 +337,27 @@ mod tests {
         // Cutting everything leaves nothing; cutting with no grain does nothing.
         assert!(outline_grain(&w, &rect(30.0, 30.0, 110.0, 90.0), Some(&a), Op::Cut, 0.8).is_none());
         assert!(outline_grain(&w, &rect(30.0, 30.0, 110.0, 90.0), None, Op::Cut, 0.8).is_none());
+    }
+
+    #[test]
+    fn padding_grows_the_drawn_region_without_padding_the_base() {
+        let (_, w) = scene();
+        let rect = |x0, x1| [[x0, 40.0], [x1, 40.0], [x1, 80.0], [x0, 80.0]];
+        let pad = super::super::OutlinePad::default();
+        let raw = outline_grain(&w, &rect(40.0, 100.0), None, Op::New, 0.8).unwrap();
+        let padded = outline_grain_padded(&w, &rect(40.0, 100.0), None, Op::New, 0.8, pad).unwrap();
+        for (got, want) in padded.bbox_um.iter().zip([36.0, 36.0, 104.0, 84.0]) {
+            assert!((got - want).abs() <= w.um_per_px, "{:?}", padded.bbox_um);
+        }
+        let added = outline_grain_padded(&w, &rect(90.0, 120.0), Some(&raw), Op::Add, 0.8, pad).unwrap();
+        assert_eq!(added.bbox_um[0], raw.bbox_um[0], "the base's far rim stays put");
+        assert_eq!(added.id, raw.id);
+        assert!(added.drawn && added.manual);
+        assert!(added.bbox_um[2] >= 123.0);
+        let off = super::super::OutlinePad { margin_um: 0.0, smooth: false };
+        let exact = outline_grain_padded(&w, &rect(40.0, 100.0), None, Op::New, 0.8, off).unwrap();
+        assert_eq!(exact.polygon_um, raw.polygon_um);
+        assert_eq!(exact.area_um2, raw.area_um2);
     }
 
     #[test]

@@ -33,7 +33,7 @@ const segDefaults = JSON.stringify(JSON.parse(defaults).segment);
 const grainsByArea = {};
 for (const a of info.areas) {
   s.stitch(a.id, defaults, () => {}, () => false);
-  const grains = s.segment(a.id, segDefaults, '');
+  const grains = s.segment(a.id, segDefaults, '', '');
   // Grain ids are new UUIDv7s on every run: number them from PARITY_ID + 0x1000 as the CLI does.
   const first = Object.values(grainsByArea).reduce((n, g) => n + g.length, 0);
   grainsByArea[a.id] = JSON.parse(grains).map((g, i) => ({ ...g, id: PARITY_ID.slice(0, 24) + (0x1000 + first + i).toString(16).padStart(12, '0') }));

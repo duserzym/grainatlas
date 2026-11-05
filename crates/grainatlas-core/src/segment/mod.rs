@@ -8,6 +8,8 @@
 pub mod edit;
 pub mod filter;
 pub mod morph;
+pub mod pad;
+pub use pad::{OutlinePad, pad_outlines, segment_padded};
 pub mod shape;
 pub mod watershed;
 
@@ -572,8 +574,8 @@ pub fn split_grain(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64) -
     let (lab, counts) = morph::components(&m, bw, bh);
     let total: usize = counts.iter().sum();
     let mut out = Vec::new();
-    for l in 1..counts.len() {
-        if counts[l] * 20 < total {
+    for (l, &count) in counts.iter().enumerate().skip(1) {
+        if count * 20 < total {
             continue;
         }
         let part: Vec<bool> = lab.iter().map(|&v| v as usize == l).collect();

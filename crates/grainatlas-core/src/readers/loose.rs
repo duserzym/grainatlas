@@ -109,7 +109,7 @@ pub struct LoosePackage {
 
 impl LoosePackage {
     pub fn open(src: Arc<dyn Source>, spec: &LooseSpec) -> Result<Self> {
-        if !(spec.um_per_px > 0.0) && !spec.field_width_um.is_some_and(|w| w > 0.0) {
+        if spec.um_per_px.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) && !spec.field_width_um.is_some_and(|w| w > 0.0) {
             return Err(Error::Invalid("loose images need a scale: micrometres per pixel or the field width".into()));
         }
         let all = list_images(src.as_ref());

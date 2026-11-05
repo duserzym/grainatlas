@@ -193,9 +193,11 @@ pub fn rasterize(g: &Grain, k: f64, pad: usize) -> (Vec<bool>, usize, usize, (us
     (m, bw, bh, (x0, y0))
 }
 
+pub type RefinedMask = (Vec<bool>, (usize, usize), usize, usize);
+
 /// GrabCut on a crop around a grain mask (dilated band = probable background, eroded core =
 /// definite foreground). Returns the refined mask, its origin and size.
-pub fn grabcut_refine(img: &Gray, mask: &[bool], origin: (usize, usize), bw: usize, bh: usize) -> Option<(Vec<bool>, (usize, usize), usize, usize)> {
+pub fn grabcut_refine(img: &Gray, mask: &[bool], origin: (usize, usize), bw: usize, bh: usize) -> Option<RefinedMask> {
     let margin = ((bw.max(bh) as f64 * 0.25) as usize).clamp(6, 40);
     let ox = origin.0.saturating_sub(margin);
     let oy = origin.1.saturating_sub(margin);

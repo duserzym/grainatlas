@@ -343,13 +343,14 @@ fn main() -> Result<()> {
                 let mut grains_n = None;
                 if segment || print.is_some() {
                     let t = clock();
+                    let outline = (&project.settings).into();
                     let rec = project.area_mut(&area.id).expect("area");
                     let prev: Vec<grainatlas_core::segment::Grain> = std::fs::read(out.join(format!("masks/{}/grains.json", area.id)))
                         .ok()
                         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                         .and_then(|v| serde_json::from_value(v["grains"].clone()).ok())
                         .unwrap_or_default();
-                    let grains = pipeline::segment_area(rec, &o, &params.segment, &prev);
+                    let grains = pipeline::segment_area(rec, &o, &params.segment, &prev, outline);
                     let mut why: std::collections::BTreeMap<&str, usize> = Default::default();
                     for g in grains.iter().filter_map(|g| g.artifact) {
                         *why.entry(g.label()).or_default() += 1;
@@ -513,7 +514,8 @@ fn full_project(s: &Session, grains: serde_json::Value, spots: serde_json::Value
 fn auto_grains(s: &mut Session, id: &str) -> Result<(String, serde_json::Value)> {
     let defaults = serde_json::to_string(&AreaParams::default())?;
     s.stitch(id, &defaults, &Ctl::NONE, &|| 0.0)?;
-    let grains = s.segment(id, &serde_json::to_string(&grainatlas_core::segment::SegmentParams::default())?, "")?;
+    let outline = serde_json::to_string(&grainatlas_core::segment::OutlinePad::from(&s.project.as_ref().expect("project").settings))?;
+    let grains = s.segment(id, &serde_json::to_string(&grainatlas_core::segment::SegmentParams::default())?, "", &outline)?;
     s.set_grains(id, &grains)?;
     let mut p: AreaParams = serde_json::from_str(&s.auto_params(id, &defaults)?)?;
     p.tone.grain_norm.enabled = true;

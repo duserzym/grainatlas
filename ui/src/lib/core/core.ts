@@ -5,7 +5,7 @@
 import { isHosted } from '@lab/bridge';
 
 import type {
-  AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, Project,
+  AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, OutlinePad, Project,
   Ownership, SheetParams, SheetResult,
 } from './types';
 
@@ -46,9 +46,9 @@ export interface Core {
   histogram(areaId: string): Promise<Uint32Array>;
   retone(areaId: string, tone: ToneParams): Promise<MosaicJson>;
   toneLut(tone: ToneParams): Promise<Uint8Array>;
-  segment(areaId: string, params: SegmentParams, previous: Grain[]): Promise<Grain[]>;
+  segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]>;
   /** Click-grow a grain at a point (manual add). */
-  grainAt(areaId: string, xUm: number, yUm: number, params: SegmentParams): Promise<Grain | null>;
+  grainAt(areaId: string, xUm: number, yUm: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null>;
   /** Split a grain along a line (um), returns the parts. */
   splitGrain(areaId: string, grain: Grain, line: [number, number, number, number]): Promise<Grain[]>;
   mergeGrains(areaId: string, grains: Grain[]): Promise<Grain>;
@@ -57,7 +57,7 @@ export interface Core {
   /** A drawn outline (um, closed) snapped to the mosaic's edges within `widthUm` of it. */
   snapOutline(areaId: string, path: [number, number][], widthUm: number, contrast: number): Promise<[number, number][]>;
   /** A grain from a drawn outline: new, or `base` grown or cut by it; null when nothing is left. */
-  outlineGrain(areaId: string, polygon: [number, number][], base: Grain | null, op: EditOp): Promise<Grain | null>;
+  outlineGrain(areaId: string, polygon: [number, number][], base: Grain | null, op: EditOp, outline: OutlinePad): Promise<Grain | null>;
   /** A grain from a brush stroke (um, diameter `sizeUm`) grown to the nearby edges. */
   brushGrain(areaId: string, stroke: [number, number][], sizeUm: number, base: Grain | null, op: EditOp): Promise<Grain | null>;
   renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]>;

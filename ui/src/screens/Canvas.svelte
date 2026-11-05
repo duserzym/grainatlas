@@ -164,7 +164,7 @@
     const id = areaId;
     const params = $state.snapshot(segParams) as SegmentParams;
     const prev = $state.snapshot(app.grains[id] ?? []) as Grain[];
-    const r = await app.run('Finding grains', () => core!.segment(id, params, prev));
+    const r = await app.run('Finding grains', () => core!.segment(id, params, prev, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth }));
     if (!r) return;
     app.checkpoint();
     app.grains = { ...app.grains, [id]: r };
@@ -696,7 +696,7 @@
     }
     if (app.tool === 'grain-add' && core && areaId && segParams) {
       const id = areaId;
-      const g = await app.run('Growing grain', () => core!.grainAt(id, x, y, $state.snapshot(segParams) as SegmentParams));
+      const g = await app.run('Growing grain', () => core!.grainAt(id, x, y, $state.snapshot(segParams) as SegmentParams, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth }));
       if (!g) {
         if (g === null) app.error = 'No grain at that point (background).';
         return;
@@ -731,7 +731,7 @@
       const snapped = await app.run('Snapping to edges', () => core!.snapOutline(id, poly, Math.max(3, 10 * k), 0.08));
       if (snapped && snapped.length >= 3) poly = snapped;
     }
-    await applyEdit(l.op, poly[0], (base, op) => core!.outlineGrain(id, poly, base, op), 'Outlining grain');
+    await applyEdit(l.op, poly[0], (base, op) => core!.outlineGrain(id, poly, base, op, snapEdges && !l.free && op !== 'cut' ? { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth } : { margin_um: 0, smooth: false }), 'Outlining grain');
   }
   async function finishStroke(st: { pts: [number, number][]; op: EditOp }) {
     if (!core || !areaId) return;

@@ -101,11 +101,11 @@ impl Session {
     pub fn export_png(&self, area_id: &str, tone: &str) -> Result<Vec<u8>, JsError> {
         self.0.export_png(area_id, tone).map_err(err)
     }
-    pub fn segment(&mut self, area_id: &str, params: &str, previous: &str) -> Result<String, JsError> {
-        self.0.segment(area_id, params, previous).map_err(err)
+    pub fn segment(&mut self, area_id: &str, params: &str, previous: &str, outline: &str) -> Result<String, JsError> {
+        self.0.segment(area_id, params, previous, outline).map_err(err)
     }
-    pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str) -> Result<String, JsError> {
-        self.0.grain_at(area_id, x_um, y_um, params).map_err(err)
+    pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str, outline: &str) -> Result<String, JsError> {
+        self.0.grain_at(area_id, x_um, y_um, params, outline).map_err(err)
     }
     pub fn split_grain(&mut self, area_id: &str, grain: &str, line: Vec<f64>) -> Result<String, JsError> {
         if line.len() != 4 {
@@ -122,8 +122,8 @@ impl Session {
     pub fn snap_outline(&mut self, area_id: &str, path: &str, width_um: f64, contrast: f64) -> Result<String, JsError> {
         self.0.snap_outline(area_id, path, width_um, contrast).map_err(err)
     }
-    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str) -> Result<String, JsError> {
-        self.0.outline_grain(area_id, polygon, base, op).map_err(err)
+    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str, outline: &str) -> Result<String, JsError> {
+        self.0.outline_grain(area_id, polygon, base, op, outline).map_err(err)
     }
     pub fn brush_grain(&mut self, area_id: &str, stroke: &str, size_um: f64, base: &str, op: &str) -> Result<String, JsError> {
         self.0.brush_grain(area_id, stroke, size_um, base, op).map_err(err)

@@ -269,15 +269,15 @@ async fn export_png(state: State<'_, AppState>, tab: u32, area_id: String, tone:
 }
 
 #[tauri::command]
-async fn segment(state: State<'_, AppState>, tab: u32, area_id: String, params: String, previous: String) -> Res<String> {
+async fn segment(state: State<'_, AppState>, tab: u32, area_id: String, params: String, previous: String, outline: String) -> Res<String> {
     let t = state.tab(tab);
-    t.lock().segment(&area_id, &params, &previous).map_err(e)
+    t.lock().segment(&area_id, &params, &previous, &outline).map_err(e)
 }
 
 #[tauri::command]
-async fn grain_at(state: State<'_, AppState>, tab: u32, area_id: String, x: f64, y: f64, params: String) -> Res<String> {
+async fn grain_at(state: State<'_, AppState>, tab: u32, area_id: String, x: f64, y: f64, params: String, outline: String) -> Res<String> {
     let t = state.tab(tab);
-    t.lock().grain_at(&area_id, x, y, &params).map_err(e)
+    t.lock().grain_at(&area_id, x, y, &params, &outline).map_err(e)
 }
 
 #[tauri::command]
@@ -299,9 +299,9 @@ async fn snap_outline(state: State<'_, AppState>, tab: u32, area_id: String, pat
 }
 
 #[tauri::command]
-async fn outline_grain(state: State<'_, AppState>, tab: u32, area_id: String, polygon: String, base: String, op: String) -> Res<String> {
+async fn outline_grain(state: State<'_, AppState>, tab: u32, area_id: String, polygon: String, base: String, op: String, outline: String) -> Res<String> {
     let t = state.tab(tab);
-    t.lock().outline_grain(&area_id, &polygon, &base, &op).map_err(e)
+    t.lock().outline_grain(&area_id, &polygon, &base, &op, &outline).map_err(e)
 }
 
 #[tauri::command]

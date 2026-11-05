@@ -11,7 +11,7 @@ pub const BAR_LENGTHS_UM: [f64; 6] = [10.0, 20.0, 50.0, 100.0, 200.0, 500.0];
 
 /// The largest of 10, 20, 50, 100, 200 or 500 um that fits a third of the grain's bbox width.
 pub fn grain_bar_um(bbox_width_um: f64) -> f64 {
-    BAR_LENGTHS_UM.iter().copied().filter(|&l| l <= bbox_width_um / 3.0).last().unwrap_or(BAR_LENGTHS_UM[0])
+    BAR_LENGTHS_UM.iter().copied().rfind(|&l| l <= bbox_width_um / 3.0).unwrap_or(BAR_LENGTHS_UM[0])
 }
 
 /// A round bar length (1-2-5 series) no longer than `max_um`.

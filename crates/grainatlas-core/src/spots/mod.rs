@@ -20,6 +20,8 @@ pub struct Settings {
     /// Kept for older projects; the theme is each viewer's own preference (UI storage).
     pub theme: String,
     pub snap: bool,
+    pub outline_margin_um: f64,
+    pub outline_smooth: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +33,8 @@ impl Default for Settings {
             user: String::new(),
             theme: "light".into(),
             snap: true,
+            outline_margin_um: 4.0,
+            outline_smooth: false,
         }
     }
 }
@@ -127,7 +131,7 @@ pub fn next_n(spots: &[Spot], sample: &str) -> u32 {
 }
 
 /// The grain whose polygon contains a point.
-pub fn grain_at<'a>(grains: &'a [Grain], x: f64, y: f64) -> Option<&'a Grain> {
+pub fn grain_at(grains: &[Grain], x: f64, y: f64) -> Option<&Grain> {
     grains.iter().filter(|g| g.is_grain()).find(|g| x >= g.bbox_um[0] && x <= g.bbox_um[2] && y >= g.bbox_um[1] && y <= g.bbox_um[3] && crate::segment::shape::inside(&g.polygon_um, x, y))
 }
 

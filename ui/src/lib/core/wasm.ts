@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, OutlinePad, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onProgress?: (p: Progress) => void };
 
@@ -199,14 +199,14 @@ export class WasmCore implements Core {
     return this.call('toneLut', { tone });
   }
 
-  async segment(areaId: string, params: SegmentParams, previous: Grain[]): Promise<Grain[]> {
+  async segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]> {
     await this.ready();
-    return this.call('segment', { areaId, params, previous });
+    return this.call('segment', { areaId, params, previous, outline });
   }
 
-  async grainAt(areaId: string, x: number, y: number, params: SegmentParams): Promise<Grain | null> {
+  async grainAt(areaId: string, x: number, y: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null> {
     await this.ready();
-    return this.call('grainAt', { areaId, x, y, params });
+    return this.call('grainAt', { areaId, x, y, params, outline });
   }
 
   async splitGrain(areaId: string, grain: Grain, line: [number, number, number, number]): Promise<Grain[]> {
@@ -229,9 +229,9 @@ export class WasmCore implements Core {
     return this.call('snapOutline', { areaId, path, widthUm, contrast });
   }
 
-  async outlineGrain(areaId: string, polygon: [number, number][], base: Grain | null, op: EditOp): Promise<Grain | null> {
+  async outlineGrain(areaId: string, polygon: [number, number][], base: Grain | null, op: EditOp, outline: OutlinePad): Promise<Grain | null> {
     await this.ready();
-    return this.call('outlineGrain', { areaId, polygon, base, op });
+    return this.call('outlineGrain', { areaId, polygon, base, op, outline });
   }
 
   async brushGrain(areaId: string, stroke: [number, number][], sizeUm: number, base: Grain | null, op: EditOp): Promise<Grain | null> {

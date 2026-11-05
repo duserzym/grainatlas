@@ -42,6 +42,14 @@
     </label>
   </div>
   <div class="glass panel">
+    <h2>Outlines</h2>
+    <label class="field">Margin around new outlines (µm, 0 = off)
+      <input type="number" min="0" max="20" step="0.5" bind:value={app.settings.outline_margin_um} onchange={save} data-testid="outline-margin" />
+    </label>
+    <label class="check"><input type="checkbox" bind:checked={app.settings.outline_smooth} onchange={save} data-testid="outline-smooth" /> Smooth new outlines</label>
+    <p class="faint small">Applies to outlines found or drawn from now on; grains already outlined keep theirs.</p>
+  </div>
+  <div class="glass panel">
     <h2>laicpmsdb</h2>
     <label class="field">Server
       <input type="url" placeholder="http://localhost:8000" bind:value={serverText} onchange={saveServer} aria-invalid={serverBad} data-testid="server" />

@@ -338,20 +338,24 @@ impl Session {
         self.rec(area_id).map_or(2, |a| a.params.segment.work_scale)
     }
 
-    pub fn segment(&mut self, area_id: &str, params: &str, previous: &str) -> Result<String> {
+    pub fn segment(&mut self, area_id: &str, params: &str, previous: &str, outline: &str) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
         let prev: Vec<Grain> = if previous.trim().is_empty() { Vec::new() } else { serde_json::from_str(previous).map_err(invalid)? };
-        let grains = crate::segment::segment(self.work_for(area_id, p.work_scale)?, &p, &prev);
+        let outline = Self::outline_args(outline)?;
+        let grains = crate::segment::segment_padded(self.work_for(area_id, p.work_scale)?, &p, &prev, outline);
         if let Some(rec) = self.project.as_mut().and_then(|pr| pr.area_mut(area_id)) {
             rec.params.segment = p;
         }
         serde_json::to_string(&grains).map_err(invalid)
     }
 
-    pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str) -> Result<String> {
+    pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str, outline: &str) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
         let w = self.work_for(area_id, p.work_scale)?;
-        serde_json::to_string(&crate::segment::grain_at(w, &p, x_um, y_um)).map_err(invalid)
+        let outline = Self::outline_args(outline)?;
+        // Click-grow has no neighbouring labels in its API; clip plain growth to coverage.
+        let grain = crate::segment::grain_at(w, &p, x_um, y_um).map(|g| crate::segment::pad_outlines(w, &[g], outline, p.simplify_px, |_| true).remove(0));
+        serde_json::to_string(&grain).map_err(invalid)
     }
 
     pub fn split_grain(&mut self, area_id: &str, grain: &str, line: [f64; 4]) -> Result<String> {
@@ -386,12 +390,13 @@ impl Session {
 
     /// A grain from a drawn outline: `op` is `new`, `add` (to `base`) or `cut` (from `base`).
     /// `null` when nothing is left.
-    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str) -> Result<String> {
+    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str, outline: &str) -> Result<String> {
         let poly: Vec<[f64; 2]> = serde_json::from_str(polygon).map_err(invalid)?;
         let (base, op) = Self::edit_args(base, op)?;
         let scale = self.seg_scale(area_id);
         let w = self.work_for(area_id, scale)?;
-        serde_json::to_string(&crate::segment::edit::outline_grain(w, &poly, base.as_ref(), op, 0.8)).map_err(invalid)
+        let outline = Self::outline_args(outline)?;
+        serde_json::to_string(&crate::segment::edit::outline_grain_padded(w, &poly, base.as_ref(), op, 0.8, outline)).map_err(invalid)
     }
 
     /// A grain from a brush stroke (um, diameter `size_um`) grown to the nearby edges.
@@ -404,6 +409,10 @@ impl Session {
         let o = self.out(area_id)?;
         let v = crate::segment::edit::View { w: o.linear.w, h: o.linear.h, px: &o.base, um_per_px: self.rec(area_id)?.um_per_px() };
         serde_json::to_string(&crate::segment::edit::brush_grain(w, &v, &stroke, size_um, base.as_ref(), op, 0.8)).map_err(invalid)
+    }
+
+    fn outline_args(outline: &str) -> Result<crate::segment::OutlinePad> {
+        if outline.trim().is_empty() { Ok(Default::default()) } else { serde_json::from_str(outline).map_err(invalid) }
     }
 
     fn edit_args(base: &str, op: &str) -> Result<(Option<Grain>, crate::segment::edit::Op)> {

@@ -106,6 +106,8 @@ export interface AreaParams {
   segment: SegmentParams;
 }
 
+export interface OutlinePad { margin_um: number; smooth: boolean }
+
 export interface SegmentParams {
   /** 'both': bright grains plus grains brighter or darker than the local epoxy (CL-dark zircons). */
   polarity: 'bright' | 'dark' | 'both';
@@ -221,6 +223,8 @@ export interface Settings {
   /** Unused by the UI (the theme is the viewer's preference, not the project's). */
   theme?: string;
   snap: boolean;
+  outline_margin_um: number;
+  outline_smooth: boolean;
 }
 
 export interface Project {

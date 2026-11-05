@@ -266,10 +266,10 @@ pub fn work_image(out: &AreaOutput, rec: &AreaRecord, scale: usize) -> crate::se
 }
 
 /// Segments a stitched area, keeping ids and numbers of `previous` grains that still match.
-pub fn segment_area(rec: &mut AreaRecord, out: &AreaOutput, p: &crate::segment::SegmentParams, previous: &[crate::segment::Grain]) -> Vec<crate::segment::Grain> {
+pub fn segment_area(rec: &mut AreaRecord, out: &AreaOutput, p: &crate::segment::SegmentParams, previous: &[crate::segment::Grain], outline: crate::segment::OutlinePad) -> Vec<crate::segment::Grain> {
     let w = work_image(out, rec, p.work_scale);
     rec.params.segment = p.clone();
-    crate::segment::segment(&w, p, previous)
+    crate::segment::segment_padded(&w, p, previous, outline)
 }
 
 /// `masks/<area>/grains.png` (u16 labels by grain number at work resolution) and `grains.json`.

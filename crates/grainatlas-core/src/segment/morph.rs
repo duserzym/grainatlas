@@ -29,8 +29,8 @@ fn box_any(m: &[bool], w: usize, h: usize, r: usize, _any: bool) -> Vec<bool> {
     crate::util::par_rows(&mut tmp, w, |y, row| {
         let src = &m[y * w..(y + 1) * w];
         let mut c: i64 = 0;
-        for x in 0..r.min(w) {
-            c += src[x] as i64;
+        for &v in src.iter().take(r.min(w)) {
+            c += v as i64;
         }
         for x in 0..w {
             if x + r < w {
@@ -200,11 +200,11 @@ fn dt1(f: &[f32], d: &mut [f32]) {
         }
     }
     k = 0;
-    for q in 0..n {
+    for (q, d) in d.iter_mut().enumerate() {
         while z[k + 1] < q as f32 {
             k += 1;
         }
         let p = v[k];
-        d[q] = (q as f32 - p as f32) * (q as f32 - p as f32) + f[p];
+        *d = (q as f32 - p as f32) * (q as f32 - p as f32) + f[p];
     }
 }
