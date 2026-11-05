@@ -1,5 +1,7 @@
 // Actions shared by the screens: open, stitch, tone, project save/load.
 
+import { beforeCheckedAction } from './checks';
+
 import type { PackageFile } from './core/core';
 import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
 import { current, tabs, type AppState, type LiveState } from './store.svelte';
@@ -173,6 +175,12 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.stitched = {};
   app.grains = {};
   app.spots = [];
+  app.findings = [];
+  app.checkLabels = null;
+  app.checkLabelsError = null;
+  app.mountLabelsCount = null;
+  app.checksRan = false;
+  app.settings.area_patterns = {};
   app.labels = [];
   app.selection = [];
   app.tone = {};
@@ -189,7 +197,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.project = JSON.parse(await core.projectJson());
   if (saved) {
     app.adopt(saved);
-    app.settings = { ...app.settings, ...(saved.settings ?? {}), spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
+    app.settings = { ...app.settings, ...(saved.settings ?? {}), area_patterns: app.project!.settings.area_patterns ?? {}, spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
   }
   fillParams(app);
   app.areaId = info.areas[0]?.id ?? null;
@@ -283,7 +291,7 @@ export async function loadProjectFile(file: File) {
   await core.loadProject(JSON.stringify(stripUi(p)));
   app.project = JSON.parse(await core.projectJson());
   app.adopt(p);
-  app.settings = { ...app.settings, ...(p.settings ?? {}), spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
+  app.settings = { ...app.settings, ...(p.settings ?? {}), area_patterns: app.project!.settings.area_patterns ?? {}, spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
   fillParams(app);
   app.dirty = false;
   await restoreAreas(app);
@@ -545,6 +553,9 @@ export async function saveProject(app: AppState = current()) {
   if (!p) return;
   const core = await app.core;
   if (core.kind === 'tauri' && app.projectPath?.kind === 'folder') {
+    if (!(await beforeCheckedAction(app, 'save'))) return;
+    const p = app.fullProject();
+    if (!p) return;
     const dir = app.projectPath.path;
     const where = await app.run('Saving project', () => core.saveProject(p, {}, dir));
     if (where) {
@@ -558,6 +569,7 @@ export async function saveProject(app: AppState = current()) {
 
 /** Saves the lightweight project file (`.gaproj`): `ask` = Save As (a dialog on the desktop). */
 export async function saveProjectFile(app: AppState = current(), ask = true) {
+  if (!(await beforeCheckedAction(app, 'save'))) return;
   const p = app.fullProject();
   if (!p) return;
   const core = await app.core;

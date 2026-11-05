@@ -34,6 +34,7 @@ export interface Overlay {
 
 export const DEFAULT_SETTINGS: Settings = {
   naming_pattern: '{sample}-{n}',
+  area_patterns: {},
   spot_presets_um: [15, 20, 25, 30, 35, 50],
   default_diameter_um: 25,
   spot_cursor_colour: 'auto',
@@ -48,7 +49,7 @@ function loadSettings(): Settings {
     const s = localStorage.getItem('grainatlas.settings');
     if (s) {
       // The theme lives under its own key now (older builds saved 'dark' here by default).
-      const { theme: _old, ...rest } = JSON.parse(s);
+      const { theme: _old, area_patterns: _patterns, ...rest } = JSON.parse(s);
       return { ...DEFAULT_SETTINGS, ...rest };
     }
   } catch {
@@ -168,6 +169,14 @@ class AppState {
   /** Which area owns each detected grain (overlapping areas see one grain twice); null with grains in fewer than two areas. */
   ownership = $state<Ownership | null>(null);
   private ownershipTimer: ReturnType<typeof setTimeout> | null = null;
+  findings = $state<import('./core/types').Finding[]>([]);
+  checkLabels = $state<string[] | null>(null);
+  checkLabelsError = $state<string | null>(null);
+  mountLabelsCount = $state<number | null>(null);
+  renamePrompt = $state<{ oldSample: string; newSample: string; answer: (choice: 'use' | 'keep' | 'cancel') => void } | null>(null);
+  checksRequested = $state(false);
+  checksRan = $state(false);
+  checkPrompt = $state<{ summary: string; answer: (proceed: boolean) => void } | null>(null);
   spots = $state<Spot[]>([]);
   overlays = $state<Record<string, Overlay>>({});
   /** Set to force the next spot's {n} (legacy run numbers); null = continue. */
@@ -337,7 +346,8 @@ class AppState {
 
   saveSettings() {
     try {
-      localStorage.setItem('grainatlas.settings', JSON.stringify(this.settings));
+      const { area_patterns: _patterns, ...defaults } = this.settings;
+      localStorage.setItem('grainatlas.settings', JSON.stringify(defaults));
     } catch {
       /* ignore */
     }
@@ -452,6 +462,13 @@ class AppState {
 
   /** Restores UI-held parts of a saved project. */
   adopt(p: Project) {
+    this.settings.naming_pattern = p.settings?.naming_pattern ?? this.settings.naming_pattern;
+    this.settings.area_patterns = p.settings?.area_patterns ?? {};
+    this.findings = [];
+    this.checkLabels = null;
+    this.checkLabelsError = null;
+    this.mountLabelsCount = null;
+    this.checksRan = false;
     const ui = p['grainatlas_ui'] as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
     if (ui?.overlays) this.overlays = ui.overlays;
     if (ui?.grains) this.grains = ui.grains;

@@ -137,7 +137,7 @@ pub fn spots_document(project: &Project, spots: &[Spot], areas: &[&str]) -> serd
         let mut v = json!({
             "id": s.id,
             "name": s.name,
-            "grain": s.grain_number.map_or(String::new(), |n| n.to_string()),
+            "grain": s.grain_number.map_or(String::new(), |n| format!("{}/{n}", s.area_id)),
             "x_um": r3(s.x_um),
             "y_um": r3(s.y_um),
             "diameter_um": r3(s.diameter_um),

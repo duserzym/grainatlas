@@ -12,6 +12,8 @@
   import Settings from './screens/Settings.svelte';
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
+  import CheckDialog from './components/CheckDialog.svelte';
+  import RenameDialog from './components/RenameDialog.svelte';
   import ReplaceDialog from './components/ReplaceDialog.svelte';
   import ThemeSwitch from './components/ThemeSwitch.svelte';
   import { editCopy } from './lib/remote';
@@ -203,6 +205,7 @@
     // Ctrl/Cmd 1-4, Ctrl/Cmd , and Ctrl/Cmd R belong to UPb Studio's menu when
     // hosted (bridge README): grainatlas binds Alt 1-5 and Ctrl/Cmd S only.
     const key = (e: KeyboardEvent) => {
+      if (app.checkPrompt || app.renamePrompt) return;
       const mod = e.metaKey || e.ctrlKey;
       if (tabKeys && mod && !e.altKey) {
         const k = e.key.toLowerCase();
@@ -296,6 +299,8 @@
     {/if}
   </main>
 
+  {#if app.checkPrompt}<CheckDialog />{/if}
+  {#if app.renamePrompt}<RenameDialog />{/if}
   {#if app.offer}<ReplaceDialog />{/if}
   {#if app.pendingLoose}<ScaleDialog />{/if}
   {#if app.busy}<Busy />{/if}

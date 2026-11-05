@@ -8,6 +8,7 @@
 
 pub mod atlas;
 pub mod blend;
+pub mod checks;
 pub mod error;
 pub mod image;
 pub mod laser;

@@ -131,6 +131,9 @@ impl Session {
     pub fn export_grains(&self, area_id: &str, grains: &str) -> Result<String, JsError> {
         self.0.export_grains(area_id, grains).map_err(err)
     }
+    pub fn check_project(&self, project: &str, labels: &str) -> Result<String, JsError> {
+        self.0.check_project(project, labels).map_err(err)
+    }
     pub fn export_spots(&self, spots: &str, grains: &str, format: &str) -> Result<String, JsError> {
         self.0.export_spots(spots, grains, format).map_err(err)
     }

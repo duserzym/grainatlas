@@ -14,6 +14,7 @@ use crate::segment::Grain;
 #[serde(default)]
 pub struct Settings {
     pub naming_pattern: String,
+    pub area_patterns: BTreeMap<String, String>,
     pub spot_presets_um: Vec<f64>,
     pub default_diameter_um: f64,
     pub spot_cursor_colour: String,
@@ -29,6 +30,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             naming_pattern: "{sample}-{n}".into(),
+            area_patterns: BTreeMap::new(),
             spot_presets_um: vec![15.0, 20.0, 25.0, 30.0, 35.0, 50.0],
             default_diameter_um: 25.0,
             spot_cursor_colour: "auto".into(),
@@ -38,6 +40,12 @@ impl Default for Settings {
             outline_margin_um: 4.0,
             outline_smooth: false,
         }
+    }
+}
+
+impl Settings {
+    pub fn pattern_for(&self, area_id: &str) -> &str {
+        self.area_patterns.get(area_id).filter(|p| !p.trim().is_empty()).map(String::as_str).unwrap_or(&self.naming_pattern)
     }
 }
 
@@ -145,7 +153,7 @@ pub fn new_spot(area_id: &str, sample: &str, grains: &[Grain], existing: &[Spot]
     Spot {
         id: crate::project::new_id(),
         area_id: area_id.to_string(),
-        name: format_name(&settings.naming_pattern, sample, g.map(|g| g.number), n),
+        name: format_name(settings.pattern_for(area_id), sample, g.map(|g| g.number), n),
         sample: sample.to_string(),
         grain_id: g.map(|g| g.id),
         grain_number: g.map(|g| g.number),

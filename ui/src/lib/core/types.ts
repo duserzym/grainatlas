@@ -217,6 +217,7 @@ export interface Label { id: string; area_id: string; x_um: number; y_um: number
 
 export interface Settings {
   naming_pattern: string;
+  area_patterns?: Record<string, string>;
   spot_presets_um: number[];
   default_diameter_um: number;
   spot_cursor_colour: string;
@@ -409,3 +410,13 @@ export interface AreaRegistration {
 }
 
 export interface LaserAdapterInfo { id: string; label: string; extension: string }
+
+export interface Finding {
+  code: string;
+  severity: 'warning';
+  area_id?: string;
+  spot_ids: string[];
+  grain_id?: string;
+  message: string;
+  label?: string;
+}

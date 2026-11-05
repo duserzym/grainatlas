@@ -427,6 +427,11 @@ impl Session {
         Ok(crate::segment::grains_csv(&gs, |x, y| rec.stage_of(x, y), |_| 0))
     }
 
+    /// Pure checks of a full saved record; does not access or mutate this session.
+    pub fn check_project(&self, project: &str, labels: &str) -> Result<String> {
+        crate::checks::check_json(project, labels)
+    }
+
     pub fn export_spots(&self, spots: &str, grains: &str, format: &str) -> Result<String> {
         let spots: Vec<Spot> = serde_json::from_str(spots).map_err(invalid)?;
         let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;

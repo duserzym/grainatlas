@@ -3,7 +3,7 @@
   // Pointer-first: navigate with trackpad or mouse, click to place, drag a spot
   // to move it, drag its ring handle to resize, double-click its name to rename;
   // the floating panel edits the hovered or selected object. Keys are extras.
-  import { app, type Overlay, type Tool } from '../lib/store.svelte';
+  import { app, current, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toMosaic, toScreen, type View } from '../lib/canvas/view';
   import { onDestroy } from 'svelte';
@@ -14,12 +14,15 @@
   import { formatName, grainAt, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
-  import { mountSpots, postSpots, spotLink } from '../lib/laicpmsdb';
+  import { mountSpotDocuments, postSpots, spotLink } from '../lib/laicpmsdb';
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
   import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
   import { refreshResults } from '../lib/results-load';
+  import { beforeCheckedAction, parseLabels, runChecks } from '../lib/checks';
+  import type { Finding } from '../lib/core/types';
+  import { CHECK_TITLES } from '../lib/check-presentation';
   import { acquisitionPage } from '../lib/laicpmsdb';
 
   let core = $state<Core | null>(null);
@@ -41,7 +44,61 @@
   let cursorScreen = $state<[number, number] | null>(null);
   const cursorUm = $derived(cursorScreen && view ? toMosaic(view, ...cursorScreen).map((x) => x * umPerPx) as [number, number] : null);
   let selGrains = $state<string[]>([]);
-  let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser'>('spots');
+  let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser' | 'checks'>('spots');
+  $effect(() => {
+    if (app.checksRequested) { tab = 'checks'; app.checksRequested = false; }
+  });
+  let labelInput = $state<HTMLInputElement>();
+  let checksBusy = $state(false);
+  const checkGroups = $derived([...new Set(app.findings.map((f) => f.code))].map((code) => ({ code, rows: app.findings.filter((f) => f.code === code) })));
+  async function checkNow(refreshLabels = false) {
+    checksBusy = true;
+    try { await runChecks(current(), refreshLabels); } catch (e) { app.error = `Checks: ${e instanceof Error ? e.message : e}`; }
+    finally { checksBusy = false; }
+  }
+  async function loadLabels(file: File) {
+    app.checkLabels = parseLabels(await file.text());
+    await checkNow();
+  }
+  function selectFinding(f: Finding) {
+    const selected = app.spots.filter((s) => f.spot_ids.includes(s.id));
+    app.selection = selected.map((s) => s.id);
+    if (!selected.length) return;
+    const first = selected[0];
+    if (first.area_id !== areaId) changeArea(first.area_id);
+    // Resolve after the new area's viewer is ready; the effect below frames all spots there.
+    pendingFinding = first.area_id;
+  }
+  let pendingFinding = $state<string | null>(null);
+  $effect(() => {
+    if (!pendingFinding || pendingFinding !== areaId || !viewer || !view) return;
+    const ss = app.spots.filter((s) => app.selection.includes(s.id) && s.area_id === areaId);
+    pendingFinding = null;
+    if (!ss.length) return;
+    const xs = ss.flatMap((s) => [Math.min(s.x_um, s.x2_um ?? s.x_um) - s.diameter_um/2, Math.max(s.x_um, s.x2_um ?? s.x_um) + s.diameter_um/2]);
+    const ys = ss.flatMap((s) => [Math.min(s.y_um, s.y2_um ?? s.y_um) - s.diameter_um/2, Math.max(s.y_um, s.y2_um ?? s.y_um) + s.diameter_um/2]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    viewer.centerOn((x0+x1)/2/umPerPx, (y0+y1)/2/umPerPx, Math.min(view.w/Math.max(100, (x1-x0)/umPerPx), view.h/Math.max(100, (y1-y0)/umPerPx)) * 0.65);
+  });
+  async function applySuggestions(rows: Finding[]) {
+    const state = current();
+    if (state.readOnly) return;
+    const requested = new Map(rows.filter((f) => f.code === 'near_miss' && f.label).map((f) => [f.spot_ids[0], f.label!]));
+    // A spot or label may have changed since the displayed run. Revalidate before renaming.
+    const latest = await state.run('Matching acquisition labels', () => runChecks(state));
+    if (!latest) return;
+    const suggestions = new Map(latest.filter((f) => f.code === 'near_miss' && f.label === requested.get(f.spot_ids[0])).map((f) => [f.spot_ids[0], f.label!]));
+    if (!suggestions.size) return;
+    state.checkpoint();
+    state.spots = state.spots.map((s) => suggestions.has(s.id) ? { ...s, name: suggestions.get(s.id)! } : s);
+    await state.run('Checking renamed spots', () => runChecks(state));
+  }
+  function patternFor(id: string) { return app.settings.area_patterns?.[id]?.trim() ? app.settings.area_patterns[id] : app.settings.naming_pattern; }
+  function setAreaPattern(value: string) {
+    if (!areaId) return;
+    app.settings.area_patterns = { ...app.settings.area_patterns, [areaId]: value };
+    app.persist();
+  }
   let pairPending = $state<[number, number] | null>(null);
   let overlayInput = $state<HTMLInputElement>();
   // Open state per visit; the position is remembered (app.layout, ux-conventions rule 7).
@@ -306,24 +363,31 @@
    * label come back as the spots' acquisition ids; otherwise the same body is downloaded.
    */
   async function sendSpots() {
-    if (!app.project || !areaId) return;
-    const { body, skipped } = mountSpots(app.project.uuid, sample, $state.snapshot(spots) as Spot[]);
-    const mount = app.project.laicpmsdb.mount_id;
-    const server = app.server;
-    const tok = server && mount ? await authToken() : null;
+    const state = current();
+    if (!state.project || !(await beforeCheckedAction(state))) return;
+    const { documents, skipped } = mountSpotDocuments(state.project, $state.snapshot(state.spots) as Spot[]);
+    const count = documents.reduce((n, d) => n + d.spots.length, 0);
+    const mount = state.project.laicpmsdb.mount_id;
+    const server = state.server;
+    const tok = server && mount ? await authToken(state) : null;
     if (!server || !mount || !tok) {
-      download(JSON.stringify(body, null, 2), `${app.pkg?.name ?? app.project.package.name}_${areaId}_laicpmsdb-spots.json`, 'application/json');
-      app.notice = `${body.spots.length} spots for ${mount ? `mount ${mount}` : 'laicpmsdb (no mount id set)'}${skipped ? `; ${skipped} lines and rasters left out` : ''}. Downloaded: ${!server ? 'no server set' : !mount ? 'no mount linked' : 'no token'}.`;
+      download(JSON.stringify({ project_id: state.project.uuid, documents }, null, 2), `${state.pkg?.name ?? state.project.package.name}_laicpmsdb-spots.json`, 'application/json');
+      state.notice = `${count} spots from all areas, ${documents.length} samples for ${mount ? `mount ${mount}` : 'laicpmsdb (no mount id set)'}${skipped ? `; ${skipped} lines and rasters left out` : ''}. Downloaded: ${!server ? 'no server set' : !mount ? 'no mount linked' : 'no token'}.`;
       return;
     }
-    const r = await app.run(`Sending ${body.spots.length} spots`, () => postSpots(server, tok, mount, body));
-    if (!r) return;
-    const linked = new Map(r.acquisitions.filter((a) => a.atlas_spot_id).map((a) => [a.atlas_spot_id.toLowerCase(), a.id]));
+    const responses = await state.run(`Sending ${count} spots from all areas`, async () => {
+      const results = [];
+      for (const doc of documents) results.push(await postSpots(server, tok, mount, doc));
+      return results;
+    });
+    if (!responses) return;
+    const linked = new Map(responses.flatMap((r) => r.acquisitions ?? []).filter((a) => a.atlas_spot_id).map((a) => [a.atlas_spot_id.toLowerCase(), a.id]));
     if (linked.size) {
-      app.checkpoint();
-      app.spots = app.spots.map((s) => (linked.has(s.id.toLowerCase()) && !s.acquisition_id ? { ...s, acquisition_id: linked.get(s.id.toLowerCase())! } : s));
+      state.checkpoint();
+      state.spots = state.spots.map((s) => (linked.has(s.id.toLowerCase()) && !s.acquisition_id ? { ...s, acquisition_id: linked.get(s.id.toLowerCase())! } : s));
     }
-    app.notice = `Sent to mount ${mount}: ${r.created} created, ${r.updated} updated, ${r.unchanged} unchanged${r.grains_created ? `, ${r.grains_created} grains created` : ''}${linked.size ? `; ${linked.size} acquisitions linked` : ''}${skipped ? `; ${skipped} lines and rasters left out` : ''}.`;
+    const sum = (key: 'created' | 'updated' | 'unchanged' | 'grains_created') => responses.reduce((n, r) => n + r[key], 0);
+    state.notice = `Sent to mount ${mount}: ${sum('created')} created, ${sum('updated')} updated, ${sum('unchanged')} unchanged, ${sum('grains_created')} grains created; ${count} spots from all areas (${documents.length} samples)${linked.size ? `; ${linked.size} acquisitions linked` : ''}${skipped ? `; ${skipped} lines and rasters left out` : ''}.`;
   }
 
   // ---- spots --------------------------------------------------------------------
@@ -337,7 +401,7 @@
     return {
       id: newId(),
       area_id: areaId!,
-      name: formatName(app.settings.naming_pattern, sample, g?.number ?? null, n),
+      name: formatName(patternFor(areaId!), sample, g?.number ?? null, n),
       sample,
       grain_id: g?.id ?? null,
       grain_number: g?.number ?? null,
@@ -366,7 +430,7 @@
   function setSpotN(id: string, n: number) {
     const s = app.spots.find((q) => q.id === id);
     if (!s || !n) return;
-    const name = formatName(app.settings.naming_pattern, s.sample || sample, s.grain_number ?? null, n);
+    const name = formatName(patternFor(s.area_id), s.sample || sample, s.grain_number ?? null, n);
     updateSpot(id, { n, name });
     const clash = app.spots.find((q) => q.id !== id && q.sample === s.sample && q.n === n);
     if (clash) app.notice = `${clash.name} has number ${n} too.`;
@@ -379,13 +443,36 @@
     app.selection = [];
     return true;
   }
-  function renameFromPattern(ids: string[]) {
+  async function renameFromPattern(ids: string[]) {
+    const state = current();
+    if (state.renamePrompt || state.readOnly) return;
+    const projectId = state.project?.uuid;
+    const changed = app.spots.filter((s) => ids.includes(s.id) && s.sample !== currentSample(s.area_id));
+    const useCurrent = new Set<string>();
+    for (const old of [...new Set(changed.map((s) => `${s.area_id}\n${s.sample}`))]) {
+      const s = changed.find((s) => `${s.area_id}\n${s.sample}` === old)!;
+      const choice = await new Promise<'use' | 'keep' | 'cancel'>((resolve) => {
+        state.renamePrompt = { oldSample: s.sample, newSample: currentSample(s.area_id), answer: (choice) => {
+          state.renamePrompt = null;
+          resolve(choice);
+        } };
+      });
+      if (choice === 'cancel' || state.project?.uuid !== projectId || current() !== state) return;
+      if (choice === 'use') useCurrent.add(old);
+    }
     app.checkpoint();
     app.spots = app.spots.map((s) => {
       if (!ids.includes(s.id)) return s;
       const g = grainAt(app.grains[s.area_id] ?? [], s.x_um, s.y_um);
-      return { ...s, grain_id: g?.id ?? null, grain_number: g?.number ?? null, name: formatName(app.settings.naming_pattern, s.sample || sample, g?.number ?? null, s.n) };
+      const sample = useCurrent.has(`${s.area_id}\n${s.sample}`) ? currentSample(s.area_id) : s.sample;
+      return { ...s, sample, grain_id: g?.id ?? null, grain_number: g?.number ?? null, name: formatName(patternFor(s.area_id), sample, g?.number ?? null, s.n) };
     });
+    const clashes = app.spots.filter((s, i, ss) => ss.some((q, j) => i !== j && (q.name === s.name || (q.sample === s.sample && q.n === s.n))));
+    if (clashes.length) app.notice = `Naming clashes: ${clashes.map((s) => s.name).join(', ')}`;
+  }
+  function currentSample(id: string) {
+    const a = app.project?.areas.find((a) => a.id === id);
+    return a?.sample || a?.name || '';
   }
   async function exportSpots(format: 'csv' | 'geojson') {
     if (!core) return;
@@ -896,6 +983,7 @@
 
   // ---- keyboard --------------------------------------------------------------------------
   function key(e: KeyboardEvent) {
+    if (app.checkPrompt || app.renamePrompt) return;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
     const mod = e.metaKey || e.ctrlKey;
@@ -1254,6 +1342,7 @@
     <aside class="glass side" data-ui>
       <div class="tabs">
         <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
+        <button aria-pressed={tab === 'checks'} onclick={() => (tab = 'checks')} data-testid="tab-checks">Checks</button>
         <button aria-pressed={tab === 'grains'} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
         <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
         <button aria-pressed={tab === 'laser'} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
@@ -1262,12 +1351,15 @@
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Read-only: published on {app.remote ? new URL(app.remote.server).host : ''}. “Edit a copy” in the top bar makes it yours to change.</p>{/if}
-      <fieldset class="plain tabbody" disabled={ro && tab !== 'link'}>
+      <fieldset class="plain tabbody" disabled={ro && tab !== 'link' && tab !== 'checks'}>
       {#if tab === 'spots'}
         <div class="two">
           <label class="field">Sample <input type="text" value={sample} onchange={(e) => setSample(e.currentTarget.value)} data-testid="sample" /></label>
           <label class="field">Pattern <input type="text" bind:value={app.settings.naming_pattern} onchange={() => app.saveSettings()} /></label>
         </div>
+        <label class="field">Name pattern for this area
+          <input type="text" value={app.settings.area_patterns?.[areaId!] ?? ''} placeholder={app.settings.naming_pattern} onchange={(e) => setAreaPattern(e.currentTarget.value)} data-testid="area-pattern" />
+        </label>
         <div class="presets">
           {#each app.settings.spot_presets_um as d, i (d)}
             <button class="icon" aria-pressed={app.diameter === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
@@ -1283,8 +1375,8 @@
           <button onclick={() => exportSpots('csv')} disabled={!app.spots.length} data-testid="export-csv">Spots CSV</button>
           <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
           <button onclick={() => renameFromPattern(app.selection.length ? app.selection : spots.map((s) => s.id))} disabled={!spots.length} title="Rename the selected spots (or all in this area) from the pattern">Rename</button>
-          <button onclick={sendSpots} disabled={!spots.length} data-testid="send-laicpmsdb"
-            title={app.server && app.project?.laicpmsdb.mount_id ? "POST this area's spots to the linked mount (with the sign-in token; downloads the JSON body when there is none)" : "Download this area's spots as the JSON body of laicpmsdb's POST /v1/mounts/{mount_id}/spots (mosaic µm)"}>Send spots to laicpmsdb</button>
+          <button onclick={sendSpots} disabled={!app.spots.length} data-testid="send-laicpmsdb"
+            title={app.server && app.project?.laicpmsdb.mount_id ? "POST all areas’ spots, grouped by sample to the linked mount (with the sign-in token; downloads the JSON body when there is none)" : "Download all areas’ spots, grouped by sample as the JSON body of laicpmsdb's POST /v1/mounts/{mount_id}/spots (mosaic µm)"}>Send spots to laicpmsdb</button>
         </div>
         <div class="list">
           <table class="data">
@@ -1300,6 +1392,35 @@
             </tbody>
           </table>
         </div>
+      {:else if tab === 'checks'}
+        <h3>Project checks</h3>
+        <p class="faint small-text">Warnings for all areas. Running checks changes nothing. Results describe the last run.</p>
+        <div class="row wrap">
+          <button onclick={() => checkNow()} disabled={checksBusy} data-testid="run-checks">{checksBusy ? 'Checking…' : 'Run checks'}</button>
+          <button onclick={() => labelInput?.click()}>Load labels…</button>
+          {#if app.server && app.mountId}
+            <button onclick={() => { app.checkLabels = null; void checkNow(true); }} disabled={checksBusy} data-testid="refresh-labels">Refresh labels</button>
+          {/if}
+          {#if app.checkLabels !== null}<button onclick={() => { app.checkLabels = null; void checkNow(); }}>Use mount labels</button>{/if}
+        </div>
+        <input type="file" accept=".txt,.csv,text/plain,text/csv" hidden bind:this={labelInput} data-testid="labels-input" onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) void loadLabels(f); e.currentTarget.value = ''; }} />
+        <p class="faint small-text">{app.checkLabels !== null ? `${app.checkLabels.length} labels loaded from file` : app.mountLabelsCount !== null ? `${app.mountLabelsCount} acquisition labels from the linked mount` : 'Load a label list or link a mount to compare names.'}</p>
+        {#if app.checkLabelsError}<p class="faint small-text" role="status" data-testid="labels-error">{app.checkLabelsError}</p>{/if}
+        {#if app.findings.some((f) => f.code === 'near_miss')}
+          <button onclick={() => applySuggestions(app.findings)} disabled={ro} data-testid="apply-suggestions">Apply all suggestions</button>
+        {/if}
+        {#if app.checksRan && !app.findings.length}<p>No warnings.</p>{/if}
+        {#each checkGroups as group (group.code)}
+          <section class="check-group" data-testid={`check-${group.code}`}>
+            <h4>{CHECK_TITLES[group.code] ?? group.code} ({group.rows.length})</h4>
+            {#each group.rows as f}
+              <div class="check-row">
+                <button class="finding" onclick={() => selectFinding(f)}>{f.message}</button>
+                {#if f.code === 'near_miss'}<button onclick={() => applySuggestions([f])} disabled={ro}>Rename to label</button>{/if}
+              </div>
+            {/each}
+          </section>
+        {/each}
       {:else if tab === 'laser'}
         <LaserPanel {core} {areaId} {spots} selected={app.selection} />
       {:else if tab === 'link'}
@@ -1475,6 +1596,11 @@
 {/if}
 
 <style>
+  .check-group { min-width: 0; }
+  .check-group h4 { margin: var(--space-2) 0; }
+  .check-row { display: grid; gap: var(--space-1); margin-bottom: var(--space-2); }
+  .finding { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+
   .canvas {
     position: absolute;
     inset: 0;

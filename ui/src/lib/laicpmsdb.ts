@@ -14,11 +14,11 @@ export function spotLink(s: Pick<Spot, 'name' | 'acquisition_id'>): string {
 export interface MountSpots {
   project_id: string;
   sample: string;
-  spots: { id: string; name: string; grain: string; x_um: number; y_um: number; diameter_um: number; kind: 'spot' }[];
+  spots: { id: string; name: string; grain: string; area: string; x_um: number; y_um: number; diameter_um: number; kind: 'spot' }[];
 }
 
 /**
- * The point spots of one area in mosaic micrometres (y down, origin at the
+ * The point spots of one sample in mosaic micrometres (y down, origin at the
  * mosaic's top-left). Lines and rasters are not part of the endpoint yet and
  * are left out; `skipped` counts them.
  */
@@ -32,7 +32,8 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[]): { 
       spots: points.map((s) => ({
         id: s.id,
         name: s.name,
-        grain: s.grain_number == null ? '' : String(s.grain_number),
+        grain: s.grain_number == null ? '' : `${s.area_id}/${s.grain_number}`,
+        area: s.area_id,
         x_um: round(s.x_um),
         y_um: round(s.y_um),
         diameter_um: s.diameter_um,
@@ -122,11 +123,10 @@ export function resolveServer(override: string | null, configured: string): stri
 }
 
 export class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
+  status: number;
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 
@@ -223,4 +223,57 @@ export function getResults(base: string, token: string | null, mountId: string, 
 /** laicpmsdb's own page for an acquisition (when the shell cannot route a laicpmsdb:// link). */
 export function acquisitionPage(base: string, id: string): string {
   return `${base}/app/#/acquisitions/${encodeURIComponent(id)}`;
+}
+
+/** All project areas, grouped by stored sample (falling back to the area's sample/name). */
+export function mountSpotDocuments(project: import('./core/types').Project, spots: Spot[]): { documents: MountSpots[]; skipped: number } {
+  const groups = new Map<string, Spot[]>();
+  for (const s of spots) {
+    const area = project.areas.find((a) => a.id === s.area_id);
+    const sample = s.sample || area?.sample || area?.name || '';
+    const list = groups.get(sample) ?? [];
+    list.push(s);
+    groups.set(sample, list);
+  }
+  let skipped = 0;
+  const documents = [...groups].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([sample, ss]) => {
+    const r = mountSpots(project.uuid, sample, ss);
+    skipped += r.skipped;
+    return r.body;
+  }).filter((d) => d.spots.length);
+  return { documents, skipped };
+}
+
+// Instrument labels belong to acquisitions, independently of physical spot links.
+const acquisitionLabels = new Map<string, Promise<string[]>>();
+const labelsKey = (base: string, mountId: string) => JSON.stringify([base.replace(/\/+$/, ''), mountId.toLowerCase()]);
+
+export function clearMountAcquisitionLabels(base: string, mountId: string) {
+  acquisitionLabels.delete(labelsKey(base, mountId));
+}
+
+/** Visible sessions that measured this mount, with at most four session requests in flight. */
+export function mountAcquisitionLabels(base: string, token: string | null, mountId: string): Promise<string[]> {
+  base = base.replace(/\/+$/, '');
+  const key = labelsKey(base, mountId);
+  const cached = acquisitionLabels.get(key);
+  if (cached) return cached;
+  const request = (async () => {
+    const sessions = await call<{ id: string }[]>(base, '/v1/sessions', token, { method: 'GET' }, 'Listing acquisition sessions');
+    const labels: string[] = [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, sessions.length) }, async () => {
+      while (next < sessions.length) {
+        const session = sessions[next++];
+        const mounts = await call<MountOut[]>(base, `/v1/mounts?session=${encodeURIComponent(session.id)}`, token, { method: 'GET' }, 'Listing session mounts');
+        if (!mounts.some((m) => m.id.toLowerCase() === mountId.toLowerCase())) continue;
+        const acquisitions = await call<{ instrument_label: string; reference_material_name: string }[]>(base, `/v1/sessions/${encodeURIComponent(session.id)}/acquisitions`, token, { method: 'GET' }, 'Loading acquisition labels');
+        labels.push(...acquisitions.filter((a) => !a.reference_material_name?.trim()).map((a) => a.instrument_label).filter((l) => l?.trim()));
+      }
+    }));
+    return [...new Set(labels)].sort();
+  })();
+  acquisitionLabels.set(key, request);
+  void request.catch(() => { if (acquisitionLabels.get(key) === request) acquisitionLabels.delete(key); });
+  return request;
 }

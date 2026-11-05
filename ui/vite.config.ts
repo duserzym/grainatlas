@@ -50,7 +50,7 @@ function demo(): Plugin {
 
 // A stand-in for laicpmsdb under /fake-laicpmsdb/ (scripts/fake-laicpmsdb.mjs) in `pnpm dev`
 // and `pnpm preview` only (the Playwright tests): atlas publish and serving, mounts, spot sync
-// and mount results, until the real endpoints exist. Never part of a build.
+// mount results, and session acquisition labels. Never part of a build.
 function fakeLaicpmsdb(): Plugin {
   const handler = createFake();
   return {

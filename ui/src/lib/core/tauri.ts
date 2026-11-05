@@ -146,6 +146,9 @@ export class TauriCore implements Core {
   async renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]> {
     return JSON.parse(await this.call<string>('renumber', { grains: JSON.stringify(grains), tolerance, from: from ? JSON.stringify(from) : '' }));
   }
+  async checkProject(project: Project, labels: string[] | null): Promise<import('./types').Finding[]> {
+    return JSON.parse(await this.call<string>('check_project', { project: JSON.stringify(project), labels: JSON.stringify(labels) }));
+  }
   async exportSpots(spots: Spot[], grains: Record<string, Grain[]>, format: 'csv' | 'geojson'): Promise<string> {
     return this.call<string>('export_spots', { spots: JSON.stringify(spots), grains: JSON.stringify(grains), format });
   }

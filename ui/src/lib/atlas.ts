@@ -2,6 +2,7 @@
 // folder or a zip, publish to laicpmsdb. The core writes the bytes (identical in the browser
 // and the desktop app); this file only moves them.
 
+import { beforeCheckedAction } from './checks';
 import { token as shellToken } from '@lab/bridge';
 import type { BundleOptions, Project, Published } from './core/types';
 import { download } from './files';
@@ -17,8 +18,7 @@ export function bundleOptions(p: Project): BundleOptions {
 }
 
 /** The bearer token: the shell's when hosted, else the one pasted in Settings. */
-export async function authToken(): Promise<string | null> {
-  const app = current();
+export async function authToken(app: AppState = current()): Promise<string | null> {
   try {
     const t = await shellToken();
     if (t) return t;
@@ -110,6 +110,7 @@ export async function saveAtlas(asZip: boolean) {
 /** Posts the bundle to `POST /v1/mounts/{mount_id}/atlas` and records the version in the project. */
 export async function publish() {
   const app = current();
+  if (!(await beforeCheckedAction(app, 'publish'))) return;
   const server = app.server;
   const mount = app.project?.laicpmsdb.mount_id;
   if (!server) {
@@ -122,7 +123,7 @@ export async function publish() {
   }
   const b = await bundleZip(app);
   if (!b) return;
-  const tok = await authToken();
+  const tok = await authToken(app);
   const res = await app.run(`Publishing to ${new URL(server).host}`, () => publishAtlas(server, tok, mount, b.project.uuid, b.zip));
   if (!res) return;
   const atlas = unzipStored(b.zip)[0];

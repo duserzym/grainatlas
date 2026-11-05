@@ -4,7 +4,9 @@
 // laicpmsdb has no endpoint yet (atlas upload and serving, mount results) it implements
 // what grainatlas codes against, so it is a fake, not a reference:
 //
-//   GET  /v1/mounts                       MountOut list (Bearer token required)
+//   GET  /v1/mounts?session=<id>          MountOut list, optionally filtered by session (Bearer)
+//   GET  /v1/sessions                    visible sessions (Bearer)
+//   GET  /v1/sessions/{id}/acquisitions   instrument labels, including standards (Bearer)
 //   POST /v1/mounts/{id}/spots            SpotImportOut (Bearer)
 //   POST /v1/mounts/{id}/atlas            multipart `bundle` = the zip; checks every hash in
 //                                         atlas.json; 201 (200 for the same zip again) with
@@ -27,6 +29,7 @@ export const PREFIX = '/fake-laicpmsdb';
 export const TOKEN = 'test-token';
 export const ACCESS = 'test-access';
 const FIXTURES = new URL('../tests/fixtures/', import.meta.url).pathname;
+const SESSION_LABELS = JSON.parse(readFileSync(join(FIXTURES, 'session-labels.json'), 'utf8'));
 const PRELOAD = new URL('../../target/atlas-fixture/', import.meta.url).pathname;
 
 const MOUNTS = [
@@ -129,7 +132,17 @@ export function createFake() {
       }
       if (path === '/v1/mounts' && req.method === 'GET') {
         if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
-        return send(res, 200, MOUNTS);
+        const session = url.searchParams.get('session');
+        return send(res, 200, session ? MOUNTS.filter((m) => SESSION_LABELS.mounts[session]?.includes(m.id)) : MOUNTS);
+      }
+      if (path === '/v1/sessions' && req.method === 'GET') {
+        if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
+        return send(res, 200, SESSION_LABELS.sessions);
+      }
+      if ((m = path.match(/^\/v1\/sessions\/([^/]+)\/acquisitions$/)) && req.method === 'GET') {
+        if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
+        const acquisitions = SESSION_LABELS.acquisitions[m[1]];
+        return acquisitions ? send(res, 200, acquisitions) : send(res, 404, { detail: 'Not Found' });
       }
       if ((m = path.match(/^\/v1\/mounts\/([^/]+)\/spots$/)) && req.method === 'POST') {
         if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });

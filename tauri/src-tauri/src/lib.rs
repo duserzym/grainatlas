@@ -328,6 +328,12 @@ fn export_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: 
 }
 
 #[tauri::command]
+fn check_project(state: State<'_, AppState>, tab: u32, project: String, labels: String) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().check_project(&project, &labels).map_err(e)
+}
+
+#[tauri::command]
 fn export_spots(state: State<'_, AppState>, tab: u32, spots: String, grains: String, format: String) -> Res<String> {
     let t = state.tab(tab);
     t.lock().export_spots(&spots, &grains, &format).map_err(e)
@@ -696,6 +702,7 @@ pub fn run() {
             renumber,
             export_grains,
             export_spots,
+            check_project,
             set_link,
             layout,
             pdf,

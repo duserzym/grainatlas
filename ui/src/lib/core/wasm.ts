@@ -249,6 +249,10 @@ export class WasmCore implements Core {
     this.project = await this.call<string>('projectJson');
   }
 
+  async checkProject(project: Project, labels: string[] | null): Promise<import('./types').Finding[]> {
+    await this.ready();
+    return this.call('checkProject', { project, labels });
+  }
   async exportSpots(spots: Spot[], grains: Record<string, Grain[]>, format: 'csv' | 'geojson'): Promise<string> {
     await this.ready();
     return this.call('exportSpots', { spots, grains, format });

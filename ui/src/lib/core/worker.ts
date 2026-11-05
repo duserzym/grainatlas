@@ -5,6 +5,11 @@
 import init, * as wasm from './pkg/grainatlas.js';
 import wasmUrl from './pkg/grainatlas_bg.wasm?url';
 
+// Also type the new export before the next wasm-bindgen regeneration.
+declare module './pkg/grainatlas.js' {
+  interface Session { check_project(project: string, labels: string): string }
+}
+
 let ready: Promise<unknown> | null = null;
 let session: wasm.Session | null = null;
 
@@ -58,6 +63,11 @@ const ops: Record<string, Handler> = {
   outlineGrain: ({ areaId, polygon, base, op, outline }) => JSON.parse(s().outline_grain(areaId, JSON.stringify(polygon), base ? JSON.stringify(base) : '', op, JSON.stringify(outline))),
   brushGrain: ({ areaId, stroke, sizeUm, base, op }) => JSON.parse(s().brush_grain(areaId, JSON.stringify(stroke), sizeUm, base ? JSON.stringify(base) : '', op)),
   renumber: ({ grains, tolerance, from }) => JSON.parse(wasm.renumber(JSON.stringify(grains), tolerance, from ? JSON.stringify(from) : '')),
+  checkProject: ({ project, labels }) => {
+    const checker = session ?? new wasm.Session('checks');
+    try { return JSON.parse(checker.check_project(JSON.stringify(project), JSON.stringify(labels))); }
+    finally { if (!session) checker.free(); }
+  },
   exportSpots: ({ spots, grains, format }) => s().export_spots(JSON.stringify(spots), JSON.stringify(grains), format),
   setLink: ({ mountId, samples }) => s().set_link(mountId, JSON.stringify(samples)),
   exportGrains: ({ areaId, grains }) => s().export_grains(areaId, JSON.stringify(grains)),

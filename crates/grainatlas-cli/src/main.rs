@@ -22,6 +22,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Check a saved project; warnings always exit successfully.
+    Check { project: PathBuf, #[arg(long)] json: bool },
     /// Show the areas and tiles of a package without stitching.
     Info { folder: PathBuf },
     /// Print `<area> <sha256>` of the base mosaic of every area with default parameters, then
@@ -134,6 +136,16 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Check { project, json } => {
+            let path = if project.is_dir() { project.join("project.json") } else { project };
+            let input = std::fs::read_to_string(&path)?;
+            let findings = grainatlas_core::checks::check_json(&input, "null")?;
+            if json { println!("{findings}"); } else {
+                let rows: Vec<grainatlas_core::checks::Finding> = serde_json::from_str(&findings)?;
+                for f in &rows { println!("warning [{}] {}", f.code, f.message); }
+                println!("{} warnings", rows.len());
+            }
+        }
         Cmd::Info { folder } => {
             let (pkg, _, _) = open(&folder)?;
             println!("{}", serde_json::to_string_pretty(pkg.info())?);

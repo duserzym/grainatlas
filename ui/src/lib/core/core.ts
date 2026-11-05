@@ -61,6 +61,7 @@ export interface Core {
   /** A grain from a brush stroke (um, diameter `sizeUm`) grown to the nearby edges. */
   brushGrain(areaId: string, stroke: [number, number][], sizeUm: number, base: Grain | null, op: EditOp): Promise<Grain | null>;
   renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]>;
+  checkProject(project: Project, labels: string[] | null): Promise<import('./types').Finding[]>;
   exportSpots(spots: Spot[], grains: Record<string, Grain[]>, format: 'csv' | 'geojson'): Promise<string>;
   /** laicpmsdb mount id and per-area sample names into the project record. */
   setLink(mountId: string | null, samples: Record<string, string>): Promise<void>;
