@@ -5,7 +5,9 @@
   // the floating panel edits the hovered or selected object. Keys are extras.
   import { app, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
-  import { toScreen, type View } from '../lib/canvas/view';
+  import { toMosaic, toScreen, type View } from '../lib/canvas/view';
+  import { onDestroy } from 'svelte';
+  import { spotContrast, type Contrast } from '../lib/canvas/contrast';
   import type { Core } from '../lib/core/core';
   import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
@@ -29,7 +31,8 @@
     if (view && app.areaId) app.savedView = { areaId: app.areaId, view: $state.snapshot(view) as View };
   });
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
-  let cursorUm = $state<[number, number] | null>(null);
+  let cursorScreen = $state<[number, number] | null>(null);
+  const cursorUm = $derived(cursorScreen && view ? toMosaic(view, ...cursorScreen).map((x) => x * umPerPx) as [number, number] : null);
   let selGrains = $state<string[]>([]);
   let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser'>('spots');
   let pairPending = $state<[number, number] | null>(null);
@@ -42,7 +45,7 @@
   let splitLine = $state<[number, number, number, number] | null>(null);
   let drawing = $state<{ kind: SpotKind | 'measure'; x: number; y: number; x2: number; y2: number } | null>(null);
   let measure = $state<[number, number, number, number] | null>(null);
-  let gesture: { mode: 'move' | 'resize'; ids: string[]; startX: number; startY: number; orig: Map<string, { x: number; y: number; x2: number | null; y2: number | null; d: number }>; dirty: boolean } | null = null;
+  let gesture = $state.raw<{ mode: 'move' | 'resize'; ids: string[]; startX: number; startY: number; orig: Map<string, { x: number; y: number; x2: number | null; y2: number | null; d: number }>; dirty: boolean } | null>(null);
   let editing = $state<{ id: string; text: string; sx: number; sy: number } | null>(null);
   // Hand editing of outlines: the lasso (a freehand drag, or click by click) and the brush.
   let lasso = $state<{ pts: [number, number][]; op: EditOp; free: boolean; clicks: number; dragged: boolean } | null>(null);
@@ -105,6 +108,38 @@
   const k = $derived(view ? umPerPx / view.zoom : 1);
   const rotDeg = $derived(view ? (view.rot * 180) / Math.PI : 0);
   const selSpots = $derived(app.spots.filter((s) => app.selection.includes(s.id)));
+  const activeIds = $derived(gesture?.ids ?? []);
+  const autoColour = $derived(app.settings.spot_cursor_colour === 'auto');
+  let contrasts = $state<Record<string, Contrast>>({});
+  let contrastFrame = 0;
+  // Store the latest geometry; rapid pointer events collapse into one frame.
+  const contrastRings = $derived([
+    ...(app.tool === 'spot' && cursorUm && !snapHint ? [{ id: 'ghost', x: cursorUm[0], y: cursorUm[1], r: app.diameter / 2 }] : []),
+    ...spots.filter((s) => activeIds.includes(s.id)).map((s) => ({ id: s.id, x: s.x_um, y: s.y_um, r: s.diameter_um / 2 })),
+  ]);
+  function scheduleContrast() {
+    if (!contrastFrame) contrastFrame = requestAnimationFrame(() => {
+      contrastFrame = 0;
+      if (!autoColour || !view || !viewer) return;
+      const next: Record<string, Contrast> = {};
+      for (const ring of contrastRings) {
+        const [sx, sy] = toScreen(view, ring.x / umPerPx, ring.y / umPerPx);
+        next[ring.id] = spotContrast(viewer.luminanceAt(sx, sy, ring.r / k), contrasts[ring.id]);
+      }
+      contrasts = next;
+    });
+  }
+  $effect(() => {
+    contrastRings; view; viewer; autoColour;
+    scheduleContrast();
+  });
+  onDestroy(() => cancelAnimationFrame(contrastFrame));
+  function activeColour(id: string) {
+    return autoColour ? (contrasts[id] === 'dark' ? '#111' : '#fff') : app.settings.spot_cursor_colour;
+  }
+  function activeHalo(id: string) {
+    return activeColour(id) === '#111' ? '#fff' : '#111';
+  }
   const focus = $derived.by(() => {
     const id = app.selection[0] ?? hoverId;
     return app.spots.find((s) => s.id === id) ?? null;
@@ -812,7 +847,7 @@
   }
 
   function hover(p: CanvasPoint | null) {
-    cursorUm = p ? [p.x * umPerPx, p.y * umPerPx] : null;
+    cursorScreen = p ? [p.sx, p.sy] : null;
     if (!p) {
       hoverId = null;
       return;
@@ -938,10 +973,10 @@
   <div class="canvas" class:folded={app.layout.sideCollapsed}>
     {#key areaId}
       <Viewer bind:this={viewer} bind:view core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
-        preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} canNudge={() => !selSpots.length}
+        preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={scheduleContrast} canNudge={() => !selSpots.length}
         onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
-          <g transform="scale({1 / umPerPx})">
+          <g transform="scale({1 / umPerPx})" data-testid="canvas-um-space">
             {#if refOverlay?.url && refOverlay.visible}
               <image class="refimg" href={refOverlay.url} width={refOverlay.w} height={refOverlay.h} transform="matrix({refOverlay.matrix.join(' ')})"
                 opacity={app.tool === 'pair' && pairPending ? 0.12 : app.tool === 'pair' ? 0.95 : refOverlay.opacity} preserveAspectRatio="none" />
@@ -994,13 +1029,17 @@
             {#if app.layers.spots}
               {#each spots as s (s.id)}
                 {@const sel = app.selection.includes(s.id)}
-                <g class="spot {s.kind}" class:sel class:hov={hoverId === s.id} data-testid="spot">
+                {@const active = activeIds.includes(s.id)}
+                <g class="spot {s.kind}" class:sel class:active class:hov={hoverId === s.id} data-testid="spot"
+                  data-contrast={active ? (autoColour ? (contrasts[s.id] ?? 'light') : 'fixed') : undefined}
+                  style:--active-spot-colour={active ? activeColour(s.id) : undefined} style:--active-spot-halo={active ? activeHalo(s.id) : undefined}>
                   {#if s.kind === 'line' && s.x2_um != null && s.y2_um != null}
                     <line class="swath" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} style:stroke-width="{s.diameter_um}px" />
                     <line class="axis" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} />
                   {:else if s.kind === 'raster' && s.x2_um != null && s.y2_um != null}
                     <rect x={s.x_um} y={s.y_um} width={s.x2_um - s.x_um} height={s.y2_um - s.y_um} />
                   {:else}
+                    {#if active}<circle class="contrast-halo" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />{/if}
                     <circle cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />
                     <circle class="dot" cx={s.x_um} cy={s.y_um} r={1.2 * k} />
                     {#if sel}
@@ -1024,7 +1063,9 @@
               <g class="snap"><circle cx={snapHint.x} cy={snapHint.y} r={7 * k} /><line x1={snapHint.x - 10 * k} x2={snapHint.x + 10 * k} y1={snapHint.y} y2={snapHint.y} /><line y1={snapHint.y - 10 * k} y2={snapHint.y + 10 * k} x1={snapHint.x} x2={snapHint.x} /></g>
             {/if}
             {#if app.tool === 'spot' && cursorUm && !snapHint}
-              <circle class="ghost" cx={cursorUm[0]} cy={cursorUm[1]} r={app.diameter / 2} />
+              <circle class="ghost contrast-halo" cx={cursorUm[0]} cy={cursorUm[1]} r={app.diameter / 2} style:stroke={activeHalo('ghost')} />
+              <circle class="ghost" cx={cursorUm[0]} cy={cursorUm[1]} r={app.diameter / 2}
+                data-testid="spot-ghost" data-contrast={autoColour ? (contrasts.ghost ?? 'light') : 'fixed'} style:stroke={activeColour('ghost')} />
             {/if}
             {#if drawing}
               {#if drawing.kind === 'raster'}
@@ -1774,6 +1815,17 @@
     stroke-width: 1.5;
     cursor: nwse-resize;
   }
+  :global(.ga-root) .spot.active circle,
+  :global(.ga-root) .spot.active rect,
+  :global(.ga-root) .spot.active .axis {
+    stroke: var(--active-spot-colour);
+  }
+  :global(.ga-root) .spot.active circle.contrast-halo {
+    fill: none;
+    stroke: var(--active-spot-halo);
+    stroke-width: 4.8;
+    pointer-events: none;
+  }
   :global(.ga-root) .flabel.sel {
     fill: var(--accent);
   }
@@ -1788,8 +1840,10 @@
     stroke: var(--ov-spot);
     stroke-dasharray: 4 3;
     stroke-width: 1.2;
-    opacity: 0.8;
     pointer-events: none;
+  }
+  :global(.ga-root) .ghost.contrast-halo {
+    stroke-width: 3.6;
   }
   :global(.ga-root) .drawing,
   :global(.ga-root) .measure {

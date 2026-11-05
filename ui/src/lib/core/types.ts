@@ -219,6 +219,7 @@ export interface Settings {
   naming_pattern: string;
   spot_presets_um: number[];
   default_diameter_um: number;
+  spot_cursor_colour: string;
   user: string;
   /** Unused by the UI (the theme is the viewer's preference, not the project's). */
   theme?: string;

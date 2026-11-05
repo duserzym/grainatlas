@@ -37,6 +37,16 @@
       <input type="number" min="1" bind:value={app.settings.default_diameter_um} onchange={save} />
     </label>
     <label class="check"><input type="checkbox" bind:checked={app.settings.snap} onchange={save} /> snap to grain centroid, long-axis ends and the previous spot</label>
+    <label class="field">Active spot colour
+      <select bind:value={app.settings.spot_cursor_colour} onchange={save} data-testid="spot-cursor-colour">
+        <option value="auto">Auto (contrast with the image)</option>
+        <option value="#111">Black</option>
+        <option value="#fff">White</option>
+        <option value="#ff8c42">Orange</option>
+        <option value="#56b4e9">Cyan</option>
+        <option value="#f0e442">Yellow</option>
+      </select>
+    </label>
     <label class="field">Your name (created_by)
       <input type="text" bind:value={app.settings.user} onchange={save} />
     </label>

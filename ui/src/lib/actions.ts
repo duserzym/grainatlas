@@ -189,7 +189,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.project = JSON.parse(await core.projectJson());
   if (saved) {
     app.adopt(saved);
-    app.settings = { ...app.settings, ...(saved.settings ?? {}), outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
+    app.settings = { ...app.settings, ...(saved.settings ?? {}), spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
   }
   fillParams(app);
   app.areaId = info.areas[0]?.id ?? null;
@@ -283,7 +283,7 @@ export async function loadProjectFile(file: File) {
   await core.loadProject(JSON.stringify(stripUi(p)));
   app.project = JSON.parse(await core.projectJson());
   app.adopt(p);
-  app.settings = { ...app.settings, ...(p.settings ?? {}), outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
+  app.settings = { ...app.settings, ...(p.settings ?? {}), spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
   fillParams(app);
   app.dirty = false;
   await restoreAreas(app);

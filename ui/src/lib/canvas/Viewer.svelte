@@ -13,6 +13,7 @@
   import { TileCache } from './tiles';
   import { type View, fit, matrix, rotateAt, toMosaic, zoomAt } from './view';
   import { attachGestures, type ViewPoint } from './gestures';
+  import { ringLuminance } from './contrast';
 
   /** A point on the canvas: `x`, `y` in mosaic pixels, `sx`, `sy` on screen. */
   export type CanvasPoint = ViewPoint;
@@ -26,6 +27,7 @@
     version = 0,
     preview = null,
     onlevel,
+    ondraw,
     view = $bindable(),
     cursor = 'default',
     overlay,
@@ -51,6 +53,8 @@
     preview?: { level: number; img: RawImage; over: number } | null;
     /** The pyramid level drawn (on change). */
     onlevel?: (level: number) => void;
+    /** The displayed pixels changed, including asynchronously loaded tiles. */
+    ondraw?: () => void;
     view?: View;
     cursor?: string;
     overlay?: Snippet<[View]>;
@@ -122,6 +126,14 @@
   function draw() {
     raf = 0;
     if (!canvas || !cache) return;
+    try {
+      drawImage(cache);
+    } finally {
+      ondraw?.();
+    }
+  }
+
+  function drawImage(cache: TileCache) {
     const dpr = window.devicePixelRatio || 1;
     const W = Math.round(size.w * dpr), H = Math.round(size.h * dpr);
     if (canvas.width !== W || canvas.height !== H) {
@@ -257,6 +269,10 @@
   });
 
   // Public helpers for toolbars.
+  /** Screen CSS pixels relative to the Viewer, sampling the displayed ring. */
+  export function luminanceAt(sx: number, sy: number, r: number): number | null {
+    return canvas ? ringLuminance(canvas, sx, sy, r, window.devicePixelRatio || 1) : null;
+  }
   export function zoomBy(f: number) {
     setView(zoomAt(v, size.w / 2, size.h / 2, f));
   }

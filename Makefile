@@ -3,7 +3,7 @@ SHELL := /bin/bash
 WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>/dev/null | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
 WASM_OUT := ui/src/lib/core/pkg
 
-.PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture
+.PHONY: setup bridge core-test unit wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upbstudio/bridge".
@@ -71,7 +71,11 @@ atlas-fixture:
 e2e: ui-build atlas-fixture
 	cd ui && pnpm exec playwright test
 
-test: core-test parity e2e
+# Browser-free UI unit tests (Node's runner strips the TypeScript types).
+unit:
+	cd ui && node --test 'unit/*.test.ts'
+
+test: core-test unit parity e2e
 
 # Static web build for UPb Studio's modules.lock.json, index.html at the top of
 # the archive. COPYFILE_DISABLE keeps macOS metadata files (._*) out of it.

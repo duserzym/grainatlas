@@ -36,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   naming_pattern: '{sample}-{n}',
   spot_presets_um: [15, 20, 25, 30, 35, 50],
   default_diameter_um: 25,
+  spot_cursor_colour: 'auto',
   user: '',
   snap: true,
   outline_margin_um: 4,
