@@ -94,6 +94,7 @@
         <tr><td><span class="kbd">M</span></td><td>measure</td><td><span class="kbd">T</span></td><td>label</td></tr>
         <tr><td><span class="kbd">D</span></td><td>delete tool</td><td><span class="kbd">⌫</span></td><td>delete selection</td></tr>
         <tr><td><span class="kbd">G</span></td><td>add grain (click-grow)</td><td><span class="kbd">K</span></td><td>split grain (draw a line)</td></tr>
+        <tr><td><span class="kbd">O</span></td><td>outline a grain: drag around it, or click corners (double-click / Enter closes); ⇧ add, ⌥ cut, ⌘ no snapping</td><td><span class="kbd">B</span></td><td>grain brush: paint a grain in, ⌥ erase</td></tr>
         <tr><td><span class="kbd">⌘Z</span> / <span class="kbd">⇧⌘Z</span></td><td>undo / redo</td><td><span class="kbd">+</span> <span class="kbd">−</span> <span class="kbd">0</span></td><td>zoom in, out, fit</td></tr>
         <tr><td><span class="kbd">←</span> <span class="kbd">→</span> <span class="kbd">↑</span> <span class="kbd">↓</span></td><td>nudge the view (⇧ more); move selected spots on the Canvas</td><td>double-click</td><td>fit (on empty space)</td></tr>
         <tr><td><span class="kbd">[</span> <span class="kbd">]</span></td><td>rotate 15°</td><td><span class="kbd">Space</span>+drag</td><td>pan with any tool</td></tr>

@@ -32,7 +32,7 @@ test('open the fixture, stitch, find grains, place three spots, export CSV, prin
   await expect(page.getByTestId('spot')).toHaveCount(3);
   const names = await page.locator('.list tbody tr td:first-child').allTextContents();
   expect(names).toHaveLength(3);
-  expect(names[0]).toMatch(/^HJ-GC1-\d+-1$/);
+  expect(names[0]).toMatch(/^HJ-GC1-1$/);
   expect(names[2]).toMatch(/-3$/);
 
   // Drag the first spot with the select tool.

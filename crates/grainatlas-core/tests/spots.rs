@@ -23,6 +23,7 @@ fn grain(n: u32, cx: f64, cy: f64) -> Grain {
         scale_bar_um: 10.0,
         artifact: None,
         kept: false,
+        drawn: false,
     }
 }
 
@@ -44,7 +45,8 @@ fn spots_continue_numbering_and_link_grains() {
         let s = spots::new_spot("a1", "AH1", &gs, &list, &st, x, y, 25.0, "2026-11-03T00:00:00Z");
         list.push(s);
     }
-    assert_eq!(list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["AH1-1-1", "AH1-2-2", "AH1-0-3"]);
+    // Spots are named sample-n; the grain they sit on is recorded, not named.
+    assert_eq!(list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["AH1-1", "AH1-2", "AH1-3"]);
     assert_eq!(list[1].grain_id, Some(gs[1].id));
     assert_eq!(list[2].grain_id, None);
     // Deleting a spot does not reuse its number: continuation from the highest.
@@ -53,6 +55,9 @@ fn spots_continue_numbering_and_link_grains() {
     assert_eq!(s.n, 4);
     // Ids are UUIDv7.
     assert_eq!(s.id.get_version_num(), 7);
+    // Each sample counts on its own.
+    let other = spots::new_spot("a2", "HH3", &gs, &list, &st, 100.0, 100.0, 25.0, "");
+    assert_eq!((other.n, other.name.as_str()), (1, "HH3-1"));
 }
 
 #[test]
@@ -72,7 +77,7 @@ fn csv_and_geojson_exports() {
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(lines.len(), 3);
     assert!(lines[0].starts_with("id,name,sample,area,grain,grain_id,x_um,y_um,x_px,y_px,diameter_um"));
-    assert!(lines[1].contains("HJ-GC1-1-1"));
+    assert!(lines[1].contains(",HJ-GC1-1,"));
     assert!(lines[1].contains("\"rim, \"\"bright\"\"\""));
     // 100 um at 661.4583 nm/px.
     assert!(lines[1].contains(",151.2,151.2,"), "{}", lines[1]);
@@ -86,5 +91,5 @@ fn csv_and_geojson_exports() {
     assert_eq!(f[0]["geometry"]["coordinates"][0].as_array().unwrap().len(), 5, "ring closed");
     assert_eq!(f[1]["geometry"]["type"], "Point");
     assert_eq!(f[2]["geometry"]["type"], "LineString");
-    assert_eq!(f[1]["properties"]["name"], "HJ-GC1-1-1");
+    assert_eq!(f[1]["properties"]["name"], "HJ-GC1-1");
 }

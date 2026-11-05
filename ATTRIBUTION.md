@@ -15,7 +15,11 @@
   - `hdr::mtb_offset`, `hdr::estimate_exposures`, `hdr::merge` and
     `hdr::tone_map` for HDR merges (`crates/grainatlas-core/src/photometric/hdr.rs`);
   - `segment::grabcut::grabcut` and `segment::RgbImage` for grain refinement
-    (`crates/grainatlas-core/src/segment/shape.rs`).
+    (`crates/grainatlas-core/src/segment/shape.rs`);
+  - `magnetic::Tracer` (the Magnetic Lasso's live wire) to snap hand-drawn
+    grain outlines to edges, and `segment::quick::quick_select` (Quick
+    Selection) for the grain brush (`crates/grainatlas-core/src/segment/edit.rs`),
+    with `photocraft-geom`'s `Rect` at the same commit.
   Any function copied in the future keeps a comment naming its origin and
   the commit.
 - `svg2pdf` and `pdf-writer` (typst project, MIT OR Apache-2.0) convert the
