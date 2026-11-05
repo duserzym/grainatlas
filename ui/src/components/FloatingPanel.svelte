@@ -87,6 +87,7 @@
   .body {
     padding: var(--space-3);
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-2);
     font-size: 0.88rem;
     overflow: auto;

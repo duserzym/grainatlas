@@ -27,6 +27,13 @@
   let viewer = $state<ReturnType<typeof Viewer>>();
   // The screen is made again on a tab switch: the tab keeps its view and gets it back.
   let view = $state<View | undefined>(app.savedView?.areaId === app.areaId ? app.savedView.view : undefined);
+  function changeArea(id: string) {
+    if (id === app.areaId) return;
+    // Let the new Viewer's first resize fit its image; tab restores and centerOn stay separate.
+    view = undefined;
+    app.savedView = null;
+    app.areaId = id;
+  }
   $effect(() => {
     if (view && app.areaId) app.savedView = { areaId: app.areaId, view: $state.snapshot(view) as View };
   });
@@ -1105,7 +1112,7 @@
     {/if}
 
     <div class="glass toolbar" data-ui>
-      <select bind:value={app.areaId} aria-label="Area">
+      <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
         {#each Object.keys(app.stitched) as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
       </select>
       <span class="sep"></span>
@@ -1538,8 +1545,11 @@
   }
   .two {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-2);
+  }
+  .two > .field {
+    min-width: 0;
   }
   .params,
   .layers {
@@ -1599,6 +1609,9 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+    /* 2px outline + 2px offset; keep the fields in their existing position. */
+    padding: var(--space-1);
+    margin: calc(-1 * var(--space-1));
   }
   fieldset.tabbody .list {
     flex: 1 0 auto;
