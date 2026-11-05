@@ -14,8 +14,9 @@ export function formatName(pattern: string, sample: string, grain: number | null
   });
 }
 
-export function nextN(spots: Spot[]): number {
-  return spots.reduce((m, s) => Math.max(m, s.n || 0), 0) + 1;
+/** The next `{n}` of a sample: one more than the highest of its spots (each sample counts on its own). */
+export function nextN(spots: Spot[], sample: string): number {
+  return spots.reduce((m, s) => (s.sample === sample ? Math.max(m, s.n || 0) : m), 0) + 1;
 }
 
 export function inside(poly: [number, number][], px: number, py: number) {

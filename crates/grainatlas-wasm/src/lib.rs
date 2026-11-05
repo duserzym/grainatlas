@@ -119,6 +119,15 @@ impl Session {
     pub fn refine_grain(&mut self, area_id: &str, grain: &str) -> Result<String, JsError> {
         self.0.refine_grain(area_id, grain).map_err(err)
     }
+    pub fn snap_outline(&mut self, area_id: &str, path: &str, width_um: f64, contrast: f64) -> Result<String, JsError> {
+        self.0.snap_outline(area_id, path, width_um, contrast).map_err(err)
+    }
+    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str) -> Result<String, JsError> {
+        self.0.outline_grain(area_id, polygon, base, op).map_err(err)
+    }
+    pub fn brush_grain(&mut self, area_id: &str, stroke: &str, size_um: f64, base: &str, op: &str) -> Result<String, JsError> {
+        self.0.brush_grain(area_id, stroke, size_um, base, op).map_err(err)
+    }
     pub fn export_grains(&self, area_id: &str, grains: &str) -> Result<String, JsError> {
         self.0.export_grains(area_id, grains).map_err(err)
     }

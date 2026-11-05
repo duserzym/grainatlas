@@ -5,6 +5,7 @@
 //! polygons and statistics, reading-order numbering that is stable across
 //! re-runs, and the manual tools (click-grow add, split, merge, renumber).
 
+pub mod edit;
 pub mod filter;
 pub mod morph;
 pub mod shape;
@@ -186,6 +187,9 @@ pub struct Grain {
     /// The user kept this detection as a grain although it was flagged; re-runs keep it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept: bool,
+    /// The outline was drawn or painted by hand ([`edit`]); re-runs keep it as it is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drawn: bool,
 }
 
 impl Grain {
@@ -345,8 +349,19 @@ pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grai
             r = r2;
         }
     }
+    keep_drawn(&mut grains, previous);
     number(&mut grains, previous, p.row_tolerance);
     grains
+}
+
+/// Outlines the user drew stay as drawn: the detections they cover give way to them.
+fn keep_drawn(grains: &mut Vec<Grain>, previous: &[Grain]) {
+    let drawn: Vec<&Grain> = previous.iter().filter(|g| g.drawn).collect();
+    if drawn.is_empty() {
+        return;
+    }
+    grains.retain(|g| !drawn.iter().any(|d| shape::inside(&d.polygon_um, g.centroid_um[0], g.centroid_um[1]) || shape::inside(&g.polygon_um, d.centroid_um[0], d.centroid_um[1])));
+    grains.extend(drawn.into_iter().cloned());
 }
 
 /// The artifact classifier and the CL-dark supplement over the primary detections, with the

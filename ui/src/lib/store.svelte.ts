@@ -13,7 +13,7 @@ import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsd
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
-export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'pair';
+export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'grain-outline' | 'grain-brush' | 'pair';
 
 /** A reference image (printout photo, post-laser frame) registered to an area's mosaic. */
 export interface Overlay {
@@ -33,7 +33,7 @@ export interface Overlay {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  naming_pattern: '{sample}-{grain}-{n}',
+  naming_pattern: '{sample}-{n}',
   spot_presets_um: [15, 20, 25, 30, 35, 50],
   default_diameter_um: 25,
   user: '',
@@ -254,7 +254,7 @@ class AppState {
   deepLink = $state<(DeepLink & { name: string | null }) | null>(null);
   /** Spot the canvas should center on once its view is ready (deep links). */
   focusSpot = $state<string | null>(null);
-  layers = $state({ mosaic: true, outlines: true, artifacts: true, numbers: true, spots: true, labels: true, scalebars: false, residuals: false, results: true });
+  layers = $state({ mosaic: true, outlines: true, artifacts: true, numbers: false, spots: true, labels: true, scalebars: false, residuals: false, results: true });
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];
   canUndo = $state(false);

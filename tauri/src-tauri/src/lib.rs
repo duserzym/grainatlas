@@ -293,6 +293,24 @@ async fn merge_grains(state: State<'_, AppState>, tab: u32, area_id: String, gra
 }
 
 #[tauri::command]
+async fn snap_outline(state: State<'_, AppState>, tab: u32, area_id: String, path: String, width_um: f64, contrast: f64) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().snap_outline(&area_id, &path, width_um, contrast).map_err(e)
+}
+
+#[tauri::command]
+async fn outline_grain(state: State<'_, AppState>, tab: u32, area_id: String, polygon: String, base: String, op: String) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().outline_grain(&area_id, &polygon, &base, &op).map_err(e)
+}
+
+#[tauri::command]
+async fn brush_grain(state: State<'_, AppState>, tab: u32, area_id: String, stroke: String, size_um: f64, base: String, op: String) -> Res<String> {
+    let t = state.tab(tab);
+    t.lock().brush_grain(&area_id, &stroke, size_um, &base, &op).map_err(e)
+}
+
+#[tauri::command]
 async fn refine_grain(state: State<'_, AppState>, tab: u32, area_id: String, grain: String) -> Res<String> {
     let t = state.tab(tab);
     t.lock().refine_grain(&area_id, &grain).map_err(e)
@@ -363,8 +381,21 @@ async fn save_bytes(app: AppHandle, state: State<'_, AppState>, request: Request
 /// Writes the project folder `<name>.grainatlas/` (plan section 5.4) next to the package, or in a
 /// folder chosen in a dialog. `project` is the full project JSON (with the UI's grains and spots).
 #[tauri::command]
-async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, ask: bool) -> Res<Option<String>> {
+async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, ask: bool, dir: Option<String>) -> Res<Option<String>> {
     let t = state.tab(tab);
+    // A project opened from its folder is saved back into that folder, wherever it is.
+    if let Some(d) = dir.filter(|d| !ask && !d.is_empty()) {
+        let dir = PathBuf::from(d);
+        let files = t.lock().project_files(&project).map_err(e)?;
+        for (rel, bytes) in files {
+            let p = dir.join(rel);
+            if let Some(q) = p.parent() {
+                std::fs::create_dir_all(q).map_err(e)?;
+            }
+            std::fs::write(&p, bytes).map_err(e)?;
+        }
+        return Ok(Some(dir.display().to_string()));
+    }
     let v: serde_json::Value = serde_json::from_str(&project).map_err(e)?;
     let name = v["name"].as_str().unwrap_or("project").to_string();
     let pkg_parent = t.package_dir();
@@ -659,6 +690,9 @@ pub fn run() {
             split_grain,
             merge_grains,
             refine_grain,
+            snap_outline,
+            outline_grain,
+            brush_grain,
             renumber,
             export_grains,
             export_spots,

@@ -1387,6 +1387,7 @@ dependencies = [
  "libm",
  "pdf-writer",
  "photocraft-algo",
+ "photocraft-geom",
  "png 0.17.16",
  "rayon",
  "roxmltree",

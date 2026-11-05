@@ -4,7 +4,7 @@
 import { invoke as tauriInvoke, type InvokeArgs } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
 
 function img(buf: ArrayBuffer | Uint8Array | number[]): RawImage | null {
   const b = buf instanceof Uint8Array ? buf : buf instanceof ArrayBuffer ? new Uint8Array(buf) : Uint8Array.from(buf);
@@ -134,6 +134,15 @@ export class TauriCore implements Core {
   async refineGrain(areaId: string, grain: Grain): Promise<Grain> {
     return JSON.parse(await this.call<string>('refine_grain', { areaId, grain: JSON.stringify(grain) }));
   }
+  async snapOutline(areaId: string, path: [number, number][], widthUm: number, contrast: number): Promise<[number, number][]> {
+    return JSON.parse(await this.call<string>('snap_outline', { areaId, path: JSON.stringify(path), widthUm, contrast }));
+  }
+  async outlineGrain(areaId: string, polygon: [number, number][], base: Grain | null, op: EditOp): Promise<Grain | null> {
+    return JSON.parse(await this.call<string>('outline_grain', { areaId, polygon: JSON.stringify(polygon), base: base ? JSON.stringify(base) : '', op }));
+  }
+  async brushGrain(areaId: string, stroke: [number, number][], sizeUm: number, base: Grain | null, op: EditOp): Promise<Grain | null> {
+    return JSON.parse(await this.call<string>('brush_grain', { areaId, stroke: JSON.stringify(stroke), sizeUm, base: base ? JSON.stringify(base) : '', op }));
+  }
   async renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]> {
     return JSON.parse(await this.call<string>('renumber', { grains: JSON.stringify(grains), tolerance, from: from ? JSON.stringify(from) : '' }));
   }
@@ -185,8 +194,8 @@ export class TauriCore implements Core {
   async saveProjectFile(project: Project, path: string | null, ask: boolean): Promise<string | null> {
     return this.call<string | null>('save_project_file', { project: JSON.stringify(project), path, ask });
   }
-  async saveProject(project: Project, _extras: Record<string, string>): Promise<string | null> {
-    return this.call<string | null>('save_project', { project: JSON.stringify(project), ask: false });
+  async saveProject(project: Project, _extras: Record<string, string>, dir: string | null = null): Promise<string | null> {
+    return this.call<string | null>('save_project', { project: JSON.stringify(project), ask: false, dir });
   }
   async ownership(grains: Record<string, Grain[]>): Promise<Ownership> {
     return JSON.parse(await this.call<string>('ownership', { grains: JSON.stringify(grains) }));

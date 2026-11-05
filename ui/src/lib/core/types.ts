@@ -169,7 +169,12 @@ export interface Grain {
   artifact?: ArtifactReason;
   /** The user kept this detection as a grain although it was flagged. */
   kept?: boolean;
+  /** The outline was drawn or painted by hand; Find again keeps it as it is. */
+  drawn?: boolean;
 }
+
+/** What a drawn outline or brush stroke does: a new grain, or grow or cut the grain. */
+export type EditOp = 'new' | 'add' | 'cut';
 
 export type ArtifactReason = 'bubble' | 'halo' | 'sliver' | 'block' | 'speck' | 'manual';
 
