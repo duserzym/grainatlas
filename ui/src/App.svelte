@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import VersionChip from './components/VersionChip.svelte';
+  import { startScheduler } from './lib/updater.svelte';
   import { app, current, tabs, type Screen } from './lib/store.svelte';
   import { isHosted, notify, onCommand, onOpenFiles, SHELL_EVENTS } from '@lab/bridge';
   import { findAllGrains, liveChanged, liveKey, openLoose, openOffered, openPathsInTabs, saveProject, saveProjectFile, startDeepLink, stitchAll } from './lib/actions';
@@ -168,6 +170,7 @@
   onMount(() => {
     const unwatch = watchTheme();
     const undo: (() => void)[] = [];
+    undo.push(startScheduler());
     if (desktop) {
       void startup();
       // Dropped folders and files arrive as paths: a new tab unless this one is empty.
@@ -323,6 +326,7 @@
     </div>
   {/if}
   {/key}
+  <VersionChip />
   {#if dropping}
     <div class="dropzone" aria-hidden="true"><span class="glass">Drop to open{app.empty ? '' : ' in a new tab'}</span></div>
   {/if}

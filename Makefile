@@ -4,6 +4,7 @@ WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>
 WASM_OUT := ui/src/lib/core/pkg
 
 .PHONY: setup bridge core-test unit wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture
+.PHONY: updater-setup check-version
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upbstudio/bridge".
@@ -54,6 +55,12 @@ desktop-dev: ui-build icons
 
 desktop-build: ui-build icons
 	cd tauri && cargo tauri build
+
+updater-setup:
+	node scripts/setup-updater.mjs
+
+check-version:
+	@node scripts/check-version.mjs
 
 # Native and wasm builds must hash the fixture mosaic identically.
 parity: wasm

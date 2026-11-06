@@ -68,6 +68,7 @@ function fakeLaicpmsdb(): Plugin {
 // asset path relative (any static host, tauri://localhost), routing is
 // hash-based, and the wasm core runs in an ES-module worker.
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version) },
   base: './',
   plugins: [svelte(), demo(), fakeLaicpmsdb()],
   worker: { format: 'es' },

@@ -60,7 +60,7 @@ make desktop-dev  # desktop app (Tauri 2) on this machine
 CI: until the first release, GitHub Actions runs only on `v*` tags and by hand,
 not on push or pull requests. Run it with `gh workflow run ci` (tests),
 `gh workflow run desktop` (installers) or `gh workflow run release` (web
-archive, no draft release); all three need the `UPBSTUDIO_TOKEN` secret below.
+archive); all three need the `UPBSTUDIO_TOKEN` secret below.
 
 ## Dependencies: `@lab/bridge`
 
@@ -159,6 +159,27 @@ All of this is optional; without a server grainatlas works as before.
   `test-token`) with atlas upload and serving, mounts, spot upload and
   `ui/tests/fixtures/mount-results.json` as the results; `make atlas-fixture`
   writes the fixture bundle it serves. Never part of a build.
+
+## Updates
+
+The version chip stays in the bottom-right corner, including on the Canvas.
+It shows when an update is available or ready; click it to open Settings >
+Updates. Use **Check now** to check explicitly, choose Stable or Beta
+(pre-releases), and turn automatic downloads on or off. A downloaded update
+waits for **Restart to update**. UPb Studio updates hosted copies with its shell.
+
+One-time owner setup (generates the signing key, writes the public key, and
+sets `TAURI_SIGNING_PRIVATE_KEY` with `gh` when signed in):
+
+```bash
+make updater-setup
+make check-version
+```
+
+Back up `~/.tauri/grainatlas-updater.key`. The `desktop` workflow now publishes
+a draft release with installers, signed update bundles and `latest.json` on
+`v*` tags; manual runs keep workflow artifacts. Publish the draft after the
+workflows pass. See [In-app updates](docs/in-app-updates.md) for setup and channels.
 
 ## Release asset for UPb Studio
 

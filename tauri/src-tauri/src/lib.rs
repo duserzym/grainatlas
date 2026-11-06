@@ -16,6 +16,7 @@ use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 mod geometry;
+mod updater;
 use tauri_plugin_dialog::DialogExt;
 
 /// One open project: a window holds several, as tabs (the UI names them by number).
@@ -645,6 +646,7 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(menu)
         .on_menu_event(|app, ev| match ev.id().as_ref() {
             "new-tab" | "close-tab" => {
@@ -669,7 +671,13 @@ pub fn run() {
             }
         })
         .manage(AppState::default())
+        .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            updater::update_check,
+            updater::update_download,
+            updater::update_install,
+            updater::update_status,
+            updater::update_supported,
             startup,
             open_path,
             open_paths,

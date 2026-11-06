@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
   import ThemeSwitch from '../components/ThemeSwitch.svelte';
+  import UpdatesPanel from '../components/UpdatesPanel.svelte';
   import { normalizeServer } from '../lib/laicpmsdb';
   import { openFromServer } from '../lib/remote';
 
@@ -102,6 +103,9 @@
       <button onclick={() => app.resetLayout()} data-testid="reset-layout">Reset layout</button>
     </div>
     <p class="faint small">Light by default; System follows the computer's setting. Images stay on a dark surface in both. {app.hostTheme ? `UPb Studio sets the theme here (${app.hostTheme}).` : app.hosted ? 'In UPb Studio, with nothing chosen here, grainatlas follows the system setting.' : ''}</p>
+  </div>
+  <div class="glass panel" id="updates" data-testid="updates-panel">
+    <UpdatesPanel />
   </div>
   <div class="glass panel">
     <h2>Keyboard</h2>
