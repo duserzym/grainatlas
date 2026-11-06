@@ -53,7 +53,7 @@ the three bridge commands are allowed there, not grainatlas's own commands.
   spot panel). "Open in laicpmsdb" calls `open('laicpmsdb://acquisition/<id>')`,
   else `open('laicpmsdb://search?label=<spot name>')`; it is disabled with a
   tooltip when not hosted. Selecting one spot sends `{ type:
-  'grainatlas.spot.selected', project, spot, name }`. "Send spots to
+  'lab.spot.selected', project, spot, name, grain, area, via }`. "Send spots to
   laicpmsdb" on the Spots tab downloads the body of `POST
   /v1/mounts/{mount_id}/spots`: `{ project_id, sample, spots: [{ id, name,
   grain, x_um, y_um, diameter_um, kind: 'spot' }] }` for the current area's
@@ -65,6 +65,23 @@ the three bridge commands are allowed there, not grainatlas's own commands.
   draft release on a `v*` tag, for `upbstudio/modules.lock.json`.
 
 ## Consequences
+
+### Bridge v3
+
+Hosted builds register `onCommand` beside `onOpenFiles`. `focus-spot` and
+`focus-grain` activate the matching project tab, or open a published atlas
+read-only using an optional HTTP(S) `server` (else the page's server or
+Settings), then fall back to a pending deep link when unavailable. They
+select and centre the target and briefly highlight it, with a static
+highlight for reduced motion. Grain lookup accepts ids, area-qualified labels
+and unambiguous numbers. `lab.spot.selected` replaces the outbound legacy
+event and includes `{project, spot, name, grain, area, via}`; command spot
+selections keep `via: 'shell'` until the selection changes. Offered project
+folders keep their `project.json` in memory until the named SEM package opens,
+using the existing Project file loader and replace dialog. Standalone builds
+never register commands; older shells continue without commands.
+
+### Existing hosting consequences
 
 - One build serves the static page, the desktop app and both shell
   deliveries; the hosted page is the static page plus the bridge.

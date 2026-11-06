@@ -346,9 +346,36 @@
     const s = app.spots.find((x) => x.id === id);
     if (!s || s.area_id !== areaId) return;
     app.focusSpot = null;
+    if (app.shellSelection?.spot === id) tab = 'spots';
+    selGrains = [];
     panel.open = true;
     centerOnUm(s.x_um, s.y_um);
   });
+
+  // Shell grain commands use the same selection and framing as a grain-table click.
+  $effect(() => {
+    const target = app.focusGrain;
+    if (!target || target.area !== areaId || !view || !viewer) return;
+    const g = detections.find((g) => g.id === target.id);
+    if (!g) return;
+    app.focusGrain = null;
+    selGrains = [g.id];
+    tab = 'grains';
+    panel.open = true;
+    const [x0, y0, x1, y1] = g.bbox_um;
+    centerOnUm((x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0, 1));
+    if (target.flash) app.flash = { kind: 'grain', id: g.id, area: areaId! };
+  });
+  const viewReady = $derived(!!view && !!viewer);
+  $effect(() => {
+    const flash = app.flash;
+    if (!flash || flash.area !== areaId || !viewReady) return;
+    const state = current();
+    const timer = setTimeout(() => { if (state.flash === flash) state.flash = null; }, 1500);
+    return () => clearTimeout(timer);
+  });
+  const flashingSpot = $derived(app.flash?.kind === 'spot' && app.flash.area === areaId ? spots.find((s) => s.id === app.flash?.id) : null);
+  const flashingGrain = $derived(app.flash?.kind === 'grain' && app.flash.area === areaId ? detections.find((g) => g.id === app.flash?.id) : null);
 
   // ---- laicpmsdb (through UPb Studio) -------------------------------------------
   const hosted = isHosted();
@@ -1094,6 +1121,12 @@
                 {@const own = owners.get(g.id)}
                 <polygon class="grain" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined}><title>{own?.duplicate_of ? ownerNote(g) : own?.cut ? 'owned here, cut by the area edge' : own ? 'owned by this area' : ''}</title></polygon>
               {/each}
+            {/if}
+            {#if flashingSpot}
+              <circle class="shell-flash spot-flash" cx={flashingSpot.x_um} cy={flashingSpot.y_um} r={flashingSpot.diameter_um / 2 + 7 * k} data-testid="shell-spot-flash" />
+            {/if}
+            {#if flashingGrain}
+              <polygon class="shell-flash grain-flash" points={flashingGrain.polygon_um.map((p) => p.join(',')).join(' ')} data-testid="shell-grain-flash" />
             {/if}
             {#if app.layers.scalebars}
               {#each grains as g (g.id)}
@@ -1845,6 +1878,21 @@
     z-index: 30;
     width: 12rem;
     font-family: var(--font-mono);
+  }
+  :global(.ga-root) .shell-flash {
+    fill: none;
+    stroke: var(--ov-number);
+    stroke-width: 4;
+    opacity: 1;
+    pointer-events: none;
+  }
+  :global(.ga-root) .spot-flash {
+    stroke: var(--ov-spot);
+    animation: shell-pulse 500ms ease-in-out infinite alternate;
+  }
+  @keyframes shell-pulse { from { opacity: 0.4; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    :global(.ga-root) .spot-flash { animation: none; }
   }
   :global(.ga-root) .grain {
     fill: none;

@@ -92,7 +92,23 @@ cd ui && pnpm add ./lab-bridge-0.1.0.tgz
   the package folder is opened again; the bundled example opens by itself.
 - A spot's panel has "Open in laicpmsdb" (`laicpmsdb://acquisition/<id>` when
   the spot has an acquisition id, else `laicpmsdb://search?label=<name>`);
-  selecting a spot sends `grainatlas.spot.selected` to the shell.
+  selecting a spot sends `lab.spot.selected` with `{project, spot, name,
+  grain, area, via}`. `grain` is `<area_id>/<grain_number>` or null; `via` is
+  `shell` for a command's selection until the user selects something else,
+  otherwise `user`.
+- Bridge v3 commands arrive through `onCommand`: `focus-spot {project, spot,
+  flash?, via?, server?}` and `focus-grain {project, grain, spot?, flash?,
+  via?, server?}`. They activate an open project tab, or open a published atlas
+  read-only from the HTTP(S) server (the command's, else the page's server or
+  Settings); otherwise they wait for the SEM package on Open. A grain may be
+  its id, `<area_id>/<number>`, or an unambiguous number (qualified by the
+  spot's area when supplied). Focus centres the canvas and highlights for
+  about 1.5 s, unless `flash: false`; reduced motion uses a static highlight.
+- A project folder offered by the shell keeps its `project.json` pending and
+  names the SEM package to open. The next matching package loads that project
+  automatically; an already open matching package loads it immediately, asking
+  before replacing a different dirty project. `grainatlas.files.opened`
+  reports `waiting: package <name>` and then `opened: project <name>`.
 - "Send spots to laicpmsdb" on the Spots tab posts the spots with the shell's
   `token()` when a server and a mount are set, else downloads the JSON body of
   laicpmsdb's `POST /v1/mounts/{mount_id}/spots`.

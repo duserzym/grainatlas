@@ -7,6 +7,7 @@
 // the active tab: components read it as before and follow a tab switch. Code that awaits takes
 // its tab once (`current()`) so a result lands in the tab that started the work.
 
+import type { ShellCommand } from './shellcmd';
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
@@ -110,6 +111,8 @@ function loadLayout(): LayoutPrefs {
 
 /** What belongs to the viewer, not to a project: the same in every tab. */
 class Shared {
+  /** Hosted project folders waiting for their SEM packages (memory only). */
+  pendingProjects = $state.raw<{ file: File; project: Project; name: string; files: number }[]>([]);
   /** Remembered panel geometry (Settings → Reset layout puts it back). */
   layout = $state<LayoutPrefs>(loadLayout());
   /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
@@ -144,7 +147,7 @@ class AppState {
   pendingLoose = $state<{ name: string; images: ImageEntry[]; spec: LooseSpec | null } | null>(null);
   project = $state<Project | null>(null);
   /** Files UPb Studio handed over while a project was open: the replace dialog asks first. */
-  offer = $state.raw<{ name: string; files: PackageFile[] } | null>(null);
+  offer = $state.raw<{ name: string; files: PackageFile[]; projectFile?: File } | null>(null);
   areaId = $state<string | null>(null);
   stitched = $state<Record<string, StitchSummary>>({});
   /** Bumps when pyramid pixels change (re-stitch, re-tone): the canvas drops its tile cache. */
@@ -182,7 +185,14 @@ class AppState {
   /** Set to force the next spot's {n} (legacy run numbers); null = continue. */
   nextN = $state<number | null>(null);
   labels = $state<Label[]>([]);
-  selection = $state<string[]>([]);
+  private selected = $state<string[]>([]);
+  /** A command's provenance survives until the selection changes. */
+  shellSelection = $state<{ project: string; spot: string } | null>(null);
+  get selection(): string[] { return this.selected; }
+  set selection(ids: string[]) {
+    if (ids.length !== this.selected.length || ids.some((id, i) => id !== this.selected[i])) this.shellSelection = null;
+    this.selected = ids;
+  }
   hover = $state<string | null>(null);
   tool = $state<Tool>('select');
   diameter = $state(25);
@@ -266,6 +276,10 @@ class AppState {
   deepLink = $state<(DeepLink & { name: string | null }) | null>(null);
   /** Spot the canvas should center on once its view is ready (deep links). */
   focusSpot = $state<string | null>(null);
+  pendingCommand = $state<ShellCommand | null>(null);
+  /** One-shot grain focus; the canvas selects the row and centres its bbox. */
+  focusGrain = $state<{ area: string; id: string; flash: boolean } | null>(null);
+  flash = $state<{ kind: 'spot' | 'grain'; id: string; area: string } | null>(null);
   layers = $state({ mosaic: true, outlines: true, artifacts: true, numbers: false, spots: true, labels: true, scalebars: false, residuals: false, results: true });
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];

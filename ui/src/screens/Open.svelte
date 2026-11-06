@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app } from '../lib/store.svelte';
+  import { app, shared } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { loadProjectFile, openExample, openFiles, openPaths, targetTab } from '../lib/actions';
+  import { pendingProjectNotice, loadProjectFile, openExample, openFiles, openPaths, targetTab } from '../lib/actions';
   import { isDesktop } from '../lib/core/core';
   import { readRecent, type RecentEntry } from '../lib/deeplink';
 
@@ -59,6 +59,9 @@
 </script>
 
 <section class="open">
+  {#each shared.pendingProjects as pending (pending.project.package.name)}
+    <div class="glass panel linked" role="status" data-testid="pending-project"><p>{pendingProjectNotice(pending.project)}</p></div>
+  {/each}
   {#if app.deepLink}
     <div class="glass panel linked" role="status" data-testid="deeplink">
       <h2>Linked project</h2>

@@ -4,8 +4,8 @@ import { beforeCheckedAction } from './checks';
 
 import type { PackageFile } from './core/core';
 import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
-import { current, tabs, type AppState, type LiveState } from './store.svelte';
-import { notify, type OpenedFiles } from '@lab/bridge';
+import { current, shared, tabs, type AppState, type LiveState } from './store.svelte';
+import { isHosted, notify, type OpenedFiles } from '@lab/bridge';
 import { download, fromShell } from './files';
 import { packageNameFor, parseDeepLink, sameId, savedProject } from './deeplink';
 
@@ -50,8 +50,27 @@ export async function openOffered(set: OpenedFiles) {
   const app = current();
   const told = (outcome: string) => void notify({ type: 'grainatlas.files.opened', kind: set.kind, name: set.name, files: set.files.length, outcome });
   if (set.kind === 'project') {
-    app.error = `${set.name} is a saved project folder: it opens in the grainatlas desktop app. Here, open its package folder, then load its project.json (Open screen, Project file).`;
-    told('refused: project folder');
+    if (!isHosted()) return;
+    try {
+      const file = set.files.find((f) => f.path.split('/').pop() === 'project.json')?.file;
+      if (!file) throw new Error('The project folder has no project.json.');
+      const project = JSON.parse(await file.text()) as Project;
+      if (!project.uuid || typeof project.uuid !== 'string' || !project.package?.name || typeof project.package.name !== 'string' || !Array.isArray(project.areas)) throw new Error('project.json is missing its project id, package name or areas.');
+      const pending = { file, project, name: set.name, files: set.files.length };
+      shared.pendingProjects = [...shared.pendingProjects.filter((p) => p.project.package.name !== project.package.name), pending];
+      const tab = tabs.list.find((t) => t.pkg?.name === project.package.name);
+      if (tab) {
+        tabs.select(tab.id);
+        await applyPendingProject(tab);
+      } else {
+        app.screen = 'open';
+        app.notice = pendingProjectNotice(project);
+        told(`waiting: package ${project.package.name}`);
+      }
+    } catch (e) {
+      app.error = String(e);
+      told(`failed: ${app.error}`);
+    }
     return;
   }
   const s = fromShell(set);
@@ -71,6 +90,31 @@ export async function openOffered(set: OpenedFiles) {
   told(app.pendingLoose ? 'asked: scale' : pkg ? `opened: ${pkg.kind}, ${pkg.areas.length} area(s)` : `failed: ${app.error ?? 'not opened'}`);
 }
 
+export function pendingProjectNotice(project: Project): string {
+  return `Open the SEM package ${project.package.name} to continue (${project.package.path})`;
+}
+
+/** Package picks, drops and shell offers all meet here after opening. */
+async function applyPendingProject(app: AppState): Promise<boolean> {
+  if (!isHosted()) return false;
+  const pending = shared.pendingProjects.find((p) => p.project.package.name === app.pkg?.name);
+  if (!pending) return false;
+  if (app.dirty && !sameId(app.project?.uuid, pending.project.uuid)) {
+    app.offer = { name: pending.name, files: [], projectFile: pending.file };
+    return true;
+  }
+  if (app.notice === pendingProjectNotice(pending.project)) app.notice = null;
+  try {
+    await loadProjectFile(pending.file, app);
+    shared.pendingProjects = shared.pendingProjects.filter((p) => p !== pending);
+    void notify({ type: 'grainatlas.files.opened', kind: 'project', name: pending.name, files: pending.files, outcome: `opened: project ${pending.project.package.name}` });
+  } catch (e) {
+    app.error = String(e);
+    void notify({ type: 'grainatlas.files.opened', kind: 'project', name: pending.name, files: pending.files, outcome: `failed: ${app.error}` });
+  }
+  return true;
+}
+
 /** The replace dialog: Open replaces the open project with the offered files, Cancel keeps it. */
 export async function answerOffer(open: boolean) {
   const app = current();
@@ -78,7 +122,16 @@ export async function answerOffer(open: boolean) {
   app.offer = null;
   if (!s) return;
   void notify({ type: 'grainatlas.files.opened', name: s.name, files: s.files.length, outcome: open ? 'replaced' : 'kept the open project' });
-  if (open) await openFiles(s.name, s.files, app);
+  if (s.projectFile) {
+    const pending = shared.pendingProjects.find((p) => p.file === s.projectFile);
+    if (open) {
+      try {
+        await loadProjectFile(s.projectFile, app);
+        void notify({ type: 'grainatlas.files.opened', kind: 'project', name: s.name, files: pending?.files ?? 1, outcome: `opened: project ${app.pkg?.name}` });
+      } catch (e) { app.error = String(e); return; }
+    }
+    shared.pendingProjects = shared.pendingProjects.filter((p) => p !== pending);
+  } else if (open) await openFiles(s.name, s.files, app);
 }
 
 /** Desktop: one folder (package, area folder, `.grainatlas` project) or a set of files, by path. */
@@ -203,7 +256,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.areaId = info.areas[0]?.id ?? null;
   app.screen = 'area';
   app.dirty = false;
-  await resolveDeepLink(app);
+  if (!isHosted() || !(await applyPendingProject(app))) await resolveDeepLink(app);
 }
 
 /** The example package bundled with the web build (the test fixture), or null when absent. */
@@ -270,6 +323,13 @@ async function resolveDeepLink(app: AppState) {
     return;
   }
   app.deepLink = null;
+  if (app.pendingCommand) {
+    const cmd = app.pendingCommand;
+    app.pendingCommand = null;
+    const { applyShellFocus } = await import('./shellcmd');
+    await applyShellFocus(app, cmd);
+    return;
+  }
   if (!link.spot) return;
   const spot = app.spots.find((s) => sameId(s.id, link.spot));
   if (!spot) {
@@ -283,8 +343,7 @@ async function resolveDeepLink(app: AppState) {
   app.screen = 'canvas';
 }
 
-export async function loadProjectFile(file: File) {
-  const app = current();
+export async function loadProjectFile(file: File, app: AppState = current()) {
   const text = await file.text();
   const p = JSON.parse(text) as Project;
   const core = await app.core;

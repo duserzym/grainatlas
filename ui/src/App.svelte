@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, current, tabs, type Screen } from './lib/store.svelte';
-  import { isHosted, notify, onOpenFiles } from '@lab/bridge';
+  import { isHosted, notify, onCommand, onOpenFiles, SHELL_EVENTS } from '@lab/bridge';
   import { findAllGrains, liveChanged, liveKey, openLoose, openOffered, openPathsInTabs, saveProject, saveProjectFile, startDeepLink, stitchAll } from './lib/actions';
   import { isDesktop } from './lib/core/core';
   import TabBar from './components/TabBar.svelte';
@@ -16,6 +16,7 @@
   import RenameDialog from './components/RenameDialog.svelte';
   import ReplaceDialog from './components/ReplaceDialog.svelte';
   import ThemeSwitch from './components/ThemeSwitch.svelte';
+  import { handleShellCommand } from './lib/shellcmd';
   import { editCopy } from './lib/remote';
 
   const screens: { id: Screen; label: string; key: string; needs?: 'pkg' | 'mosaic' }[] = [
@@ -72,6 +73,7 @@
   // Tell UPb Studio which spot is selected (a no-op when not hosted).
   let lastSelected = '';
   $effect(() => {
+    if (!isHosted()) return;
     const id = app.selection.length === 1 ? app.selection[0] : null;
     const project = app.project?.uuid;
     const spot = id ? app.spots.find((s) => s.id === id) : null;
@@ -79,10 +81,12 @@
       lastSelected = '';
       return;
     }
-    const key = `${project}/${spot.id}`;
+    const via = app.shellSelection?.project === project && app.shellSelection.spot === spot.id ? 'shell' : 'user';
+    const grain = spot.grain_number == null ? null : `${spot.area_id}/${spot.grain_number}`;
+    const key = JSON.stringify([project, spot.id, spot.name, grain, spot.area_id, via]);
     if (key === lastSelected) return;
     lastSelected = key;
-    void notify({ type: 'grainatlas.spot.selected', project, spot: spot.id, name: spot.name });
+    void notify({ type: SHELL_EVENTS.spotSelected, project, spot: spot.id, name: spot.name, grain, area: spot.area_id, via });
   });
 
   // Theme: the system setting, and the shell's data-theme on <html> when hosted.
@@ -199,6 +203,7 @@
     // bridge takes them at once (before the shell's 3 s fallback) and hands them
     // over as {path, file}; they open like a drop on the Open screen.
     const stopFiles = isHosted() ? onOpenFiles((set) => openOffered(set)) : () => {};
+    const stopCommands = isHosted() ? onCommand(handleShellCommand) : () => {};
     fromHash();
     void startDeepLink();
     window.addEventListener('hashchange', fromHash);
@@ -250,6 +255,7 @@
       for (const f of undo) f();
       unwatch();
       stopFiles();
+      stopCommands();
       window.removeEventListener('hashchange', fromHash);
       window.removeEventListener('keydown', key);
     };

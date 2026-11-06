@@ -1,0 +1,108 @@
+// Hosted bridge v3 commands. Pure validation/lookup stay usable by Node's unit runner.
+import type { BridgeCommand } from '@lab/bridge';
+import type { Grain, Spot } from './core/types';
+import type { AppState } from './store.svelte';
+
+export type ShellCommand = BridgeCommand & { server?: string };
+const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
+const isId = (x: unknown): x is string => typeof x === 'string' && ID.test(x);
+
+export function commandServer(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const u = new URL(value);
+    return /^https?:$/.test(u.protocol) && !!u.hostname ? value : null;
+  } catch { return null; }
+}
+
+export function isShellCommand(value: unknown): value is ShellCommand {
+  if (!value || typeof value !== 'object') return false;
+  const c = value as Record<string, unknown>;
+  if (!isId(c.project) || (c.flash !== undefined && typeof c.flash !== 'boolean') ||
+      (c.via !== undefined && typeof c.via !== 'string') ||
+      (c.server !== undefined && !commandServer(c.server))) return false;
+  if (c.type === 'focus-spot') return isId(c.spot);
+  return c.type === 'focus-grain' && typeof c.grain === 'string' &&
+    c.grain.split('/').length <= 2 && c.grain.split('/').every(isId) &&
+    (c.spot === undefined || isId(c.spot));
+}
+
+/** Id first, then area/number, then an unambiguous number (spot's area wins). */
+export function findGrain(grains: Record<string, Grain[]>, grain: string, spot?: Pick<Spot, 'area_id'> | null): { area: string; grain: Grain } | null {
+  const all = Object.entries(grains).flatMap(([area, gs]) => gs.map((g) => ({ area, grain: g })));
+  const byId = all.find((g) => g.grain.id.toLowerCase() === grain.toLowerCase());
+  if (byId) return byId;
+  const parts = grain.split('/');
+  if (parts.length > 2) return null;
+  const number = parts.at(-1)!;
+  if (!/^\d+$/.test(number)) return null;
+  const matches = all.filter((g) => g.grain.number === Number(number) &&
+    (parts.length === 2 ? g.area === parts[0] : !spot || g.area === spot.area_id));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** Runs only once the requested project is open; also used when its package arrives later. */
+export async function applyShellFocus(app: AppState, cmd: ShellCommand) {
+  app.flash = null;
+  const { stitch } = await import('./actions');
+  const { sameId } = await import('./deeplink');
+  const spot = app.spots.find((s) => sameId(s.id, cmd.spot));
+  if (cmd.type === 'focus-spot') {
+    if (!spot) {
+      app.notice = `Spot ${cmd.spot} is not in project ${app.project?.name || cmd.project}.`;
+      return;
+    }
+    if (!app.stitched[spot.area_id] && !(await stitch(spot.area_id, app))) return;
+    app.areaId = spot.area_id;
+    app.selection = [spot.id];
+    app.shellSelection = { project: app.project?.uuid ?? cmd.project, spot: spot.id };
+    app.focusGrain = null;
+    app.focusSpot = spot.id;
+    if (cmd.flash !== false) app.flash = { kind: 'spot', id: spot.id, area: spot.area_id };
+  } else {
+    const hit = findGrain(app.grains, cmd.grain, spot);
+    if (!hit) {
+      app.notice = `Grain ${cmd.grain} is not in project ${app.project?.name || cmd.project} or its number is ambiguous.`;
+      return;
+    }
+    if (!app.stitched[hit.area] && !(await stitch(hit.area, app))) return;
+    app.areaId = hit.area;
+    app.selection = [];
+    app.focusSpot = null;
+    app.focusGrain = { area: hit.area, id: hit.grain.id, flash: cmd.flash !== false };
+  }
+  app.screen = 'canvas';
+}
+
+export async function handleShellCommand(value: unknown) {
+  const { isHosted } = await import('@lab/bridge');
+  if (!isHosted() || !isShellCommand(value)) return;
+  const cmd = value;
+  const { current, tabs } = await import('./store.svelte');
+  const { sameId, packageNameFor } = await import('./deeplink');
+  let app = tabs.list.find((t) => sameId(t.project?.uuid, cmd.project));
+  if (app) tabs.select(app.id);
+  else {
+    const active = current();
+    app = !active.pkg && !active.remote ? active : tabs.add();
+  }
+  app.pendingCommand = cmd;
+  app.deepLink = { project: cmd.project, spot: cmd.spot ?? null, name: packageNameFor(cmd.project) };
+  if (!sameId(app.project?.uuid, cmd.project)) {
+    const requestedServer = commandServer(cmd.server);
+    if (requestedServer) app.serverOverride = requestedServer;
+    const server = requestedServer ?? app.server;
+    if (server) {
+      const { openFromServer } = await import('./remote');
+      if (await openFromServer(server, cmd.project, null, null, null, app)) app.error = null;
+    }
+    if (!sameId(app.project?.uuid, cmd.project)) {
+      app.screen = 'open';
+      app.notice = app.deepLink.name ? `Open the SEM package ${app.deepLink.name} to continue.` : `Open the SEM package for project ${cmd.project}, then load its project.json to continue.`;
+      return;
+    }
+  }
+  app.pendingCommand = null;
+  app.deepLink = null;
+  await applyShellFocus(app, cmd);
+}

@@ -8,7 +8,7 @@
 import type { RawImage } from './core/core';
 import type { LevelInfo, MosaicJson, Project, StitchSummary } from './core/types';
 import { atlasUrl, normalizeServer } from './laicpmsdb';
-import { current } from './store.svelte';
+import { current, type AppState } from './store.svelte';
 import { savedProject, sameId } from './deeplink';
 import { authToken } from './atlas';
 
@@ -103,14 +103,13 @@ function mosaicOf(a: AtlasArea, tile: number): MosaicJson {
 }
 
 /** Loads a published bundle and shows it on the Canvas, read-only; selects `spot` when given. */
-export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null) {
-  const app = current();
+export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null, app: AppState = current()) {
   const server = normalizeServer(serverIn);
   if (!server) {
     app.error = `Not a server address: ${serverIn}`;
     return false;
   }
-  const token = await authToken();
+  const token = await authToken(app);
   const at = { server, projectId, token, access };
   const r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
     const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json');
