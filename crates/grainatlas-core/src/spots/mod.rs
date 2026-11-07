@@ -29,7 +29,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            naming_pattern: "{sample}-{n}".into(),
+            naming_pattern: "{sample}_{n}".into(),
             area_patterns: BTreeMap::new(),
             spot_presets_um: vec![15.0, 20.0, 25.0, 30.0, 35.0, 50.0],
             default_diameter_um: 25.0,
@@ -135,7 +135,7 @@ pub fn format_name(pattern: &str, sample: &str, grain: Option<u32>, n: u32) -> S
 }
 
 /// The next `{n}` of a sample: one more than the highest of its spots. Each sample counts on
-/// its own (HH3-1, HH3-2, ..., AH1-1); a number typed in by hand moves the count on from there.
+/// its own (HH3_1, HH3_2, ..., AH1_1); a number typed in by hand moves the count on from there.
 pub fn next_n(spots: &[Spot], sample: &str) -> u32 {
     spots.iter().filter(|s| s.sample == sample).map(|s| s.n).max().unwrap_or(0) + 1
 }

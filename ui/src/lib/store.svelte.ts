@@ -34,7 +34,7 @@ export interface Overlay {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  naming_pattern: '{sample}-{n}',
+  naming_pattern: '{sample}_{n}',
   area_patterns: {},
   spot_presets_um: [15, 20, 25, 30, 35, 50],
   default_diameter_um: 25,

@@ -507,7 +507,7 @@ mod tests {
     }
     fn spot(id: u128, area: &str, sample: &str, n: u32, x: f64, y: f64) -> Spot {
         serde_json::from_value(json!({"id": Uuid::from_u128(id), "area_id": area, "sample": sample,
-            "name": format!("{sample}-{n}"), "n": n, "grain_id": Uuid::from_u128(if area == "a" {1} else {2}),
+            "name": format!("{sample}_{n}"), "n": n, "grain_id": Uuid::from_u128(if area == "a" {1} else {2}),
             "grain_number": 1, "x_um": x, "y_um": y, "diameter_um": 10.})).unwrap()
     }
     fn project() -> Project {
@@ -540,7 +540,7 @@ mod tests {
                 &p,
                 &grains,
                 std::slice::from_ref(&clean),
-                Some(&["A-1".into()])
+                Some(&["A_1".into()])
             )
             .is_empty()
         );
@@ -583,7 +583,7 @@ mod tests {
         let a = spot(100, "a", "A", 1, 30., 30.);
         let mut b = spot(101, "a", "A", 1, 31., 30.);
         let mut c = spot(102, "b", "B", 3, 50., 50.);
-        c.name = "a-1".into();
+        c.name = "a_1".into();
         let d = spot(103, "b", "B", 1, 20., 20.);
         let f = check_project(&p, &grains, &[a, b.clone(), c, d], None);
         for code in [
@@ -605,7 +605,7 @@ mod tests {
                 .any(|f| f.code == "duplicate_name" && f.message.contains("ignoring case"))
         );
         b.sample = "Old".into();
-        b.name = "Old-1".into();
+        b.name = "Old_1".into();
         assert_eq!(codes(&p, &grains, &[b.clone()]), ["sample_mismatch"]);
         b.sample = "A".into();
         b.name = "A_S_1".into();
@@ -616,9 +616,9 @@ mod tests {
         let s =
             crate::spots::new_spot("a", "A", &grains["a"], &[], &p.settings, 50., 50., 10., "t");
         assert_eq!(s.name, "A_S_1");
-        assert_eq!(p.settings.pattern_for("b"), "{sample}-{n}");
+        assert_eq!(p.settings.pattern_for("b"), "{sample}_{n}");
         p.settings.area_patterns.insert("a".into(), " ".into());
-        assert_eq!(p.settings.pattern_for("a"), "{sample}-{n}");
+        assert_eq!(p.settings.pattern_for("a"), "{sample}_{n}");
         let f = check_project(&p, &grains, &[spot(100, "a", "A", 8, 50., 50.)], None);
         assert!(!f.iter().any(|f| f.code == "n_gap"));
     }
@@ -662,9 +662,9 @@ mod tests {
         assert!(
             pattern
                 .message
-                .contains("22 names differ from the pattern {sample}-{n}")
+                .contains("22 names differ from the pattern {sample}_{n}")
         );
-        assert!(pattern.message.contains("e.g. A_S_1, pattern gives A-1"));
+        assert!(pattern.message.contains("e.g. A_S_1, pattern gives A_1"));
         let unused: Vec<_> = f.iter().filter(|f| f.code == "no_spot").collect();
         assert_eq!(unused.len(), 1);
         assert!(unused[0].message.contains("22 acquisition labels"));
