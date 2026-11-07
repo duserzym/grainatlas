@@ -7,8 +7,8 @@ WASM_OUT := ui/src/lib/core/pkg
 .PHONY: updater-setup check-version
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
-# is published: ui/package.json has "file:../../upbstudio/bridge".
-UPBSTUDIO ?= ../upbstudio
+# is published: ui/package.json has "file:../../upblab/bridge".
+UPBSTUDIO ?= ../upblab
 VERSION := $(shell node -p "require('./ui/package.json').version" 2>/dev/null)
 RELEASE_DIR := target/release-web
 RELEASE_ASSET := grainatlas-web-$(VERSION).tar.gz

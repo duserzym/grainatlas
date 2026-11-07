@@ -41,7 +41,7 @@ export async function openFiles(name: string, files: PackageFile[], app: AppStat
 }
 
 /**
- * Hosted: files the user dropped on UPb Studio's window or opened through the OS
+ * Hosted: files the user dropped on UPb Lab's window or opened through the OS
  * (bridge `onOpenFiles`, ux-conventions rule 4). They open exactly like a drop on
  * the Open screen; `kind` is only the shell's hint, the core still decides. With
  * a project open, the replace dialog asks first.
@@ -280,7 +280,7 @@ export async function openExample(app: AppState = current()) {
 }
 
 /**
- * Start-up: `?project=<id>&spot=<id>` (from UPb Studio, or typed); with `&server=<base>` the
+ * Start-up: `?project=<id>&spot=<id>` (from UPb Lab, or typed); with `&server=<base>` the
  * project's published bundle opens read-only from that server instead (laicpmsdb's links). The query is
  * dropped from the address afterwards so a reload does not repeat it. The
  * browser keeps no pixels, so the package must be opened again: the bundled

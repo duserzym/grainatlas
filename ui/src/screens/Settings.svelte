@@ -69,7 +69,7 @@
       {#if app.serverOverride}This page was opened for {app.serverOverride}, which is used until it is reloaded without <code>?server=</code>.{:else if !app.link.server && app.server}grainatlas is served by {app.server} and uses it.{:else}The laicpmsdb service that receives atlas bundles and spots and gives results. Empty = none; grainatlas works the same without it.{/if}
     </p>
     {#if hosted}
-      <p class="faint small">In UPb Studio the shell's sign-in is used (no token needed here).</p>
+      <p class="faint small">In UPb Lab the shell's sign-in is used (no token needed here).</p>
     {:else}
       <label class="field">Token
         <input type="password" autocomplete="off" placeholder="bearer token from laicpmsdb" bind:value={app.link.token} onchange={() => app.saveLink()} data-testid="token" />
@@ -102,7 +102,7 @@
       <p class="faint small grow">Panel positions and folded panels are remembered on this computer{app.hosted ? '' : ', and the desktop app remembers its window'}. Reset puts everything back where it starts.</p>
       <button onclick={() => app.resetLayout()} data-testid="reset-layout">Reset layout</button>
     </div>
-    <p class="faint small">Light by default; System follows the computer's setting. Images stay on a dark surface in both. {app.hostTheme ? `UPb Studio sets the theme here (${app.hostTheme}).` : app.hosted ? 'In UPb Studio, with nothing chosen here, grainatlas follows the system setting.' : ''}</p>
+    <p class="faint small">Light by default; System follows the computer's setting. Images stay on a dark surface in both. {app.hostTheme ? `UPb Lab sets the theme here (${app.hostTheme}).` : app.hosted ? 'In UPb Lab, with nothing chosen here, grainatlas follows the system setting.' : ''}</p>
   </div>
   <div class="glass panel" id="updates" data-testid="updates-panel">
     <UpdatesPanel />

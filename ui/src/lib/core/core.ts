@@ -1,5 +1,5 @@
 // The one interface the UI talks to. Two implementations: the wasm core in a
-// Web Worker (static web page, and the page hosted by UPb Studio) and the native
+// Web Worker (static web page, and the page hosted by UPb Lab) and the native
 // core through grainatlas's own Tauri commands (desktop app).
 
 import { isHosted } from '@lab/bridge';
@@ -104,7 +104,7 @@ export { isHosted };
 
 /**
  * True only in grainatlas's own desktop app, where its Tauri commands exist.
- * Ask the bridge first: UPb Studio hosts this page in a Tauri webview too
+ * Ask the bridge first: UPb Lab hosts this page in a Tauri webview too
  * (`__TAURI_INTERNALS__` is present there), but only the bridge commands are
  * allowed in it, so a hosted page uses the wasm core and the web file paths.
  */

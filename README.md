@@ -42,7 +42,7 @@ waiting for its name and an example file).
 6. Registers reference images (photos of annotated printouts, post-laser
    frames) to the mosaic by point pairs, to recover spots of legacy sessions
    (`docs/legacy_workflow.md`).
-7. Writes **atlas bundles** (`upbstudio/docs/WORKFLOW.md` section 3.1) and
+7. Writes **atlas bundles** (`upblab/docs/WORKFLOW.md` section 3.1) and
    publishes them to laicpmsdb; opens published ones from a server; shows
    laicpmsdb's results on the spots; registers the laser stage and writes the
    spot list (see "laicpmsdb and the laser" below).
@@ -66,14 +66,14 @@ archive); all three need the `UPBSTUDIO_TOKEN` secret below.
 
 grainatlas runs on its own and as the Images tab of UPb Studio. It talks to
 the shell through `@lab/bridge`, which is not on npm yet: `ui/package.json`
-depends on a sibling checkout, `"@lab/bridge": "file:../../upbstudio/bridge"`
-(paths from `ui/`), so clone `upbstudio` next to `grainatlas`. `make setup`
-builds `../upbstudio/bridge/dist` if it is missing (`make bridge`), before
+depends on a sibling checkout, `"@lab/bridge": "file:../../upblab/bridge"`
+(paths from `ui/`), so clone `upblab` next to `grainatlas`. `make setup`
+builds `../upblab/bridge/dist` if it is missing (`make bridge`), before
 `pnpm install`. CI checks out both repositories side by side
-(`duserzym/upbstudio`; a private one needs a read-only `UPBSTUDIO_TOKEN`
+(`duserzym/upblab`; a private one needs a read-only `UPBSTUDIO_TOKEN`
 secret).
 
-Without an `upbstudio` checkout, take the bridge tarball from someone who has
+Without an `upblab` checkout, take the bridge tarball from someone who has
 one (`pnpm --filter @lab/bridge pack` in `upbstudio` writes
 `lab-bridge-<version>.tgz`) and point the dependency at it, locally only:
 

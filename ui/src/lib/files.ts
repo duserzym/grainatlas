@@ -66,7 +66,7 @@ export async function fromDrop(dt: DataTransfer): Promise<{ name: string; files:
 }
 
 /**
- * Files UPb Studio handed over (`onOpenFiles`, a drop on its window or an OS
+ * Files UPb Lab handed over (`onOpenFiles`, a drop on its window or an OS
  * open): paths are already relative to the dropped folder, as from `fromDrop`.
  */
 export function fromShell(set: { name: string; files: { path: string; file: File }[] }): { name: string; files: PackageFile[] } {

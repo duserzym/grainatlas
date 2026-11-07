@@ -65,12 +65,12 @@ const THEME_KEY = 'grainatlas.theme';
 /**
  * The viewer's own theme choice: stored only when picked with the switch, so
  * nothing stored means the default: light, or the system theme when hosted by
- * UPb Studio (its module webviews cannot see the shell's choice yet). A
+ * UPb Lab (its module webviews cannot see the shell's choice yet). A
  * `?theme=light|dark` in the address wins for this page load.
  */
 function loadTheme(): { pref: ThemePref; chosen: boolean } {
   try {
-    // The address counts as a choice (UPb Studio passes its theme this way), but is not stored.
+    // The address counts as a choice (UPb Lab passes its theme this way), but is not stored.
     const q = new URLSearchParams(location.search).get('theme');
     if (q === 'light' || q === 'dark' || q === 'system') return { pref: q, chosen: true };
     const s = localStorage.getItem(THEME_KEY);
@@ -124,7 +124,7 @@ class Shared {
   /** False until the viewer picks a theme (or the address names one). */
   themeChosen = $state(this.theme0.chosen);
   systemDark = $state(systemDark());
-  /** `data-theme` the UPb Studio shell put on this page's <html>, when hosted. */
+  /** `data-theme` the UPb Lab shell put on this page's <html>, when hosted. */
   hostTheme = $state<'light' | 'dark' | null>(null);
   /** True when hosted: with nothing chosen here, follow the system like the shell's "system". */
   hosted = $state(false);
@@ -146,7 +146,7 @@ class AppState {
   /** Loose images waiting for a scale (the scale dialog is open while set). */
   pendingLoose = $state<{ name: string; images: ImageEntry[]; spec: LooseSpec | null } | null>(null);
   project = $state<Project | null>(null);
-  /** Files UPb Studio handed over while a project was open: the replace dialog asks first. */
+  /** Files UPb Lab handed over while a project was open: the replace dialog asks first. */
   offer = $state.raw<{ name: string; files: PackageFile[]; projectFile?: File } | null>(null);
   areaId = $state<string | null>(null);
   stitched = $state<Record<string, StitchSummary>>({});

@@ -22,7 +22,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
-    # grainatlas and upbstudio side by side for @lab/bridge (see ci.yml).
+    # grainatlas and upblab side by side for @lab/bridge (see ci.yml).
     defaults:
       run:
         working-directory: grainatlas
@@ -32,8 +32,8 @@ jobs:
           path: grainatlas
       - uses: actions/checkout@v4
         with:
-          repository: duserzym/upbstudio
-          path: upbstudio
+          repository: duserzym/upblab
+          path: upblab
           token: ${{ secrets.UPBSTUDIO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -55,7 +55,7 @@ jobs:
           cargo install --locked tauri-cli --version '^2'
           V=$(grep -A1 'name = "wasm-bindgen"$' Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
           cargo install --locked wasm-bindgen-cli --version "$V"
-          (cd ../upbstudio && pnpm install --frozen-lockfile --filter @lab/bridge && pnpm --filter @lab/bridge build)
+          (cd ../upblab && pnpm install --frozen-lockfile --filter @lab/bridge && pnpm --filter @lab/bridge build)
           cd ui && pnpm install --frozen-lockfile
       - name: Web build (wasm core + UI)
         shell: bash

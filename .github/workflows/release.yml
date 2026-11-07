@@ -5,8 +5,8 @@ name: release
 # UPb Studio pins that asset in its modules.lock.json (url + sha256).
 #
 # @lab/bridge is a sibling-checkout dependency until it is published, so the
-# job checks out grainatlas and upbstudio side by side (ui/package.json has
-# "file:../../upbstudio/bridge"). If duserzym/upbstudio is private, add a
+# job checks out grainatlas and upblab side by side (ui/package.json has
+# "file:../../upblab/bridge"). If duserzym/upblab is private, add a
 # read-only token as the UPBSTUDIO_TOKEN secret.
 #
 # A manual run (gh workflow run release) builds the same archive and skips the
@@ -31,8 +31,8 @@ jobs:
           path: grainatlas
       - uses: actions/checkout@v4
         with:
-          repository: duserzym/upbstudio
-          path: upbstudio
+          repository: duserzym/upblab
+          path: upblab
           token: ${{ secrets.UPBSTUDIO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:

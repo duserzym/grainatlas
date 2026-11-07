@@ -232,7 +232,7 @@
   const laserOf = (s: Spot) => app.project?.laser?.areas?.[s.area_id]?.fit ?? null;
   async function openAcquisition(id: string) {
     if (await openLink(`laicpmsdb://acquisition/${encodeURIComponent(id)}`)) return;
-    // Not inside UPb Studio: laicpmsdb's own page, when the server is known.
+    // Not inside UPb Lab: laicpmsdb's own page, when the server is known.
     if (app.server) window.open(acquisitionPage(app.server, id), '_blank', 'noopener');
     else app.notice = `Acquisition ${id}: open it in laicpmsdb (no server set here).`;
   }
@@ -377,12 +377,12 @@
   const flashingSpot = $derived(app.flash?.kind === 'spot' && app.flash.area === areaId ? spots.find((s) => s.id === app.flash?.id) : null);
   const flashingGrain = $derived(app.flash?.kind === 'grain' && app.flash.area === areaId ? detections.find((g) => g.id === app.flash?.id) : null);
 
-  // ---- laicpmsdb (through UPb Studio) -------------------------------------------
+  // ---- laicpmsdb (through UPb Lab) -------------------------------------------
   const hosted = isHosted();
   async function openInLaicpmsdb(s: Spot) {
     const url = spotLink(s);
     const ok = await openLink(url);
-    app.error = ok ? null : `UPb Studio did not open ${url}`;
+    app.error = ok ? null : `UPb Lab did not open ${url}`;
   }
   /**
    * Spot sync: with a server, a mount and a token (the shell's, or one pasted in Settings) the
@@ -1325,7 +1325,7 @@
           </table>
           <label class="field">laicpmsdb acquisition <input type="text" placeholder="id (optional)" value={focus.acquisition_id ?? ''} onchange={(e) => updateSpot(focus.id, { acquisition_id: e.currentTarget.value.trim() || null })} data-testid="panel-acquisition" /></label>
           <button class="linkout" onclick={() => openInLaicpmsdb(focus)} disabled={!hosted} data-testid="open-laicpmsdb"
-            title={hosted ? (focus.acquisition_id ? 'Open this acquisition in the Sessions tab' : `Search laicpmsdb for the label ${focus.name}`) : 'Available when grainatlas runs inside UPb Studio'}>Open in laicpmsdb</button>
+            title={hosted ? (focus.acquisition_id ? 'Open this acquisition in the Sessions tab' : `Search laicpmsdb for the label ${focus.name}`) : 'Available when grainatlas runs inside UPb Lab'}>Open in laicpmsdb</button>
           <div class="two">
             <button onclick={() => renameFromPattern([focus.id])}>Rename from pattern</button>
             <button class="danger" onclick={() => { app.selection = [focus.id]; deleteSelection(); }}>Delete</button>

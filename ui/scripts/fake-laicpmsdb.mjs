@@ -1,6 +1,6 @@
 // A stand-in for the laicpmsdb endpoints grainatlas calls, for `pnpm dev`, `pnpm preview` and
 // the Playwright tests, mounted by vite.config.ts under /fake-laicpmsdb (never in a build).
-// It follows upbstudio/docs/WORKFLOW.md v1 and laicpmsdb's schemas/openapi.json; where
+// It follows upblab/docs/WORKFLOW.md v1 and laicpmsdb's schemas/openapi.json; where
 // laicpmsdb has no endpoint yet (atlas upload and serving, mount results) it implements
 // what grainatlas codes against, so it is a fake, not a reference:
 //

@@ -2,7 +2,7 @@
    language) so the two apps look like one. Scoped to .ga-root, never :root, so
    grainatlas can live in a tab of the unified shell (plan section 7). Light is the
    default; [data-theme='dark'] switches (App.svelte resolves light, dark or
-   system, and the UPb Studio shell's theme when hosted). Glass is for chrome
+   system, and the UPb Lab shell's theme when hosted). Glass is for chrome
    only; the image surface is opaque and dark in both themes. */
 
 .ga-root {

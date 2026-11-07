@@ -1,4 +1,4 @@
-//! Atlas bundles (`upbstudio/docs/WORKFLOW.md` section 3.1): what grainatlas
+//! Atlas bundles (`upblab/docs/WORKFLOW.md` section 3.1): what grainatlas
 //! publishes to laicpmsdb, or hands over as files.
 //!
 //! ```text

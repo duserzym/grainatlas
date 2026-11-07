@@ -1,5 +1,5 @@
 // Deep links: `?project=<id>&spot=<id>` in the page URL, and `?server=<base>&project=<id>&spot=<id>`
-// for a bundle published to laicpmsdb (opened read-only from `<base>/atlas/projects/<id>/`). UPb Studio maps
+// for a bundle published to laicpmsdb (opened read-only from `<base>/atlas/projects/<id>/`). UPb Lab maps
 // `grainatlas://project/<id>/spot/<id>` to `index.html?project=<id>&spot=<id>`
 // (its docs/deep-links.md). The browser keeps projects without pixels in
 // localStorage under `grainatlas.project.<package name>`; this file finds the

@@ -21,7 +21,7 @@
 <h2>Updates</h2>
 <strong>grainatlas v{updater.version}</strong>
 {#if isHosted()}
-  <p class="faint small">UPb Studio updates grainatlas with the shell; see its Settings &gt; Updates.</p>
+  <p class="faint small">UPb Lab updates grainatlas with the shell; see its Settings &gt; Updates.</p>
 {:else}
   <p class="small" role="status">{line}</p>
   {#if status.kind === 'unsupported' && info}<p class="small">Version {info.version} is available</p>{/if}

@@ -1,4 +1,4 @@
-// Atlas bundles (upbstudio/docs/WORKFLOW.md section 3.1): save as a `<project_id>.atlas/`
+// Atlas bundles (upblab/docs/WORKFLOW.md section 3.1): save as a `<project_id>.atlas/`
 // folder or a zip, publish to laicpmsdb. The core writes the bytes (identical in the browser
 // and the desktop app); this file only moves them.
 

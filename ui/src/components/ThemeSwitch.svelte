@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Light / dark / system, in the top bar and in Settings. The UPb Studio shell's
+  // Light / dark / system, in the top bar and in Settings. The UPb Lab shell's
   // theme wins while it sets one on this page (hosted).
   import { app, type ThemePref } from '../lib/store.svelte';
 
@@ -19,7 +19,7 @@
       class="icon"
       aria-pressed={!app.hostTheme && pressed(o.id)}
       disabled={!!app.hostTheme}
-      title={app.hostTheme ? `UPb Studio sets the theme (${app.hostTheme})` : o.title}
+      title={app.hostTheme ? `UPb Lab sets the theme (${app.hostTheme})` : o.title}
       aria-label={o.title}
       onclick={() => app.setTheme(o.id)}
       data-testid="theme-{o.id}"

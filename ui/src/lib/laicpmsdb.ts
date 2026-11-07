@@ -46,7 +46,7 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[]): { 
 
 // ---- the laicpmsdb server: where it is, the token, and the calls grainatlas makes ----------
 //
-// Endpoints (upbstudio/docs/WORKFLOW.md v1 and laicpmsdb's schemas/openapi.json):
+// Endpoints (upblab/docs/WORKFLOW.md v1 and laicpmsdb's schemas/openapi.json):
 //   GET  /v1/mounts                         mount picker (MountOut list)
 //   POST /v1/mounts/{id}/spots              spot sync (MountSpots body)
 //   POST /v1/mounts/{id}/atlas              publish: multipart/form-data, field `bundle` = the zip

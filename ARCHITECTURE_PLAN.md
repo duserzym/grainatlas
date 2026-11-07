@@ -364,7 +364,7 @@ Letter, Tabloid 11x17 (the lab's default), A4, A3, custom.
 
 What exists (2026-11-03, ADR-0005):
 
-- The shell is UPb Studio (`../upbstudio`); grainatlas is its Images tab and
+- The shell is UPb Studio (`../upblab`); grainatlas is its Images tab and
   uses `@lab/bridge` (sibling-checkout dependency until published). Hosted, it
   runs the wasm core with the web file input and drag-drop.
 - Files the user drops on the shell's window or opens through the OS
@@ -400,7 +400,7 @@ What exists (2026-11-03, ADR-0005):
   (`tauri-plugin-deep-link`, single-instance on Windows; needs a bundled build
   to test and a rule for machines where the shell also claims the scheme).
 
-Workflow v1 (2026-11-03, `../upbstudio/docs/WORKFLOW.md`): grainatlas is
+Workflow v1 (2026-11-03, `../upblab/docs/WORKFLOW.md`): grainatlas is
 stages 2 and 3 of the lab workflow and gains three hand-offs:
 
 - **Publish an atlas bundle** (section 3.1 of the contract): the corrected

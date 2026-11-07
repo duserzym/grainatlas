@@ -1,5 +1,5 @@
 <script lang="ts">
-  // UPb Studio handed over files while a project is open: ask once before
+  // UPb Lab handed over files while a project is open: ask once before
   // replacing it (Open, Cancel). Cancel has the focus, so Enter or a stray
   // keystroke keeps the open project; replacing it takes a click on Open (or
   // Tab, Enter). The open project is saved before it is replaced.

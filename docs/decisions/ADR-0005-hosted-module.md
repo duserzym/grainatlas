@@ -7,18 +7,18 @@ segmentation ADR.)
 
 ## Context
 
-UPb Studio (`../upbstudio`) shows the grainatlas web build as its Images tab:
+UPb Studio (`../upblab`) shows the grainatlas web build as its Images tab:
 a native child webview on desktop, an iframe named `lab-shell:<module>` in the
-web delivery (`upbstudio/docs/decisions/ADR-0002-tab-hosting.md`). Modules talk
+web delivery (`upblab/docs/decisions/ADR-0002-tab-hosting.md`). Modules talk
 to the shell only through `@lab/bridge` (`open`, `token`, `notify`,
-`isHosted`), and follow `upbstudio/docs/cross-platform-contract.md`. Tauri
+`isHosted`), and follow `upblab/docs/cross-platform-contract.md`. Tauri
 injects `__TAURI_INTERNALS__` into the shell's module webviews too, but only
 the three bridge commands are allowed there, not grainatlas's own commands.
 
 ## Decision
 
 - **Dependency.** `ui/package.json` has `"@lab/bridge":
-  "file:../../upbstudio/bridge"` until the bridge is published. `make bridge`
+  "file:../../upblab/bridge"` until the bridge is published. `make bridge`
   (run by `make setup`) builds the sibling's `bridge/dist`; CI and release jobs
   check out both repositories side by side. README gives the tarball fallback.
 - **Which core.** `isDesktop()` (`ui/src/lib/core/core.ts`) is false when
@@ -95,5 +95,5 @@ never register commands; older shells continue without commands.
   child webviews and swallows HTML file drops; the shell should build module
   webviews with `disable_drag_drop_handler()` for drag-drop to reach the page.
   The file input works either way.
-- CI depends on `duserzym/upbstudio` being reachable until the bridge is on
+- CI depends on `duserzym/upblab` being reachable until the bridge is on
   npm.

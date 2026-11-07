@@ -72,7 +72,7 @@
     }
   });
 
-  // Tell UPb Studio which spot is selected (a no-op when not hosted).
+  // Tell UPb Lab which spot is selected (a no-op when not hosted).
   let lastSelected = '';
   $effect(() => {
     if (!isHosted()) return;
@@ -114,7 +114,7 @@
   }
 
   const desktop = isDesktop();
-  /** Tab keys and the menu are the desktop app's: a browser and UPb Studio keep Cmd+T/W/1-9. */
+  /** Tab keys and the menu are the desktop app's: a browser and UPb Lab keep Cmd+T/W/1-9. */
   const tabKeys = desktop && !isHosted();
   let tabBar = $state<ReturnType<typeof TabBar>>();
   /** A folder dragged over the desktop window (it opens in a new tab). */
@@ -202,7 +202,7 @@
           listen<string>('grainatlas://menu', (e) => (e.payload === 'new-tab' || e.payload === 'close-tab') && tabCommand(e.payload)).then((f) => undo.push(f)),
         );
     }
-    // Files dropped on UPb Studio's window or opened through the OS (rule 4): the
+    // Files dropped on UPb Lab's window or opened through the OS (rule 4): the
     // bridge takes them at once (before the shell's 3 s fallback) and hands them
     // over as {path, file}; they open like a drop on the Open screen.
     const stopFiles = isHosted() ? onOpenFiles((set) => openOffered(set)) : () => {};
@@ -210,7 +210,7 @@
     fromHash();
     void startDeepLink();
     window.addEventListener('hashchange', fromHash);
-    // Ctrl/Cmd 1-4, Ctrl/Cmd , and Ctrl/Cmd R belong to UPb Studio's menu when
+    // Ctrl/Cmd 1-4, Ctrl/Cmd , and Ctrl/Cmd R belong to UPb Lab's menu when
     // hosted (bridge README): grainatlas binds Alt 1-5 and Ctrl/Cmd S only.
     const key = (e: KeyboardEvent) => {
       if (app.checkPrompt || app.renamePrompt) return;

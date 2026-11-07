@@ -7,8 +7,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # grainatlas and upbstudio side by side: @lab/bridge is "file:../../upbstudio/bridge"
-    # until it is published (README, Dependencies). Private upbstudio: UPBSTUDIO_TOKEN secret.
+    # grainatlas and upblab side by side: @lab/bridge is "file:../../upblab/bridge"
+    # until it is published (README, Dependencies). Private upblab: UPBSTUDIO_TOKEN secret.
     defaults:
       run:
         working-directory: grainatlas
@@ -18,8 +18,8 @@ jobs:
           path: grainatlas
       - uses: actions/checkout@v4
         with:
-          repository: duserzym/upbstudio
-          path: upbstudio
+          repository: duserzym/upblab
+          path: upblab
           token: ${{ secrets.UPBSTUDIO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
