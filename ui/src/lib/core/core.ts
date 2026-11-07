@@ -27,6 +27,7 @@ export interface Core {
   blank(name: string): Promise<void>;
   loadProject(json: string): Promise<void>;
   projectJson(): Promise<string>;
+  memoryReport(): Promise<import('./types').MemoryReport>;
   navigation(): Promise<RawImage | null>;
   tileThumb(area: number, tile: number, max: number): Promise<RawImage>;
   stitch(areaId: string, params: AreaParams, onProgress?: (p: Progress) => void): Promise<StitchSummary>;
@@ -115,5 +116,9 @@ export function isDesktop(): boolean {
 
 /** The core of one tab: a native session keyed by `tab` in the desktop app, its own wasm worker on the web. */
 export function newCore(tab: number): Promise<Core> {
-  return isDesktop() ? import('./tauri').then((m) => new m.TauriCore(tab)) : import('./wasm').then((m) => new m.WasmCore());
+  const pending = isDesktop() ? import('./tauri').then((m) => new m.TauriCore(tab)) : import('./wasm').then((m) => new m.WasmCore());
+  // A published viewer may never use its local core before the frame reloads.
+  // Mark unused initialization failures handled; callers still await the original promise.
+  void pending.catch(() => {});
+  return pending;
 }

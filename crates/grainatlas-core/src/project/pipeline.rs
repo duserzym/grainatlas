@@ -20,12 +20,13 @@ pub struct Timings {
 /// Everything the pipeline produced for one area.
 pub struct AreaOutput {
     pub placement: Placement,
-    /// Blended mosaic before the tone curve (f32, 0..1).
+    /// Blended mosaic before the tone curve (f32, 0..1). Session eviction clears
+    /// pixels but retains dimensions; Session restores them before heavy operations.
     pub linear: Gray,
-    /// Coverage per pixel (0..1).
+    /// Coverage per pixel (0..1), empty alongside evicted linear pixels.
     pub coverage: Vec<f32>,
-    /// 8-bit base mosaic after the tone curve (what the pyramid and the hash are made of).
-    pub base: Vec<u8>,
+    /// 8-bit base mosaic after the tone curve, shared with pyramid level 0.
+    pub base: std::sync::Arc<Vec<u8>>,
     pub pyramid: Pyramid,
     pub mosaic_json: MosaicJson,
 }
@@ -128,8 +129,9 @@ pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, param
     let base = tone_base_with(&linear, &coverage, &params.tone, grains, rec.um_per_px());
     lap("tone", timings);
     let mosaic_json_sha = crate::util::sha256_hex(&base);
-    let pyramid = Pyramid::build(linear.w, linear.h, base.clone());
+    let pyramid = Pyramid::build(linear.w, linear.h, base);
     lap("pyramid", timings);
+    let base = pyramid.levels[0].1.clone();
     let mosaic_json = MosaicJson {
         w: linear.w,
         h: linear.h,
@@ -145,6 +147,26 @@ pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, param
     rec.photometric = Some(photo);
     rec.mosaic = Some(mosaic_json.clone());
     Ok(AreaOutput { placement, linear, coverage, base, pyramid, mosaic_json })
+}
+
+/// Deterministic rehydration from the original package and the stored solved placement.
+pub fn rebuild_heavy(
+    rec: &AreaRecord,
+    tiles: Vec<Tile>,
+    placement: &Placement,
+    ctl: &Ctl,
+) -> crate::Result<(Gray, Vec<f32>)> {
+    let Inputs { imgs, .. } = inputs(rec, &tiles);
+    // inputs owns its pixels; release the decoded source copies before correction/blending.
+    drop(tiles);
+    let (corrected, photo) = crate::photometric::correct(placement, &imgs, &rec.params.photometric);
+    drop(imgs);
+    let fill = if rec.params.photometric.background {
+        photo.background_median
+    } else {
+        median_of(&corrected)
+    };
+    crate::blend::blend(placement, corrected, &rec.params.blend, fill, ctl)
 }
 
 /// The 8-bit base mosaic: percentile stretch over covered pixels, then CLAHE if enabled.
@@ -214,8 +236,9 @@ pub fn scale_placement(pl: &Placement, small: &[Gray], k: usize) -> Placement {
 
 /// Rebuilds base, pyramid and mosaic.json after a tone change (no re-stitch).
 pub fn retone(rec: &mut AreaRecord, out: &mut AreaOutput, tone: &crate::photometric::ToneParams, grains: &[Grain]) {
-    out.base = tone_base_with(&out.linear, &out.coverage, tone, grains, rec.um_per_px());
-    out.pyramid = Pyramid::build(out.linear.w, out.linear.h, out.base.clone());
+    let base = tone_base_with(&out.linear, &out.coverage, tone, grains, rec.um_per_px());
+    out.pyramid = Pyramid::build(out.linear.w, out.linear.h, base);
+    out.base = out.pyramid.levels[0].1.clone();
     out.mosaic_json.sha256 = crate::util::sha256_hex(&out.base);
     out.mosaic_json.levels = out.pyramid.infos();
     rec.params.tone = tone.clone();

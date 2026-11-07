@@ -6,11 +6,25 @@
 import type { Core, PackageFile, RawImage } from './core';
 import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, OutlinePad, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
 
+import wasmUrl from './pkg/grainatlas_bg.wasm?url';
+
+// Structured cloning a Module shares the compiled code with every tab and respawn.
+let compiled: Promise<WebAssembly.Module> | null = null;
+function compiledModule(): Promise<WebAssembly.Module> {
+  return compiled ??= (async () => {
+    const response = await fetch(wasmUrl);
+    if (!response.ok) throw new Error(`wasm load failed: ${response.status}`);
+    return WebAssembly.compile(await response.arrayBuffer());
+  })();
+}
+
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onProgress?: (p: Progress) => void };
 
 export class WasmCore implements Core {
   readonly kind = 'wasm' as const;
   private worker!: Worker;
+  private workerReady!: Promise<void>;
+  private disposed = false;
   private seq = 0;
   private pending = new Map<number, Pending>();
   private opened: { name: string; files: PackageFile[] } | null = null;
@@ -26,6 +40,13 @@ export class WasmCore implements Core {
 
   private spawn() {
     this.worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+    const worker = this.worker;
+    this.workerReady = compiledModule().then((module) => {
+      if (!this.disposed && this.worker === worker) worker.postMessage({ op: 'init', module });
+    });
+    // An unused core can lose its fetch when the hosted page reloads after sign-in.
+    // Keep the rejection for call(), without reporting it as an unhandled promise.
+    void this.workerReady.catch(() => {});
     this.worker.onmessage = (e) => {
       const m = e.data;
       const p = this.pending.get(m.id);
@@ -44,7 +65,10 @@ export class WasmCore implements Core {
     };
   }
 
-  private call<T>(op: string, args: unknown = {}, onProgress?: (p: Progress) => void): Promise<T> {
+  private async call<T>(op: string, args: unknown = {}, onProgress?: (p: Progress) => void): Promise<T> {
+    const worker = this.worker;
+    await this.workerReady;
+    if (this.disposed || worker !== this.worker) throw new Error('cancelled');
     const id = ++this.seq;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, onProgress });
@@ -56,7 +80,13 @@ export class WasmCore implements Core {
     if (this.restoring) await this.restoring;
   }
 
+  async memoryReport(): Promise<import('./types').MemoryReport> {
+    await this.ready();
+    return this.call('memory_report');
+  }
+
   async dispose(): Promise<void> {
+    this.disposed = true;
     this.worker.terminate();
     for (const p of this.pending.values()) p.reject(new Error('cancelled'));
     this.pending.clear();
@@ -64,6 +94,7 @@ export class WasmCore implements Core {
   }
 
   cancel() {
+    if (this.disposed) return;
     this.worker.terminate();
     for (const p of this.pending.values()) p.reject(new Error('cancelled'));
     this.pending.clear();

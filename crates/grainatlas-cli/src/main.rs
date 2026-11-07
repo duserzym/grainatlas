@@ -384,7 +384,7 @@ fn main() -> Result<()> {
                     let ui = project.extra.entry("grainatlas_ui".into()).or_insert_with(|| serde_json::json!({}));
                     ui["grains"][&area.id] = serde_json::to_value(&grains)?;
                     if sheets {
-                        kept.push((area.id.clone(), o.linear.w, o.linear.h, o.base.clone()));
+                        kept.push((area.id.clone(), o.linear.w, o.linear.h, o.base.as_ref().clone()));
                         all_grains.insert(area.id.clone(), grains.clone());
                     } else if let Some(paper) = &print {
                         let t = clock();

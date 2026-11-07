@@ -32,6 +32,9 @@ impl Session {
     pub fn add_file(&mut self, path: &str, bytes: Vec<u8>) {
         self.0.add_file(path, bytes);
     }
+    pub fn memory_report(&self) -> String {
+        serde_json::to_string(&self.0.memory_report()).expect("memory report")
+    }
     pub fn file_count(&self) -> usize {
         self.0.mem.files.len()
     }
@@ -83,7 +86,7 @@ impl Session {
         self.0.set_grains(area_id, grains).map_err(err)
     }
     /// One-click Auto: `params` with background leveling on and an automatic tone.
-    pub fn auto_params(&self, area_id: &str, params: &str) -> Result<String, JsError> {
+    pub fn auto_params(&mut self, area_id: &str, params: &str) -> Result<String, JsError> {
         self.0.auto_params(area_id, params).map_err(err)
     }
     pub fn has_mosaic(&self, area_id: &str) -> bool {
@@ -92,7 +95,7 @@ impl Session {
     pub fn pyramid_tile(&self, area_id: &str, level: usize, col: usize, row: usize) -> Result<Vec<u8>, JsError> {
         self.0.pyramid_tile(area_id, level, col, row).map_err(err)
     }
-    pub fn histogram(&self, area_id: &str) -> Result<Vec<u32>, JsError> {
+    pub fn histogram(&mut self, area_id: &str) -> Result<Vec<u32>, JsError> {
         self.0.histogram(area_id).map_err(err)
     }
     pub fn retone(&mut self, area_id: &str, tone: &str) -> Result<String, JsError> {

@@ -38,6 +38,10 @@ export class TauriCore implements Core {
     });
   }
 
+  async memoryReport(): Promise<import('./types').MemoryReport> {
+    return JSON.parse(await this.call<string>('memory_report'));
+  }
+
   async dispose(): Promise<void> {
     (await this.unlisten)();
     await tauriInvoke('close_tab', { tab: this.tab });

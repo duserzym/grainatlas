@@ -420,3 +420,7 @@ export interface Finding {
   message: string;
   label?: string;
 }
+
+/** Resident core image buffers; pyramid excludes the shared base level. */
+export interface AreaMemory { base: number; pyramid: number; linear: number; coverage: number; work: number; small: number; total: number }
+export interface MemoryReport { areas: Record<string, AreaMemory>; total: number; budget: number; wasmBytes?: number }

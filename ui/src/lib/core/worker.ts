@@ -3,14 +3,13 @@
 // Image buffers go back as transferables.
 
 import init, * as wasm from './pkg/grainatlas.js';
-import wasmUrl from './pkg/grainatlas_bg.wasm?url';
 
 // Also type the new export before the next wasm-bindgen regeneration.
 declare module './pkg/grainatlas.js' {
   interface Session { check_project(project: string, labels: string): string }
 }
 
-let ready: Promise<unknown> | null = null;
+let ready: ReturnType<typeof init> | null = null;
 let session: wasm.Session | null = null;
 
 function img(buf: Uint8Array) {
@@ -22,6 +21,7 @@ function img(buf: Uint8Array) {
 type Handler = (args: any, id: number) => unknown | Promise<unknown>;
 
 const ops: Record<string, Handler> = {
+  memory_report: async () => ({ ...JSON.parse(s().memory_report()), wasmBytes: (await ready)!.memory.buffer.byteLength }),
   async open({ name, files }: { name: string; files: { path: string; file: Blob }[] }, id) {
     session?.free();
     session = new wasm.Session(name);
@@ -103,7 +103,12 @@ function transferables(v: unknown): Transferable[] {
 self.onmessage = async (e: MessageEvent) => {
   const { id, op, args } = e.data;
   try {
-    if (!ready) ready = init({ module_or_path: wasmUrl });
+    if (op === 'init') {
+      ready = init({ module_or_path: e.data.module as WebAssembly.Module });
+      await ready;
+      return;
+    }
+    if (!ready) throw new Error('worker is not initialized');
     await ready;
     const h = ops[op];
     if (!h) throw new Error(`unknown op ${op}`);

@@ -247,6 +247,12 @@ async fn pyramid_tile(state: State<'_, AppState>, tab: u32, area_id: String, lev
 }
 
 #[tauri::command]
+fn memory_report(state: State<'_, AppState>, tab: u32) -> Res<String> {
+    let t = state.tab(tab);
+    serde_json::to_string(&t.lock().memory_report()).map_err(e)
+}
+
+#[tauri::command]
 fn histogram(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<Vec<u32>> {
     let t = state.tab(tab);
     t.lock().histogram(&area_id).map_err(e)
@@ -696,6 +702,7 @@ pub fn run() {
             cancel,
             pyramid_tile,
             histogram,
+            memory_report,
             retone,
             tone_lut,
             export_png,

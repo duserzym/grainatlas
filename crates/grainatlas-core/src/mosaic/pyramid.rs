@@ -34,7 +34,7 @@ pub struct MosaicJson {
 /// An 8-bit grey pyramid held in memory.
 #[derive(Clone, Debug)]
 pub struct Pyramid {
-    pub levels: Vec<(LevelInfo, Vec<u8>)>,
+    pub levels: Vec<(LevelInfo, std::sync::Arc<Vec<u8>>)>,
     /// Tile edge in pixels.
     pub tile: usize,
 }
@@ -54,7 +54,7 @@ impl Pyramid {
             let info = LevelInfo { level: l, w: cw, h: ch, cols: cw.div_ceil(tile).max(1), rows: ch.div_ceil(tile).max(1), scale: 1 << l };
             let last = info.cols == 1 && info.rows == 1;
             let next = if last { None } else { Some(half_u8(cw, ch, &cur)) };
-            levels.push((info, cur));
+            levels.push((info, std::sync::Arc::new(cur)));
             match next {
                 Some((nw, nh, n)) => {
                     cw = nw;

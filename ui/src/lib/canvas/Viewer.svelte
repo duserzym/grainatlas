@@ -196,7 +196,7 @@
           for (let k = L + 1; k <= maxL; k++) {
             const f = 1 << (k - L);
             const pc = Math.floor(c / f), pr = Math.floor(r / f);
-            const pb = cache.get(areaId, k, pc, pr);
+            const pb = cache.peek(areaId, k, pc, pr);
             if (!pb) continue;
             const sub = T / f;
             const sx = (c % f) * sub, sy = (r % f) * sub;

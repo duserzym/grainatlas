@@ -8,7 +8,7 @@
 
 mod sheets;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use super::pipeline::{self, AreaOutput, Clock, Timings};
@@ -33,7 +33,35 @@ pub fn with_header(w: usize, h: usize, px: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Resident image allocations, in bytes. `pyramid` excludes its shared base level.
+/// Package source bytes, metadata and temporary operation allocations are not included.
+#[derive(Default, Debug, serde::Serialize)]
+pub struct AreaMemory {
+    pub base: usize,
+    pub pyramid: usize,
+    pub linear: usize,
+    pub coverage: usize,
+    pub work: usize,
+    pub small: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct MemoryReport {
+    pub areas: BTreeMap<String, AreaMemory>,
+    pub total: usize,
+    pub budget: usize,
+}
+
+const DEFAULT_HEAVY_BUDGET: usize = if cfg!(target_arch = "wasm32") {
+    192 * 1024 * 1024
+} else {
+    512 * 1024 * 1024
+};
+
 pub struct Session {
+    heavy_budget: usize,
+    recent: VecDeque<String>,
     /// Files handed over one by one (browser) before `open`.
     pub mem: MemSource,
     src: Option<Arc<dyn Source>>,
@@ -53,7 +81,130 @@ pub struct Session {
 
 impl Session {
     pub fn new(name: &str) -> Session {
-        Session { mem: MemSource::new(name), src: None, pkg: None, project: None, outputs: BTreeMap::new(), work: BTreeMap::new(), origin_files: Vec::new(), path: String::new(), small: BTreeMap::new(), grains: BTreeMap::new() }
+        Session {
+            heavy_budget: DEFAULT_HEAVY_BUDGET,
+            recent: VecDeque::new(),
+            mem: MemSource::new(name),
+            src: None,
+            pkg: None,
+            project: None,
+            outputs: BTreeMap::new(),
+            work: BTreeMap::new(),
+            origin_files: Vec::new(),
+            path: String::new(),
+            small: BTreeMap::new(),
+            grains: BTreeMap::new(),
+        }
+    }
+
+    /// Budget shared by linear/coverage, segmentation work and preview inputs.
+    /// An active operation may exceed it; finished heavy mosaics can always be evicted.
+    pub fn set_memory_budget(&mut self, bytes: usize) {
+        self.heavy_budget = bytes;
+        self.trim(None);
+    }
+
+    pub fn memory_report(&self) -> MemoryReport {
+        let mut areas: BTreeMap<String, AreaMemory> = self
+            .project
+            .as_ref()
+            .map(|p| {
+                p.areas
+                    .iter()
+                    .map(|a| (a.id.clone(), AreaMemory::default()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (id, o) in &self.outputs {
+            let a = areas.entry(id.clone()).or_default();
+            a.base = o.base.capacity();
+            a.pyramid = o
+                .pyramid
+                .levels
+                .iter()
+                .skip(1)
+                .map(|(_, px)| px.capacity())
+                .sum();
+            a.linear = o.linear.px.capacity() * size_of::<f32>();
+            a.coverage = o.coverage.capacity() * size_of::<f32>();
+        }
+        for (id, (_, w)) in &self.work {
+            let a = areas.entry(id.clone()).or_default();
+            a.work = w.img.px.capacity() * size_of::<f32>() + w.cov.capacity();
+        }
+        for ((id, _), imgs) in &self.small {
+            areas.entry(id.clone()).or_default().small += imgs
+                .iter()
+                .map(|g| g.px.capacity() * size_of::<f32>())
+                .sum::<usize>();
+        }
+        for a in areas.values_mut() {
+            a.total = a.base + a.pyramid + a.linear + a.coverage + a.work + a.small;
+        }
+        MemoryReport {
+            total: areas.values().map(|a| a.total).sum(),
+            areas,
+            budget: self.heavy_budget,
+        }
+    }
+
+    fn touch(&mut self, id: &str) {
+        self.recent.retain(|a| a != id);
+        self.recent.push_back(id.to_string());
+    }
+
+    fn trim(&mut self, keep: Option<&str>) {
+        let report = self.memory_report();
+        let mut used: usize = report
+            .areas
+            .values()
+            .map(|a| a.linear + a.coverage + a.work + a.small)
+            .sum();
+        for id in &self.recent {
+            if used <= self.heavy_budget {
+                break;
+            }
+            if keep == Some(id.as_str()) {
+                continue;
+            }
+            if let Some(a) = report.areas.get(id) {
+                used -= a.linear + a.coverage + a.work + a.small;
+            }
+            if let Some(o) = self.outputs.get_mut(id) {
+                o.linear.px = Vec::new();
+                o.coverage = Vec::new();
+            }
+            self.work.remove(id);
+            self.small.retain(|(a, _), _| a != id);
+        }
+    }
+
+    /// Restore only the pre-tone mosaic; resident pixels and project metadata never change.
+    fn ensure_heavy(&mut self, id: &str) -> Result<()> {
+        self.touch(id);
+        if self.out(id)?.linear.px.is_empty() {
+            // Make room before allocating the replacement, including the oversized-area case.
+            let needed = self.out(id)?.linear.w * self.out(id)?.linear.h * 8;
+            let budget = self.heavy_budget;
+            self.heavy_budget = budget.saturating_sub(needed);
+            self.trim(Some(id));
+            self.heavy_budget = budget;
+            let rec = self.rec(id)?;
+            let pkg = self.pkg()?;
+            let ai = pkg
+                .info()
+                .areas
+                .iter()
+                .position(|a| a.id == id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
+            let (linear, coverage) =
+                pipeline::rebuild_heavy(rec, pkg.tiles(ai)?, &self.out(id)?.placement, &Ctl::NONE)?;
+            let o = self.outputs.get_mut(id).expect("stitched");
+            o.linear = linear;
+            o.coverage = coverage;
+        }
+        self.trim(Some(id));
+        Ok(())
     }
 
     pub fn add_file(&mut self, path: &str, bytes: Vec<u8>) {
@@ -73,6 +224,7 @@ impl Session {
     pub fn open_source(&mut self, src: Arc<dyn Source>, path: &str, created: &str) -> Result<String> {
         let (probe, pkg) = readers::probe(src.clone())?;
         self.outputs.clear();
+        self.recent.clear();
         self.work.clear();
         self.small.clear();
         self.src = Some(src);
@@ -92,6 +244,7 @@ impl Session {
         let pkg = LoosePackage::open(src, &spec)?;
         let info = serde_json::to_string(pkg.info()).map_err(invalid)?;
         self.outputs.clear();
+        self.recent.clear();
         self.work.clear();
         self.small.clear();
         self.adopt(Box::new(pkg), Some(spec), created);
@@ -177,6 +330,8 @@ impl Session {
         self.outputs.insert(area_id.to_string(), out);
         self.work.remove(area_id);
         self.small.retain(|(a, _), _| a != area_id);
+        self.touch(area_id);
+        self.trim(None);
         Ok(summary.to_string())
     }
 
@@ -216,6 +371,8 @@ impl Session {
             self.outputs.insert(area_id.to_string(), out);
             self.work.remove(area_id);
         }
+        self.touch(area_id);
+        self.trim(None);
         let rec = self.rec(area_id)?;
         let o = self.out(area_id)?;
         Ok(serde_json::json!({ "mosaic": o.mosaic_json, "placement": o.placement, "photometric": rec.photometric, "timings": timings.steps }).to_string())
@@ -228,9 +385,13 @@ impl Session {
         let k = 1usize << level.min(12);
         let rec = self.rec(area_id)?.clone();
         let placement = rec.placement.clone().ok_or_else(|| Error::Invalid(format!("{area_id} is not stitched")))?;
-        let o = self.out(area_id)?;
+        self.touch(area_id);
         if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
-            let (w, h, px) = pipeline::preview_tone(o, &p.tone, k, self.grains_of(area_id), rec.um_per_px());
+            self.ensure_heavy(area_id)?;
+            let (w, h, px) = pipeline::preview_tone(
+                self.out(area_id)?, &p.tone, k, self.grains_of(area_id), rec.um_per_px(),
+            );
+            self.trim(None);
             return Ok(with_header(w, h, &px));
         }
         let key = (area_id.to_string(), k);
@@ -244,6 +405,7 @@ impl Session {
             self.small.insert(key.clone(), small);
         }
         let (w, h, px) = pipeline::preview(&self.small[&key], &placement, &p, k, self.grains_of(area_id), rec.um_per_px());
+        self.trim(None);
         Ok(with_header(w, h, &px))
     }
 
@@ -263,12 +425,15 @@ impl Session {
     /// and the tone from `tone::auto` (see there), measured on the mosaic as these parameters
     /// leave it (so Auto gives the same answer whatever was set before). The caller applies them
     /// like any edit.
-    pub fn auto_params(&self, area_id: &str, params: &str) -> Result<String> {
+    pub fn auto_params(&mut self, area_id: &str, params: &str) -> Result<String> {
         let mut p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
         p.photometric.background = true;
-        let o = self.out(area_id)?;
-        let rec = self.rec(area_id)?;
+        self.out(area_id)?;
+        self.touch(area_id);
+        let rec = self.rec(area_id)?.clone();
         let tone = if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
+            self.ensure_heavy(area_id)?;
+            let o = self.out(area_id)?;
             crate::photometric::tone::auto(&o.linear, Some(&o.coverage), rec.um_per_px(), &p.tone)
         } else {
             // The current mosaic is corrected differently: render the linear mosaic Auto will give.
@@ -281,6 +446,7 @@ impl Session {
             crate::photometric::tone::auto(&out.linear, Some(&out.coverage), rec.um_per_px(), &p.tone)
         };
         p.tone = tone;
+        self.trim(None);
         serde_json::to_string(&p).map_err(invalid)
     }
 
@@ -293,7 +459,8 @@ impl Session {
         Ok(with_header(w, h, &px))
     }
 
-    pub fn histogram(&self, area_id: &str) -> Result<Vec<u32>> {
+    pub fn histogram(&mut self, area_id: &str) -> Result<Vec<u32>> {
+        self.ensure_heavy(area_id)?;
         let o = self.out(area_id)?;
         let mut h = vec![0u32; 256];
         for (v, c) in o.base.iter().zip(&o.coverage) {
@@ -301,16 +468,20 @@ impl Session {
                 h[*v as usize] += 1;
             }
         }
+        self.trim(None);
         Ok(h)
     }
 
     pub fn retone(&mut self, area_id: &str, tone: &str) -> Result<String> {
         let tone: ToneParams = serde_json::from_str(tone).map_err(invalid)?;
+        self.ensure_heavy(area_id)?;
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
         let rec = project.area_mut(area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
         let o = self.outputs.get_mut(area_id).ok_or_else(|| Error::Invalid("not stitched".into()))?;
         pipeline::retone(rec, o, &tone, self.grains.get(area_id).map_or(&[][..], |g| g.as_slice()));
-        serde_json::to_string(&o.mosaic_json).map_err(invalid)
+        let json = serde_json::to_string(&o.mosaic_json).map_err(invalid);
+        self.trim(None);
+        json
     }
 
     pub fn export_png(&self, area_id: &str, tone: &str) -> Result<Vec<u8>> {
@@ -326,10 +497,27 @@ impl Session {
     }
 
     fn work_for(&mut self, area_id: &str, scale: usize) -> Result<&WorkImage> {
+        self.touch(area_id);
         let fresh = !matches!(self.work.get(area_id), Some((s, _)) if *s == scale);
         if fresh {
+            self.ensure_heavy(area_id)?;
             let w = pipeline::work_image(self.out(area_id)?, self.rec(area_id)?, scale);
             self.work.insert(area_id.to_string(), (scale, w));
+        }
+        self.trim(Some(area_id));
+        // Work images suffice for segmentation: release the current linear buffers if needed.
+        let report = self.memory_report();
+        let used: usize = report
+            .areas
+            .values()
+            .map(|a| a.linear + a.coverage + a.work + a.small)
+            .sum();
+        if used > self.heavy_budget {
+            if let Some(o) = self.outputs.get_mut(area_id) {
+                o.linear.px = Vec::new();
+                o.coverage = Vec::new();
+            }
+            self.small.retain(|(a, _), _| a != area_id);
         }
         Ok(&self.work.get(area_id).expect("inserted").1)
     }
@@ -475,19 +663,21 @@ impl Session {
 
     /// All files of the project folder (plan section 5.4) for a full project JSON that also
     /// carries the UI's grains, spots and labels under `grainatlas_ui`.
-    pub fn project_files(&self, full_project_json: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    pub fn project_files(&mut self, full_project_json: &str) -> Result<Vec<(String, Vec<u8>)>> {
         let v: serde_json::Value = serde_json::from_str(full_project_json).map_err(invalid)?;
         let mut files = vec![("project.json".to_string(), serde_json::to_vec_pretty(&v).map_err(invalid)?)];
         let ui = &v["grainatlas_ui"];
         let spots = serde_json::json!({ "spots": ui["spots"], "labels": ui["labels"] });
         files.push(("spots.json".into(), serde_json::to_vec_pretty(&spots).map_err(invalid)?));
         let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
-        for rec in &project.areas {
+        for rec in project.areas.clone() {
             let Some(o) = self.outputs.get(&rec.id) else { continue };
-            files.extend(pipeline::area_files(rec, o));
+            files.extend(pipeline::area_files(&rec, o));
             let grains: Vec<Grain> = serde_json::from_value(ui["grains"][&rec.id].clone()).unwrap_or_default();
             if !grains.is_empty() {
-                files.extend(pipeline::mask_files(rec, o, &grains));
+                self.ensure_heavy(&rec.id)?;
+                files.extend(pipeline::mask_files(&rec, self.out(&rec.id)?, &grains));
+                self.trim(None);
             }
         }
         Ok(files)
@@ -622,4 +812,55 @@ pub fn register(pairs: &str) -> Result<String> {
     let src: Vec<[f64; 2]> = pairs.iter().map(|p| p[0]).collect();
     let dst: Vec<[f64; 2]> = pairs.iter().map(|p| p[1]).collect();
     serde_json::to_string(&crate::scale::register::fit(&src, &dst)).map_err(invalid)
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use crate::image::Gray;
+
+    #[test]
+    fn work_and_preview_inputs_share_the_budget_and_evict_lru_areas() {
+        let mut s = Session::new("synthetic");
+        for id in ["a", "b", "c"] {
+            s.work.insert(
+                id.into(),
+                (
+                    1,
+                    WorkImage {
+                        img: Gray {
+                            w: 2,
+                            h: 2,
+                            px: vec![0.5; 4],
+                        },
+                        cov: vec![true; 4],
+                        um_per_px: 1.0,
+                    },
+                ),
+            );
+            s.small.insert(
+                (id.into(), 2),
+                vec![Gray {
+                    w: 2,
+                    h: 2,
+                    px: vec![0.5; 4],
+                }],
+            );
+            s.touch(id);
+        }
+        s.touch("a"); // b is now oldest, then c, then a.
+        let per_area = 4 * 4 + 4 + 4 * 4;
+        assert_eq!(s.memory_report().total, 3 * per_area);
+        s.set_memory_budget(2 * per_area);
+        assert!(!s.work.contains_key("b"));
+        assert!(!s.small.contains_key(&("b".into(), 2)));
+        assert!(s.work.contains_key("a"));
+        assert!(s.work.contains_key("c"));
+        s.heavy_budget = 0;
+        s.trim(Some("c")); // never evict the current area's work mid-operation.
+        assert!(!s.work.contains_key("a"));
+        assert!(s.work.contains_key("c"));
+        s.trim(None);
+        assert_eq!(s.memory_report().total, 0);
+    }
 }

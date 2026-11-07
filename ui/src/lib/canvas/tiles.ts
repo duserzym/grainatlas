@@ -6,7 +6,8 @@
 
 import type { Core, RawImage } from '../core/core';
 
-const MAX_TILES = 600;
+export const BITMAP_BUDGET = 96 * 1024 * 1024;
+export const RAW_BUDGET = 32 * 1024 * 1024;
 
 export class TileCache {
   private raw = new Map<string, RawImage>();
@@ -15,9 +16,35 @@ export class TileCache {
   private lut: Uint8Array = identity();
   private lutKey = 'id';
   private gen = 0;
+  private bitmapBytes = 0;
+  private rawBytes = 0;
   onLoad: () => void = () => {};
 
-  constructor(private core: Pick<Core, 'pyramidTile'>) {}
+  private core: Pick<Core, 'pyramidTile'>;
+  private bitmapBudget: number;
+  private rawBudget: number;
+
+  constructor(core: Pick<Core, 'pyramidTile'>, bitmapBudget = BITMAP_BUDGET, rawBudget = RAW_BUDGET) {
+    this.core = core;
+    this.bitmapBudget = bitmapBudget;
+    this.rawBudget = rawBudget;
+  }
+
+  memoryReport() {
+    return { bitmapBytes: this.bitmapBytes, rawBytes: this.rawBytes };
+  }
+
+  /** Only use already cached tiles for coarser-level fallback. Never request a level here. */
+  peek(area: string, level: number, col: number, row: number): ImageBitmap | null {
+    const k = `${area}/${level}/${col}/${row}`;
+    const b = this.bmp.get(k);
+    if (!b) return null;
+    this.bmp.delete(k);
+    this.bmp.set(k, b);
+    const r = this.raw.get(k);
+    if (r) { this.raw.delete(k); this.raw.set(k, r); }
+    return b;
+  }
 
   setLut(lut: Uint8Array) {
     const key = Array.from(lut.subarray(0, 256)).join(',');
@@ -26,6 +53,7 @@ export class TileCache {
     this.lutKey = key;
     for (const b of this.bmp.values()) b.close();
     this.bmp.clear();
+    this.bitmapBytes = 0;
     this.onLoad();
   }
 
@@ -33,19 +61,16 @@ export class TileCache {
     this.gen++;
     for (const b of this.bmp.values()) b.close();
     this.bmp.clear();
+    this.bitmapBytes = 0;
     this.raw.clear();
+    this.rawBytes = 0;
     this.inflight.clear();
   }
 
   get(area: string, level: number, col: number, row: number): ImageBitmap | null {
     const k = `${area}/${level}/${col}/${row}`;
-    const b = this.bmp.get(k);
-    if (b) {
-      // LRU touch
-      this.bmp.delete(k);
-      this.bmp.set(k, b);
-      return b;
-    }
+    const b = this.peek(area, level, col, row);
+    if (b) return b;
     if (!this.inflight.has(k)) {
       const p: Promise<void> = this.load(k, area, level, col, row).finally(() => {
         if (this.inflight.get(k) === p) this.inflight.delete(k);
@@ -65,8 +90,16 @@ export class TileCache {
         return;
       }
       if (gen !== this.gen) return;
+      this.rawBytes += r.w * r.h;
       this.raw.set(k, r);
+      while (this.rawBytes > this.rawBudget) {
+        const first = this.raw.keys().next().value!;
+        const old = this.raw.get(first)!;
+        this.rawBytes -= old.w * old.h;
+        this.raw.delete(first);
+      }
     }
+    if (this.raw.has(k)) { this.raw.delete(k); this.raw.set(k, r); }
     const lut = this.lut;
     const rgba = new Uint8ClampedArray(r.w * r.h * 4);
     const d = r.data;
@@ -80,16 +113,17 @@ export class TileCache {
     const bmp = await createImageBitmap(new ImageData(rgba, r.w, r.h));
     if (lut !== this.lut || gen !== this.gen) {
       bmp.close();
+      if (gen === this.gen) this.onLoad();
       return;
     }
     this.bmp.set(k, bmp);
-    while (this.bmp.size > MAX_TILES) {
-      const first = this.bmp.keys().next().value as string;
-      this.bmp.get(first)?.close();
+    this.bitmapBytes += bmp.width * bmp.height * 4;
+    while (this.bitmapBytes > this.bitmapBudget) {
+      const first = this.bmp.keys().next().value!;
+      const old = this.bmp.get(first)!;
+      this.bitmapBytes -= old.width * old.height * 4;
+      old.close();
       this.bmp.delete(first);
-    }
-    while (this.raw.size > MAX_TILES * 2) {
-      this.raw.delete(this.raw.keys().next().value as string);
     }
     this.onLoad();
   }
