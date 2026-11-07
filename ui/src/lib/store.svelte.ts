@@ -95,10 +95,12 @@ export interface LayoutPrefs {
   panel: { x: number; y: number };
   /** The Canvas side panel folded to a strip. */
   sideCollapsed: boolean;
+  infoCollapsed: boolean;
+  menuCollapsed: boolean;
   layersOpen: boolean;
 }
 const LAYOUT_KEY = 'grainatlas.layout';
-export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, layersOpen: false };
+export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, infoCollapsed: false, menuCollapsed: false, layersOpen: false };
 
 function loadLayout(): LayoutPrefs {
   try {

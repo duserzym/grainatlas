@@ -29,6 +29,12 @@
     { id: 'settings', label: 'Settings', key: '5' },
   ];
 
+  const menuCollapsed = $derived(app.screen === 'canvas' && app.layout.menuCollapsed);
+  function toggleMenu() {
+    app.layout.menuCollapsed = !app.layout.menuCollapsed;
+    app.saveLayout();
+  }
+
   const hasMosaic = $derived(Object.keys(app.stitched).length > 0);
   function enabled(s: (typeof screens)[number]) {
     if (s.needs === 'pkg') return !!app.pkg;
@@ -266,9 +272,12 @@
 </script>
 
 <div class="ga-root app" data-theme={app.theme}>
-  <TabBar bind:this={tabBar} shortcuts={tabKeys} />
+  <div class="project-tabs" hidden={menuCollapsed}><TabBar bind:this={tabBar} shortcuts={tabKeys} /></div>
   {#key tabs.activeId}
-  <header class="glass topbar">
+  <header class="glass topbar" class:compact={menuCollapsed} class:has-menu-toggle={app.screen === 'canvas'}>
+    {#if menuCollapsed}
+      <span class="compact-name" title={app.remote?.atlas.name ?? app.pkg?.name}>{app.remote?.atlas.name ?? app.pkg?.name ?? 'GrainAtlas'}</span>
+    {:else}
     <div class="brand">
       <!-- The app icon (a light tile by design, the same in both themes). -->
       <img class="mark" src="{import.meta.env.BASE_URL}favicon.svg" width="22" height="22" alt="" />
@@ -292,6 +301,14 @@
         <button onclick={() => saveProjectFile()} title="Save a project file (.gaproj): parameters, placements, grains and spots, no pixels; it reopens with the package's images (double-click it)">Save as…</button>
       {/if}
     </div>
+    {/if}
+    {#if app.screen === 'canvas'}
+      <button class="icon menu-toggle" aria-expanded={!menuCollapsed} onclick={toggleMenu}
+        aria-label={menuCollapsed ? 'Expand GrainAtlas menu' : 'Collapse GrainAtlas menu'}
+        title={menuCollapsed ? 'Expand the menu and project tabs' : 'Collapse the menu and project tabs'}>
+        {menuCollapsed ? '⌄' : '⌃'}
+      </button>
+    {/if}
   </header>
 
   <main>
@@ -335,24 +352,42 @@
 <style>
   .app {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto 1fr;
     height: 100vh;
     overflow: hidden;
+    container-type:inline-size;
   }
   .topbar {
+    grid-row:2;
+    position: relative;
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    min-width: 0;
     gap: var(--space-4);
     margin: 0 var(--space-2) var(--space-2);
     padding: var(--space-2) var(--space-4);
     border-radius: var(--radius);
     z-index: 5;
   }
+  .project-tabs {min-width:0;}
+  .topbar.compact {
+    margin-bottom:0;
+    padding:0 var(--space-2);
+    min-height:24px;
+    font-size:0.75rem;
+    gap:var(--space-2);
+  }
+  .topbar.has-menu-toggle {padding-inline-end: 3rem;}
+  .menu-toggle {position:absolute;inset-inline-end:var(--space-2);top:50%;transform:translateY(-50%);min-width:24px;padding:0 var(--space-1);}
+  .compact-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .brand {
     display: flex;
     align-items: center;
     gap: var(--space-2);
     font-weight: 650;
+    min-width:0;
   }
   .mark {
     display: block;
@@ -361,6 +396,7 @@
   .pkgname {
     font-weight: 400;
     margin-left: var(--space-2);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   }
   nav {
     display: flex;
@@ -376,7 +412,14 @@
     display: flex;
     gap: var(--space-2);
   }
+  @container (max-width: 900px) {
+    .topbar {gap:var(--space-2);padding-inline:var(--space-2);flex-wrap:wrap;}
+    nav {margin-left:0;}
+    .right {margin-left:0;}
+    .tab {padding-inline:var(--space-1);}
+  }
   main {
+    grid-row:3;
     position: relative;
     min-height: 0;
     overflow: hidden;

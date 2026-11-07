@@ -1275,7 +1275,8 @@
     </div>
 
     {#if panel.open && (focus || focusGrain)}
-      <FloatingPanel title={focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}>
+      <FloatingPanel title={focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}
+        minimized={app.layout.infoCollapsed} onminimize={() => { app.layout.infoCollapsed = !app.layout.infoCollapsed; app.saveLayout(); }}>
           {#if focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
           <div class="resbox" data-testid="spot-results">
@@ -1369,10 +1370,14 @@
 
     {#if app.layout.sideCollapsed}
       <aside class="glass side-mini" data-ui>
-        <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" data-testid="side-expand">«</button>
+        <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" aria-expanded={false} data-testid="side-expand">‹ Panel</button>
       </aside>
     {:else}
     <aside class="glass side" data-ui>
+      <div class="panel-heading">
+        <span>Image panels</span>
+        <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away" aria-label="Fold the side panel" aria-expanded={true} data-testid="side-collapse">›</button>
+      </div>
       <div class="tabs">
         <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
         <button aria-pressed={tab === 'checks'} onclick={() => (tab = 'checks')} data-testid="tab-checks">Checks</button>
@@ -1380,12 +1385,12 @@
         <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
         <button aria-pressed={tab === 'laser'} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
         <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to laicpmsdb" data-testid="tab-link">laicpmsdb</button>
-        <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away (more room for the image)" aria-label="Fold the side panel" data-testid="side-collapse">»</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
-      {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Read-only: published on {app.remote ? new URL(app.remote.server).host : ''}. “Edit a copy” in the top bar makes it yours to change.</p>{/if}
+      {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
       <fieldset class="plain tabbody" disabled={ro && tab !== 'link' && tab !== 'checks'}>
       {#if tab === 'spots'}
+        {#if !ro}
         <div class="two">
           <label class="field">Sample <input type="text" value={sample} onchange={(e) => setSample(e.currentTarget.value)} data-testid="sample" /></label>
           <label class="field">Pattern <input type="text" bind:value={app.settings.naming_pattern} onchange={() => app.saveSettings()} /></label>
@@ -1411,16 +1416,17 @@
           <button onclick={sendSpots} disabled={!app.spots.length} data-testid="send-laicpmsdb"
             title={app.server && app.project?.laicpmsdb.mount_id ? "POST all areas’ spots, grouped by sample to the linked mount (with the sign-in token; downloads the JSON body when there is none)" : "Download all areas’ spots, grouped by sample as the JSON body of laicpmsdb's POST /v1/mounts/{mount_id}/spots (mosaic µm)"}>Send spots to laicpmsdb</button>
         </div>
+        {/if}
         <div class="list">
           <table class="data">
-            <thead><tr><th>Name</th><th>⌀</th></tr></thead>
+            <thead><tr><th>Name</th><th>⌀ (µm)</th></tr></thead>
             <tbody>
               {#each spots as s (s.id)}
                 <tr class:selected={app.selection.includes(s.id)} onclick={(e) => { app.selection = e.shiftKey ? [...app.selection, s.id] : [s.id]; panel.open = true; centerOnUm(s.x_um, s.y_um); }}>
                   <td>{s.name}</td><td class="num">{s.diameter_um}</td>
                 </tr>
               {:else}
-                <tr><td colspan="2" class="muted">Pick the Spot tool (S) and click on a grain.</td></tr>
+                <tr><td colspan="2" class="muted">{ro ? 'No registered spots in this area.' : 'Pick the Spot tool (S) and click on a grain.'}</td></tr>
               {/each}
             </tbody>
           </table>
@@ -1635,6 +1641,7 @@
   .finding { text-align: left; white-space: normal; overflow-wrap: anywhere; }
 
   .canvas {
+    --side-width:clamp(12rem, 37%, 21rem);
     position: absolute;
     inset: 0;
   }
@@ -1642,7 +1649,7 @@
     position: absolute;
     top: var(--space-2);
     left: var(--space-2);
-    max-width: calc(100% - 23rem);
+    max-width: calc(100% - var(--side-width) - 2rem);
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-1);
@@ -1650,7 +1657,7 @@
     align-items: center;
   }
   .folded .toolbar {
-    max-width: calc(100% - 5rem);
+    max-width: calc(100% - 5.5rem);
   }
   .folded .legend {
     right: calc(3rem + 2 * var(--space-2));
@@ -1661,6 +1668,7 @@
     right: var(--space-2);
     padding: var(--space-1);
   }
+  .panel-heading {display:flex;align-items:center;gap:var(--space-2);font-size:0.75rem;color:var(--text-muted);}
   .fold {
     margin-left: auto;
   }
@@ -1685,7 +1693,7 @@
     top: var(--space-2);
     right: var(--space-2);
     bottom: var(--space-2);
-    width: 21rem;
+    width: var(--side-width);
     padding: var(--space-3);
     display: flex;
     flex-direction: column;
@@ -1778,7 +1786,7 @@
   }
   .legend {
     position: absolute;
-    right: calc(21rem + 2 * var(--space-2));
+    right: calc(var(--side-width) + 2 * var(--space-2));
     bottom: 3rem;
     padding: var(--space-2) var(--space-3);
     font-size: 0.8rem;

@@ -4,7 +4,7 @@
   // when the window gets smaller (a place saved on a large monitor, opened on a laptop).
   import { onMount, type Snippet } from 'svelte';
 
-  let { title, children, x = $bindable(24), y = $bindable(120), onclose, onmoved }: { title: string; children: Snippet; x?: number; y?: number; onclose?: () => void; onmoved?: () => void } = $props();
+  let { title, children, x = $bindable(24), y = $bindable(120), onclose, onmoved, minimized = false, onminimize }: { title: string; children: Snippet; x?: number; y?: number; onclose?: () => void; onmoved?: () => void; minimized?: boolean; onminimize?: () => void } = $props();
   let el: HTMLDivElement;
 
   /** Whole panel inside the parent when it fits, at least its header otherwise. */
@@ -22,6 +22,7 @@
     clamp();
     const ro = new ResizeObserver(clamp);
     if (el.offsetParent) ro.observe(el.offsetParent);
+    ro.observe(el);
     return () => ro.disconnect();
   });
 
@@ -44,19 +45,24 @@
   }
 </script>
 
-<div class="glass floating" bind:this={el} style:left="{x}px" style:top="{y}px" style:max-height="calc(100% - {y + 8}px)" data-ui role="dialog" aria-label={title}>
-  <header role="toolbar" tabindex="-1" onpointerdown={down} onpointermove={move} onpointerup={up}>
+<div class="glass floating" class:minimized bind:this={el} style:left="{x}px" style:top="{y}px" style:max-height="calc(100% - {y + 8}px)" data-ui role="dialog" aria-label={title}>
+  <header role="toolbar" tabindex="-1" onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onlostpointercapture={up}>
     <span class="grip" aria-hidden="true">⠿</span>
-    <strong>{title}</strong>
+    <strong {title}>{title}</strong>
+    {#if onminimize}
+      <button class="icon minimize" aria-expanded={!minimized} onclick={onminimize}
+        aria-label={minimized ? 'Expand spot and grain info' : 'Minimize spot and grain info'}
+        title={minimized ? 'Expand info panel' : 'Minimize info panel'}>{minimized ? '⌄' : '⌃'}</button>
+    {/if}
     {#if onclose}<button class="icon close" onclick={onclose} aria-label="Close">✕</button>{/if}
   </header>
-  <div class="body">{@render children()}</div>
+  {#if !minimized}<div class="body">{@render children()}</div>{/if}
 </div>
 
 <style>
   .floating {
     position: absolute;
-    width: 19rem;
+    width: min(19rem, 100%);
     z-index: 20;
     background: var(--glass-strong);
     display: flex;
@@ -76,11 +82,15 @@
   header:active {
     cursor: grabbing;
   }
+  .minimized {width:min(16rem,100%);min-height:0;}
+  .minimized header {padding-block:var(--space-1);border-bottom:0;}
+  header strong {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .grip {
     color: var(--text-faint);
   }
-  .close {
-    margin-left: auto;
+  .minimize {margin-left:auto;}
+  .minimize, .close {
+    flex:none;
     padding: 0 0.4rem;
     min-width: 0;
   }
