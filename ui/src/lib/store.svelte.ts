@@ -142,6 +142,9 @@ interface Snapshot {
   grains: Record<string, Grain[]>;
 }
 
+/** Display-only scope from the host. Editing and exports keep the original spots. */
+export const reviewSpots = $state<{ projects: Record<string, string[]> }>({ projects: {} });
+
 class AppState {
   screen = $state<Screen>('open');
   pkg = $state<PackageInfo | null>(null);

@@ -1,9 +1,9 @@
 // Hosted bridge v3 commands. Pure validation/lookup stay usable by Node's unit runner.
-import type { BridgeCommand } from '@lab/bridge';
+import { isBridgeCommand, type FocusGrainCommand, type FocusSpotCommand } from '@lab/bridge';
 import type { Grain, Spot } from './core/types';
 import type { AppState } from './store.svelte';
 
-export type ShellCommand = BridgeCommand & { server?: string };
+export type ShellCommand = FocusSpotCommand | FocusGrainCommand;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const isId = (x: unknown): x is string => typeof x === 'string' && ID.test(x);
 
@@ -76,9 +76,15 @@ export async function applyShellFocus(app: AppState, cmd: ShellCommand) {
 
 export async function handleShellCommand(value: unknown) {
   const { isHosted } = await import('@lab/bridge');
-  if (!isHosted() || !isShellCommand(value)) return;
+  if (!isHosted()) return;
+  const { current, tabs, reviewSpots } = await import('./store.svelte');
+  if (isBridgeCommand(value) && value.type === 'review-spots') {
+    reviewSpots.projects = value.projects;
+    if (value.focus) await handleShellCommand({ ...value.focus, type: 'focus-spot' });
+    return;
+  }
+  if (!isShellCommand(value)) return;
   const cmd = value;
-  const { current, tabs } = await import('./store.svelte');
   const { sameId, packageNameFor } = await import('./deeplink');
   let app = tabs.list.find((t) => sameId(t.project?.uuid, cmd.project));
   if (app) tabs.select(app.id);

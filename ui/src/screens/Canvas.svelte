@@ -23,23 +23,26 @@
   import { beforeCheckedAction, parseLabels, runChecks } from '../lib/checks';
   import type { Finding } from '../lib/core/types';
   import { CHECK_TITLES } from '../lib/check-presentation';
+  import { reviewSpots } from '../lib/store.svelte';
   import { acquisitionPage } from '../lib/laicpmsdb';
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
+  const areaId = $derived(app.areaId && app.stitched[app.areaId] ? app.areaId : (Object.keys(app.stitched)[0] ?? null));
   let viewer = $state<ReturnType<typeof Viewer>>();
   // The screen is made again on a tab switch: the tab keeps its view and gets it back.
-  let view = $state<View | undefined>(app.savedView?.areaId === app.areaId ? app.savedView.view : undefined);
-  function changeArea(id: string) {
-    if (id === app.areaId) return;
-    // Let the new Viewer's first resize fit its image; tab restores and centerOn stay separate.
-    view = undefined;
-    app.savedView = null;
-    app.areaId = id;
+  let viewport = $state<{ area: string; view: View } | null>(
+    app.savedView ? { area: app.savedView.areaId, view: app.savedView.view } : null,
+  );
+  const view = $derived(viewport?.area === areaId ? viewport?.view : undefined);
+  function setAreaView(id: string, next: View | undefined) {
+    if (id !== areaId || !next) return;
+    viewport = { area: id, view: next };
+    app.savedView = { areaId: id, view: $state.snapshot(next) as View };
   }
-  $effect(() => {
-    if (view && app.areaId) app.savedView = { areaId: app.areaId, view: $state.snapshot(view) as View };
-  });
+  function changeArea(id: string) {
+    if (id !== app.areaId) app.areaId = id;
+  }
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
   let cursorScreen = $state<[number, number] | null>(null);
   const cursorUm = $derived(cursorScreen && view ? toMosaic(view, ...cursorScreen).map((x) => x * umPerPx) as [number, number] : null);
@@ -133,7 +136,6 @@
   const ro = $derived(app.readOnly);
   const noPixels = $derived(!!app.remote);
   const tiles = $derived(app.remote && app.remoteTiles ? app.remoteTiles : core);
-  const areaId = $derived(app.areaId && app.stitched[app.areaId] ? app.areaId : (Object.keys(app.stitched)[0] ?? null));
   const area = $derived(app.project?.areas.find((a) => a.id === areaId) ?? null);
   const mosaic = $derived(areaId ? app.stitched[areaId].mosaic : null);
   const umPerPx = $derived(mosaic?.um_per_px ?? 1);
@@ -142,7 +144,15 @@
   const grains = $derived(detections.filter((g) => !g.artifact));
   const artifacts = $derived(detections.filter((g) => !!g.artifact));
   const artifactCounts = $derived(Object.entries(artifacts.reduce((m, g) => ({ ...m, [g.artifact!]: (m[g.artifact!] ?? 0) + 1 }), {} as Record<string, number>)).map(([k, v]) => `${k} ${v}`).join(', '));
-  const spots = $derived(app.spots.filter((s) => s.area_id === areaId));
+  const reviewVisible = $derived.by(() => {
+    const project = app.project?.uuid;
+    const ids = project && Object.hasOwn(reviewSpots.projects, project) ? reviewSpots.projects[project] : null;
+    return ids ? new Set(ids) : null;
+  });
+  const spots = $derived(app.spots.filter((s) => s.area_id === areaId && (!reviewVisible || reviewVisible.has(s.id))));
+  const outlinedGrains = $derived(reviewVisible
+    ? grains.filter(g => spots.some(s => s.grain_number === g.number))
+    : grains);
   const labels = $derived(app.labels.filter((l) => l.area_id === areaId));
   const segParams = $derived(areaId ? app.params[areaId]?.segment : null);
   /** Owner of each detection here: a grain also seen in an overlapping area belongs to the area it lies deepest in. */
@@ -1094,7 +1104,8 @@
 {#if core && tiles && areaId && mosaic}
   <div class="canvas" class:folded={app.layout.sideCollapsed}>
     {#key areaId}
-      <Viewer bind:this={viewer} bind:view core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
+      {@const viewerArea = areaId}
+      <Viewer bind:this={viewer} bind:view={() => view, (next) => setAreaView(viewerArea, next)} core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
         preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={scheduleContrast} canNudge={() => !selSpots.length}
         onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
@@ -1117,7 +1128,7 @@
               {/each}
             {/if}
             {#if app.layers.outlines}
-              {#each grains as g (g.id)}
+              {#each outlinedGrains as g (g.id)}
                 {@const own = owners.get(g.id)}
                 <polygon class="grain" class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined}><title>{own?.duplicate_of ? ownerNote(g) : own?.cut ? 'owned here, cut by the area edge' : own ? 'owned by this area' : ''}</title></polygon>
               {/each}
