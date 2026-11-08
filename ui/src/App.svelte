@@ -303,10 +303,13 @@
     </div>
     {/if}
     {#if app.screen === 'canvas'}
-      <button class="icon menu-toggle" aria-expanded={!menuCollapsed} onclick={toggleMenu}
+      <button class="menu-toggle" aria-expanded={!menuCollapsed} onclick={toggleMenu}
         aria-label={menuCollapsed ? 'Expand GrainAtlas menu' : 'Collapse GrainAtlas menu'}
         title={menuCollapsed ? 'Expand the menu and project tabs' : 'Collapse the menu and project tabs'}>
-        {menuCollapsed ? '⌄' : '⌃'}
+        <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+          <path d={menuCollapsed ? 'm3 5 4 4 4-4' : 'm3 9 4-4 4 4'} fill="none"
+            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
       </button>
     {/if}
   </header>
@@ -372,15 +375,33 @@
     z-index: 5;
   }
   .project-tabs {min-width:0;}
+  .topbar.has-menu-toggle:not(.compact) {padding-inline-end: 3rem;}
   .topbar.compact {
-    margin-bottom:0;
-    padding:0 var(--space-2);
-    min-height:24px;
-    font-size:0.75rem;
-    gap:var(--space-2);
+    margin-bottom: 0;
+    padding: 2px var(--space-2);
+    flex-wrap: nowrap;
+    font-size: 0.75rem;
+    gap: var(--space-2);
   }
-  .topbar.has-menu-toggle {padding-inline-end: 3rem;}
-  .menu-toggle {position:absolute;inset-inline-end:var(--space-2);top:50%;transform:translateY(-50%);min-width:24px;padding:0 var(--space-1);}
+  button.menu-toggle {
+    position: absolute;
+    inset-inline-end: var(--space-2);
+    top: 50%;
+    transform: translateY(-50%);
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+  }
+  .compact .menu-toggle {
+    position: static;
+    transform: none;
+    margin-inline-start: auto;
+    width: 24px;
+    height: 20px;
+  }
   .compact-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .brand {
     display: flex;
