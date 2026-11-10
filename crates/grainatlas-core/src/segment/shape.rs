@@ -154,6 +154,7 @@ pub fn grain_from_mask(mask: &[bool], bw: usize, bh: usize, origin: (usize, usiz
         artifact: None,
         kept: false,
         drawn: false,
+        added: false,
     })
 }
 

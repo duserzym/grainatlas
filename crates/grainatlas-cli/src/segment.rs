@@ -57,7 +57,22 @@ pub fn relink_spots(full: &mut Value, area: &str, grains: &[Grain]) -> Result<()
     Ok(())
 }
 
-pub fn run(path: &Path, area: Option<&str>, missing: bool, flag: Option<&str>) -> Result<()> {
+/// Only previously unlinked spots inside a new real grain receive a link.
+fn link_unlinked_spots(full: &mut Value, area: &str, grains: &[Grain]) -> Result<()> {
+    if let Some(spots) = full.get_mut("grainatlas_ui").and_then(|ui| ui.get_mut("spots")).and_then(Value::as_array_mut) {
+        for spot in spots.iter_mut().filter(|s| s["area_id"] == area && s["grain_id"].is_null()) {
+            let x = spot["x_um"].as_f64().context("spot has no x_um")?;
+            let y = spot["y_um"].as_f64().context("spot has no y_um")?;
+            if let Some(g) = grainatlas_core::spots::grain_at(grains, x, y) {
+                spot["grain_id"] = json!(g.id);
+                spot["grain_number"] = json!(g.number);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn run(path: &Path, areas: &[String], missing: bool, add_missing: bool, dry_run: bool, flag: Option<&str>) -> Result<()> {
     let file = if path.is_dir() {
         path.join("project.json")
     } else {
@@ -69,16 +84,24 @@ pub fn run(path: &Path, area: Option<&str>, missing: bool, flag: Option<&str>) -
     // nested fields. Only the selected grain entries and their spots' two links may change.
     let mut full: Value = serde_json::from_str(&input)?;
     let project = Project::from_json(&input)?;
-    if let Some(id) = area
-        && !project.areas.iter().any(|a| a.id == id)
-    {
-        bail!("unknown area {id}");
+    for id in areas {
+        if !project.areas.iter().any(|a| &a.id == id) {
+            bail!("unknown area {id}");
+        }
     }
     let ids: Vec<_> = project
         .areas
         .iter()
-        .filter(|a| area.is_none_or(|id| a.id == id))
+        .filter(|a| areas.is_empty() || areas.contains(&a.id))
         .filter(|a| !missing || full["grainatlas_ui"]["grains"].get(&a.id).is_none())
+        .filter(|a| {
+            if add_missing && full["grainatlas_ui"]["grains"].get(&a.id).is_none() {
+                eprintln!("{}: never segmented, use segment --missing", a.id);
+                false
+            } else {
+                true
+            }
+        })
         .map(|a| a.id.clone())
         .collect();
     if ids.is_empty() {
@@ -160,7 +183,8 @@ pub fn run(path: &Path, area: Option<&str>, missing: bool, flag: Option<&str>) -
             &Ctl::NONE,
             &|| 0.0,
         )?;
-        let grains: Vec<Grain> = serde_json::from_str(&session.segment(
+        let segment = if add_missing { Session::segment_missing } else { Session::segment };
+        let grains: Vec<Grain> = serde_json::from_str(&segment(&mut session,
             &id,
             &serde_json::to_string(&p)?,
             &serde_json::to_string(&previous)?,
@@ -173,13 +197,27 @@ pub fn run(path: &Path, area: Option<&str>, missing: bool, flag: Option<&str>) -
             .context("area missing after reopen")?;
         let output = &session.outputs[&id];
         let work = pipeline::work_image(output, rec, p.work_scale);
-        summary.push(report(
-            &id,
-            &grains,
-            p.resolved_signal(&work),
-            source,
-            segment::grain_mask(&work, &p).1,
-        ));
+        let new = &grains[if add_missing { previous.len() } else { 0 }..];
+        if add_missing {
+            let mut why = BTreeMap::new();
+            for reason in new.iter().filter_map(|g| g.artifact) {
+                *why.entry(reason.label()).or_insert(0usize) += 1;
+            }
+            let existing_grains = previous.iter().filter(|g| g.is_grain()).count();
+            let added_grains = new.iter().filter(|g| g.is_grain()).count();
+            eprintln!("{id}: {existing_grains} existing grains, {added_grains} added grains, added artifacts: {}", json!(why));
+            summary.push(json!({"area": id, "existing_grains": existing_grains,
+                "added_grains": added_grains, "added_artifacts": why}));
+        } else {
+            summary.push(report(
+                &id, &grains, p.resolved_signal(&work), source, segment::grain_mask(&work, &p).1,
+            ));
+        }
+        if dry_run {
+            session.outputs.remove(&id);
+            session.set_memory_budget(0);
+            continue;
+        }
         for (rel, bytes) in pipeline::mask_files(rec, output, &grains) {
             super::write(&out.join(rel), &bytes)?;
         }
@@ -206,15 +244,23 @@ pub fn run(path: &Path, area: Option<&str>, missing: bool, flag: Option<&str>) -
             &out.join(format!("exports/{id}_grains.csv")),
             csv.as_bytes(),
         )?;
-        relink_spots(&mut full, &id, &grains)?;
-        full["grainatlas_ui"]["grains"][&id] = serde_json::to_value(grains)?;
+        if add_missing {
+            link_unlinked_spots(&mut full, &id, new)?;
+            let entries = full["grainatlas_ui"]["grains"][&id].as_array_mut().context("grains must be an array")?;
+            entries.extend(new.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?);
+        } else {
+            relink_spots(&mut full, &id, &grains)?;
+            full["grainatlas_ui"]["grains"][&id] = serde_json::to_value(grains)?;
+        }
         session.outputs.remove(&id);
         session.set_memory_budget(0);
     }
     // Write the project last, atomically, after all areas and exports succeeded.
-    let tmp = file.with_extension("json.tmp");
-    super::write(&tmp, &serde_json::to_vec_pretty(&full)?)?;
-    std::fs::rename(&tmp, &file)?;
+    if !dry_run {
+        let tmp = file.with_extension("json.tmp");
+        super::write(&tmp, &serde_json::to_vec_pretty(&full)?)?;
+        std::fs::rename(&tmp, &file)?;
+    }
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }

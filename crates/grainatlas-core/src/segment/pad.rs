@@ -31,6 +31,56 @@ pub fn segment_padded(w: &WorkImage, p: &SegmentParams, previous: &[Grain], outl
     pad_outlines(w, &grains, outline, p.simplify_px, |g| g.is_grain() && !g.drawn)
 }
 
+/// Adds uncovered detections without changing any existing detection or its position in the list.
+pub fn add_missing(w: &WorkImage, p: &SegmentParams, existing: &[Grain], outline: OutlinePad) -> Vec<Grain> {
+    let mut occupied = vec![false; w.img.w * w.img.h];
+    for g in existing {
+        let (mask, bw, bh, origin) = shape::rasterize(g, w.um_per_px, 0);
+        for y in 0..bh.min(w.img.h.saturating_sub(origin.1)) {
+            for x in 0..bw.min(w.img.w.saturating_sub(origin.0)) {
+                occupied[(origin.1 + y) * w.img.w + origin.0 + x] |= mask[y * bw + x];
+            }
+        }
+    }
+    let occupied = if occupied.is_empty() { occupied } else { morph::dilate(&occupied, w.img.w, w.img.h, 1) };
+    let mut added: Vec<Grain> = segment_padded(w, p, &[], outline).into_iter().filter(|g| {
+        if existing.iter().any(|q| {
+            shape::inside(&q.polygon_um, g.centroid_um[0], g.centroid_um[1])
+                || shape::inside(&g.polygon_um, q.centroid_um[0], q.centroid_um[1])
+        }) {
+            return false;
+        }
+        let (mask, bw, bh, origin) = shape::rasterize(g, w.um_per_px, 0);
+        let (mut pixels, mut overlap) = (0usize, 0usize);
+        for y in 0..bh.min(w.img.h.saturating_sub(origin.1)) {
+            for x in 0..bw.min(w.img.w.saturating_sub(origin.0)) {
+                if mask[y * bw + x] {
+                    pixels += 1;
+                    overlap += usize::from(occupied[(origin.1 + y) * w.img.w + origin.0 + x]);
+                }
+            }
+        }
+        overlap * 20 <= pixels
+    }).collect();
+    for g in &mut added {
+        g.id = crate::project::new_id();
+        g.added = true;
+        g.manual = false;
+        g.number = 0;
+    }
+    let real: Vec<usize> = (0..added.len()).filter(|&i| added[i].is_grain()).collect();
+    let sub: Vec<Grain> = real.iter().map(|&i| added[i].clone()).collect();
+    let mut next = existing.iter().map(|g| g.number).max().unwrap_or(0);
+    for i in super::reading_order(&sub, p.row_tolerance) {
+        next += 1;
+        added[real[i]].number = next;
+    }
+    super::sort_grains(&mut added);
+    let mut out = existing.to_vec();
+    out.extend(added);
+    out
+}
+
 pub(super) struct Crop {
     pub mask: Vec<bool>,
     distance: Vec<f32>,
@@ -103,6 +153,7 @@ pub fn pad_outlines(w: &WorkImage, grains: &[Grain], outline: OutlinePad, simpli
         ng.artifact = g.artifact;
         ng.kept = g.kept;
         ng.drawn = g.drawn;
+        ng.added = g.added;
         ng
     }).collect()
 }

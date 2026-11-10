@@ -3,9 +3,13 @@
 //! In a zigzag package neighbouring areas overlap (100 to 850 um on the Boise
 //! TM4000 runs), so one grain is detected in several areas. Every detection is
 //! mapped mosaic → stage (as [`AreaRecord::stage_of`]) and from the stage into
-//! every other area; detections of the same grain are linked, and the grain is
+//! every other area; detections of the same grain are linked. The grain is owned
+//! by the area whose operator-drawn rectangle ([`drawn_area_nm`], the smallest one
+//! when several hold it) contains it: the tile grid that covers a rectangle is
+//! larger than it, so a neighbour's grid can hold a row more completely than the
+//! row's own area does. A grain in no drawn rectangle (or without that metadata) is
 //! owned by the area where its bounding box lies farthest inside the covered
-//! mosaic. A grain cut by an area's edge always loses to one that is whole.
+//! mosaic; a grain cut by an area's edge then always loses to one that is whole.
 //! The others are duplicates of the owner's grain.
 //!
 //! Areas whose names differ only by a `_N` suffix (`KH2-30.7` and
@@ -55,6 +59,36 @@ pub struct GrainOwner {
     /// Stage position of the centroid (nm), when the area has stage positions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_nm: Option<[f64; 2]>,
+    /// The grain lies in none of its areas' operator-drawn rectangles, so the owner comes from
+    /// the coverage rule alone: worth a look.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside_drawn: bool,
+}
+
+/// The rectangle the operator drew for an area on the TM4000 navigation image, on the stage
+/// ([x0, y0, x1, y1] nm, x0 < x1, y0 < y1). The instrument covers it with whole tiles, so the
+/// tile grid is larger and neighbouring grids overlap by grain rows that belong to the
+/// neighbour; the drawn rectangle is the sample row the operator meant. `CenterX/Y` and
+/// `AreaWidth/Height` are display pixels of the navigation image: its pixel size times
+/// `ImageInfoWidth / ImageDispInfoWidth`, counted from its top-left stage corner towards the
+/// bottom-right one. `None` without those keys (other instruments, older saved metadata).
+pub fn drawn_area_nm(a: &AreaRecord) -> Option<[f64; 4]> {
+    let g = |k: &str| a.area_meta.get(&format!("zag.{k}")).and_then(|v| v.trim().parse::<f64>().ok());
+    let px = g("ImageInfoPixelSize")? * g("ImageInfoWidth")? / g("ImageDispInfoWidth")?;
+    let (tl, br) = ([g("ImageInfoTopLeftStagePositionX")?, g("ImageInfoTopLeftStagePositionY")?], [g("ImageInfoBottomRightStagePositionX")?, g("ImageInfoBottomRightStagePositionY")?]);
+    let (cx, cy, w, h) = (g("CenterX")?, g("CenterY")?, g("AreaWidth")?, g("AreaHeight")?);
+    if !(px > 0.0 && w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let sx = (br[0] - tl[0]).signum();
+    let sy = (br[1] - tl[1]).signum();
+    let (x, y) = (tl[0] + sx * cx * px, tl[1] + sy * cy * px);
+    let (hw, hh) = (w * px / 2.0, h * px / 2.0);
+    Some([x - hw, y - hh, x + hw, y + hh])
+}
+
+fn rect_contains(r: &[f64; 4], s: [f64; 2]) -> bool {
+    s[0] >= r[0] && s[0] <= r[2] && s[1] >= r[1] && s[1] <= r[3]
 }
 
 /// Areas that make up one sample.
@@ -279,10 +313,36 @@ pub fn assign(areas: &[AreaRecord], grains: &BTreeMap<String, Vec<Grain>>, p: &O
         let r = find(&mut parent, i);
         clusters.entry(r).or_default().push(i);
     }
+    let drawn: Vec<Option<[f64; 4]>> = areas.iter().map(drawn_area_nm).collect();
     let mut out: Vec<Option<GrainOwner>> = vec![None; dets.len()];
     for members in clusters.values() {
-        // Best: highest score; ties to the earlier area, then the earlier grain.
-        let best = *members.iter().max_by(|&&a, &&b| score(&dets[a]).total_cmp(&score(&dets[b])).then(b.cmp(&a))).expect("member");
+        // The operator's drawn rectangles decide first: the grain belongs to the area whose
+        // rectangle holds its centre. Where rectangles nest or overlap (HH11 drawn inside HH5 on
+        // the Grenville 50X mount), the smallest one is the narrower, deliberate selection.
+        let stages: Vec<[f64; 2]> = members.iter().filter_map(|&i| dets[i].stage).collect();
+        let centre = (!stages.is_empty()).then(|| {
+            let n = stages.len() as f64;
+            [stages.iter().map(|s| s[0]).sum::<f64>() / n, stages.iter().map(|s| s[1]).sum::<f64>() / n]
+        });
+        let rect_area = |r: &[f64; 4]| (r[2] - r[0]) * (r[3] - r[1]);
+        // A detection cut by its mosaic edge never owns a grain another area has whole.
+        let whole = members.iter().any(|&i| !dets[i].cut);
+        let by_drawn = centre.and_then(|c| {
+            members
+                .iter()
+                .filter(|&&i| !(whole && dets[i].cut))
+                .filter_map(|&i| drawn[dets[i].area].filter(|r| rect_contains(r, c)).map(|r| (dets[i].area, rect_area(&r))))
+                .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+                .map(|(area, _)| area)
+        });
+        let outside_drawn = by_drawn.is_none() && members.iter().any(|&i| drawn[dets[i].area].is_some());
+        // Otherwise (and within the chosen area): the detection farthest inside its covered
+        // mosaic; ties to the earlier area, then the earlier grain.
+        let best = *members
+            .iter()
+            .filter(|&&i| by_drawn.is_none_or(|a| dets[i].area == a))
+            .max_by(|&&a, &&b| score(&dets[a]).total_cmp(&score(&dets[b])).then(b.cmp(&a)))
+            .expect("member");
         let owner_area = dets[best].area;
         for &i in members {
             let d = &dets[i];
@@ -308,6 +368,7 @@ pub fn assign(areas: &[AreaRecord], grains: &BTreeMap<String, Vec<Grain>>, p: &O
                 cut: d.cut,
                 interior_um: if d.interior.is_finite() { (d.interior * 10.0).round() / 10.0 } else { 0.0 },
                 stage_nm: d.stage.map(|s| [s[0].round(), s[1].round()]),
+                outside_drawn,
             });
         }
     }

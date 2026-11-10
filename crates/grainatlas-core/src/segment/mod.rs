@@ -9,7 +9,7 @@ pub mod edit;
 pub mod filter;
 pub mod morph;
 pub mod pad;
-pub use pad::{OutlinePad, pad_outlines, segment_padded};
+pub use pad::{OutlinePad, add_missing, pad_outlines, segment_padded};
 pub mod shape;
 pub mod watershed;
 
@@ -263,6 +263,9 @@ pub struct Grain {
     /// The outline was drawn or painted by hand ([`edit`]); re-runs keep it as it is.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub drawn: bool,
+    /// Added by Find missed grains and not yet reviewed; accepting clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub added: bool,
 }
 
 impl Grain {
@@ -484,6 +487,7 @@ pub fn number(grains: &mut [Grain], previous: &[Grain], tolerance: f64) {
             g.id = q.id;
             g.number = q.number;
             g.manual = q.manual;
+            g.added = q.added;
             // The user's decisions carry over: kept as a grain, or marked as an artifact.
             if q.kept {
                 g.kept = true;

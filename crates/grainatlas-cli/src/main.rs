@@ -100,10 +100,16 @@ enum Cmd {
     Segment {
         project: PathBuf,
         #[arg(long)]
-        area: Option<String>,
+        area: Vec<String>,
         /// Only areas with no saved grains entry (an empty entry counts as segmented).
         #[arg(long)]
         missing: bool,
+        /// Append uncovered detections while preserving existing grains and spot links.
+        #[arg(long, conflicts_with = "missing")]
+        add_missing: bool,
+        /// Compute and report without writing.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long, value_parser = ["auto", "cl", "bse"])]
         signal: Option<String>,
     },
@@ -287,7 +293,7 @@ fn main() -> Result<()> {
             max_width,
         } => legacy::render(&project, &out, max_width)?,
         Cmd::ImportGrains { project, from, areas, missing, dry_run } => import::run(&project, &from, &areas, missing, dry_run)?,
-        Cmd::Segment { project, area, missing, signal } => segment::run(&project, area.as_deref(), missing, signal.as_deref())?,
+        Cmd::Segment { project, area, missing, add_missing, dry_run, signal } => segment::run(&project, &area, missing, add_missing, dry_run, signal.as_deref())?,
         Cmd::Rerender { project, areas, background, dry_run } => rerender::run(&project, &areas, &background, dry_run)?,
         Cmd::Check { project, json } => {
             let path = if project.is_dir() {

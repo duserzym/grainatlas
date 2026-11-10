@@ -597,6 +597,17 @@ impl Session {
         serde_json::to_string(&grains).map_err(invalid)
     }
 
+    pub fn segment_missing(&mut self, area_id: &str, params: &str, existing: &str, outline: &str) -> Result<String> {
+        let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
+        let prev: Vec<Grain> = if existing.trim().is_empty() { Vec::new() } else { serde_json::from_str(existing).map_err(invalid)? };
+        let outline = Self::outline_args(outline)?;
+        let grains = crate::segment::add_missing(self.work_for(area_id, p.work_scale)?, &p, &prev, outline);
+        if let Some(rec) = self.project.as_mut().and_then(|pr| pr.area_mut(area_id)) {
+            rec.params.segment = p;
+        }
+        serde_json::to_string(&grains).map_err(invalid)
+    }
+
     pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str, outline: &str) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
         let w = self.work_for(area_id, p.work_scale)?;

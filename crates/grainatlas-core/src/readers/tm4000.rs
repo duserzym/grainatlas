@@ -123,6 +123,13 @@ impl TM4000Package {
                 for (k, v) in z {
                     ameta.insert(format!("zag.{k}"), v.clone());
                 }
+                // The navigation image's frame: the area's drawn rectangle (CenterX/Y,
+                // AreaWidth/Height) is in its display pixels (`ownership::drawn_area_nm`).
+                for k in ["ImageInfoPixelSize", "ImageInfoWidth", "ImageDispInfoWidth", "ImageInfoTopLeftStagePositionX", "ImageInfoTopLeftStagePositionY", "ImageInfoBottomRightStagePositionX", "ImageInfoBottomRightStagePositionY"] {
+                    if let Some(v) = meta.get(&format!("zag.{k}")) {
+                        ameta.insert(format!("zag.{k}"), v.clone());
+                    }
+                }
             }
             // The area's .ini (UTF-16LE).
             let ini = files.iter().find(|f| parent(f) == dir && f.to_ascii_lowercase().ends_with("_.ini"));

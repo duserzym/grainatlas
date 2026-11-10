@@ -93,18 +93,37 @@ In a zigzag package neighbouring areas overlap (100 to 850 µm on that run), so
 one grain is detected in several areas. Each detection is mapped mosaic → stage
 through its nearest tile (as `AreaRecord::stage_of`) and from the stage into
 every other area. A detection in another area within half the grain's size plus
-`match_um` (20 µm) is the same grain; linked detections form one grain. The
-owner is the area where the grain's box lies farthest inside the covered mosaic
-(a signed distance field of the tile rectangles); a detection cut by an area's
-edge always loses to a whole one. The others are duplicates of the owner's
-detection. A grain that maps into another area where nothing was detected stays
+`match_um` (20 µm) is the same grain; linked detections form one grain.
+
+The owner is the area whose operator-drawn rectangle holds the grain's stage
+position (`ownership::drawn_area_nm`). The TM4000 `.zag` gives each area's
+rectangle as `CenterX/Y` and `AreaWidth/Height` in display pixels of the
+navigation image: its `ImageInfoPixelSize` times `ImageInfoWidth /
+ImageDispInfoWidth` (91.67 µm on the 2026 Boise runs), counted from its top-left
+stage corner. The instrument covers the rectangle with whole tiles, so the tile
+grid is up to 3 mm taller than the drawn row and a neighbour's grid can hold a
+row more completely than the row's own area does. On Grenville_apatite_50X the
+coverage rule alone gave HH11's row to HH5, WS3's row to HH11 and every grain of
+TH3 to UM2 (57 grains against their drawn area); the drawn rectangles fix all
+but grains whose own area did not detect them. Where rectangles nest (HH11
+drawn inside HH5) the smallest one decides. A detection cut by its mosaic edge
+never owns a grain another area has whole. A grain in no drawn rectangle, or an
+area without that metadata, falls back to the coverage rule: the area where the
+grain's box lies farthest inside the covered mosaic (a signed distance field of
+the tile rectangles), a cut detection losing to a whole one. Such grains carry
+`outside_drawn` and the app says "outside every drawn area" for them. The other
+detections are duplicates of the owner's detection. A grain that maps into another area where nothing was detected stays
 with its own area, so a missed detection never loses a grain.
 
 Areas whose names differ only by a numeric `_N` (`KH2-30.7`, `KH2-30.7_2`) are
 one sample, when the base name is another area's name.
 
-In the app the Grains tab shows duplicates dashed, with "→ HH4 #12" in the
-grain table; print sheets and their counts leave them out.
+In the app the canvas draws duplicates dashed in a colour per owning area, as
+visibly as the area's own grains, with a legend ("32 grains held by HH5") and a
+switch to hide them; the grain table shows "→ HH4 #12". A spot placed on a
+grain another area holds is named for the current area as before, and the app
+says which area holds the grain, with a button to go there. Print sheets and
+their counts leave duplicates out.
 
 ## Segmentation and the artifact classifier (`segment::filter`)
 
@@ -247,6 +266,22 @@ nothing, with the likely reason), marks such areas with a hollow dot in the
 area lists, and its all-areas button finds grains in the areas without grains
 only; when every area has grains it re-runs all of them after a second click,
 since a re-run replaces hand-edited outlines that are not drawn, kept or marked.
+
+Find missed grains in the Grains tab runs the same area segmentation and adds
+only detections that no existing grain or artifact covers. Existing outlines,
+ids, numbers and spot links stay unchanged. New grains continue after the largest
+number; new artifacts remain flagged and unnumbered. Only unlinked spots inside
+new grains receive links. Dashed accent outlines mark the additions: show only
+new filters the table, Accept or Accept all clears their review flag, and one
+undo restores the whole action.
+
+`grainatlas segment <project> --add-missing [--area ID]... [--signal auto|cl|bse]
+[--dry-run]` performs the additive pass on saved areas with grain lists. Areas
+never segmented are skipped with a message to use `--missing`; the two flags
+cannot be combined. It appends new JSON entries, writes masks and grain CSVs,
+then saves the project atomically. It reports existing grains, added grains and
+added artifacts by reason on stderr and as JSON on stdout. `--dry-run` reports
+without writing any files.
 
 Split tool: a part that a cut separates from a grain is flagged as a bubble when it is
 round and below 0.7 × the epoxy level around the grain. One cut through the neck
