@@ -7,6 +7,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use grainatlas_core::Ctl;
+use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
 use grainatlas_core::project::pipeline::{self, Timings};
 use grainatlas_core::project::session::Session;
 use grainatlas_core::project::{AreaParams, Project};
@@ -22,6 +23,28 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Re-render print sheets from a saved project's mosaics and grains.
+    Sheets {
+        project: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// SheetParams JSON; missing fields use defaults.
+        #[arg(long)]
+        params: Option<PathBuf>,
+        /// tabloid (default), letter, a4 or a3.
+        #[arg(long)]
+        paper: Option<String>,
+        /// Micrometres of sample per millimetre of paper (default 8).
+        #[arg(long)]
+        scale: Option<f64>,
+        /// Also write each sheet as SVG.
+        #[arg(long)]
+        svg: bool,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        lab: Option<String>,
+    },
     /// Check a saved project; warnings always exit successfully.
     Check { project: PathBuf, #[arg(long)] json: bool },
     /// Show the areas and tiles of a package without stitching.
@@ -136,6 +159,17 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Sheets { project, out, params, paper, scale, svg, title, lab } => {
+            let mut p: SheetParams = match params {
+                Some(path) => serde_json::from_str(&std::fs::read_to_string(&path)?)?,
+                None => SheetParams::default(),
+            };
+            if let Some(paper) = paper { p.paper = paper; }
+            if let Some(scale) = scale { p.um_per_mm = scale; }
+            if let Some(title) = title { p.title = title; }
+            if let Some(lab) = lab { p.lab = lab; }
+            render_sheets(&project, &out, p, svg)?;
+        }
         Cmd::Check { project, json } => {
             let path = if project.is_dir() { project.join("project.json") } else { project };
             let input = std::fs::read_to_string(&path)?;
@@ -478,6 +512,141 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Only reads the saved project; exports always go outside its folder.
+fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Result<()> {
+    let folder = folder.canonicalize()?;
+    let out = resolved_path(out)?;
+    if out.starts_with(&folder) {
+        bail!("--out must be outside the project folder");
+    }
+    if !matches!(p.paper.as_str(), "tabloid" | "letter" | "a4" | "a3") {
+        bail!("paper {}: tabloid, letter, a4 or a3", p.paper);
+    }
+    if !p.um_per_mm.is_finite() || p.um_per_mm <= 0.0 {
+        bail!("scale must be positive and finite");
+    }
+    let project = Project::from_json(&std::fs::read_to_string(folder.join("project.json"))?)?;
+    let start = Instant::now();
+    let mut grains = std::collections::BTreeMap::<String, Vec<grainatlas_core::segment::Grain>>::new();
+    let mut kept = Vec::new();
+    for rec in &project.areas {
+        let Some(saved) = project.extra.get("grainatlas_ui").and_then(|ui| ui["grains"].get(&rec.id)) else {
+            eprintln!("{}: skipped (no saved grains)", rec.id);
+            continue;
+        };
+        let gs: Vec<grainatlas_core::segment::Grain> = serde_json::from_value(saved.clone()).with_context(|| format!("{}: saved grains", rec.id))?;
+        if gs.is_empty() {
+            eprintln!("{}: skipped (no saved grains)", rec.id);
+            continue;
+        }
+        let dir = folder.join("mosaic").join(&rec.id);
+        if !dir.join("mosaic.json").exists() {
+            eprintln!("{}: skipped (no saved mosaic)", rec.id);
+            continue;
+        }
+        let (m, px) = saved_mosaic(&dir).with_context(|| format!("{}: saved mosaic", rec.id))?;
+        kept.push((rec, m, px));
+        grains.insert(rec.id.clone(), gs);
+    }
+    if kept.is_empty() {
+        bail!("no saved area with mosaics and grains to print");
+    }
+    let own = grainatlas_core::ownership::assign(&project.areas, &grains, &Default::default());
+    let meta = match open(Path::new(&project.package.path)) {
+        Ok((pkg, _, _)) => sheets::sheet_meta(pkg.info()),
+        Err(_) => SheetMeta {
+            package: project.package.name.clone(),
+            areas: project.areas.len(),
+            tiles: project.areas.iter().map(|a| a.tiles.len()).sum(),
+            um_per_px: project.areas.first().map_or(0.0, |a| a.um_per_px()),
+            ..Default::default()
+        },
+    };
+    let name = &project.package.name;
+    p.project = folder.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+    p.registration_file = format!("{name}_print_registration.json");
+    p.printed = now_rfc3339().replace('T', " ").trim_end_matches('Z').chars().take(16).collect::<String>() + " UTC";
+    let areas: Vec<SheetArea> = kept.iter().map(|(rec, m, px)| SheetArea {
+        rec,
+        img: grainatlas_core::layout::AreaImage {
+            id: &rec.id,
+            name: &rec.name,
+            sample: if rec.sample.is_empty() { &rec.name } else { &rec.sample },
+            w: m.w,
+            h: m.h,
+            px,
+            lut: std::array::from_fn(|i| i as u8),
+            um_per_px: m.um_per_px,
+        },
+    }).collect();
+    let r = sheets::sheets(&p, &areas, &grains, &own, &meta);
+    let mut files = vec![
+        (format!("{name}_grain_sheets_{}.pdf", p.paper), grainatlas_core::layout::pdf::pdf_from_svgs(&r.pages)?),
+        (p.registration_file.clone(), serde_json::to_vec_pretty(&r.registration)?),
+        (format!("{name}_sheet_stats.json"), serde_json::to_vec_pretty(&r.stats)?),
+    ];
+    if svg {
+        files.extend(r.pages.iter().enumerate().map(|(i, page)| (format!("{name}_sheet{}.svg", i + 1), page.as_bytes().to_vec())));
+    }
+    // Check all destinations first, including existing symlinks and names from project.json.
+    for (file, _) in &files {
+        if Path::new(file).file_name().is_none_or(|n| Path::new(n) != Path::new(file)) || resolved_path(&out.join(file))?.starts_with(&folder) {
+            bail!("export must be a file outside the project folder: {file}");
+        }
+    }
+    for (file, bytes) in files { write(&out.join(file), &bytes)?; }
+    let s = &r.stats;
+    eprintln!(
+        "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice) in {:.0} ms",
+        s.sheets, s.bands, s.grains, s.duplicates, s.artifacts, s.filtered, s.stripped, s.strip_refused, s.grains_cut, s.grains_twice, start.elapsed().as_secs_f64() * 1000.0
+    );
+    Ok(())
+}
+
+/// Assemble level 0, including the smaller tiles at the right and bottom edges.
+fn saved_mosaic(dir: &Path) -> Result<(grainatlas_core::mosaic::pyramid::MosaicJson, Vec<u8>)> {
+    let m: grainatlas_core::mosaic::pyramid::MosaicJson = serde_json::from_slice(&std::fs::read(dir.join("mosaic.json"))?)?;
+    if m.w == 0 || m.h == 0 || m.tile_size == 0 || m.format != "png" {
+        bail!("invalid mosaic dimensions, tile size or format");
+    }
+    let mut px = vec![0; m.w.checked_mul(m.h).context("mosaic dimensions overflow")?];
+    for row in 0..m.h.div_ceil(m.tile_size) {
+        for col in 0..m.w.div_ceil(m.tile_size) {
+            let path = dir.join(format!("0/{col}_{row}.png"));
+            let (tile, _) = grainatlas_core::image::decode(&std::fs::read(&path).with_context(|| path.display().to_string())?)?;
+            let (x, y) = (col * m.tile_size, row * m.tile_size);
+            if tile.w != m.tile_size.min(m.w - x) || tile.h != m.tile_size.min(m.h - y) {
+                bail!("{}: unexpected tile dimensions", path.display());
+            }
+            let bytes = tile.to_u8();
+            for r in 0..tile.h {
+                px[(y + r) * m.w + x..(y + r) * m.w + x + tile.w].copy_from_slice(&bytes[r * tile.w..(r + 1) * tile.w]);
+            }
+        }
+    }
+    Ok((m, px))
+}
+
+/// Resolve symlinks in existing components even when the output does not exist yet.
+fn resolved_path(path: &Path) -> Result<PathBuf> {
+    let mut out = std::env::current_dir()?;
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => { out.pop(); }
+            std::path::Component::CurDir => {}
+            _ => {
+                out.push(part);
+                match out.canonicalize() {
+                    Ok(path) => out = path,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(&out).is_err() => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Opens a package; if `folder` has no `.zag` and is one area of a package, opens
