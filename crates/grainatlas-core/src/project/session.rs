@@ -10,6 +10,7 @@ mod sheets;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::pipeline::{self, AreaOutput, Clock, Timings};
 use super::{AreaParams, Project};
@@ -53,13 +54,17 @@ pub struct MemoryReport {
     pub budget: usize,
 }
 
-const DEFAULT_HEAVY_BUDGET: usize = if cfg!(target_arch = "wasm32") {
+pub const DEFAULT_HEAVY_BUDGET: usize = if cfg!(target_arch = "wasm32") {
     192 * 1024 * 1024
 } else {
     512 * 1024 * 1024
 };
 
+// Shared by sessions, including sessions used on different native threads.
+static HEAVY_USE: AtomicUsize = AtomicUsize::new(1);
+
 pub struct Session {
+    last_heavy_use: usize,
     heavy_budget: usize,
     recent: VecDeque<String>,
     /// Files handed over one by one (browser) before `open`.
@@ -84,6 +89,7 @@ pub struct Session {
 impl Session {
     pub fn new(name: &str) -> Session {
         Session {
+            last_heavy_use: 0,
             heavy_budget: DEFAULT_HEAVY_BUDGET,
             recent: VecDeque::new(),
             mem: MemSource::new(name),
@@ -151,12 +157,39 @@ impl Session {
         }
     }
 
+    /// Resident linear, coverage, work-image and preview-input allocations, in bytes.
+    pub fn evictable_bytes(&self) -> usize {
+        self.memory_report()
+            .areas
+            .values()
+            .map(|a| a.linear + a.coverage + a.work + a.small)
+            .sum()
+    }
+
+    /// Evict LRU areas down to `bytes` (zero releases all evictable buffers).
+    /// Keeps base/pyramid pixels, dimensions, placement and project metadata, and
+    /// leaves the session's configured budget and last-use stamp unchanged.
+    pub fn evict_to(&mut self, bytes: usize) {
+        self.trim_to(bytes, None);
+    }
+
+    /// Monotonic heavy/work/preview-use stamp, comparable across sessions.
+    /// Zero means no such use yet. Eviction and resident-only reads do not touch it.
+    pub fn last_heavy_use(&self) -> usize {
+        self.last_heavy_use
+    }
+
     fn touch(&mut self, id: &str) {
+        self.last_heavy_use = HEAVY_USE.fetch_add(1, Ordering::Relaxed);
         self.recent.retain(|a| a != id);
         self.recent.push_back(id.to_string());
     }
 
     fn trim(&mut self, keep: Option<&str>) {
+        self.trim_to(self.heavy_budget, keep);
+    }
+
+    fn trim_to(&mut self, bytes: usize, keep: Option<&str>) {
         let report = self.memory_report();
         let mut used: usize = report
             .areas
@@ -164,7 +197,7 @@ impl Session {
             .map(|a| a.linear + a.coverage + a.work + a.small)
             .sum();
         for id in &self.recent {
-            if used <= self.heavy_budget {
+            if used <= bytes {
                 break;
             }
             if keep == Some(id.as_str()) {
