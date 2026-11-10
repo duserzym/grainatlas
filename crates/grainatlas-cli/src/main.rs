@@ -426,7 +426,7 @@ fn main() -> Result<()> {
                         let img = pipeline::area_image(rec, &o, &rec.params.tone);
                         let mut gmap = std::collections::BTreeMap::new();
                         gmap.insert(rec.id.clone(), grains.clone());
-                        let lp = grainatlas_core::layout::LayoutParams { paper: paper.clone(), um_per_mm: scale, title: format!("{} · {}", pkg.info().name, rec.name), ..Default::default() };
+                        let lp = grainatlas_core::layout::LayoutParams { paper: paper.clone(), items: grainatlas_core::layout::Items::Grains, um_per_mm: scale, title: format!("{} · {}", pkg.info().name, rec.name), ..Default::default() };
                         let r = grainatlas_core::layout::layout(&lp, &[img], &gmap, &[], &[]);
                         for (i, svg) in r.pages.iter().enumerate() {
                             write(&out.join(format!("exports/{}_page{}.svg", area.id, i + 1)), svg.as_bytes())?;

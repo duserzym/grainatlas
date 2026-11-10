@@ -36,8 +36,10 @@ pub fn paper(name: &str) -> Option<Paper> {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Items {
-    #[default]
+    /// Each grain cropped alone, without its neighbours: an explicit choice only
+    /// (see "Layout rule: context first" in docs/print_sheets.md).
     Grains,
+    #[default]
     Areas,
 }
 
@@ -76,7 +78,7 @@ impl Default for LayoutParams {
             landscape: false,
             margin_mm: 12.0,
             um_per_mm: 0.0,
-            items: Items::Grains,
+            items: Items::Areas,
             area_ids: Vec::new(),
             grain_margin_um: 20.0,
             show_spots: true,
