@@ -42,6 +42,21 @@ pub fn report(area: &str, grains: &[Grain], signal: Signal, source: &str, thresh
         "signal": signal, "signal_source": source, "threshold": threshold, "warning": warning})
 }
 
+/// Links every spot of `area` in a full project JSON to the grain under it (artifacts excluded),
+/// as the app does; names, ids and positions are never touched.
+pub fn relink_spots(full: &mut Value, area: &str, grains: &[Grain]) -> Result<()> {
+    if let Some(spots) = full.get_mut("grainatlas_ui").and_then(|ui| ui.get_mut("spots")).and_then(Value::as_array_mut) {
+        for spot in spots.iter_mut().filter(|s| s["area_id"] == area) {
+            let x = spot["x_um"].as_f64().context("spot has no x_um")?;
+            let y = spot["y_um"].as_f64().context("spot has no y_um")?;
+            let grain = grainatlas_core::spots::grain_at(grains, x, y);
+            spot["grain_id"] = json!(grain.map(|g| g.id));
+            spot["grain_number"] = json!(grain.map(|g| g.number));
+        }
+    }
+    Ok(())
+}
+
 pub fn run(path: &Path, area: Option<&str>, missing: bool, flag: Option<&str>) -> Result<()> {
     let file = if path.is_dir() {
         path.join("project.json")
@@ -191,15 +206,7 @@ pub fn run(path: &Path, area: Option<&str>, missing: bool, flag: Option<&str>) -
             &out.join(format!("exports/{id}_grains.csv")),
             csv.as_bytes(),
         )?;
-        if let Some(spots) = full.get_mut("grainatlas_ui").and_then(|ui| ui.get_mut("spots")).and_then(Value::as_array_mut) {
-            for spot in spots.iter_mut().filter(|s| s["area_id"] == id) {
-                let x = spot["x_um"].as_f64().context("spot has no x_um")?;
-                let y = spot["y_um"].as_f64().context("spot has no y_um")?;
-                let grain = grainatlas_core::spots::grain_at(&grains, x, y);
-                spot["grain_id"] = json!(grain.map(|g| g.id));
-                spot["grain_number"] = json!(grain.map(|g| g.number));
-            }
-        }
+        relink_spots(&mut full, &id, &grains)?;
         full["grainatlas_ui"]["grains"][&id] = serde_json::to_value(grains)?;
         session.outputs.remove(&id);
         session.set_memory_budget(0);

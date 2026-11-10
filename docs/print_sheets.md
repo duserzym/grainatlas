@@ -231,7 +231,12 @@ detections. `grainatlas segment <project> [--missing] [--area ID] [--signal
 auto|cl|bse]` segments a saved project as the app does (saved placement and
 parameters, previous grains and decisions kept, spots re-linked, every other
 part of `project.json` untouched). `grainatlas check` lists areas that have
-never been segmented. Print registrations record `project_uuid` and
+never been segmented. `grainatlas import-grains <project> --from <copy> --missing` copies
+the grains of another copy of the same project (for example the copy a print was
+made from) into areas without grains, only when project uuid, area uuid, mosaic
+hash and size, pixel size and tile placement all match; ids and numbers stay as
+printed, spots in those areas are linked to the grain under them, nothing else in
+`project.json` changes, and it never replaces existing grains. Print registrations record `project_uuid` and
 `project_path`, so a printed sheet can be traced to the project whose grains it
 shows: the Grenville_apatite_50X sheets of 2026-11-07 were printed from a
 temporary copy whose grains never reached the project.

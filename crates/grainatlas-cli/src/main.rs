@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 mod legacy;
+mod import;
 mod segment;
 use grainatlas_core::Ctl;
 use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
@@ -77,6 +78,22 @@ enum Cmd {
         project: PathBuf,
         #[arg(long)]
         json: bool,
+    },
+    /// Copy saved grains from another copy of this project (e.g. the one a print was made from)
+    /// into areas without grains, when the mosaics are the same; spots are re-linked.
+    ImportGrains {
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+        /// Areas to fill (each must have no grains yet).
+        #[arg(long = "area")]
+        areas: Vec<String>,
+        /// Every area without grains.
+        #[arg(long)]
+        missing: bool,
+        /// Check and report without writing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Segment saved areas with their saved placement, parameters and manual decisions.
     Segment {
@@ -256,6 +273,7 @@ fn main() -> Result<()> {
             out,
             max_width,
         } => legacy::render(&project, &out, max_width)?,
+        Cmd::ImportGrains { project, from, areas, missing, dry_run } => import::run(&project, &from, &areas, missing, dry_run)?,
         Cmd::Segment { project, area, missing, signal } => segment::run(&project, area.as_deref(), missing, signal.as_deref())?,
         Cmd::Check { project, json } => {
             let path = if project.is_dir() {
