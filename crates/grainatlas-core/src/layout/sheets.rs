@@ -186,6 +186,11 @@ pub struct SheetArea<'a> {
 /// The `print_sheet` frame: paper sheet ↔ grainatlas mosaic.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PrintRegistration {
+    #[serde(default)]
+    pub project_uuid: Option<uuid::Uuid>,
+    /// Absolute saved-project path on native hosts; empty for an unsaved/browser project.
+    #[serde(default)]
+    pub project_path: String,
     pub frame: String,
     pub note: String,
     pub package: String,
@@ -829,6 +834,8 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     stats.sheets = pages.len();
 
     let mut reg = PrintRegistration {
+        project_uuid: None,
+        project_path: String::new(),
         frame: "print_sheet".into(),
         note: "paper sheet <-> grainatlas mosaic; not the laser stage registration".into(),
         package: meta.package.clone(),

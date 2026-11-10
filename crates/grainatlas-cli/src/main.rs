@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 mod legacy;
+mod segment;
 use grainatlas_core::Ctl;
 use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
 use grainatlas_core::project::pipeline::{self, Timings};
@@ -76,6 +77,17 @@ enum Cmd {
         project: PathBuf,
         #[arg(long)]
         json: bool,
+    },
+    /// Segment saved areas with their saved placement, parameters and manual decisions.
+    Segment {
+        project: PathBuf,
+        #[arg(long)]
+        area: Option<String>,
+        /// Only areas with no saved grains entry (an empty entry counts as segmented).
+        #[arg(long)]
+        missing: bool,
+        #[arg(long, value_parser = ["auto", "cl", "bse"])]
+        signal: Option<String>,
     },
     /// Show the areas and tiles of a package without stitching.
     Info { folder: PathBuf },
@@ -190,6 +202,9 @@ struct StitchOptions {
     /// CL-dark grains relative to the local epoxy level).
     #[arg(long)]
     polarity: Option<String>,
+    /// Signal profile; auto reads each area's instrument metadata.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "cl", "bse"])]
+    signal: String,
 }
 
 fn main() -> Result<()> {
@@ -241,6 +256,7 @@ fn main() -> Result<()> {
             out,
             max_width,
         } => legacy::render(&project, &out, max_width)?,
+        Cmd::Segment { project, area, missing, signal } => segment::run(&project, area.as_deref(), missing, signal.as_deref())?,
         Cmd::Check { project, json } => {
             let path = if project.is_dir() {
                 project.join("project.json")
@@ -543,6 +559,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         sample,
         auto,
         polarity,
+        signal,
     } = options;
     let sheets = print.is_some() && print_style != "grains";
     if !matches!(print_style.as_str(), "sheets" | "grains") {
@@ -553,6 +570,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         Some(p) => serde_json::from_str(&std::fs::read_to_string(&p)?)?,
         None => AreaParams::default(),
     };
+    params.segment.signal = segment::signal_override(&signal);
     if fast {
         params.blend.mode = grainatlas_core::blend::BlendMode::Feather;
     }
@@ -641,27 +659,20 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
                     .and_then(|v| serde_json::from_value(v["grains"].clone()).ok())
                     .unwrap_or_default();
             let grains = pipeline::segment_area(rec, &o, &params.segment, &prev, outline);
-            let mut why: std::collections::BTreeMap<&str, usize> = Default::default();
-            for g in grains.iter().filter_map(|g| g.artifact) {
-                *why.entry(g.label()).or_default() += 1;
-            }
-            let flagged: usize = why.values().sum();
-            eprintln!(
-                "  {} grains, {flagged} artifacts{} in {:.0} ms",
-                grains.len() - flagged,
-                if flagged > 0 {
-                    format!(
-                        " ({})",
-                        why.iter()
-                            .map(|(k, v)| format!("{k} {v}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                } else {
-                    String::new()
-                },
-                clock() - t
+            let work = pipeline::work_image(&o, rec, params.segment.work_scale);
+            let resolved = params.segment.resolved_signal(&work);
+            let report = segment::report(
+                &area.id,
+                &grains,
+                resolved,
+                if signal == "auto" { "metadata" } else { "flag" },
+                grainatlas_core::segment::grain_mask(&work, &params.segment).1,
             );
+            let row = summary.last_mut().expect("summary");
+            for key in ["artifacts", "signal", "signal_source", "threshold", "warning"] {
+                row[key] = report[key].clone();
+            }
+            eprintln!("  segmentation in {:.0} ms", clock() - t);
             for (rel, bytes) in pipeline::mask_files(rec, &o, &grains) {
                 write(&out.join(rel), &bytes)?;
             }
@@ -797,7 +808,9 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
             })
             .collect();
         let meta = grainatlas_core::layout::sheets::sheet_meta(pkg.info());
-        let r = grainatlas_core::layout::sheets::sheets(&sp, &areas, &all_grains, &own, &meta);
+        let mut r = grainatlas_core::layout::sheets::sheets(&sp, &areas, &all_grains, &own, &meta);
+        r.registration.project_uuid = Some(project.uuid);
+        r.registration.project_path = abs(&out);
         let pdf = grainatlas_core::layout::pdf::pdf_from_svgs(&r.pages)?;
         write(
             &out.join(format!("exports/{name}_grain_sheets_{paper}.pdf")),
@@ -925,7 +938,9 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
             },
         })
         .collect();
-    let r = sheets::sheets(&p, &areas, &grains, &own, &meta);
+    let mut r = sheets::sheets(&p, &areas, &grains, &own, &meta);
+    r.registration.project_uuid = Some(project.uuid);
+    r.registration.project_path = abs(&folder);
     let mut files = vec![
         (
             format!("{name}_grain_sheets_{}.pdf", p.paper),

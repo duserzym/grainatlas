@@ -197,6 +197,10 @@ pub fn check_project(
     labels: Option<&[String]>,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
+    let missing: Vec<_> = project.areas.iter().filter(|a| !grains.contains_key(&a.id)).map(|a| a.id.as_str()).collect();
+    if !missing.is_empty() {
+        out.push(finding("never_segmented", &[], format!("{} of {} areas have never been segmented: {}", missing.len(), project.areas.len(), missing.join(", "))));
+    }
     let mut patterns: BTreeMap<&str, Vec<&Spot>> = BTreeMap::new();
     for s in spots {
         let gs = grains

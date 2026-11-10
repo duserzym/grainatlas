@@ -67,7 +67,9 @@ impl Session {
         if areas.is_empty() {
             return Err(Error::Invalid("no stitched area to print".into()));
         }
-        let r = sheets::sheets(&p, &areas, &grains, &own, &self.meta()?);
+        let mut r = sheets::sheets(&p, &areas, &grains, &own, &self.meta()?);
+        r.registration.project_uuid = Some(project.uuid);
+        r.registration.project_path = self.project_path.clone();
         serde_json::to_string(&serde_json::json!({ "pages": r.pages, "registration": r.registration, "stats": r.stats, "ownership": own })).map_err(invalid)
     }
 
