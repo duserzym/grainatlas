@@ -8,7 +8,8 @@ import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo,
 import { current, shared, tabs, type AppState, type LiveState } from './store.svelte';
 import { isHosted, notify, type OpenedFiles } from '@lab/bridge';
 import { download, fromShell } from './files';
-import { packageNameFor, parseDeepLink, sameId, savedProject } from './deeplink';
+import { packageNameFor, parseDeepLink, readRecent, sameId, savedProject } from './deeplink';
+import { clearStoredCopy, newerStoredCopy, storedCopyDate } from './stored-copy';
 
 /** Where something newly opened goes: the active tab when nothing is open there, else a new tab
  * (opening never replaces the project of a tab). */
@@ -141,9 +142,13 @@ export async function openPaths(paths: string[], app: AppState = current()) {
   if (paths.length === 1 && PROJECT_PATH.test(paths[0])) {
     const r = await app.run(`Opening ${paths[0]}`, () => core.openProject(paths[0]));
     if (!r) return;
-    await adoptPackage(app, r.info, r.project);
-    app.projectPath = { kind: /\.gaproj$/i.test(paths[0]) ? 'file' : 'folder', path: paths[0].replace(/\/$/, '') };
-    await restoreAreas(app);
+    const path = { kind: /\.gaproj$/i.test(paths[0]) ? 'file' as const : 'folder' as const, path: paths[0].replace(/\/$/, '') };
+    app.loadingProject = true;
+    try {
+      await adoptPackage(app, r.info, r.project, path, r.modified_ms);
+      await restoreAreas(app);
+      if (app.storedCopy) app.storedCopy = { ...app.storedCopy, ready: true };
+    } finally { app.loadingProject = false; }
     return;
   }
   const label = paths.length === 1 ? paths[0] : `${paths.length} files`;
@@ -179,7 +184,7 @@ async function opened(app: AppState, r: OpenResult) {
   const spec = saved?.package.kind === 'loose' ? saved.package.loose : undefined;
   if (spec && sameFiles(spec.files, r.images)) {
     await openLoose(spec, app);
-    if (app.pkg) app.notice = `Reopened ${r.images.length} images with the project's scale (${scaleText(spec)}).`;
+    if (app.pkg) app.notice = `${app.notice ? `${app.notice} ` : ''}Reopened ${r.images.length} images with the project's scale (${scaleText(spec)}).`;
     return;
   }
   app.pendingLoose = { name: r.name, images: r.images, spec: null };
@@ -219,9 +224,13 @@ function fits(saved: Project, info: PackageInfo) {
   return saved.areas.length === ids.length && saved.areas.every((a, i) => a.id === ids[i]);
 }
 
-async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Project | null = null) {
+async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Project | null = null, path: AppState['projectPath'] = null, modifiedMs = NaN) {
   const core = await app.core;
-  app.projectPath = null;
+  const stored = savedProject(info.name);
+  // Set the guard before changing any UI state: effects and rendering can call persist.
+  app.storedCopy = fromFolder && path ? newerStoredCopy(fromFolder, path.path, modifiedMs) : null;
+  app.notice = null;
+  app.projectPath = path;
   app.remote = null;
   app.remoteTiles = null;
   app.pkg = info;
@@ -239,19 +248,24 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.selection = [];
   app.tone = {};
   // A project saved earlier for this package (browser storage) is picked up again.
-  let saved: Project | null = fromFolder ?? savedProject(info.name);
+  let saved: Project | null = fromFolder ?? stored;
   if (saved && !fromFolder && !fits(saved, info)) saved = null;
   if (saved) {
     try {
       await core.loadProject(JSON.stringify(stripUi(saved)));
     } catch {
       saved = null;
+      app.storedCopy = null;
     }
   }
   app.project = JSON.parse(await core.projectJson());
   if (saved) {
     app.adopt(saved);
     app.settings = { ...app.settings, ...(saved.settings ?? {}), area_patterns: app.project!.settings.area_patterns ?? {}, spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
+    if (!fromFolder) {
+      const date = storedCopyDate(readRecent().find((r) => r.name === info.name && !r.path)?.when);
+      app.notice = `Opened the copy of ${info.name} kept in this app${date ? ` (saved ${date})` : ''}. A .grainatlas project folder is not read from here: open that folder to use what is saved in it.`;
+    }
   }
   fillParams(app);
   app.areaId = info.areas[0]?.id ?? null;
@@ -345,17 +359,35 @@ async function resolveDeepLink(app: AppState) {
 }
 
 export async function loadProjectFile(file: File, app: AppState = current()) {
-  const text = await file.text();
-  const p = JSON.parse(text) as Project;
+  const p = JSON.parse(await file.text()) as Project;
   const core = await app.core;
-  await core.loadProject(JSON.stringify(stripUi(p)));
-  app.project = JSON.parse(await core.projectJson());
-  app.adopt(p);
-  app.settings = { ...app.settings, ...(p.settings ?? {}), area_patterns: app.project!.settings.area_patterns ?? {}, spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
-  fillParams(app);
-  app.dirty = false;
-  await restoreAreas(app);
-  await resolveDeepLink(app);
+  const path = file.webkitRelativePath || file.name;
+  const previous = app.storedCopy;
+  app.loadingProject = true;
+  app.storedCopy = newerStoredCopy(p, path, file.lastModified);
+  try {
+    try {
+      await core.loadProject(JSON.stringify(stripUi(p)));
+    } catch (e) {
+      app.storedCopy = previous;
+      throw e;
+    }
+    app.notice = null;
+    app.projectPath = { kind: 'file', path };
+    app.project = JSON.parse(await core.projectJson());
+    app.spots = [];
+    app.grains = {};
+    app.labels = [];
+    app.tone = {};
+    app.stitched = {};
+    app.adopt(p);
+    app.settings = { ...app.settings, ...(p.settings ?? {}), area_patterns: app.project!.settings.area_patterns ?? {}, spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
+    fillParams(app);
+    app.dirty = false;
+    await restoreAreas(app);
+    if (app.storedCopy) app.storedCopy = { ...app.storedCopy, ready: true };
+    await resolveDeepLink(app);
+  } finally { app.loadingProject = false; }
 }
 
 /** `base` with the values of `over` (objects merged at every depth, in `base`'s key order). */
@@ -619,8 +651,9 @@ export async function saveProject(app: AppState = current()) {
     const dir = app.projectPath.path;
     const where = await app.run('Saving project', () => core.saveProject(p, {}, dir));
     if (where) {
-      app.notice = `Saved ${where}`;
       app.dirty = false;
+      clearStoredCopy(p.uuid, dir);
+      app.notice = `Saved ${where}`;
     }
     return where;
   }
@@ -636,11 +669,14 @@ export async function saveProjectFile(app: AppState = current(), ask = true) {
   const prev = app.projectPath?.kind === 'file' ? app.projectPath.path : null;
   const where = await app.run('Saving project file', () => core.saveProjectFile(p, prev, ask));
   if (core.kind !== 'tauri') {
+    if (app.error) return null;
     app.dirty = false;
+    if (app.projectPath) clearStoredCopy(p.uuid, app.projectPath.path);
     return null;
   }
   if (where) {
     app.projectPath = { kind: 'file', path: where };
+    clearStoredCopy(p.uuid, where);
     app.notice = `Saved ${where}`;
     app.dirty = false;
   }

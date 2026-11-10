@@ -48,6 +48,15 @@ export function relinkSpots(spots: Spot[], areaId: string, grains: Grain[]): Spo
   });
 }
 
+/** Link only unlinked spots inside new real grains, preserving every other spot exactly. */
+export function linkUnlinkedSpots(spots: Spot[], areaId: string, newGrains: Grain[]): Spot[] {
+  return spots.map((s) => {
+    if (s.area_id !== areaId || s.grain_id != null) return s;
+    const g = grainAt(newGrains, s.x_um, s.y_um);
+    return g ? { ...s, grain_id: g.id, grain_number: g.number } : s;
+  });
+}
+
 export interface SnapTarget { x: number; y: number; what: string }
 
 /** Snap targets: grain centroids, long-axis ends (kept inside by the spot radius), previous spot. */

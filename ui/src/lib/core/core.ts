@@ -22,7 +22,7 @@ export interface Core {
   /** After `needs_scale`: open the same images as loose files with the user's scale. */
   openLoose(spec: LooseSpec): Promise<PackageInfo>;
   /** Desktop: open a saved `<name>.grainatlas/` folder (its package and project). */
-  openProject(path: string): Promise<{ info: PackageInfo; project: Project }>;
+  openProject(path: string): Promise<{ info: PackageInfo; project: Project; modified_ms: number }>;
   /** Drops the open package and project: an empty session for a project without its package. */
   blank(name: string): Promise<void>;
   loadProject(json: string): Promise<void>;
@@ -52,6 +52,7 @@ export interface Core {
   /** Shared warning text after segmentation, or null when the profile fits. */
   segmentWarning(areaId: string, params: SegmentParams, grains: Grain[]): Promise<string | null>;
   segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]>;
+  segmentMissing(areaId: string, params: SegmentParams, existing: Grain[], outline: OutlinePad): Promise<Grain[]>;
   /** Click-grow a grain at a point (manual add). */
   grainAt(areaId: string, xUm: number, yUm: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null>;
   /** Split a grain along a line (um), returns the parts. */

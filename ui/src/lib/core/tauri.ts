@@ -60,7 +60,7 @@ export class TauriCore implements Core {
   async openLoose(spec: LooseSpec): Promise<PackageInfo> {
     return JSON.parse(await this.call<string>('open_loose', { spec: JSON.stringify(spec) }));
   }
-  async openProject(path: string): Promise<{ info: PackageInfo; project: Project }> {
+  async openProject(path: string): Promise<{ info: PackageInfo; project: Project; modified_ms: number }> {
     return JSON.parse(await this.call<string>('open_project', { path }));
   }
   async blank(name: string): Promise<void> {
@@ -131,6 +131,9 @@ export class TauriCore implements Core {
   }
   async segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]> {
     return JSON.parse(await this.call<string>('segment', { areaId, params: JSON.stringify(params), previous: JSON.stringify(previous), outline: JSON.stringify(outline) }));
+  }
+  async segmentMissing(areaId: string, params: SegmentParams, existing: Grain[], outline: OutlinePad): Promise<Grain[]> {
+    return JSON.parse(await this.call<string>('segment_missing', { areaId, params: JSON.stringify(params), existing: JSON.stringify(existing), outline: JSON.stringify(outline) }));
   }
   async grainAt(areaId: string, x: number, y: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null> {
     return JSON.parse(await this.call<string>('grain_at', { areaId, x, y, params: JSON.stringify(params), outline: JSON.stringify(outline) }));

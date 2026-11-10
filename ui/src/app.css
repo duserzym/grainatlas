@@ -53,6 +53,10 @@
      Okabe-Ito based, colour-blind safe) */
   --image-bg: #05070b;
   --ov-outline: #56b4e9;
+  --ov-owner-1: #e69f00;
+  --ov-owner-2: #cc79a7;
+  --ov-owner-3: #009e73;
+  --ov-owner-4: #d55e00;
   --ov-number: #f0e442;
   --ov-spot: #ff8c42;
   --ov-spot-selected: #ffffff;
@@ -74,6 +78,10 @@
 }
 
 .ga-root[data-theme='dark'] {
+  --ov-owner-1: #e69f00;
+  --ov-owner-2: #cc79a7;
+  --ov-owner-3: #009e73;
+  --ov-owner-4: #d55e00;
   --wallpaper:
     radial-gradient(60rem 40rem at 10% -10%, #1d3263 0%, transparent 60%),
     radial-gradient(50rem 36rem at 100% 0%, #0f4a45 0%, transparent 55%),

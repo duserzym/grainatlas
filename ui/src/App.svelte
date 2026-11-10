@@ -17,6 +17,7 @@
   import CheckDialog from './components/CheckDialog.svelte';
   import RenameDialog from './components/RenameDialog.svelte';
   import ReplaceDialog from './components/ReplaceDialog.svelte';
+  import StoredCopyDialog from './components/StoredCopyDialog.svelte';
   import ThemeSwitch from './components/ThemeSwitch.svelte';
   import { handleShellCommand } from './lib/shellcmd';
   import { editCopy } from './lib/remote';
@@ -126,6 +127,8 @@
   /** A folder dragged over the desktop window (it opens in a new tab). */
   let dropping = $state(false);
 
+  let profile = $state<string | null>(null);
+
   // The window title names the active tab (desktop), and save dialogs start in its folder.
   $effect(() => {
     const title = `${app.title}${app.dirty && !app.readOnly ? ' •' : ''} — grainatlas`;
@@ -134,8 +137,9 @@
       return;
     }
     const id = tabs.activeId;
+    const windowTitle = title + (profile ? ` (${profile})` : '');
     void import('./lib/core/tauri').then((m) => m.setSaveTab(id));
-    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title)).catch(() => {});
+    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(windowTitle)).catch(() => {});
   });
 
   // Cmd+T / Cmd+W arrive as a keydown and, from the menu bar, as a menu event: act once.
@@ -151,7 +155,8 @@
   /** Desktop start-up: `grainatlas A.grainatlas B.grainatlas … [--stitch] [--segment]` opens one tab per folder. */
   async function startup() {
     const { invoke } = await import('@tauri-apps/api/core');
-    const s = await invoke<{ paths: string[]; stitch: boolean; segment: boolean; um_per_px: number | null; field_um: number | null }>('startup');
+    const s = await invoke<{ paths: string[]; stitch: boolean; segment: boolean; um_per_px: number | null; field_um: number | null; profile: string | null }>('startup');
+    profile = s.profile;
     if (!s.paths.length) return;
     const opened = await openPathsInTabs(s.paths);
     if (opened[0]) tabs.select(opened[0].id);
@@ -331,11 +336,15 @@
   {#if app.checkPrompt}<CheckDialog />{/if}
   {#if app.renamePrompt}<RenameDialog />{/if}
   {#if app.offer}<ReplaceDialog />{/if}
+  {#if app.storedCopy?.ready}<StoredCopyDialog />{/if}
   {#if app.pendingLoose}<ScaleDialog />{/if}
   {#if app.busy}<Busy />{/if}
   {#if app.notice}
     <div class="glass toast ok" role="status">
       <span>{app.notice}</span>
+      {#if app.noticeAction}
+        <button onclick={() => { const action = app.noticeAction; app.notice = null; action?.run(); }}>{app.noticeAction.label}</button>
+      {/if}
       <button class="icon" onclick={() => (app.notice = null)} aria-label="Dismiss">✕</button>
     </div>
   {/if}
@@ -472,6 +481,8 @@
     z-index: 50;
     max-width: 80vw;
   }
+  .toast button { flex-shrink: 0; }
+  .toast span { min-width: 0; overflow-wrap: anywhere; }
   .toast.ok {
     color: var(--ok);
   }

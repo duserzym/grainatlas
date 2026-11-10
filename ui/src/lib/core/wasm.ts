@@ -136,7 +136,7 @@ export class WasmCore implements Core {
     return info;
   }
 
-  async openProject(): Promise<{ info: PackageInfo; project: Project }> {
+  async openProject(): Promise<{ info: PackageInfo; project: Project; modified_ms: number }> {
     throw new Error('opening a project folder needs the desktop app; open the package, then load its project.json');
   }
 
@@ -243,6 +243,11 @@ export class WasmCore implements Core {
   async segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]> {
     await this.ready();
     return this.call('segment', { areaId, params, previous, outline });
+  }
+
+  async segmentMissing(areaId: string, params: SegmentParams, existing: Grain[], outline: OutlinePad): Promise<Grain[]> {
+    await this.ready();
+    return this.call('segmentMissing', { areaId, params, existing, outline });
   }
 
   async grainAt(areaId: string, x: number, y: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null> {

@@ -57,6 +57,7 @@ const ops: Record<string, Handler> = {
   areaSignal: ({ areaId }) => JSON.parse(s().area_signal(areaId)),
   segmentWarning: ({ areaId, params, grains }) => JSON.parse(s().segment_warning(areaId, JSON.stringify(params), JSON.stringify(grains))),
   segment: ({ areaId, params, previous, outline }) => JSON.parse(s().segment(areaId, JSON.stringify(params), JSON.stringify(previous), JSON.stringify(outline))),
+  segmentMissing: ({ areaId, params, existing, outline }) => JSON.parse(s().segment_missing(areaId, JSON.stringify(params), JSON.stringify(existing), JSON.stringify(outline))),
   grainAt: ({ areaId, x, y, params, outline }) => JSON.parse(s().grain_at(areaId, x, y, JSON.stringify(params), JSON.stringify(outline))),
   splitGrain: ({ areaId, grain, line }) => JSON.parse(s().split_grain(areaId, JSON.stringify(grain), new Float64Array(line))),
   mergeGrains: ({ areaId, grains }) => JSON.parse(s().merge_grains(areaId, JSON.stringify(grains))),

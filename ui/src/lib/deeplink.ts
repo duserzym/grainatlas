@@ -22,6 +22,8 @@ export interface RecentEntry {
   /** Project uuid (missing in entries written before deep links). */
   id?: string;
   name: string;
+  /** Saved project location; absent for packages opened alone. */
+  path?: string;
   when: string;
   areas: number;
   spots: number;

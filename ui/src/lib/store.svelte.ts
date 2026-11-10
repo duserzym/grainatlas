@@ -9,7 +9,8 @@
 
 import type { ShellCommand } from './shellcmd';
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
-import { PROJECT_PREFIX, readRecent, RECENT_KEY, type DeepLink } from './deeplink';
+import type { DeepLink } from './deeplink';
+import { persistProject, type StoredCopy } from './stored-copy';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
@@ -140,6 +141,7 @@ interface Snapshot {
   spots: Spot[];
   labels: Label[];
   grains: Record<string, Grain[]>;
+  tone: Record<string, ToneParams>;
 }
 
 /** Display-only scope from the host. Editing and exports keep the original spots. */
@@ -153,6 +155,9 @@ class AppState {
   project = $state<Project | null>(null);
   /** Files UPb Lab handed over while a project was open: the replace dialog asks first. */
   offer = $state.raw<{ name: string; files: PackageFile[]; projectFile?: File } | null>(null);
+  /** Protect unsaved changes until the viewer answers the restore dialog. */
+  storedCopy = $state.raw<StoredCopy | null>(null);
+  loadingProject = false;
   areaId = $state<string | null>(null);
   stitched = $state<Record<string, StitchSummary>>({});
   /** Bumps when pyramid pixels change (re-stitch, re-tone): the canvas drops its tile cache. */
@@ -203,7 +208,15 @@ class AppState {
   diameter = $state(25);
   busy = $state<{ label: string; progress: Progress | null } | null>(null);
   error = $state<string | null>(null);
-  notice = $state<string | null>(null);
+  private noticeText = $state<string | null>(null);
+  noticeAction = $state<{ label: string; run: () => void } | null>(null);
+  get notice(): string | null { return this.noticeText; }
+  set notice(value: string | null) {
+    this.noticeAction = null;
+    this.noticeText = value;
+  }
+  /** Viewer preference per project tab, never serialized in the project. */
+  showNeighbourGrains = $state(true);
   settings = $state<Settings>(loadSettings());
   get layout(): LayoutPrefs {
     return shared.layout;
@@ -394,7 +407,7 @@ class AppState {
 
   // ---- undo / redo over spots, labels and grains ----------------------------
   private snap(): Snapshot {
-    return { spots: $state.snapshot(this.spots) as Spot[], labels: $state.snapshot(this.labels) as Label[], grains: $state.snapshot(this.grains) as Record<string, Grain[]> };
+    return { spots: $state.snapshot(this.spots) as Spot[], labels: $state.snapshot(this.labels) as Label[], grains: $state.snapshot(this.grains) as Record<string, Grain[]>, tone: $state.snapshot(this.tone) as Record<string, ToneParams> };
   }
   /** Call before every edit. */
   checkpoint() {
@@ -409,6 +422,7 @@ class AppState {
     this.spots = s.spots;
     this.labels = s.labels;
     this.grains = s.grains;
+    this.tone = s.tone;
     this.selection = this.selection.filter((id) => this.spots.some((x) => x.id === id) || this.labels.some((x) => x.id === id));
   }
   undo() {
@@ -464,23 +478,17 @@ class AppState {
     return p;
   }
 
-  /** Browser: keep the latest project (without pixels) per package name for "recent projects". */
+  /** Keep unsaved changes per saved location, or per package for a package opened alone. */
   persist() {
-    // A bundle shown read-only from a server is not this browser's project.
-    if (this.readOnly) return;
+    if (this.readOnly || this.loadingProject || this.storedCopy) return;
     this.dirty = true;
+    const uuid = this.project?.uuid;
+    const path = this.projectPath?.path ?? null;
     queueMicrotask(() => {
+      // An open or save may have happened since this write was queued.
+      if (this.readOnly || this.loadingProject || this.storedCopy || !this.dirty || this.project?.uuid !== uuid || (this.projectPath?.path ?? null) !== path) return;
       const p = this.fullProject();
-      if (!p) return;
-      try {
-        localStorage.setItem(PROJECT_PREFIX + p.package.name, JSON.stringify(p));
-        // The id lets a deep link (?project=<uuid>) find the package name.
-        const recent = readRecent().filter((r) => r.name !== p.package.name);
-        recent.unshift({ id: p.uuid, name: p.package.name, when: new Date().toISOString(), areas: p.areas.length, spots: this.spots.length });
-        localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, 12)));
-      } catch {
-        /* quota or private mode */
-      }
+      if (p) persistProject(p, path);
     });
   }
 

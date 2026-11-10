@@ -37,6 +37,11 @@ waiting for its name and an example file).
    `docs/print_sheets.md`). The Grains tab says when an area has never been
    segmented and finds grains in every area without grains in one click;
    `grainatlas segment <project> --missing` does the same from the command line.
+   Find missed grains adds uncovered detections while keeping existing outlines,
+   numbers and spot links. New outlines are dashed until accepted; one undo
+   restores the whole action. The CLI equivalent is
+   `grainatlas segment <project> --add-missing [--area ID]... [--signal auto|cl|bse] [--dry-run]`.
+   It requires an existing grain list and cannot be combined with `--missing`.
 4. Places laser spots, lines and rasters on an infinite canvas with the mouse
    or trackpad alone (click to place, drag to move, drag the ring to resize,
    double-click to rename), named from a pattern such as
@@ -60,6 +65,10 @@ make ui-build     # static page in ui/dist (serve it from any static server)
 make ui-dev       # dev server on http://localhost:5174
 make desktop-dev  # desktop app (Tauri 2) on this machine
 ```
+
+Development desktop builds use the separate `dev` browser storage profile by default.
+Test bundles must be launched with `GRAINATLAS_PROFILE=test` or `--profile test`; named profiles keep localStorage separate and show their name in the window title (on macOS, separate stores require macOS 14 or later).
+Release launches without a profile keep the normal app's existing storage.
 
 CI: until the first release, GitHub Actions runs only on `v*` tags and by hand,
 not on push or pull requests. Run it with `gh workflow run ci` (tests),

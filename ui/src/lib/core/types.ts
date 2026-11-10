@@ -177,6 +177,7 @@ export interface Grain {
   kept?: boolean;
   /** The outline was drawn or painted by hand; Find again keeps it as it is. */
   drawn?: boolean;
+  added?: boolean;
 }
 
 /** What a drawn outline or brush stroke does: a new grain, or grow or cut the grain. */
@@ -359,6 +360,7 @@ export interface GrainOwner {
   duplicate_of?: string;
   cut: boolean;
   interior_um: number;
+  outside_drawn?: boolean;
   stage_nm?: [number, number];
 }
 
