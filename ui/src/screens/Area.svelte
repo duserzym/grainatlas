@@ -119,7 +119,7 @@
         {#each app.pkg.areas as a (a.id)}
           <li>
             <button class="arearow" aria-pressed={a.id === app.areaId} onclick={() => { app.areaId = a.id; tileSel = null; }} data-testid="area-{a.id}">
-              <span class="nm">{a.name}</span>
+              <span class="nm">{a.name}{#if app.grains[a.id] === undefined} <span class="faint" title="no grains yet" aria-label="no grains yet">○</span>{/if}</span>
               <span class="faint mono">{a.id}</span>
               <span class="faint">{a.grid ? `${a.grid[0]}×${a.grid[1]}` : ''} · {a.tiles.length} tiles</span>
               {#if app.stitched[a.id]}<span class="pill ok">stitched</span>{/if}

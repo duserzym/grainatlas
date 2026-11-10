@@ -15,6 +15,9 @@
 <div class="backdrop" role="presentation">
   <div class="glass panel dialog" role="alertdialog" tabindex="-1" onkeydown={key} aria-modal="true" aria-label="Project warnings" data-testid="check-dialog">
     <p>{app.checkPrompt?.summary}</p>
+    {#if app.findings.some((f) => f.code === 'never_segmented')}
+      <p class="faint small">Review, then open Grains and use Find grains in all areas.</p>
+    {/if}
     <div class="row">
       <button bind:this={review} onclick={() => app.checkPrompt?.answer(false)}>Review</button>
       <button bind:this={continueButton} class="primary" onclick={() => app.checkPrompt?.answer(true)} data-testid="checks-continue">Continue</button>

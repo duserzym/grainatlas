@@ -1,6 +1,7 @@
 // Actions shared by the screens: open, stitch, tone, project save/load.
 
 import { beforeCheckedAction } from './checks';
+import { findGrainsInAreas } from './grain-finding';
 
 import type { PackageFile } from './core/core';
 import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
@@ -374,7 +375,7 @@ function fillParams(app: AppState) {
     const base = a.params;
     const p = deepFill(base, app.params[a.id] ?? base);
     const tone = deepFill(base.tone, app.tone[a.id] ?? p.tone);
-    app.params[a.id] = { ...p, tone };
+    app.params[a.id] = { ...p, segment: { ...p.segment, signal: p.segment.signal ?? null }, tone };
     app.tone[a.id] = tone;
   }
 }
@@ -654,15 +655,7 @@ export async function exportPng(areaId: string) {
   if (png) download(png, `${areaId}_mosaic.png`, 'image/png');
 }
 
-/** Finds grains in every stitched area (keeps ids and numbers of grains found before). */
+/** Find missing areas first, or rerun all areas when every area has a saved result. */
 export async function findAllGrains(app: AppState = current()) {
-  const core = await app.core;
-  for (const id of Object.keys(app.stitched)) {
-    const params = JSON.parse(JSON.stringify(app.params[id].segment));
-    const prev = JSON.parse(JSON.stringify(app.grains[id] ?? []));
-    const r = await app.run(`Finding grains in ${id}`, () => core.segment(id, params, prev, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth }));
-    if (!r) return;
-    app.grains = { ...app.grains, [id]: r };
-  }
-  app.persist();
+  await findGrainsInAreas(app);
 }

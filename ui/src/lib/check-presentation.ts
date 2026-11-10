@@ -1,6 +1,7 @@
 import type { Finding } from './core/types.ts';
 
 export const CHECK_TITLES: Record<string, string> = {
+  never_segmented: 'Areas without grain finding',
   off_grain: 'Spots not on a grain',
   grain_mismatch: 'Spot on a different grain than recorded',
   ring_outside: 'Ring extends past the grain',
@@ -32,6 +33,7 @@ export function findingsSummary(findings: Finding[]): string {
     const areaPhrase = (text: string) => `${areas} ${areas === 1 ? 'area' : 'areas'} ${text}`;
     const spotPhrase = (one: string, many = one) => `${spots} ${spots === 1 ? 'spot' : 'spots'} ${spots === 1 ? one : many}`;
     switch (code) {
+      case 'never_segmented': return rows.map((f) => f.message).join('; ');
       case 'pattern_mismatch': return areaPhrase('with names off the pattern');
       case 'off_grain': return spotPhrase('off a grain');
       case 'grain_mismatch': return spotPhrase('on a different grain than recorded');

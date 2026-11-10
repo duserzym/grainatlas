@@ -39,6 +39,15 @@ export function grainAt(gs: Grain[], x: number, y: number, artifacts = false): G
   return null;
 }
 
+/** Spots follow the grain under them; artifacts never link, and names stay unchanged. */
+export function relinkSpots(spots: Spot[], areaId: string, grains: Grain[]): Spot[] {
+  return spots.map((s) => {
+    if (s.area_id !== areaId) return s;
+    const g = grainAt(grains, s.x_um, s.y_um);
+    return { ...s, grain_id: g?.id ?? null, grain_number: g?.number ?? null };
+  });
+}
+
 export interface SnapTarget { x: number; y: number; what: string }
 
 /** Snap targets: grain centroids, long-axis ends (kept inside by the spot radius), previous spot. */

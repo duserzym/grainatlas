@@ -11,7 +11,7 @@
   import type { Core } from '../lib/core/core';
   import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
-  import { formatName, grainAt, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
+  import { formatName, grainAt, relinkSpots, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
   import { mountSpotDocuments, postSpots, spotLink } from '../lib/laicpmsdb';
@@ -25,6 +25,8 @@
   import { CHECK_TITLES } from '../lib/check-presentation';
   import { reviewSpots } from '../lib/store.svelte';
   import { acquisitionPage } from '../lib/laicpmsdb';
+  import { findAllGrains } from '../lib/actions';
+  import { autoSignalLabel, grainStatus } from '../lib/grain-status';
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
@@ -155,6 +157,53 @@
     : grains);
   const labels = $derived(app.labels.filter((l) => l.area_id === areaId));
   const segParams = $derived(areaId ? app.params[areaId]?.segment : null);
+  const missingGrainAreas = $derived((app.project?.areas ?? []).filter((a) => app.grains[a.id] === undefined).length);
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  // Re-running areas that already have grains replaces their outlines (hand edits that are not
+  // drawn, kept or marked are lost and spots re-link), so that mode asks for a second click.
+  let confirmAll = $state(false);
+  const allGrainsLabel = $derived(missingGrainAreas
+    ? `Find grains in ${plural(missingGrainAreas, 'area', 'areas')} without grains`
+    : confirmAll ? 'Replace grains in all areas' : 'Find again in all areas');
+  function findAll() {
+    if (!missingGrainAreas && !confirmAll) {
+      confirmAll = true;
+      setTimeout(() => (confirmAll = false), 6000);
+      return;
+    }
+    confirmAll = false;
+    void findAllGrains(current());
+  }
+  let metadataSignal = $state<{ id: string; signal: 'cl' | 'bse' } | null>(null);
+  const resolvedSignal = $derived(metadataSignal?.id === areaId ? metadataSignal.signal : 'cl');
+  const effectiveSignal = $derived(segParams?.signal ?? resolvedSignal);
+  const autoSignal = $derived(autoSignalLabel(resolvedSignal, area?.area_meta ?? {}));
+  $effect(() => {
+    const id = areaId, c = core;
+    // Re-read metadata after a project is loaded or its area record is refreshed.
+    area?.area_meta;
+    let active = true;
+    if (id && c && !noPixels) void c.areaSignal(id).then((signal) => {
+      if (active) metadataSignal = { id, signal };
+    }).catch(() => { if (active) metadataSignal = null; });
+    return () => { active = false; };
+  });
+  let segmentWarning = $state<string | null>(null);
+  const segmentationStatus = $derived(grainStatus(areaId ? app.grains[areaId] : undefined, segmentWarning));
+  $effect(() => {
+    const id = areaId, c = core;
+    const gs = id ? app.grains[id] : undefined;
+    const params = segParams ? $state.snapshot(segParams) as SegmentParams : null;
+    const status = grainStatus(gs);
+    let active = true;
+    segmentWarning = null;
+    if (tab === 'grains' && !app.busy && !noPixels && id && c && params && gs && status.warning) {
+      void c.segmentWarning(id, params, $state.snapshot(gs) as Grain[]).then((warning) => {
+        if (active) segmentWarning = warning;
+      }).catch(() => { /* The pure status still gives a useful hint if the core is unavailable. */ });
+    }
+    return () => { active = false; };
+  });
   /** Owner of each detection here: a grain also seen in an overlapping area belongs to the area it lies deepest in. */
   const owners = $derived.by(() => {
     const m = new Map<string, GrainOwner>();
@@ -277,14 +326,14 @@
     if (!r) return;
     app.checkpoint();
     app.grains = { ...app.grains, [id]: r };
-    relinkSpots(id);
+    app.spots = relinkSpots(app.spots, id, r);
   }
   /** Replaces the area's grains; flagged artifacts stay unless `all` is the whole list. */
   function setGrains(gs: Grain[], all = false) {
     if (!areaId) return;
     app.checkpoint();
     app.grains = { ...app.grains, [areaId]: all ? gs : [...gs, ...artifacts.filter((a) => !gs.some((g) => g.id === a.id))] };
-    relinkSpots(areaId);
+    app.spots = relinkSpots(app.spots, areaId, app.grains[areaId]);
   }
   /** Keeps a flagged detection as a grain (the next number); re-runs keep it too. */
   function keepAsGrain(id: string) {
@@ -295,15 +344,6 @@
   function markArtifact() {
     if (!selGrains.length) return;
     setGrains(detections.map((g) => (selGrains.includes(g.id) ? { ...g, artifact: 'manual' as ArtifactReason, kept: false, number: 0 } : g)), true);
-  }
-  /** Spots follow the grain under them (number changes, merges, splits). Names are kept. */
-  function relinkSpots(id: string) {
-    const gs = app.grains[id] ?? [];
-    app.spots = app.spots.map((s) => {
-      if (s.area_id !== id) return s;
-      const g = grainAt(gs, s.x_um, s.y_um);
-      return { ...s, grain_id: g?.id ?? null, grain_number: g?.number ?? null };
-    });
   }
   async function refine() {
     if (!core || !areaId) return;
@@ -1245,7 +1285,7 @@
 
     <div class="glass toolbar" data-ui>
       <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
-        {#each Object.keys(app.stitched) as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
+        {#each Object.keys(app.stitched) as id (id)}<option value={id} title={app.grains[id] === undefined ? 'no grains yet' : undefined}>{app.grains[id] === undefined ? '○ ' : ''}{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
       </select>
       <span class="sep"></span>
       {#each ro ? toolList.filter((t) => t.id === 'select' || t.id === 'measure') : toolList as t (t.id)}
@@ -1466,6 +1506,7 @@
             {#each group.rows as f}
               <div class="check-row">
                 <button class="finding" onclick={() => selectFinding(f)}>{f.message}</button>
+                {#if f.code === 'never_segmented'}<button onclick={() => (tab = 'grains')} title="Find grains in all areas from the Grains tab">Open Grains</button>{/if}
                 {#if f.code === 'near_miss'}<button onclick={() => applySuggestions([f])} disabled={ro}>Rename to label</button>{/if}
               </div>
             {/each}
@@ -1541,8 +1582,15 @@
           <p class="faint small-text">Then use the Spot tool with a pattern such as <code>{'{sample}_{n}'}</code> and set "Next n" to the run number before each click, so spot names equal the instrument labels.</p>
         {/if}
       {:else if segParams}
-        <details class="params">
+        <details class="params" onchange={() => app.persist()}>
           <summary>Segmentation</summary>
+          <label class="field">Signal
+            <select bind:value={segParams.signal} data-testid="signal">
+              <option value={null}>{autoSignal}</option>
+              <option value="cl">CL (cathodoluminescence)</option>
+              <option value="bse">BSE (backscattered electrons)</option>
+            </select>
+          </label>
           <label class="field">Grains are
             <select bind:value={segParams.polarity} data-testid="polarity"><option value="bright">brighter than the epoxy</option><option value="both">brighter or darker (CL: also CL-dark grains)</option><option value="dark">darker (transmitted light)</option></select>
           </label>
@@ -1550,7 +1598,8 @@
             <label class="field">Dark below the local epoxy level by (fraction) <input type="number" step="0.05" min="0.05" max="0.95" bind:value={segParams.dark_rel} /></label>
           {/if}
           <p class="faint small-text">Artifacts are flagged, not deleted: they show dimmed with their reason and can be kept as grains.</p>
-          <label class="check"><input type="checkbox" bind:checked={segParams.flag_bubbles} /> flag epoxy bubbles and their halos</label>
+          <label class="check"><input type="checkbox" bind:checked={segParams.flag_bubbles} disabled={effectiveSignal === 'bse'} /> flag epoxy bubbles and their halos</label>
+          {#if effectiveSignal === 'bse'}<p class="faint small-text">not used on BSE images</p>{/if}
           <label class="check"><input type="checkbox" bind:checked={segParams.flag_slivers} /> flag tile-seam slivers (and cut seam lines)</label>
           <label class="check"><input type="checkbox" bind:checked={segParams.flag_blocks} /> flag exposure-step tile blocks</label>
           <label class="check"><input type="checkbox" bind:checked={segParams.flag_specks} /> flag specks</label>
@@ -1566,8 +1615,12 @@
           <label class="check"><input type="checkbox" bind:checked={segParams.split} /> split touching grains</label>
           <label class="check"><input type="checkbox" bind:checked={segParams.grabcut} /> GrabCut refinement (slower)</label>
         </details>
-        <div class="row">
-          <button class="primary" onclick={findGrains} disabled={noPixels} title={noPixels ? 'Needs the stitched mosaic: open the raw package' : ''} data-testid="find-grains">{grains.length ? 'Find again' : 'Find grains'}</button>
+        {#if segmentationStatus.message}
+          <p class="faint small-text" style:color={segmentationStatus.warning ? 'var(--warning)' : undefined} data-testid="grain-status" role="status">{segmentationStatus.message}</p>
+        {/if}
+        <div class="row" data-testid="grain-actions">
+          <button class="primary" onclick={findGrains} disabled={noPixels || !!app.busy} title={noPixels ? 'Needs the stitched mosaic: open the raw package' : ''} data-testid="find-grains">{app.grains[areaId] !== undefined ? 'Find again' : 'Find grains'}</button>
+          <button class:danger={confirmAll} onclick={findAll} disabled={noPixels || !!app.busy} title={missingGrainAreas ? 'Areas that already have grains are left as they are' : 'Finds grains again in every area; hand edits to outlines are replaced'} data-testid="find-all-grains">{allGrainsLabel}</button>
           <button onclick={exportGrains} disabled={!grains.length}>Grain CSV</button>
         </div>
         <div class="row">

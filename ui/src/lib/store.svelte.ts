@@ -453,6 +453,11 @@ class AppState {
   fullProject(): Project | null {
     if (!this.project) return null;
     const p = $state.snapshot(this.project) as Project;
+    // Segmentation controls are UI-held until the next run; save edits immediately too.
+    for (const a of p.areas) {
+      const segment = this.params[a.id]?.segment;
+      if (segment) a.params.segment = { ...$state.snapshot(segment), signal: segment.signal ?? null };
+    }
     p.settings = $state.snapshot(this.settings) as Settings;
     const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
     p['grainatlas_ui'] = { grains: $state.snapshot(this.grains), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
