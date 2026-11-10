@@ -211,8 +211,13 @@ cargo run --release -p grainatlas-cli -- stitch <package-or-area-folder> --out <
 
 `--print tabloid` writes print sheets for hand spot registration: every grain of
 the package once (cross-area duplicates go to their owner area), at 1 mm = 8 µm,
-with the `print_sheet` registration sidecar; `--print-style grains` gives the
-older per-area grain layout. See [docs/print_sheets.md](docs/print_sheets.md).
+with the `print_sheet` registration sidecar. Sheets follow the layout rule
+"context first": grains are printed in continuous pieces of the mosaic with their
+neighbours, and where a piece must be cut a hatched strip repeats the other side.
+`--print-style grains` gives the older per-area layout of single grains cropped
+alone, only when asked for by name. `grainatlas sheets <name>.grainatlas --out <dir>`
+prints the sheets of a saved project again without stitching. See
+[docs/print_sheets.md](docs/print_sheets.md).
 
 The desktop app also takes `grainatlas <package-or-area-folder> [--stitch] [--segment]`
 or `grainatlas <images…> --um-per-px <µm> | --field-um <µm> [--stitch]`, and
