@@ -187,6 +187,7 @@
           <span>Pairs <b class="num">{placement?.pairs.filter((p) => p.used).length}/{placement?.pairs.length}</b> measured</span>
           <span>Residual RMS <b class="num" data-testid="rms">{fmt(placement?.rms_residual ?? 0)}</b> px, max <b class="num">{fmt(placement?.max_residual ?? 0)}</b> px</span>
           <span>Overlap RMS <b class="num">{fmt(summary.photometric.overlap_rms_before * 255, 1)} → {fmt(summary.photometric.overlap_rms_after * 255, 1)}</b> grey levels</span>
+          {#if summary.photometric.fallback}<div class="faint small">{summary.photometric.fallback}</div>{/if}
           <span class="faint" title={summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}>{summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}</span>
         </div>
       {/if}

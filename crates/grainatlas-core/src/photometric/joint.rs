@@ -10,14 +10,16 @@
 //! the background) takes the background of CL-bright tiles for grain and skips them, so whole
 //! tiles and halves of mosaics jump. Here each tile's correction is
 //!
-//! `g·v + o + Σ_k s_k·[inside the overlap with tile k] + P(x, y)`
+//! `g·v + o + w(v)·(Σ_k s_k·[inside the overlap with tile k] + P(x, y))`
 //!
 //! with `P` a 2nd-order polynomial without constant term (charging gradients) and one step `s_k`
 //! per overlapping neighbour `k` (the part of a tile the beam had already scanned while `k` was
 //! captured is darker, with sharp edges at the neighbour's outline; corners scanned twice add two
 //! steps). Background is found by level and flatness on both sides of the tile's mode, so
 //! CL-dark and CL-bright grains alike are left out. Grain contrast is kept: the correction is a
-//! gain per tile and a smooth or piecewise-constant additive field.
+//! gain per tile and a smooth or piecewise-constant additive field. The field fades below the
+//! epoxy (full at mode - 1.5 bands), with a wider ramp for strong fields to keep the mapping
+//! monotonic and limit contrast changes, so it is not extrapolated off mount.
 
 use crate::image::Gray;
 use crate::mosaic::Placement;
@@ -34,6 +36,7 @@ pub struct JointSolution {
     /// Range (max - min) of each tile's additive field (surface and steps).
     pub range: Vec<f32>,
     fields: Vec<Field>,
+    pub(super) raw_stats: Vec<TileStats>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -65,27 +68,131 @@ pub struct Fixed<'a> {
 }
 
 /// Background statistics of one tile.
-struct TileStats {
+#[derive(Clone, Debug)]
+pub(super) struct TileStats {
     /// Background level (mode) and pixel noise.
-    mode: f32,
-    band: f32,
+    pub(super) mode: f32,
+    pub(super) band: f32,
+}
+
+impl TileStats {
+    /// Keep the full additive field on epoxy and brighter grains, and fade it to zero below
+    /// the epoxy. Gain and offset still apply everywhere. Near-black CL epoxy has a full-field
+    /// threshold at or below zero, so all nonnegative pixels keep the original correction.
+    fn field_weight(&self, v: f32, field: f32) -> f32 {
+        let full = self.mode - 1.5 * self.band;
+        // For a fixed spatial field F, d(v + w(v)*F)/dv is 1 outside the ramp and
+        // 1 + F/ramp inside it: widening downwards keeps that slope in [0.5, 1.5].
+        let ramp = (1.5 * self.band).max(2.0 * field.abs());
+        let zero = full - ramp;
+        if v >= full { 1.0 } else if v <= zero { 0.0 } else { (v - zero) / (full - zero) }
+    }
 }
 
 fn valid(v: f32) -> bool {
     (0.002..0.998).contains(&v)
 }
 
-fn tile_stats(t: &Gray) -> TileStats {
-    // Mode of a smoothed 256-bin histogram (the epoxy is the largest population of a CL tile).
+/// Smoothed 256-bin histogram of a tile's valid pixels.
+fn smoothed_hist(t: &Gray) -> Vec<f64> {
     let mut hist = [0f64; 256];
     for &v in t.px.iter().step_by(3) {
         if valid(v) {
             hist[(v * 255.0) as usize] += 1.0;
         }
     }
-    let sm: Vec<f64> = (0..256usize).map(|i| (i.saturating_sub(3)..(i + 4).min(256)).map(|j| hist[j]).sum()).collect();
-    let mi = (0..256).max_by(|&a, &b| sm[a].total_cmp(&sm[b])).unwrap_or(128);
-    let mode = (mi as f32 + 0.5) / 255.0;
+    (0..256usize)
+        .map(|i| {
+            (i.saturating_sub(3)..(i + 4).min(256))
+                .map(|j| hist[j])
+                .sum()
+        })
+        .collect()
+}
+
+/// Bins of the main peaks of a smoothed histogram: local maxima with at least `MIN_PEAK` of the
+/// highest one, highest first. Plateaus count once, at their centre; a smaller peak must be
+/// separated from every retained higher peak by a drop of at least 20 % of its own height.
+fn peaks(sm: &[f64]) -> Vec<usize> {
+    const MIN_PEAK: f64 = 0.15;
+    const MIN_DROP: f64 = 0.20;
+    let top = sm.iter().copied().fold(0.0, f64::max);
+    let mut candidates = Vec::new();
+    let mut i = 0;
+    while i < sm.len() {
+        let mut end = i + 1;
+        while end < sm.len() && sm[end] == sm[i] {
+            end += 1;
+        }
+        if sm[i] > 0.0 && sm[i] >= MIN_PEAK * top
+            && (i == 0 || sm[i] > sm[i - 1])
+            && (end == sm.len() || sm[i] > sm[end])
+        {
+            candidates.push((i + end - 1) / 2);
+        }
+        i = end;
+    }
+    candidates.sort_by(|&a, &b| sm[b].total_cmp(&sm[a]).then(a.cmp(&b)));
+    let mut out: Vec<usize> = Vec::new();
+    for p in candidates {
+        if out.iter().all(|&q| {
+            let valley = sm[p.min(q)..=p.max(q)].iter().copied().fold(f64::INFINITY, f64::min);
+            valley <= (1.0 - MIN_DROP) * sm[p]
+        }) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn bin_value(i: usize) -> f32 {
+    (i as f32 + 0.5) / 255.0
+}
+
+/// One tile's statistics with the background at its largest histogram peak (a single image,
+/// e.g. a blended mosaic, where the epoxy is the largest population).
+fn tile_stats(t: &Gray) -> TileStats {
+    let sm = smoothed_hist(t);
+    let mi = (0..256)
+        .filter(|&i| sm[i] > 0.0)
+        .max_by(|&a, &b| sm[a].total_cmp(&sm[b]))
+        .unwrap_or(128);
+    tile_stats_at(t, bin_value(mi))
+}
+
+/// Statistics of every tile of a mosaic, with each tile's background at the peak of its
+/// histogram near the background its overlap neighbours agree on. Each neighbour votes with
+/// its own largest peak; even counts use the mean of the two middle votes. Only switch a
+/// distant main peak (> 0.06) to a significant peak within 0.04 of that local consensus, so
+/// noise and smooth background drift do not change the population. Isolated tiles keep their
+/// main peak. Votes always use the original peaks, independent of tile traversal order.
+/// A tile mostly off the mount (BSE: dark beyond the mount edge) or mostly grain (CL-bright
+/// grains) has its largest peak elsewhere; taking that for background would pull it to the
+/// level of the others and print the whole tile as a bright or dark panel.
+fn tiles_stats(tiles: &[Gray], neighbours: &[Vec<usize>]) -> Vec<TileStats> {
+    let hists: Vec<Vec<f64>> = crate::util::par_map(tiles.len(), |i| smoothed_hist(&tiles[i]));
+    let pks: Vec<Vec<usize>> = hists.iter().map(|h| peaks(h)).collect();
+    crate::util::par_map(tiles.len(), |i| {
+        let mut mi = pks[i].first().copied().unwrap_or(128);
+        let mut votes: Vec<usize> = neighbours[i].iter().filter_map(|&j| pks[j].first().copied()).collect();
+        if !votes.is_empty() {
+            votes.sort_unstable();
+            let k = votes.len() / 2;
+            let consensus = (bin_value(votes[(votes.len() - 1) / 2]) + bin_value(votes[k])) * 0.5;
+            if (bin_value(mi) - consensus).abs() > 0.06
+                && let Some(&p) = pks[i].iter().min_by(|&&a, &&b| {
+                    (bin_value(a) - consensus).abs().total_cmp(&(bin_value(b) - consensus).abs())
+                })
+                && (bin_value(p) - consensus).abs() <= 0.04
+            {
+                mi = p;
+            }
+        }
+        tile_stats_at(&tiles[i], bin_value(mi))
+    })
+}
+
+fn tile_stats_at(t: &Gray, mode: f32) -> TileStats {
     // Pixel noise from neighbour differences (independent of gradients and steps).
     let mut d: Vec<f32> = Vec::with_capacity(t.px.len() / 9);
     for y in (0..t.h).step_by(3) {
@@ -198,7 +305,6 @@ fn frac(block: [i64; 4], r: [i64; 4]) -> f64 {
 pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fixed, overrides: &[(usize, Option<f32>, Option<f32>)]) -> (Vec<Gray>, JointSolution, Vec<f32>, Vec<f32>) {
     let n = tiles.len();
     let block = (bp.cell / 2).max(4) as i64;
-    let stats: Vec<TileStats> = crate::util::par_map(n, |i| tile_stats(&tiles[i]));
 
     // Neighbours: every pair of placed tiles that overlap by at least a block (and margins) each way.
     let rect = |i: usize| {
@@ -206,16 +312,22 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
         [t.x, t.y, t.x + t.w as i64, t.y + t.h as i64]
     };
     let mut nb: Vec<Vec<(usize, [i64; 4])>> = vec![Vec::new(); n];
+    let mut neighbours = vec![Vec::new(); n];
     for a in 0..n {
         for b in a + 1..n {
             let (ra, rb) = (rect(a), rect(b));
             let r = [ra[0].max(rb[0]), ra[1].max(rb[1]), ra[2].min(rb[2]), ra[3].min(rb[3])];
+            if r[2] > r[0] && r[3] > r[1] {
+                neighbours[a].push(b);
+                neighbours[b].push(a);
+            }
             if r[2] - r[0] >= block + 8 && r[3] - r[1] >= block + 8 {
                 nb[a].push((b, [r[0] - ra[0], r[1] - ra[1], r[2] - ra[0], r[3] - ra[1]]));
                 nb[b].push((a, [r[0] - rb[0], r[1] - rb[1], r[2] - rb[0], r[3] - rb[1]]));
             }
         }
     }
+    let stats: Vec<TileStats> = tiles_stats(tiles, &neighbours);
     // Step rectangles: the overlaps, with their inner edges moved onto the step lines found in
     // the tile's background, and the step lines that no overlap edge explains.
     let lines: Vec<Cuts> = crate::util::par_map(n, |i| if fixed.skip[i] { (Vec::new(), Vec::new()) } else { step_lines(&tiles[i], &stats[i]) });
@@ -264,7 +376,12 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
         })
         .collect();
     // Stage 2: gains, offsets, surfaces and overlap steps of all tiles together.
-    let mut sol = solve(pl, &leveled, block, fixed, nb, steps, &cuts);
+    let leveled_stats = tiles_stats(&leveled, &neighbours);
+    let mut sol = solve(pl, &leveled, block, fixed, nb, steps, &cuts, &leveled_stats, &stats);
+    // Both application stages use the raw mode/band. Stage-two fitting still uses the
+    // leveled background statistics, but its overlap mask and application must not shift
+    // the fade thresholds after stage one.
+    sol.raw_stats = stats;
     for (r, r1) in sol.range.iter_mut().zip(&range1) {
         *r += r1;
     }
@@ -283,9 +400,9 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
 
 /// The joint solve over all tiles (stage 2 of `correct`); `steps` are each tile's overlap
 /// rectangles, snapped to its step lines.
-fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<(usize, [i64; 4])>>, steps: Vec<Vec<[i64; 4]>>, cuts: &[Cuts]) -> JointSolution {
+#[allow(clippy::too_many_arguments)]
+fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<(usize, [i64; 4])>>, steps: Vec<Vec<[i64; 4]>>, cuts: &[Cuts], stats: &[TileStats], fade_stats: &[TileStats]) -> JointSolution {
     let n = tiles.len();
-    let stats: Vec<TileStats> = crate::util::par_map(n, |i| tile_stats(&tiles[i]));
     let gain_free = fixed.gain.is_none();
     let fixed_g = |i: usize| fixed.gain.map_or(1.0, |g| g[i] as f64);
     let mut base = Vec::with_capacity(n);
@@ -314,7 +431,8 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
         }
     };
 
-    // Overlap rows: block means over pixels valid in both tiles agree.
+    // Overlap rows: block means over pixels valid in both tiles agree. Leave out pixels whose
+    // field is faded: these rows model the full field, not a value-dependent fraction of it.
     let mut rows: Vec<Row> = Vec::new();
     for a in 0..n {
         for &(b, ra) in &lay.nb[a] {
@@ -332,7 +450,7 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
                         for x in bx..bx + block {
                             let va = tiles[a].px[y as usize * ta.w + x as usize];
                             let vb = tiles[b].px[(y + dy) as usize * tb.w + (x + dx) as usize];
-                            if valid(va) && valid(vb) {
+                            if valid(va) && valid(vb) && fade_stats[a].field_weight(va, 0.0) == 1.0 && fade_stats[b].field_weight(vb, 0.0) == 1.0 {
                                 sa += va as f64;
                                 sb += vb as f64;
                                 k += 1;
@@ -641,7 +759,8 @@ fn flatten_tile(t: &Gray, st: &TileStats, cuts: &Cuts, block: i64) -> Option<(Gr
             let fx = (x as f64 + 0.5) / t.w as f64 - 0.5;
             let mut v: f64 = colm[x].iter().zip(&line).map(|(a, b)| a * b).sum();
             v += poly_terms(fx, fy).iter().zip(&sol[nc..]).map(|(a, b)| a * b).sum::<f64>();
-            *o = t.px[y * t.w + x] + v as f32;
+            let raw = t.px[y * t.w + x];
+            *o = raw + st.field_weight(raw, v as f32) * v as f32;
         }
     });
     for gy in 0..=8 {
@@ -825,7 +944,10 @@ impl JointSolution {
                         v += s * m;
                     }
                 }
-                *o_px = t.px[y * w + x] * g + o + v as f32;
+                let raw = t.px[y * w + x];
+                // Scale ramp width by the positive gain too: the transition slope then
+                // stays between 0.5*g and 1.5*g. Composition with stage one is monotonic.
+                *o_px = raw * g + o + self.raw_stats[i].field_weight(raw, v as f32 / g.abs().max(f32::MIN_POSITIVE)) * v as f32;
             }
         });
         out
@@ -923,4 +1045,129 @@ fn solve_rows(rows: &[Row], keep: &[bool], lay: &Layout, fixed: &Fixed, n_tiles:
         y[i] = s / a[i * width];
     }
     Some(y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn additive_field_fade_preserves_affine_and_near_black_cl() {
+        let bse = TileStats { mode: 0.41, band: 0.04 };
+        assert_eq!(bse.field_weight(0.27, 0.0), 0.0);
+        assert_eq!(bse.field_weight(bse.mode - 3.0 * bse.band, 0.0), 0.0);
+        assert_eq!(bse.field_weight(bse.mode - 1.5 * bse.band, 0.0), 1.0);
+        assert!((bse.field_weight(bse.mode - 2.25 * bse.band, 0.0) - 0.5).abs() < 1e-6);
+        for v in [0.41, 0.65, 1.0] {
+            assert_eq!(bse.field_weight(v, 0.0), 1.0);
+        }
+        let cl = TileStats { mode: 0.04, band: 0.04 };
+        assert!(cl.mode - 1.5 * cl.band <= 0.0);
+        for k in 0..=255 {
+            assert_eq!(cl.field_weight(k as f32 / 255.0, 0.0), 1.0);
+        }
+        let t = Gray { w: 3, h: 1, px: vec![0.27, 0.41, 0.8] };
+        let sol = JointSolution {
+            gain: vec![1.2], offset: vec![0.03], raw_stats: vec![bse],
+            fields: vec![Field { poly: [0.06, 0.0, 0.0, 0.0, 0.0], ..Default::default() }],
+            ..Default::default()
+        };
+        let out = sol.apply(0, &t);
+        assert_eq!(out.px[0], t.px[0] * 1.2 + 0.03);
+        assert_eq!(out.px[1], t.px[1] * 1.2 + 0.03);
+        assert!((out.px[2] - (t.px[2] * 1.2 + 0.03 + 0.02)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn strong_fields_keep_raw_ramps_monotonic_and_gentle() {
+        let st = TileStats { mode: 0.41, band: 0.04 };
+        let t = Gray { w: 1001, h: 1, px: (0..=1000).map(|k| k as f32 / 1000.0).collect() };
+        for field in [-0.1, 0.1] {
+            // Stage one's pixel mapping, and stage two with both low and high gains.
+            let first: Vec<f32> = t.px.iter().map(|&v| v + st.field_weight(v, field) * field).collect();
+            let check = |px: &[f32], gain: f32| {
+                for (raw, corrected) in t.px.windows(2).zip(px.windows(2)) {
+                    let slope = (corrected[1] - corrected[0]) / (raw[1] - raw[0]);
+                    assert!((0.5 * gain - 0.001..=1.5 * gain + 0.001).contains(&slope), "field {field}, gain {gain}, raw {raw:?}, slope {slope}");
+                }
+            };
+            check(&first, 1.0);
+            for gain in [0.2, 1.0, 2.0] {
+                let sol = JointSolution {
+                    gain: vec![gain], offset: vec![0.03], raw_stats: vec![st.clone()],
+                    fields: vec![Field { steps: vec![([0, 0, t.w as i64, 1], field as f64)], ..Default::default() }],
+                    ..Default::default()
+                };
+                check(&sol.apply(0, &t).px, gain);
+                let composed = sol.apply(0, &Gray { w: t.w, h: 1, px: first.clone() });
+                assert!(composed.px.windows(2).all(|w| w[1] >= w[0]));
+            }
+        }
+    }
+
+    #[test]
+    fn both_stages_keep_the_raw_background_statistics_for_fading() {
+        let (w, h) = (128, 96);
+        let t = Gray { w, h, px: (0..w * h).map(|k| 0.38 + 0.05 * ((k % w) as f32 / w as f32).powi(2)).collect() };
+        let raw = tiles_stats(std::slice::from_ref(&t), &[Vec::new()]);
+        let (flat, _) = flatten_tile(&t, &raw[0], &(Vec::new(), Vec::new()), 8).unwrap();
+        let leveled = tiles_stats(&[flat], &[Vec::new()]);
+        assert_ne!(raw[0].mode, leveled[0].mode, "scene must change the stage-two histogram bin");
+        let pl = Placement {
+            tiles: vec![crate::mosaic::TilePlacement { index: 0, prior: [0.0; 2], pos: [0.0; 2], x: 0, y: 0, w, h, drift: [0.0; 2] }],
+            pairs: Vec::new(), width: w, height: h, rms_residual: 0.0, max_residual: 0.0,
+        };
+        let bp = BackgroundParams { cell: 32, ..Default::default() };
+        let (_, sol, _, _) = correct(&pl, &[t], &bp, &Fixed { gain: None, skip: &[false], regularisation: 0.01 }, &[]);
+        assert_eq!(sol.raw_stats[0].mode, raw[0].mode);
+        assert_eq!(sol.raw_stats[0].band, raw[0].band);
+    }
+
+    #[test]
+    fn all_black_statistics_use_the_same_default_peak() {
+        let t = Gray::new(32, 32);
+        let single = tile_stats(&t);
+        let multiple = tiles_stats(&[t], &[Vec::new()]);
+        assert_eq!(single.mode, bin_value(128));
+        assert_eq!(single.mode, multiple[0].mode);
+        assert_eq!(single.band, multiple[0].band);
+    }
+
+    #[test]
+    fn histogram_shoulders_and_plateaus_are_one_peak() {
+        // A shallow dip on the flank is a shoulder, not a second population.
+        assert_eq!(peaks(&[0., 3., 8., 10., 10., 9., 9.5, 8., 3., 0.]), vec![3]);
+        // A rising plateau is not a peak at either edge.
+        assert_eq!(peaks(&[0., 3., 3., 6., 10., 10., 6., 0.]), vec![4]);
+        assert_eq!(peaks(&[0., 10., 10., 2., 6., 6., 0.]), vec![1, 4]);
+        assert!(peaks(&[0.; 256]).is_empty());
+    }
+
+    fn populations(main: f32, secondary: f32) -> Gray {
+        let mut t = Gray::new(90, 30);
+        for (i, v) in t.px.iter_mut().enumerate() {
+            *v = if i % 90 < 60 { main } else { secondary };
+        }
+        t
+    }
+
+    #[test]
+    fn background_switch_requires_local_nearby_evidence() {
+        let tiles = vec![
+            populations(0.10, 0.25), populations(0.20, 0.20),
+            populations(0.10, 0.15), populations(0.14, 0.14),
+            populations(0.04, 0.30), populations(0.30, 0.30),
+        ];
+        let neighbours = vec![vec![1], vec![], vec![3], vec![], vec![5], vec![]];
+        let stats = tiles_stats(&tiles, &neighbours);
+        assert!((stats[0].mode - 0.10).abs() < 0.01, "distant alternative stays out");
+        assert!((stats[2].mode - 0.10).abs() < 0.01, "nearby main peak stays put");
+        assert!((stats[4].mode - 0.30).abs() < 0.01, "off-mount main peak switches");
+        assert!((stats[1].mode - 0.20).abs() < 0.01, "isolated main peak stays put");
+        // Remote bright tiles cannot vote; an even split between populations is ambiguous.
+        let neighbours = vec![vec![2, 3], vec![], vec![], vec![], vec![1, 5], vec![]];
+        let stats = tiles_stats(&tiles, &neighbours);
+        assert!((stats[0].mode - 0.10).abs() < 0.01);
+        assert!((stats[4].mode - 0.04).abs() < 0.01);
+    }
 }

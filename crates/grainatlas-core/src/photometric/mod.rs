@@ -74,6 +74,92 @@ pub struct PhotometricResult {
     /// RMS intensity difference over the overlaps before and after correction (0..1 units).
     pub overlap_rms_before: f32,
     pub overlap_rms_after: f32,
+    /// Why the joint background correction was replaced by gain and offset only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+    /// Spread of owned-region background medians before choosing the correction (0..1 units).
+    #[serde(default)]
+    pub level_spread_joint: f32,
+    #[serde(default)]
+    pub level_spread_affine: f32,
+}
+
+/// Compare the same raw-background population in both results. A tile owns the pixels nearest
+/// its centre among all tiles covering them (ties go to the lower index). Sample at most about
+/// 64 x 64 pixels per tile; this is a panel-level guard, not a second full-image analysis.
+/// Returns (global spread, largest overlapping-neighbour difference) for joint and affine.
+fn background_level_comparison(pl: &Placement, raw: &[Gray], joint: &[Gray], stats: &[joint::TileStats], gain: &[f32], offset: &[f32]) -> [(f32, f32); 2] {
+    let n = raw.len();
+    let mut neighbours = vec![Vec::new(); n];
+    for a in 0..n {
+        for b in a + 1..n {
+            let (ta, tb) = (&pl.tiles[a], &pl.tiles[b]);
+            if ta.x.max(tb.x) < (ta.x + ta.w as i64).min(tb.x + tb.w as i64)
+                && ta.y.max(tb.y) < (ta.y + ta.h as i64).min(tb.y + tb.h as i64)
+            {
+                neighbours[a].push(b);
+                neighbours[b].push(a);
+            }
+        }
+    }
+    let levels: Vec<Option<[f32; 2]>> = crate::util::par_map(n, |i| {
+        let (t, p, st) = (&raw[i], &pl.tiles[i], &stats[i]);
+        let stride = t.w.max(t.h).div_ceil(64).max(4);
+        let (mut jv, mut av, mut region) = (Vec::new(), Vec::new(), 0usize);
+        for y in (0..t.h).step_by(stride) {
+            for x in (0..t.w).step_by(stride) {
+                // Doubled pixel/centre coordinates keep ownership and ties exact, on wasm too.
+                let wx = 2 * (p.x as i128 + x as i128) + 1;
+                let wy = 2 * (p.y as i128 + y as i128) + 1;
+                let distance = |k: usize| {
+                    let q = &pl.tiles[k];
+                    let dx = wx - (2 * q.x as i128 + q.w as i128);
+                    let dy = wy - (2 * q.y as i128 + q.h as i128);
+                    dx * dx + dy * dy
+                };
+                let own = distance(i);
+                if neighbours[i].iter().any(|&k| {
+                    let q = &pl.tiles[k];
+                    let covered = wx >= 2 * q.x as i128 && wx < 2 * (q.x as i128 + q.w as i128)
+                        && wy >= 2 * q.y as i128 && wy < 2 * (q.y as i128 + q.h as i128);
+                    covered && (distance(k), k) < (own, i)
+                }) {
+                    continue;
+                }
+                region += 1;
+                let k = y * t.w + x;
+                if (t.px[k] - st.mode).abs() <= st.band {
+                    jv.push(joint[i].px[k]);
+                    av.push(t.px[k] * gain[i] + offset[i]);
+                }
+            }
+        }
+        if jv.is_empty() || jv.len() * 100 < region * 3 {
+            return None;
+        }
+        let k = jv.len() / 2;
+        jv.select_nth_unstable_by(k, f32::total_cmp);
+        av.select_nth_unstable_by(k, f32::total_cmp);
+        Some([jv[k], av[k]])
+    });
+    std::array::from_fn(|r| {
+        let (mut lo, mut hi, mut step) = (f32::INFINITY, f32::NEG_INFINITY, 0.0f32);
+        for (i, level) in levels.iter().enumerate() {
+            let Some(v) = level else { continue };
+            lo = lo.min(v[r]);
+            hi = hi.max(v[r]);
+            for &k in &neighbours[i] {
+                if let Some(w) = levels[k] {
+                    step = step.max((v[r] - w[r]).abs());
+                }
+            }
+        }
+        (if lo <= hi { hi - lo } else { 0.0 }, step)
+    })
+}
+
+fn joint_is_worse(joint: (f32, f32), affine: (f32, f32)) -> bool {
+    joint.1 > affine.1 + 0.5 / 255.0 && joint.0 >= affine.0
 }
 
 /// Overlap samples between placed tiles: (tile a, tile b, value a, value b).
@@ -283,8 +369,11 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
         let fixed = joint::Fixed { gain: fixed_gain, skip: &skip, regularisation: p.regularisation };
         let overrides: Vec<(usize, Option<f32>, Option<f32>)> = p.overrides.iter().filter(|ov| ov.index < n).map(|ov| (ov.index, ov.gain, ov.offset)).collect();
         let (out, sol, auto_gain, auto_offset) = joint::correct(pl, tiles, &p.background_params, &fixed, &overrides);
-        let after = overlap_samples(pl, &out, 3);
-        let res = PhotometricResult {
+        // Compare the background-disabled path with the same model and overrides, reusing
+        // fitted gains/offsets and raw statistics. Compute affine pixels only on the stride;
+        // materialise the full affine result only if the guard selects it.
+        let [(level_spread_joint, joint_step), (level_spread_affine, affine_step)] = background_level_comparison(pl, tiles, &out, &sol.raw_stats, &g, &o);
+        let mut res = PhotometricResult {
             auto_gain,
             auto_offset,
             gain: sol.gain.clone(),
@@ -292,8 +381,30 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
             background_median: sol.level,
             background_range: sol.range.clone(),
             overlap_rms_before: before,
-            overlap_rms_after: rms(&after, &vec![1.0; n], &vec![0.0; n]),
+            overlap_rms_after: 0.0,
+            fallback: None,
+            level_spread_joint,
+            level_spread_affine,
         };
+        // A single neighbour can worsen while the area becomes flatter overall. Reject
+        // joint only when its largest step worsens meaningfully and its spread does not improve.
+        let out = if joint_is_worse((level_spread_joint, joint_step), (level_spread_affine, affine_step)) {
+            res.fallback = Some(format!("background leveling left larger tile steps than none ({:.1} vs {:.1} grey); used gain and offset only", joint_step * 255.0, affine_step * 255.0));
+            let affine = crate::util::par_map(n, |i| Gray {
+                w: tiles[i].w, h: tiles[i].h, px: tiles[i].px.iter().map(|&v| v * g[i] + o[i]).collect(),
+            });
+            res.auto_gain = ag;
+            res.auto_offset = ao;
+            res.gain = g;
+            res.offset = o;
+            res.background_median = 0.0;
+            res.background_range.clear();
+            affine
+        } else {
+            out
+        };
+        let after = overlap_samples(pl, &out, 3);
+        res.overlap_rms_after = rms(&after, &vec![1.0; n], &vec![0.0; n]);
         return (out, res);
     }
     let mut out: Vec<Gray> = tiles
@@ -312,4 +423,86 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
     res.overlap_rms_before = before;
     res.overlap_rms_after = rms(&after_samples, &vec![1.0; n], &vec![0.0; n]);
     (out, res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mosaic::TilePlacement;
+
+    fn placement(rows: usize, cols: usize, w: usize, h: usize) -> Placement {
+        let mut tiles = Vec::new();
+        for r in 0..rows {
+            for c in 0..cols {
+                let (x, y) = ((c * w * 3 / 4) as i64, (r * h * 3 / 4) as i64);
+                let pos = [x as f64, y as f64];
+                tiles.push(TilePlacement { index: tiles.len(), prior: pos, pos, x, y, w, h, drift: [0.0; 2] });
+            }
+        }
+        Placement { tiles, pairs: Vec::new(), width: (cols - 1) * w * 3 / 4 + w, height: (rows - 1) * h * 3 / 4 + h, rms_residual: 0.0, max_residual: 0.0 }
+    }
+
+    #[test]
+    fn level_guard_uses_raw_background_in_owned_regions_and_geometric_neighbours() {
+        let pl = placement(1, 3, 64, 64);
+        let mut raw = vec![Gray { w: 64, h: 64, px: vec![0.41; 64 * 64] }; 3];
+        let mut out = raw.clone();
+        // The last tile has under 3 % raw epoxy in its own region, so its extreme output is
+        // excluded. The other two have grains in over half their region; exclude those using
+        // the raw mask even though their corrected values are inside the epoxy band.
+        for i in 0..3 {
+            for y in 0..64 {
+                for x in 0..64 {
+                    let k = y * 64 + x;
+                    if (i == 2 && y >= 1) || (i < 2 && y >= 24) {
+                        raw[i].px[k] = 0.8;
+                        out[i].px[k] = 0.41;
+                    } else {
+                        out[i].px[k] = [0.50, 0.52, 0.9][i];
+                    }
+                    // Unowned overlap pixels must not affect the medians.
+                    if (i == 0 && x >= 56) || (i == 1 && !(8..56).contains(&x)) {
+                        out[i].px[k] = 0.1;
+                    }
+                }
+            }
+        }
+        let stats = vec![joint::TileStats { mode: 0.41, band: 0.04 }; 3];
+        // One sampled background pixel is below 3 % of tile 2's owned region.
+        raw[2].px.fill(0.8);
+        raw[2].px[16] = 0.41;
+        let [j, a] = background_level_comparison(&pl, &raw, &out, &stats, &[1.0; 3], &[0.0; 3]);
+        assert!((j.0 - 0.02).abs() < 1e-6, "{j:?}");
+        assert!((j.1 - 0.02).abs() < 1e-6, "{j:?}");
+        assert_eq!(a, (0.0, 0.0));
+        // Tile 1's corrected epoxy is deliberately outside the raw band's bounds.
+        assert!(out[1].px[16] > stats[1].mode + stats[1].band);
+        // No registration pair is needed: ownership and adjacency come from tile rectangles.
+        assert!(pl.pairs.is_empty());
+    }
+
+    #[test]
+    fn level_guard_comparison_small_area_finishes_within_generous_bound() {
+        let pl = placement(2, 3, 128, 96);
+        let raw = vec![Gray { w: 128, h: 96, px: vec![0.41; 128 * 96] }; 6];
+        let out = raw.clone();
+        let stats = vec![joint::TileStats { mode: 0.41, band: 0.04 }; 6];
+        let start = std::time::Instant::now();
+        let metrics = background_level_comparison(&pl, &raw, &out, &stats, &[1.0; 6], &[0.0; 6]);
+        assert_eq!(metrics, [(0.0, 0.0); 2]);
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn level_guard_keeps_joint_when_area_spread_improves_despite_a_larger_step() {
+        let pl = placement(1, 4, 64, 64);
+        let raw: Vec<Gray> = [0.30, 0.34, 0.38, 0.42].iter().map(|&v| Gray { w: 64, h: 64, px: vec![v; 64 * 64] }).collect();
+        let out: Vec<Gray> = [0.32, 0.32, 0.39, 0.39].iter().map(|&v| Gray { w: 64, h: 64, px: vec![v; 64 * 64] }).collect();
+        let stats: Vec<_> = raw.iter().map(|t| joint::TileStats { mode: t.px[0], band: 0.04 }).collect();
+        let [j, a] = background_level_comparison(&pl, &raw, &out, &stats, &[1.0; 4], &[0.0; 4]);
+        assert!(j.1 > a.1 + 0.5 / 255.0 && j.0 < a.0, "{j:?} {a:?}");
+        assert!(!joint_is_worse(j, a));
+        assert!(joint_is_worse((a.0, j.1), a), "equal spread still falls back");
+        assert!(!joint_is_worse((a.0 + 0.1, a.1 + 0.4 / 255.0), a), "sub-threshold step keeps joint");
+    }
 }

@@ -145,6 +145,8 @@ export interface PhotometricResult {
   auto_gain: number[]; auto_offset: number[]; gain: number[]; offset: number[];
   background_median: number; background_range: number[];
   overlap_rms_before: number; overlap_rms_after: number;
+  fallback?: string;
+  level_spread_joint: number; level_spread_affine: number;
 }
 
 export interface StitchSummary {
