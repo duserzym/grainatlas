@@ -32,7 +32,11 @@ waiting for its name and an example file).
    grain.
 3. Finds and numbers grains (reading order, stable across re-runs), with
    GrabCut refinement and manual add, split, merge and renumber; scale bars
-   per grain; grain table CSV.
+   per grain; grain table CSV. The artifact rules follow the image signal
+   (CL or BSE, read from the TM4000 metadata, overridable in the Grains tab;
+   `docs/print_sheets.md`). The Grains tab says when an area has never been
+   segmented and finds grains in every area without grains in one click;
+   `grainatlas segment <project> --missing` does the same from the command line.
 4. Places laser spots, lines and rasters on an infinite canvas with the mouse
    or trackpad alone (click to place, drag to move, drag the ring to resize,
    double-click to rename), named from a pattern such as

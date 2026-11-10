@@ -188,6 +188,61 @@ The steps (`segment()`, then `second_pass`):
 
 `GRAINATLAS_DEBUG_SEG=1` prints every detection's measures, verdict and `r`.
 
+### Signal profiles: CL and BSE (2026-11-09)
+
+The rules above were tuned on zircon CL. On BSE (backscattered electrons:
+apatite, titanite and rutile mounts of the same run) grains are bright and
+fairly uniform on dark epoxy, with dark charging shadows at their edges and no
+bright bubble halos. There the bubble rules found 12 to 135 "bubbles" per area
+(mostly the shadows), cut notches into grain outlines through the halo zone, and
+the oversized-blob step split real large grains (a 775 µm chip, a 280 µm grain)
+into numbered fragments.
+
+`SegmentParams.signal` selects the profile: `null` (Auto, the default and what
+older projects load as) reads the area metadata, `"cl"` or `"bse"` overrides it.
+Auto uses `zag.ABCCHistory.SignalType1` (`BSE…` is BSE, `UVD` or `…CL…` is CL);
+without it, a tile `SignalName` starting with `BSE` counts as BSE. A tile
+`SignalName=SE` alone is ignored, because TM4000 CL tiles carry it
+(`docs/legacy_workflow.md`). Unknown signals get the CL rules, so CL results
+are unchanged (checked on Grenville_S/L_150X, Sweden_XS_150X and
+Grenville_M_100X: the same outlines before and after).
+
+One pipeline; with BSE these steps are gated:
+
+- No bubble detection, halo zone, fused-bubble detachment or `bubble` / `halo`
+  verdicts, whatever `flag_bubbles` says (the Grains tab disables it), and the
+  split tool does not flag a cut-off part as a bubble.
+- An oversized blob (over 3 r) is split and flagged `block` only when it
+  follows tile edges: 28 % or more of its outline lies in the overlap bands of
+  neighbouring tiles (placed tile footprints, tolerance max(6 µm, 2 work px)), or
+  it is weakly contrasted against the epoxy around it, or box-shaped. Measured:
+  exposure-step tiles 0.31 to 0.54, real large grains 0.24 to 0.25. The margin
+  is small: a large grain lying along a tile seam can still be split; merge it
+  back with Merge. Without tile footprints (loose images) BSE falls back to the
+  CL rule.
+- The `block` verdict measures a non-boxy BSE grain's contrast against the
+  epoxy outside it, not only against the running background, which a large
+  uniform grain can fill.
+- Polarity stays as set; Both (CL-dark grains) is only meaningful for CL.
+
+The CLI reports per area the grains, the artifacts by rule and the signal with
+its source, and warns when an area finds nothing or flags 80 % or more of its
+detections. `grainatlas segment <project> [--missing] [--area ID] [--signal
+auto|cl|bse]` segments a saved project as the app does (saved placement and
+parameters, previous grains and decisions kept, spots re-linked, every other
+part of `project.json` untouched). `grainatlas check` lists areas that have
+never been segmented. Print registrations record `project_uuid` and
+`project_path`, so a printed sheet can be traced to the project whose grains it
+shows: the Grenville_apatite_50X sheets of 2026-11-07 were printed from a
+temporary copy whose grains never reached the project.
+
+In the app, the Grains tab says "Grain finding has not been run on this area"
+for an area without a grain list (an empty list means it ran and found
+nothing, with the likely reason), marks such areas with a hollow dot in the
+area lists, and its all-areas button finds grains in the areas without grains
+only; when every area has grains it re-runs all of them after a second click,
+since a re-run replaces hand-edited outlines that are not drawn, kept or marked.
+
 Split tool: a part that a cut separates from a grain is flagged as a bubble when it is
 round and below 0.7 × the epoxy level around the grain. One cut through the neck
 therefore detaches a fused bubble; "Keep as grain" undoes the flag.
