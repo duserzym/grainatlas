@@ -87,6 +87,47 @@ Any change to a print layout is held to these properties. Isolated single-grain
 crops remain available only where the user asks for them by name (Layout →
 "Grains or areas" → Items → "single grains, cropped alone (no neighbours)").
 
+## Layout rule: print scale
+
+A grain on paper needs to be large enough to recognise by its shape and zoning,
+to find among its neighbours, and to take a hand-drawn spot circle and its
+number. It does not need to be larger. At 8 µm/mm the Boise zircon S and L
+sheets printed their median grains at 15 and 24 mm, and those sheets worked at
+the laser; the same scale printed the XL mount's (median 287 µm) at 36 mm on 13
+sheets, where 16 µm/mm prints them at 18 mm on 6.
+
+So the default scale (`um_per_mm: "auto"`, `--scale auto`, an empty Scale field
+in Layout) is chosen per mount from its printed grains
+(`layout::sheets::auto_scale`):
+
+1. **Target.** The coarsest round scale (R10 series: … 5, 6.3, 8, 10, 12.5, 16,
+   20, 25 … µm/mm) at which the median printed grain is at least
+   `target_grain_mm` across: 15 mm for CL (the zoning must be read to place a
+   spot; the median then prints at 15 to 19 mm), 10 mm when every printed area is
+   BSE (apatite, titanite, rutile: uniform grains; the BSE sheets chosen by hand
+   in November printed their medians at 7 to 12 mm). A number in
+   `target_grain_mm` overrides both.
+2. **Lower limits.** The scale is no coarser than any of: the 10th percentile
+   of the printed grains at 3 mm (room for a spot circle and its number on the
+   small grains); CL zones about 10 µm wide at 0.4 mm (25 µm/mm); the third
+   largest laser spot size at 1 mm across (so the spot key keeps three circles).
+   When one of these binds, the registration says which (`auto_scale.limit`).
+3. **Spot key.** At any scale, spot sizes whose circle is under 1 mm, or within
+   0.3 mm of a larger circle, are left off the key; the header names them and
+   the registration lists them (`spot_sizes_left_off_um`).
+
+The header gives the scale and how it was chosen ("1 mm = 16 µm (62×) · auto:
+median grain 287 µm prints 17.9 mm"); the registration records `um_per_mm`,
+`scale` ("auto" or "fixed") and `auto_scale` (median, 10th percentile, limit).
+An explicit scale (a number in the Scale field, `--scale 8`, or a saved
+`sheet_params.json` with a number) is used as given. The rule ranks below
+context first: a coarser scale puts more of the mosaic on a line, so 2-D
+clusters (the two rows of an area) more often print whole as one tall band;
+the context distance and the cut rules are unchanged, and paper is spent
+before a lower limit is given up. Tested in `crates/grainatlas-core/tests/sheets.rs`
+on synthetic size distributions of the 2026 mounts (zircon XS, S, L, XL and
+apatite).
+
 ## Cross-area grain ownership (`crate::ownership`)
 
 In a zigzag package neighbouring areas overlap (100 to 850 µm on that run), so
@@ -312,7 +353,8 @@ of 30 µm or more outside every hull departs from the background by 6 robust σ
 
 ## Sheets (`layout::sheets`)
 
-Tabloid landscape at a fixed scale (1 mm = 8 µm by default). Only grains are
+Tabloid landscape at one scale per mount, by default chosen from the grain
+sizes ([print scale](#layout-rule-print-scale)). Only grains are
 printed: artifacts and duplicates are left off, and the stats count both. A print
 check (`audit`) counts grains missing from an owner band or not whole in it,
 grains owned by more than one band, and whole visible grains absent from both
@@ -383,7 +425,7 @@ Command line:
 
 ```bash
 grainatlas stitch <package> --out <package>.grainatlas --auto --polarity both \
-  --print tabloid [--scale 8] [--strip-bg 22] [--no-denoise] [--no-sharpen] \
+  --print tabloid [--scale auto|8] [--strip-bg 22] [--no-denoise] [--no-sharpen] \
   [--title "Grenville · mount S · zircon CL"] [--lab "…"]
 ```
 
@@ -391,4 +433,4 @@ writes `exports/<package>_grain_sheets_tabloid.pdf`,
 `exports/<package>_print_registration.json` and `exports/ownership.json`.
 In the app: Layout → Print sheets.
 
-`grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale 8] [--params sheet_params.json] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.
+`grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale auto|8] [--params sheet_params.json] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.

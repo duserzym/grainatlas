@@ -1,5 +1,5 @@
 //! Print sheets for hand spot registration (first used on the Boise State SEM
-//! run of 2026-11-03): every owned grain of a mount, at one fixed print scale,
+//! run of 2026-11-03): every owned grain of a mount, at one print scale per mount (by default from its grain sizes),
 //! as bands cut straight out of the mosaic.
 //!
 //! Per sample (top of the mount first), the owned grains of each area are
@@ -37,8 +37,13 @@ pub struct SheetParams {
     pub paper: String,
     pub landscape: bool,
     pub margin_mm: f64,
-    /// Micrometres of sample per millimetre of paper (8 = 125x).
+    /// Micrometres of sample per millimetre of paper (8 = 125x). 0, written "auto" in JSON,
+    /// picks the scale per mount from its grain sizes ([`auto_scale`]).
+    #[serde(with = "scale_serde")]
     pub um_per_mm: f64,
+    /// Auto scale: the median printed grain prints at least this large (mm); 0 = by signal
+    /// ([`AUTO_TARGET_CL_MM`], or [`AUTO_TARGET_BSE_MM`] when every printed area is BSE).
+    pub target_grain_mm: f64,
     /// Margin around the grains of a band (um).
     pub pad_um: f64,
     /// Floor of the automatic context distance (um).
@@ -74,7 +79,8 @@ impl Default for SheetParams {
             paper: "tabloid".into(),
             landscape: true,
             margin_mm: 8.0,
-            um_per_mm: 8.0,
+            um_per_mm: 0.0,
+            target_grain_mm: 0.0,
             pad_um: 22.0,
             gap_break_um: 420.0,
             context_um: 0.0,
@@ -177,6 +183,117 @@ pub fn sheet_meta(info: &PackageInfo) -> SheetMeta {
     m
 }
 
+/// `um_per_mm` in JSON: a number, or "auto" (stored as 0).
+mod scale_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+        if *v > 0.0 && v.is_finite() { s.serialize_f64(*v) } else { s.serialize_str("auto") }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum V {
+            N(f64),
+            S(String),
+        }
+        match V::deserialize(d)? {
+            V::N(n) => Ok(n),
+            V::S(t) if t.trim().eq_ignore_ascii_case("auto") || t.trim().is_empty() => Ok(0.0),
+            V::S(t) => t.trim().parse::<f64>().map_err(|_| serde::de::Error::custom(format!("um_per_mm: a number or \"auto\", not {t:?}"))),
+        }
+    }
+}
+
+/// Round print scales (um per mm, the R10 series): a grain keeps a simple ratio on paper.
+pub const ROUND_SCALES: [f64; 17] = [2.0, 2.5, 3.2, 4.0, 5.0, 6.3, 8.0, 10.0, 12.5, 16.0, 20.0, 25.0, 32.0, 40.0, 50.0, 63.0, 80.0];
+/// Auto scale target for CL: the median printed grain prints at least this large (mm), so its
+/// zoning can be read. The Boise zircon S and L sheets used at the laser printed their median
+/// grains at 15 and 24 mm.
+pub const AUTO_TARGET_CL_MM: f64 = 15.0;
+/// Auto scale target for BSE (apatite, titanite, rutile: no zoning to place spots in). The
+/// Boise BSE sheets chosen by hand printed their median grains at 7 to 12 mm.
+pub const AUTO_TARGET_BSE_MM: f64 = 10.0;
+/// The small grains (10th percentile of the printed ones) still print this large (mm), room
+/// for a hand-drawn spot and its number.
+pub const MIN_MARK_MM: f64 = 3.0;
+/// CL zones about 10 um wide still print 0.4 mm wide: at most 25 um per mm.
+pub const ZONE_UM: f64 = 10.0;
+pub const MIN_ZONE_MM: f64 = 0.4;
+/// Spot-key circles smaller than this are left off the key (mm).
+pub const MIN_SPOT_MM: f64 = 1.0;
+/// Two key circles closer in diameter than this cannot be told apart; the smaller is left off.
+pub const MIN_SPOT_STEP_MM: f64 = 0.3;
+
+/// The scale [`auto_scale`] chose and why.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct AutoScale {
+    pub um_per_mm: f64,
+    pub median_um: f64,
+    pub p10_um: f64,
+    /// The median size aimed for (mm).
+    #[serde(default)]
+    pub target_mm: f64,
+    /// What set the scale: "target", "small grains", "zoning" or "spot key".
+    pub limit: String,
+}
+
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let x = q * (sorted.len() - 1) as f64;
+    let (i, f) = (x.floor() as usize, x - x.floor());
+    sorted[i] + f * (sorted[(i + 1).min(sorted.len() - 1)] - sorted[i])
+}
+
+fn round_down(v: f64) -> f64 {
+    ROUND_SCALES.iter().rev().copied().find(|&r| r <= v + 1e-9).unwrap_or(ROUND_SCALES[0])
+}
+
+/// The print scale of a mount from the eq. diameters of its printed grains: the coarsest round
+/// scale at which the median grain prints at least `target_mm`, no coarser than the limits that
+/// keep small grains markable (10th percentile at [`MIN_MARK_MM`]), CL zoning readable
+/// ([`ZONE_UM`] at [`MIN_ZONE_MM`]) and three spot-key circles drawable ([`MIN_SPOT_MM`]).
+/// Paper is spent before any of these is given up.
+pub fn auto_scale(diameters_um: &[f64], spot_sizes_um: &[f64], target_mm: f64) -> AutoScale {
+    let mut d: Vec<f64> = diameters_um.iter().copied().filter(|v| v.is_finite() && *v > 0.0).collect();
+    d.sort_by(f64::total_cmp);
+    let (median, p10) = if d.is_empty() { (100.0, 100.0) } else { (quantile(&d, 0.5), quantile(&d, 0.1)) };
+    let target = if target_mm > 0.0 { target_mm } else { AUTO_TARGET_CL_MM };
+    let mut spots: Vec<f64> = spot_sizes_um.iter().copied().filter(|v| *v > 0.0).collect();
+    spots.sort_by(|a, b| b.total_cmp(a));
+    let spot_cap = spots.get(2.min(spots.len().saturating_sub(1))).map_or(f64::INFINITY, |s| s / MIN_SPOT_MM);
+    let mut k = round_down(median / target);
+    let mut limit = "target";
+    for (cap, why) in [(p10 / MIN_MARK_MM, "small grains"), (ZONE_UM / MIN_ZONE_MM, "zoning"), (spot_cap, "spot key")] {
+        if round_down(cap) < k {
+            k = round_down(cap);
+            limit = why;
+        }
+    }
+    AutoScale { um_per_mm: k, median_um: median, p10_um: p10, target_mm: target, limit: limit.into() }
+}
+
+/// Spot-key sizes drawable at `um_per_mm`: (shown, left off). A circle under [`MIN_SPOT_MM`]
+/// or within [`MIN_SPOT_STEP_MM`] of a larger shown circle is left off.
+pub fn key_spots(sizes_um: &[f64], um_per_mm: f64) -> (Vec<f64>, Vec<f64>) {
+    let mut s: Vec<f64> = sizes_um.iter().copied().filter(|v| *v > 0.0).collect();
+    s.sort_by(|a, b| b.total_cmp(a));
+    s.dedup();
+    let (mut shown, mut off): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+    for d in s {
+        let mm = d / um_per_mm;
+        if mm < MIN_SPOT_MM || shown.last().is_some_and(|&l: &f64| (l - d) / um_per_mm < MIN_SPOT_STEP_MM) {
+            off.push(d);
+        } else {
+            shown.push(d);
+        }
+    }
+    shown.reverse();
+    off.reverse();
+    (shown, off)
+}
+
 /// One area to print: its record (stage geometry) and pixels.
 pub struct SheetArea<'a> {
     pub rec: &'a AreaRecord,
@@ -198,6 +315,14 @@ pub struct PrintRegistration {
     pub paper: String,
     pub paper_mm: [f64; 2],
     pub um_per_mm: f64,
+    /// "auto" or "fixed"; with auto, how the scale was chosen.
+    #[serde(default)]
+    pub scale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_scale: Option<AutoScale>,
+    /// Spot sizes (um) left off the key because they print too small to draw or tell apart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spot_sizes_left_off_um: Vec<f64>,
     pub sheet_origin: String,
     pub mapping: String,
     pub bands: Vec<BandRecord>,
@@ -637,7 +762,6 @@ fn area_short(rec: &AreaRecord) -> String {
 pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership, meta: &SheetMeta) -> SheetResult {
     let base = paper(&p.paper).unwrap_or(super::Paper { w_mm: 279.4, h_mm: 431.8 });
     let page = if p.landscape { super::Paper { w_mm: base.w_mm.max(base.h_mm), h_mm: base.w_mm.min(base.h_mm) } } else { base };
-    let k = p.um_per_mm.max(0.5);
     let m = p.margin_mm;
     let body_w = page.w_mm - 2.0 * m;
     let body_h = page.h_mm - 2.0 * m - HEADER_MM - FOOTER_MM;
@@ -662,6 +786,15 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         printed.push(v);
     }
     stats.grains = printed.iter().map(|v| v.len()).sum();
+    // CL zoning needs a larger grain on paper than a uniform BSE grain does.
+    let all_bse = areas.iter().zip(&printed).filter(|(_, v)| !v.is_empty()).all(|(a, _)| {
+        a.rec.params.segment.signal.or_else(|| crate::segment::signal_from_meta(&a.rec.area_meta)) == Some(crate::segment::Signal::Bse)
+    }) && printed.iter().any(|v| !v.is_empty());
+    let target = if p.target_grain_mm > 0.0 { p.target_grain_mm } else if all_bse { AUTO_TARGET_BSE_MM } else { AUTO_TARGET_CL_MM };
+    let auto = (!(p.um_per_mm > 0.0 && p.um_per_mm.is_finite()))
+        .then(|| auto_scale(&printed.iter().flatten().map(|g| g.eq_diameter_um).collect::<Vec<_>>(), &p.spot_sizes_um, target));
+    let k = auto.as_ref().map_or(p.um_per_mm, |a| a.um_per_mm).max(0.5);
+    let (spots_shown, spots_off) = key_spots(&p.spot_sizes_um, k);
 
     // Samples, top of the mount first (mean "SEM view" y of their printed grains).
     let geo: Vec<Option<crate::ownership::AreaGeometry>> = areas.iter().map(|a| crate::ownership::AreaGeometry::new(a.rec)).collect();
@@ -843,9 +976,25 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         paper: format!("{} {} {} x {} mm", p.paper, if p.landscape { "landscape" } else { "portrait" }, page.w_mm, page.h_mm),
         paper_mm: [page.w_mm, page.h_mm],
         um_per_mm: k,
+        scale: if auto.is_some() { "auto" } else { "fixed" }.into(),
+        auto_scale: auto.clone(),
+        spot_sizes_left_off_um: spots_off.clone(),
         sheet_origin: "sheet top-left corner, mm, y down".into(),
         mapping: "mosaic_um = mosaic_rect_um[0:2] + (sheet_mm - sheet_rect_mm[0:2]) * um_per_mm".into(),
         bands: Vec::new(),
+    };
+    // The header draws the key that fits this scale and says how the scale was chosen.
+    let hp = SheetParams { spot_sizes_um: spots_shown.clone(), ..p.clone() };
+    let scale_note = match &auto {
+        Some(a) => {
+            let why = match a.limit.as_str() {
+                "target" => String::new(),
+                "small grains" => format!(", limited by small grains ({} µm)", fmt(a.p10_um, 0)),
+                other => format!(", limited by {other}"),
+            };
+            format!("auto: median grain {} µm prints {} mm{why}", fmt(a.median_um, 0), fmt(a.median_um / k, 1))
+        }
+        None => String::new(),
     };
     let mut svgs = Vec::new();
     let mut j = 0;
@@ -951,7 +1100,7 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
             let _ = write!(s, r##"<path d="M{m} {ny:.2} H{:.2}" stroke="#e3e3e3" stroke-width="0.2" stroke-dasharray="0.6 1.2"/>"##, w - m);
             y = itop + bh + NOTE_MM;
         }
-        header(&mut s, p, meta, page, pi + 1, n, &here, areas, &printed, ownership, &stats, k);
+        header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &printed, ownership, &stats, k, &scale_note, &spots_off);
         mount_map(&mut s, p, page, areas, &printed, &here, &band_rects, &|ai| sample_of(ai), &view);
         // Footer and corner registration marks.
         let fy = h - m + 0.5;
@@ -1099,6 +1248,8 @@ fn header(
     ownership: &Ownership,
     stats: &SheetStats,
     k: f64,
+    scale_note: &str,
+    spots_off: &[f64],
 ) {
     let m = p.margin_mm;
     let map_w = map_width(page, areas);
@@ -1151,7 +1302,11 @@ fn header(
     kv.push(("Tiles", tiles));
     let imaged = if meta.date.is_empty() { "—".into() } else { format!("{} {}–{}", meta.date, meta.t_start, meta.t_end) };
     kv.push(("Imaged", imaged));
-    let mut proc = vec![format!("1 mm = {} µm ({}×)", super::fmt_num(k), fmt(1000.0 / k, 0)), "Auto tone".to_string()];
+    let mut proc = vec![format!("1 mm = {} µm ({}×)", super::fmt_num(k), fmt(1000.0 / k, 0))];
+    if !scale_note.is_empty() {
+        proc.push(scale_note.to_string());
+    }
+    proc.push("Auto tone".to_string());
     if p.enhance.denoise {
         proc.push("NLM denoise".into());
     }
@@ -1223,6 +1378,10 @@ fn header(
             super::fmt_num(d)
         );
         cx += 2.0 * r + 4.0;
+    }
+    if !spots_off.is_empty() {
+        let list = spots_off.iter().map(|d| super::fmt_num(*d)).collect::<Vec<_>>().join(", ");
+        let _ = write!(s, r#"<text x="{:.2}" y="{:.2}" font-size="2" fill="{GREY}">{list} µm left off: too small to draw or tell apart at this scale</text>"#, cx + 2.0, sy - 1.0);
     }
     let _ = write!(s, r#"<path d="M{m} {:.2} H{text_r:.2}" stroke="{LIGHT}" stroke-width="0.3"/>"#, m + HEADER_MM - 0.5);
 }

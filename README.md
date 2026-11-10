@@ -256,7 +256,8 @@ cargo run --release -p grainatlas-cli -- stitch <package-or-area-folder> --out <
 ```
 
 `--print tabloid` writes print sheets for hand spot registration: every grain of
-the package once (cross-area duplicates go to their owner area), at 1 mm = 8 µm,
+the package once (cross-area duplicates go to their owner area), at a scale chosen
+from the grain sizes (median grain about 15 mm on paper; `--scale 8` fixes it),
 with the `print_sheet` registration sidecar. Sheets follow the layout rule
 "context first": grains are printed in continuous pieces of the mosaic with their
 neighbours, and where a piece must be cut a hatched strip repeats the other side.

@@ -305,7 +305,10 @@ export interface SheetParams {
   paper: string;
   landscape: boolean;
   margin_mm: number;
-  um_per_mm: number;
+  /** µm of sample per mm of paper, or 'auto': from the mount's grain sizes (median grain at
+   *  least `target_grain_mm`, on a round scale, within the small-grain, zoning and spot-key limits). */
+  um_per_mm: number | 'auto';
+  target_grain_mm?: number;
   pad_um: number;
   gap_break_um: number;
   context_um: number;
@@ -344,6 +347,11 @@ export interface PrintRegistration {
   paper: string;
   paper_mm: [number, number];
   um_per_mm: number;
+  /** 'auto' or 'fixed'; with auto, how the scale was chosen. */
+  scale?: 'auto' | 'fixed';
+  auto_scale?: { um_per_mm: number; median_um: number; p10_um: number; limit: string };
+  /** Spot sizes left off the key: too small to draw or tell apart at this scale. */
+  spot_sizes_left_off_um?: number[];
   sheet_origin: string;
   mapping: string;
   bands: BandRecord[];

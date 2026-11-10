@@ -43,8 +43,9 @@ enum Cmd {
         /// tabloid (default), letter, a4 or a3.
         #[arg(long)]
         paper: Option<String>,
-        /// Micrometres of sample per millimetre of paper (default 8).
-        #[arg(long)]
+        /// Micrometres of sample per millimetre of paper, or "auto" (the default: from the
+        /// mount's grain sizes, see docs/print_sheets.md "Layout rule: print scale").
+        #[arg(long, value_parser = parse_scale)]
         scale: Option<f64>,
         /// Also write each sheet as SVG.
         #[arg(long)]
@@ -209,7 +210,7 @@ struct StitchOptions {
     /// sheets (default) or grains.
     #[arg(long, default_value = "sheets")]
     print_style: String,
-    /// Print scale in um of sample per mm of paper (sheets: default 8; grains: 0 = fit).
+    /// Print scale in um of sample per mm of paper (sheets: 0 = auto from the grain sizes; grains: 0 = fit).
     #[arg(long, default_value_t = 0.0)]
     scale: f64,
     /// Sheets: no non-local means denoising of the bands.
@@ -798,7 +799,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         let reg_file = format!("{name}_print_registration.json");
         let sp = grainatlas_core::layout::sheets::SheetParams {
             paper: paper.clone(),
-            um_per_mm: if scale > 0.0 { scale } else { 8.0 },
+            um_per_mm: if scale > 0.0 { scale } else { 0.0 },
             enhance: grainatlas_core::photometric::enhance::EnhanceParams {
                 denoise: !no_denoise,
                 sharpen: !no_sharpen,
@@ -897,8 +898,8 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
     if !matches!(p.paper.as_str(), "tabloid" | "letter" | "a4" | "a3") {
         bail!("paper {}: tabloid, letter, a4 or a3", p.paper);
     }
-    if !p.um_per_mm.is_finite() || p.um_per_mm <= 0.0 {
-        bail!("scale must be positive and finite");
+    if !p.um_per_mm.is_finite() || p.um_per_mm < 0.0 {
+        bail!("scale must be positive and finite, or auto");
     }
     let project = Project::from_json(&std::fs::read_to_string(folder.join("project.json"))?)?;
     let start = Instant::now();
@@ -1220,6 +1221,17 @@ fn now_rfc3339() -> String {
 #[path = "../../grainatlas-core/tests/common/legacy.rs"]
 mod legacy_fixtures;
 
+/// `--scale`: micrometres per millimetre, or "auto" (0).
+fn parse_scale(s: &str) -> std::result::Result<f64, String> {
+    if s.trim().eq_ignore_ascii_case("auto") {
+        return Ok(0.0);
+    }
+    match s.trim().parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!("{s:?}: a positive number of um per mm, or auto")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1277,3 +1289,4 @@ mod tests {
         assert_eq!(root, tmp.0.join("001_SU3_L").canonicalize().unwrap());
     }
 }
+
