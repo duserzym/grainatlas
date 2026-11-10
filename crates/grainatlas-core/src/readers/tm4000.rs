@@ -48,7 +48,8 @@ impl TM4000Package {
         let mut zag_areas: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut navigation = None;
         let mut name = src.root_name();
-        if let Some(zag) = files.iter().find(|f| f.to_ascii_lowercase().ends_with(".zag") && parent(f).is_empty()).or_else(|| files.iter().find(|f| f.to_ascii_lowercase().ends_with(".zag"))) {
+        let zag = files.iter().find(|f| f.to_ascii_lowercase().ends_with(".zag") && parent(f).is_empty()).or_else(|| files.iter().find(|f| f.to_ascii_lowercase().ends_with(".zag")));
+        if let Some(zag) = zag {
             let fname = file_name(zag);
             name = fname[..fname.len() - 4].to_string();
             let text = decode_text(&src.read(zag)?);
@@ -73,9 +74,20 @@ impl TM4000Package {
             }
         }
 
+        // A nested .zag starts a separate package unless this package names its folder as an area.
+        let nested_packages: Vec<_> = files
+            .iter()
+            .filter(|f| zag.is_some_and(|z| parent(z).is_empty()) && f.to_ascii_lowercase().ends_with(".zag"))
+            .map(|f| parent(f))
+            .filter(|dir| !dir.is_empty() && !zag_areas.contains_key(*dir))
+            .collect();
+
         // Group tile sidecars by folder.
         let mut folders: BTreeMap<String, Vec<(usize, String, String)>> = BTreeMap::new(); // folder -> (n, txt, image)
         for f in &files {
+            if nested_packages.iter().any(|dir| f.strip_prefix(*dir).is_some_and(|rest| rest.starts_with('/'))) {
+                continue;
+            }
             let fname = file_name(f);
             if !fname.to_ascii_lowercase().ends_with(".txt") {
                 continue;
@@ -96,7 +108,13 @@ impl TM4000Package {
 
         // No .zag and the tiles at the top: one area folder opened on its own.
         let kind = if zag_areas.is_empty() && meta.is_empty() && folders.len() == 1 && folders.contains_key("") { super::kind::AREA } else { super::kind::PACKAGE };
+        let mut folder_counts = BTreeMap::new();
+        for dir in folders.keys() {
+            let folder = if dir.is_empty() { src.root_name() } else { file_name(dir).to_string() };
+            *folder_counts.entry(folder).or_insert(0) += 1;
+        }
         let mut areas = Vec::new();
+        let mut unnamed = 0;
         for (dir, mut list) in folders {
             list.sort();
             let folder = if dir.is_empty() { src.root_name() } else { file_name(&dir).to_string() };
@@ -154,7 +172,18 @@ impl TM4000Package {
             let pixel_size_nm = median(tiles.iter().map(|t| t.pixel_size_nm).filter(|v| *v > 0.0).collect()).unwrap_or(1000.0);
             // The .zag names the area; without it (an area folder alone) the folder `NNN_<name>` does.
             let area_name = ameta.get("zag.AreaName").cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| strip_index(&folder).to_string());
-            areas.push(AreaMeta { id: folder.clone(), name: area_name, grid, pixel_size_nm, field_um, pitch_um, stage_sign: [-1.0, -1.0], tiles, meta: ameta });
+            let area_name = if area_name.is_empty() {
+                unnamed += 1;
+                if unnamed == 1 { name.clone() } else { format!("{name} {unnamed}") }
+            } else {
+                area_name
+            };
+            let id = if folder_counts[&folder] > 1 {
+                if dir.is_empty() { ".".into() } else { dir }
+            } else {
+                folder
+            };
+            areas.push(AreaMeta { id, name: area_name, grid, pixel_size_nm, field_um, pitch_um, stage_sign: [-1.0, -1.0], tiles, meta: ameta });
         }
         let info = PackageInfo { reader: "tm4000".into(), kind: kind.to_string(), name, areas, meta, navigation };
         Ok(Self { src, info })
@@ -166,7 +195,7 @@ use super::is_image;
 /// `001_HJ-GC1` → `HJ-GC1` (Zigzag area folders are `<NNN>_<area name>`).
 fn strip_index(folder: &str) -> &str {
     match folder.split_once('_') {
-        Some((n, rest)) if !rest.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => rest,
+        Some((n, rest)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => rest,
         _ => folder,
     }
 }

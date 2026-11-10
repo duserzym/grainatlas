@@ -55,8 +55,13 @@ export); until then the CSV carries the project, area and (if set) mount ids.
 
 - On TM4000 CL areas the tile `.txt` says `SignalName=SE`; CL is recorded only
   as `SignalType1=UVD` in the `.zag` (kept in the area metadata).
-- Some areas have no `.zag` covering them, or an empty `AreaName`; the reader
-  works from the tile sidecars alone and falls back to the folder name.
+- Some areas have no `.zag` covering them; the reader works from the tile
+  sidecars alone.
+- A nested folder with its own `.zag` is a separate package unless the parent
+  `.zag` names that folder as an area.
+- An empty or missing `AreaName` falls back to the folder name without its
+  numeric prefix. If that is empty too, the reader uses the package name,
+  adding ` 2`, ` 3` for repeated fallbacks.
 - Single captures (`NAME(xMAG).jpg`) have a data bar burned into the bottom
   strip; use them as overlays, not as tiles.
 - Stage frames from different holder loads differ by up to a few hundred
