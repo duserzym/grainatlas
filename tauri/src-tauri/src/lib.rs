@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -16,19 +16,22 @@ use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 mod geometry;
+mod memory;
 mod updater;
 use tauri_plugin_dialog::DialogExt;
 
 /// One open project: a window holds several, as tabs (the UI names them by number).
 struct Tab {
     session: Mutex<Session>,
+    /// Last completed allocation count, also readable while a command is busy.
+    evictable: AtomicUsize,
     cancel: Arc<AtomicBool>,
     package_path: Mutex<Option<PathBuf>>,
 }
 
 impl Tab {
     fn new() -> Self {
-        Self { session: Mutex::new(Session::new("package")), cancel: Arc::new(AtomicBool::new(false)), package_path: Mutex::new(None) }
+        Self { session: Mutex::new(Session::new("package")), evictable: AtomicUsize::new(0), cancel: Arc::new(AtomicBool::new(false)), package_path: Mutex::new(None) }
     }
     fn lock(&self) -> std::sync::MutexGuard<'_, Session> {
         self.session.lock().unwrap_or_else(|p| p.into_inner())
@@ -45,6 +48,8 @@ struct AppState {
     tabs: Mutex<HashMap<u32, Arc<Tab>>>,
     /// Paths from the OS's open-file events not yet taken by the page (`take_opened`).
     opened: Mutex<Vec<String>>,
+    /// Serializes short eviction passes, never running commands.
+    memory_trim: Mutex<()>,
 }
 
 impl AppState {
@@ -99,7 +104,9 @@ async fn open_paths(state: State<'_, AppState>, tab: u32, paths: Vec<String>) ->
     let out = {
         let mut s = t.lock();
         s.origin_files = files;
-        s.open_source(src, &path.display().to_string(), &now_iso()).map_err(e)?
+        let out = s.open_source(src, &path.display().to_string(), &now_iso()).map_err(e)?;
+        t.evictable.store(0, Ordering::Relaxed);
+        out
     };
     *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(path);
     Ok(out)
@@ -113,8 +120,7 @@ async fn open_path(state: State<'_, AppState>, tab: u32, path: String) -> Res<St
 /// Loose images of the last open, with the scale the user gave (LooseSpec JSON).
 #[tauri::command]
 async fn open_loose(state: State<'_, AppState>, tab: u32, spec: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().open_loose(&spec, &now_iso()).map_err(e)
+    state.with_session(tab, |s| s.open_loose(&spec, &now_iso())).map_err(e)
 }
 
 /// Opens a project: a `<name>.grainatlas/` folder (its project.json) or a `<name>.gaproj` project
@@ -143,6 +149,7 @@ async fn open_project(state: State<'_, AppState>, tab: u32, path: String) -> Res
         s.project_path = file.canonicalize().map_err(e)?.display().to_string();
         s.origin_files = if is_loose { loose_files.iter().map(|p| p.display().to_string()).collect() } else { Vec::new() };
         let probe = s.open_source(src, &pkg, &now_iso()).map_err(e)?;
+        t.evictable.store(0, Ordering::Relaxed);
         if is_loose {
             let spec = serde_json::to_string(&v["package"]["loose"]).map_err(e)?;
             s.open_loose(&spec, &now_iso()).map_err(e)?
@@ -194,7 +201,7 @@ async fn stitch(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: S
     let canc = || cancel.load(Ordering::SeqCst);
     let clock = || start.elapsed().as_secs_f64() * 1000.0;
     let ctl = Ctl { cancel: &canc, progress: &prog };
-    t.lock().stitch(&area_id, &params, &ctl, &clock).map_err(e)
+    state.with_session(tab, |s| s.stitch(&area_id, &params, &ctl, &clock)).map_err(e)
 }
 
 #[tauri::command]
@@ -209,25 +216,22 @@ async fn recompute(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id
     let canc = || cancel.load(Ordering::SeqCst);
     let clock = || start.elapsed().as_secs_f64() * 1000.0;
     let ctl = Ctl { cancel: &canc, progress: &prog };
-    t.lock().recompute(&area_id, &params, &ctl, &clock).map_err(e)
+    state.with_session(tab, |s| s.recompute(&area_id, &params, &ctl, &clock)).map_err(e)
 }
 
 #[tauri::command]
 async fn preview(state: State<'_, AppState>, tab: u32, area_id: String, params: String, level: usize) -> Res<Response> {
-    let t = state.tab(tab);
-    t.lock().preview(&area_id, &params, level).map(Response::new).map_err(e)
+    state.with_session(tab, |s| s.preview(&area_id, &params, level)).map(Response::new).map_err(e)
 }
 
 #[tauri::command]
 fn auto_params(state: State<'_, AppState>, tab: u32, area_id: String, params: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().auto_params(&area_id, &params).map_err(e)
+    state.with_session(tab, |s| s.auto_params(&area_id, &params)).map_err(e)
 }
 
 #[tauri::command]
 fn set_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<()> {
-    let t = state.tab(tab);
-    t.lock().set_grains(&area_id, &grains).map_err(e)
+    state.with_session(tab, |s| s.set_grains(&area_id, &grains)).map_err(e)
 }
 
 #[tauri::command]
@@ -255,14 +259,12 @@ fn memory_report(state: State<'_, AppState>, tab: u32) -> Res<String> {
 
 #[tauri::command]
 fn histogram(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<Vec<u32>> {
-    let t = state.tab(tab);
-    t.lock().histogram(&area_id).map_err(e)
+    state.with_session(tab, |s| s.histogram(&area_id)).map_err(e)
 }
 
 #[tauri::command]
 async fn retone(state: State<'_, AppState>, tab: u32, area_id: String, tone: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().retone(&area_id, &tone).map_err(e)
+    state.with_session(tab, |s| s.retone(&area_id, &tone)).map_err(e)
 }
 
 #[tauri::command]
@@ -283,55 +285,47 @@ fn area_signal(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<Str
 
 #[tauri::command]
 async fn segment_warning(state: State<'_, AppState>, tab: u32, area_id: String, params: String, grains: String) -> Res<String> {
-    state.tab(tab).lock().segment_warning(&area_id, &params, &grains).map_err(e)
+    state.with_session(tab, |s| s.segment_warning(&area_id, &params, &grains)).map_err(e)
 }
 
 #[tauri::command]
 async fn segment(state: State<'_, AppState>, tab: u32, area_id: String, params: String, previous: String, outline: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().segment(&area_id, &params, &previous, &outline).map_err(e)
+    state.with_session(tab, |s| s.segment(&area_id, &params, &previous, &outline)).map_err(e)
 }
 
 #[tauri::command]
 async fn grain_at(state: State<'_, AppState>, tab: u32, area_id: String, x: f64, y: f64, params: String, outline: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().grain_at(&area_id, x, y, &params, &outline).map_err(e)
+    state.with_session(tab, |s| s.grain_at(&area_id, x, y, &params, &outline)).map_err(e)
 }
 
 #[tauri::command]
 async fn split_grain(state: State<'_, AppState>, tab: u32, area_id: String, grain: String, line: [f64; 4]) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().split_grain(&area_id, &grain, line).map_err(e)
+    state.with_session(tab, |s| s.split_grain(&area_id, &grain, line)).map_err(e)
 }
 
 #[tauri::command]
 async fn merge_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().merge_grains(&area_id, &grains).map_err(e)
+    state.with_session(tab, |s| s.merge_grains(&area_id, &grains)).map_err(e)
 }
 
 #[tauri::command]
 async fn snap_outline(state: State<'_, AppState>, tab: u32, area_id: String, path: String, width_um: f64, contrast: f64) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().snap_outline(&area_id, &path, width_um, contrast).map_err(e)
+    state.with_session(tab, |s| s.snap_outline(&area_id, &path, width_um, contrast)).map_err(e)
 }
 
 #[tauri::command]
 async fn outline_grain(state: State<'_, AppState>, tab: u32, area_id: String, polygon: String, base: String, op: String, outline: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().outline_grain(&area_id, &polygon, &base, &op, &outline).map_err(e)
+    state.with_session(tab, |s| s.outline_grain(&area_id, &polygon, &base, &op, &outline)).map_err(e)
 }
 
 #[tauri::command]
 async fn brush_grain(state: State<'_, AppState>, tab: u32, area_id: String, stroke: String, size_um: f64, base: String, op: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().brush_grain(&area_id, &stroke, size_um, &base, &op).map_err(e)
+    state.with_session(tab, |s| s.brush_grain(&area_id, &stroke, size_um, &base, &op)).map_err(e)
 }
 
 #[tauri::command]
 async fn refine_grain(state: State<'_, AppState>, tab: u32, area_id: String, grain: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().refine_grain(&area_id, &grain).map_err(e)
+    state.with_session(tab, |s| s.refine_grain(&area_id, &grain)).map_err(e)
 }
 
 #[tauri::command]
@@ -365,8 +359,7 @@ fn set_link(state: State<'_, AppState>, tab: u32, mount_id: String, samples: Str
 
 #[tauri::command]
 async fn layout(state: State<'_, AppState>, tab: u32, params: String, grains: String, spots: String, labels: String, tone: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().layout(&params, &grains, &spots, &labels, &tone).map_err(e)
+    state.with_session(tab, |s| s.layout(&params, &grains, &spots, &labels, &tone)).map_err(e)
 }
 
 #[tauri::command]
@@ -410,7 +403,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
     // A project opened from its folder is saved back into that folder, wherever it is.
     if let Some(d) = dir.filter(|d| !ask && !d.is_empty()) {
         let dir = PathBuf::from(d);
-        let files = t.lock().project_files(&project).map_err(e)?;
+        let files = state.with_session(tab, |s| s.project_files(&project)).map_err(e)?;
         for (rel, bytes) in files {
             let p = dir.join(rel);
             if let Some(q) = p.parent() {
@@ -438,7 +431,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
         }
     };
     let dir = parent.join(format!("{name}.grainatlas"));
-    let files = t.lock().project_files(&project).map_err(e)?;
+    let files = state.with_session(tab, |s| s.project_files(&project)).map_err(e)?;
     for (rel, bytes) in files {
         let p = dir.join(rel);
         if let Some(d) = p.parent() {
@@ -572,15 +565,18 @@ async fn ownership(state: State<'_, AppState>, tab: u32, grains: String) -> Res<
 /// Print sheets of the mount (pages, print_sheet registration, stats, ownership).
 #[tauri::command]
 async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grains: String, tone: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().print_sheets(&params, &grains, &tone).map_err(e)
+    state.with_session(tab, |s| s.print_sheets(&params, &grains, &tone)).map_err(e)
 }
 
 /// Drops the open package and project (a project opened from a server becomes a local copy).
 #[tauri::command]
 fn blank(state: State<'_, AppState>, tab: u32, name: String) {
     let t = state.tab(tab);
-    *t.lock() = Session::new(&name);
+    {
+        let mut s = t.lock();
+        *s = Session::new(&name);
+        t.evictable.store(0, Ordering::Relaxed);
+    }
     *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = None;
 }
 
