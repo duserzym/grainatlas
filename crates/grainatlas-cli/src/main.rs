@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 mod legacy;
 mod import;
 mod segment;
+mod rerender;
 use grainatlas_core::Ctl;
 use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
 use grainatlas_core::project::pipeline::{self, Timings};
@@ -105,6 +106,18 @@ enum Cmd {
         missing: bool,
         #[arg(long, value_parser = ["auto", "cl", "bse"])]
         signal: Option<String>,
+    },
+    /// Re-run correction, blend and tone from saved placements without stitching or segmenting.
+    Rerender {
+        project: PathBuf,
+        /// Areas to render; all saved areas when omitted.
+        #[arg(long = "area")]
+        areas: Vec<String>,
+        #[arg(long, default_value = "keep", value_parser = ["keep", "on", "off"])]
+        background: String,
+        /// Compute and report without writing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show the areas and tiles of a package without stitching.
     Info { folder: PathBuf },
@@ -275,6 +288,7 @@ fn main() -> Result<()> {
         } => legacy::render(&project, &out, max_width)?,
         Cmd::ImportGrains { project, from, areas, missing, dry_run } => import::run(&project, &from, &areas, missing, dry_run)?,
         Cmd::Segment { project, area, missing, signal } => segment::run(&project, area.as_deref(), missing, signal.as_deref())?,
+        Cmd::Rerender { project, areas, background, dry_run } => rerender::run(&project, &areas, &background, dry_run)?,
         Cmd::Check { project, json } => {
             let path = if project.is_dir() {
                 project.join("project.json")

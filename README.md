@@ -66,6 +66,39 @@ not on push or pull requests. Run it with `gh workflow run ci` (tests),
 `gh workflow run desktop` (installers) or `gh workflow run release` (web
 archive); all three need the `UPBSTUDIO_TOKEN` secret below.
 
+## Re-render saved areas
+
+`grainatlas rerender <project.grainatlas>` re-runs photometric correction,
+blend and tone from each area's saved placement and parameters. It requires
+the original package at the saved path. Repeat `--area ID` to select areas.
+`--background keep` (the default) uses the saved settings; `on` enables joint
+background correction and `off` disables background correction. `--dry-run`
+computes the JSON report without writing files. Without `--area`, areas with
+no saved placement are skipped with a note on stderr and in the report. An
+explicitly selected area without a placement is an error.
+
+Save and close the project in the app before running rerender. The command
+refuses to install results if project.json's modification time or size has
+changed since it started. The app writes no on-disk open-project lock or
+marker, so rerender cannot detect an open project that has not been saved.
+The app's next save of a project that was open during a rerender would write
+old photometric metadata. Reopen the project after rerender finishes.
+
+The command keeps geometry, grains, spots and annotations unchanged. It
+replaces the selected mosaic pyramids and photometric results, and saves
+the originals as `project.before-rerender.YYYY-MM-DD_HHMM.json` and
+`mosaic.before-rerender.YYYY-MM-DD_HHMM/<area>/` (UTC). An existing backup
+for that minute is never overwritten. The JSON report includes elapsed
+seconds, overlap RMS before and after correction, and grain and spot counts.
+
+After a crash mid-install, keep the app closed and use backups with the same
+stamp to recover by hand. Copy `project.before-rerender.STAMP.json` over
+`project.json`. For every area folder present in
+`mosaic.before-rerender.STAMP/`, move any replacement `mosaic/<area>/` aside,
+then move the backed-up folder back to `mosaic/<area>/`. Leave areas absent
+from that backup alone; they were not moved. Keep the backups until the
+restored project opens correctly.
+
 ## Dependencies: `@lab/bridge`
 
 grainatlas runs on its own and as the Images tab of UPb Studio. It talks to
