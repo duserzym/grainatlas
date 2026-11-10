@@ -93,7 +93,11 @@ In a zigzag package neighbouring areas overlap (100 to 850 µm on that run), so
 one grain is detected in several areas. Each detection is mapped mosaic → stage
 through its nearest tile (as `AreaRecord::stage_of`) and from the stage into
 every other area. A detection in another area within half the grain's size plus
-`match_um` (20 µm) is the same grain; linked detections form one grain.
+`match_um` (20 µm), or whose outline holds the mapped centre, is the same grain;
+linked detections form one grain. The outline test catches a piece of a grain
+that the other area found whole (a CL-dark half, or a grain cut by this
+mosaic's edge): on Grenville_XL_80X such pieces in HH3 lay 230 µm from the
+centre of HH5's whole grain and would have been printed under both samples.
 
 The owner is the area whose operator-drawn rectangle holds the grain's stage
 position (`ownership::drawn_area_nm`). The TM4000 `.zag` gives each area's

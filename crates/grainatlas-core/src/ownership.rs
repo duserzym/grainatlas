@@ -294,10 +294,18 @@ pub fn assign(areas: &[AreaRecord], grains: &BTreeMap<String, Vec<Grain>>, p: &O
             if gb.interior([m[0] - r, m[1] - r, m[0] + r, m[1] + r]) < -r {
                 continue; // not in that area
             }
+            // Same grain: centres close on the stage, or this detection's centre inside the
+            // other area's outline. The second catches a piece of a grain (a CL-dark half, or a
+            // grain cut by this mosaic's edge) that the other area found whole: its centre is
+            // too far from the whole grain's centre, and printing it unlinked put the grain on
+            // paper twice, under two samples (Grenville_XL_80X, HH3 and HH5).
             let best = by_area[bi]
                 .iter()
                 .map(|&j| (j, d2(dets[j].g.centroid_um, m).sqrt()))
-                .filter(|&(j, d)| d < 0.5 * dets[i].g.eq_diameter_um.max(dets[j].g.eq_diameter_um) + p.match_um)
+                .filter(|&(j, d)| {
+                    d < 0.5 * dets[i].g.eq_diameter_um.max(dets[j].g.eq_diameter_um) + p.match_um
+                        || crate::segment::shape::inside(&dets[j].g.polygon_um, m[0], m[1])
+                })
                 .min_by(|a, b| a.1.total_cmp(&b.1));
             if let Some((j, _)) = best {
                 let (ra, rb) = (find(&mut parent, i), find(&mut parent, j));
