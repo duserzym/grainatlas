@@ -1433,8 +1433,11 @@ dependencies = [
  "anyhow",
  "clap",
  "grainatlas-core",
+ "image",
+ "resvg",
  "serde",
  "serde_json",
+ "tempfile",
  "uuid",
 ]
 

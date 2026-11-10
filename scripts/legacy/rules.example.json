@@ -1,0 +1,41 @@
+{
+  "source_root": "./example_archive",
+  "visits": { "2030_Lab": "./Lab_visits/2030_Lab" },
+  "forbidden_write_roots": ["./example_archive_backup"],
+  "skip_names": [".DS_Store", "Thumbs.db"],
+  "known_samples": ["SAMPLE_A", "SAMPLE_B"],
+  "coverage_roots": ["visit/SEM", "visit/printouts", "visit/mount_photos", "visit/targets", "visit/session"],
+  "rules": [
+    {
+      "visit": "2030_Lab", "src": "visit/SEM/Mount_A/Child_package",
+      "dst": "SEM/Child_package", "package": true, "kind": "tm4000_package",
+      "mount": "Mount B", "samples": "SAMPLE_B"
+    },
+    {
+      "visit": "2030_Lab", "src": "visit/SEM/Mount_A",
+      "dst": "SEM/Mount_A", "package": true, "exclude_dirs": ["Child_package"],
+      "kind": "tm4000_package", "mount": "Mount A", "samples": "SAMPLE_A",
+      "notes": "Child package is copied separately"
+    },
+    {
+      "visit": "2030_Lab", "src": "visit/printouts", "match": "*",
+      "dst": "SEM_print/annotated_photos", "kind": "annotated_printout"
+    },
+    {
+      "visit": "2030_Lab", "src": "visit/mount_photos", "match": "*",
+      "dst": "mount_photos", "kind": "mount_photo"
+    },
+    {
+      "visit": "2030_Lab", "src": "visit/targets", "match": "*",
+      "dst": "TIMS_targets", "kind": "tims_target"
+    },
+    {
+      "visit": "2030_Lab", "src": "visit/session", "match": "*.exe",
+      "dst": null, "kind": "software", "notes": "Recorded but not copied"
+    },
+    {
+      "visit": "2030_Lab", "src": "visit/session", "match": "*",
+      "dst": "LAICPMS_data/Session_A", "kind": "laicpms_per_spot"
+    }
+  ]
+}
