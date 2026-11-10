@@ -4,6 +4,89 @@ First used on the Boise State SEM run of 2026-11-03 (Hitachi TM4000, zircon
 CL, three zigzag packages, 22 tabloid sheets) for spotting by hand next to the
 digital spots in grainatlas.
 
+## Layout rule: context first
+
+At the laser a grain is found on the printout by the grains around it: the
+operator matches the pattern of neighbours on paper to the pattern in the
+camera view. A grain cropped alone, or a row cut away from the row above it,
+cannot be found that way. So every automatic print layout in grainatlas
+(print sheets here, and any later layout) keeps continuous pieces of the
+mosaic together, and gives up paper before it gives up context. Cutting,
+rearranging and removing empty stretches are allowed only where they do not
+strip a grain of its neighbours.
+
+Terms: `r` is the area's reference grain size (`segment::filter::reference_size`
+of its printed grains, see below); the **context distance** `c` is
+`context_um`, or when that is 0 (the default) `max(3 r, gap_break_um)`, which
+is 420 µm on the Boise zircon mounts and 525 µm on mount L. Two grains are
+**neighbours** when the gap between their boxes is at most `c`. A **cluster**
+is a set of grains connected through neighbours.
+
+The properties every layout must keep, each checked by a test in
+`crates/grainatlas-core/tests/sheets.rs`:
+
+1. **A band is a translated mosaic rectangle.** Nothing inside a band is moved,
+   scaled, rotated or removed (background stripping greys pixels, it does not
+   move them). Why: distances and directions between grains on paper are the
+   ones under the laser camera, so the pattern matches.
+2. **Neighbours share a band.** Grains of a cluster are printed in one band
+   whenever the cluster's rectangle fits a sheet line (`body width` x
+   `body height`). Why: the neighbours a grain is found by are the ones within
+   a few grain sizes.
+3. **2-D clusters stay 2-D.** A cluster that spans several rows of grains is
+   printed as one tall band, not as one thin band per row. Why: rows printed
+   apart put a grain's vertical neighbours on another line or sheet; the old
+   row chaining did this on the apatite mounts (three rows of HJ17 on five
+   lines of sheet 1).
+4. **Bands of one area do not overlap**, except in repeated strips (6). Clusters
+   whose rectangles would overlap are printed as one band. Why: a grain that
+   appears whole in two bands can be spotted twice.
+5. **Cuts go through empty gaps near the line end.** A cluster wider than a
+   line (or taller than a page body) is cut. The cut is placed in an empty
+   column (row) within the last 30 % of the line: the one nearest the line end
+   among those at least `min(r, widest gap there)` wide, cut in its middle. A
+   cut crosses a grain only when no empty column exists there; then the grain
+   belongs to the side holding its centre and that band holds it whole. Each
+   piece is only as tall as the grains it owns. Why: an empty gap is a place
+   where the operator expects the pattern to stop; a gap near the line end and
+   pieces fitted to their own grains keep the paper cost of a cut small, and
+   neither removes a neighbour.
+6. **Repeated strips at cuts.** Each band at a cut repeats a strip of
+   `overlap_um`, by default `max(r, c / 3)` (140 µm on S, 175 µm on L; 17
+   and 22 mm of paper at 8 µm/mm), and more where a crossing grain it owns
+   needs it, from the other side, under a thin black and white diagonal hatch
+   with "repeated" written along it. Its registration lists the grains in the strip as
+   `context`, not as its own. The hatch never covers a grain the band owns, and the
+   strip keeps its own tone (a white veil read as an odd bright panel). Why:
+   the grains at the cut keep their neighbours on both lines, and no grain is
+   counted or spotted twice. A wider strip (`c / 2`) showed whole large grains
+   twice and cost 16 % of every line on mount L.
+7. **No small orphans.** A break (a removed empty stretch, marked "//") never
+   leaves a group of fewer than `min_group` grains (default 3: a grain and two
+   neighbours) on its own when merging the group into the nearest band of the
+   same area still fits a line, or when that band is cut anyway and the merge
+   adds at most one line of width. Why: a lone grain on paper has nothing to be
+   found by; the 2026-11 Grenville S sheets had 17 of 325 grains alone in
+   their band.
+8. **Breaks only at long gaps.** An empty stretch is removed only where it is
+   longer than `c`. Why: shorter gaps hold the next grain inside the view the
+   operator matches.
+9. **Paper ranks last.** When a rule above costs paper (taller bands, a
+   half-empty line before a cluster that fits a full line), the paper is spent.
+   Sheet count is reported, not optimised against the rules.
+10. **Areas are boundaries.** A band never mixes areas (each is its own
+    mosaic); bands of different areas and samples may share a line, each with
+    its label. Grains near an area edge owned by the neighbouring area keep only
+    the neighbours in that area's mosaic.
+
+The layout reports `isolated`: printed grains with fewer than two other grains
+of their area visible in the band that owns them. It is shown in the sheet
+statistics so a regression is seen before printing.
+
+Any change to a print layout is held to these properties. Isolated single-grain
+crops remain available only where the user asks for them by name (Layout →
+"Grains or areas" → Items → "single grains, cropped alone (no neighbours)").
+
 ## Cross-area grain ownership (`crate::ownership`)
 
 In a zigzag package neighbouring areas overlap (100 to 850 µm on that run), so
@@ -132,23 +215,58 @@ of 30 µm or more outside every hull departs from the background by 6 robust σ
 
 Tabloid landscape at a fixed scale (1 mm = 8 µm by default). Only grains are
 printed: artifacts and duplicates are left off, and the stats count both. A print
-check (`audit`) counts printed grains that no band holds whole (always 0 so far)
-and grains printed twice (a neighbouring row's band holds them too). Samples are
-ordered top of the mount first. The owned grains of each area are chained into
-rows along x; rows flow across the lines of a sheet and break only between
-grains. A row whose grains step up or down is cut into bands of their own
-height; an empty stretch over 420 µm becomes a short break marked "//" with its
-length. Rows of the same area on one line share one label (sample and area,
-no grain numbers). Every band carries a 100 µm (or 50 µm) scale bar and corner
-ticks. The header has the instrument metadata from the sidecars (instrument
-and serial, detector, kV, emission, WD, scan, magnification, tiles and pixel
+check (`audit`) counts grains missing from an owner band or not whole in it,
+grains owned by more than one band, and whole visible grains absent from both
+ownership and context (all three must be 0). Samples are ordered top of the
+mount first; areas retain their sample's order. Bands of different areas and
+samples may share a line, each with its label.
+
+The layout follows [context first](#layout-rule-context-first): printed grains
+form 2-D clusters through box gaps of at most `context_um` (0 uses the larger
+of three reference grain sizes and `gap_break_um`). Intersecting padded cluster
+rectangles merge until stable. Groups smaller than `min_group` (default 3)
+join the nearest cluster when their union fits a full line. Clusters follow the
+mosaic's long axis and stay whole whenever they fit a full line, even when that
+spends a new line. Empty stretches between clusters become breaks marked "//"
+with their length. Bands of the same area on one line share one sample/area
+label, with no grain numbers.
+
+Oversized clusters are cut vertically first, then horizontally, in the nearest
+empty gap at least `min(r, widest gap)` wide in the final 30 % before the
+available line ends. When no empty gap is available, a cut crosses the fewest
+boxes and assigns each grain by its centroid, extending its owner's rectangle
+to hold the whole box. A cluster with at least `2 * min_group` grains keeps at
+least `min_group` owned grains in every piece. A small head spends a new line;
+a small tail moves the cut earlier, searching backwards from the position that
+leaves `min_group` grains, within 30 % of a full line. Smaller clusters retain
+their usual cuts.
+
+Each side repeats `overlap_um` beyond the cut (0 uses `max(r, c / 3)`), included
+in the space needed on paper. If that strip holds no part of a grain box, it
+widens to the nearest box plus `r / 2`, capped at `c / 2`. If no box lies within
+`c / 2`, the default width stays. A thin black and white diagonal hatch marks the repeated
+strip (the image keeps its tone), with a dashed grey cut line and "repeated" along it; owned boxes plus
+padding are clear of the hatch. Registration distinguishes owned `grains` from
+other bands' visible `context`, and records mosaic strip rectangles in
+`repeated_um`. `row` is the area's 1-based cluster number in reading order;
+all bands cut from that cluster keep that number. Stats include `clusters`,
+`cuts` and `isolated` (owned grains with fewer than two other printed box centres
+of the same area in their band), alongside the three audit counts.
+
+Every band carries a 100 µm (or 50 µm) scale bar inside its owned part, left of
+any right-hand repeated strip, and corner ticks. The header has the instrument
+metadata from the sidecars (instrument and serial, detector, kV, emission, WD,
+scan, magnification, tiles and pixel
 size, capture times), the sample legend, laser spot circles at print scale and
 the mount map: area boxes from stage coordinates in the SEM view, this sheet's
 samples dark with their grains as white dots and its bands outlined.
 Everything is black, white and grey. Corner marks sit in the sheet margins.
 
 The registration sidecar (`<package>_print_registration.json`) is the
-`print_sheet` frame, separate from the laser stage registration:
+`print_sheet` frame, separate from the laser stage registration. In this example,
+`row: 1` identifies the area's first cluster; further bands cut from that cluster
+also use `row: 1`. `context` and `repeated_um` are empty because this band has no
+cuts:
 
 ```json
 { "frame": "print_sheet", "um_per_mm": 8.0, "paper_mm": [431.8, 279.4],
@@ -156,6 +274,7 @@ The registration sidecar (`<package>_print_registration.json`) is the
   "mapping": "mosaic_um = mosaic_rect_um[0:2] + (sheet_mm - sheet_rect_mm[0:2]) * um_per_mm",
   "bands": [{ "sheet": 1, "sample": "HH3", "area": "007_HH3", "row": 1,
               "grains": [{ "id": "…", "number": 4 }],
+              "context": [], "repeated_um": [],
               "sheet_rect_mm": [8.0, 74.6, 120.4, 101.9],
               "mosaic_rect_um": [432.6, 366.4, 1331.6, 584.8],
               "background": "kept" }] }
@@ -172,3 +291,5 @@ grainatlas stitch <package> --out <package>.grainatlas --auto --polarity both \
 writes `exports/<package>_grain_sheets_tabloid.pdf`,
 `exports/<package>_print_registration.json` and `exports/ownership.json`.
 In the app: Layout → Print sheets.
+
+`grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale 8] [--params sheet_params.json] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.

@@ -303,6 +303,9 @@ export interface SheetParams {
   um_per_mm: number;
   pad_um: number;
   gap_break_um: number;
+  context_um: number;
+  min_group: number;
+  overlap_um: number;
   min_grain_um: number;
   max_grain_um: number;
   spot_sizes_um: number[];
@@ -320,6 +323,8 @@ export interface BandRecord {
   area: string;
   row: number;
   grains: { id: string; number: number }[];
+  context: { id: string; number: number }[];
+  repeated_um: [number, number, number, number][];
   sheet_rect_mm: [number, number, number, number];
   mosaic_rect_um: [number, number, number, number];
   background: string;
@@ -339,7 +344,7 @@ export interface PrintRegistration {
   bands: BandRecord[];
 }
 
-export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number }
+export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; clusters: number }
 
 /** One detection and the area that owns the grain. */
 export interface GrainOwner {

@@ -21,7 +21,7 @@
     landscape: false,
     margin_mm: 12,
     um_per_mm: 0,
-    items: 'grains',
+    items: 'areas',
     area_ids: [],
     grain_margin_um: 20,
     show_spots: true,
@@ -41,6 +41,9 @@
     um_per_mm: 8,
     pad_um: 22,
     gap_break_um: 420,
+    context_um: 0,
+    min_group: 3,
+    overlap_um: 0,
     min_grain_um: 35,
     max_grain_um: 0,
     spot_sizes_um: [15, 20, 25, 30, 35, 50],
@@ -136,7 +139,7 @@
       <label class="check"><input type="radio" bind:group={style} value="layout" data-testid="style-layout" /> Grains or areas</label>
     </div>
     {#if style === 'sheets'}
-      <p class="muted small-text">Every grain of the mount once (duplicates in overlapping areas go to the area they lie deepest in), sample by sample, at one scale, as bands cut straight out of the mosaic. Each sheet has the instrument header, a mount map and laser spot sizes; the registration file maps every band on paper back to the mosaic.</p>
+      <p class="muted small-text">Grains are printed in continuous pieces of the mosaic with their neighbours. Where a piece must be cut, a greyed strip repeats the other side.</p>
       <label class="field">Title <input type="text" bind:value={sheet.title} placeholder={app.pkg?.name ?? ''} /></label>
       <label class="field">Lab and operator <input type="text" bind:value={sheet.lab} placeholder="e.g. Boise State Isotope Geology Lab · Y. Zhang" /></label>
       <div class="two">
@@ -152,7 +155,7 @@
       </div>
       <div class="two">
         <label class="field">Smallest grain (µm) <input type="number" min="0" bind:value={sheet.min_grain_um} /></label>
-        <label class="field">Mark gaps over (µm) <input type="number" min="50" step="10" bind:value={sheet.gap_break_um} /></label>
+        <label class="field">Keep grains together within (µm) <input type="number" min="0" step="10" bind:value={() => sheet.context_um || undefined, (value) => sheet.context_um = value ?? 0} placeholder="auto (3 grain sizes)" data-testid="sheet-context" title="Grains closer than this stay in one band, and a larger value costs paper." /></label>
       </div>
       <label class="field">Laser spot sizes (µm) <input type="text" bind:value={spotText} /></label>
       <div class="two">
@@ -169,7 +172,7 @@
       <button class="primary" onclick={generateSheets} disabled={!hasGrains} title={hasGrains ? '' : 'Find grains first'} data-testid="sheets">Make print sheets</button>
       {#if sheets}
         {@const st = sheets.stats}
-        <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}.</p>
+        <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{st.isolated ? `, ${st.isolated} grains with fewer than two neighbours in their band` : ''}{st.cuts ? `, ${st.cuts} cuts with repeated strips` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}{st.grains_unmarked ? `, ${st.grains_unmarked} grains visible but not marked` : ''}.</p>
         <div class="two">
           <button onclick={pdf} data-testid="export-pdf">Export PDF</button>
           <button onclick={registration} data-testid="export-registration">Registration</button>
@@ -202,8 +205,8 @@
       <label class="field">Margin mm <input type="number" min="0" bind:value={params.margin_mm} /></label>
     </div>
     <label class="field">Items
-      <select bind:value={params.items}>
-        <option value="grains" disabled={!hasGrains}>grains {hasGrains ? '' : '(find grains first)'}</option>
+      <select bind:value={params.items} data-testid="items">
+        <option value="grains" disabled={!hasGrains}>single grains, cropped alone (no neighbours)</option>
         <option value="areas">whole areas</option>
       </select>
     </label>

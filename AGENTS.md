@@ -50,3 +50,10 @@ desktop app; the supervisor does.
 - Rust: `cargo fmt`, clippy-clean.
 - Prose in docs: plain sentences, no marketing, no emoji, numbers with units.
 - Say in your final message what you did not finish or could not verify.
+
+## Print layout rule
+
+Every automatic print layout keeps neighbouring grains together: a grain on
+paper is found by the grains around it. Read "Layout rule: context first" in
+`docs/print_sheets.md` before changing `crates/grainatlas-core/src/layout/`;
+its properties are tested and must not be loosened.
