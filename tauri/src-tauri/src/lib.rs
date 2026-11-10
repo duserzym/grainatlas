@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 mod geometry;
 mod memory;
+mod profile;
 mod updater;
 use tauri_plugin_dialog::DialogExt;
 
@@ -132,6 +133,8 @@ async fn open_project(state: State<'_, AppState>, tab: u32, path: String) -> Res
     let t = state.tab(tab);
     let file = PathBuf::from(&path);
     let file = if file.is_dir() { file.join("project.json") } else { file };
+    let modified_ms = std::fs::metadata(&file).and_then(|m| m.modified()).map_err(e)?
+        .duration_since(std::time::UNIX_EPOCH).map_err(e)?.as_millis();
     let pj = std::fs::read_to_string(&file).map_err(|x| format!("{path}: {x}"))?;
     let v: serde_json::Value = serde_json::from_str(&pj).map_err(e)?;
     let pkg = v["package"]["path"].as_str().ok_or("project.json has no package path")?.to_string();
@@ -162,7 +165,7 @@ async fn open_project(state: State<'_, AppState>, tab: u32, path: String) -> Res
         }
     };
     *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(PathBuf::from(&pkg));
-    Ok(serde_json::json!({ "info": serde_json::from_str::<serde_json::Value>(&info).map_err(e)?, "project": v }).to_string())
+    Ok(serde_json::json!({ "info": serde_json::from_str::<serde_json::Value>(&info).map_err(e)?, "project": v, "modified_ms": modified_ms }).to_string())
 }
 
 #[tauri::command]
@@ -291,6 +294,11 @@ async fn segment_warning(state: State<'_, AppState>, tab: u32, area_id: String, 
 #[tauri::command]
 async fn segment(state: State<'_, AppState>, tab: u32, area_id: String, params: String, previous: String, outline: String) -> Res<String> {
     state.with_session(tab, |s| s.segment(&area_id, &params, &previous, &outline)).map_err(e)
+}
+
+#[tauri::command]
+async fn segment_missing(state: State<'_, AppState>, tab: u32, area_id: String, params: String, existing: String, outline: String) -> Res<String> {
+    state.with_session(tab, |s| s.segment_missing(&area_id, &params, &existing, &outline)).map_err(e)
 }
 
 #[tauri::command]
@@ -621,6 +629,7 @@ struct Startup {
     /// Scale for loose images, so they open without the dialog.
     um_per_px: Option<f64>,
     field_um: Option<f64>,
+    profile: Option<String>,
 }
 
 /// Command line: `grainatlas [folder | images…] [--um-per-px X | --field-um W] [--stitch]
@@ -630,10 +639,16 @@ struct Startup {
 #[tauri::command]
 fn startup() -> Startup {
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
+    let profile = launch_profile(&args);
+    let args = profile::without_profile(&args);
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0);
     let paths: Vec<String> = args.iter().filter(|a| !a.starts_with("--") && std::path::Path::new(a).exists()).cloned().collect();
     let segment = args.iter().any(|a| a == "--segment");
-    Startup { paths, stitch: segment || args.iter().any(|a| a == "--stitch"), segment, um_per_px: value("--um-per-px"), field_um: value("--field-um") }
+    Startup { paths, stitch: segment || args.iter().any(|a| a == "--stitch"), segment, um_per_px: value("--um-per-px"), field_um: value("--field-um"), profile }
+}
+
+fn launch_profile(args: &[String]) -> Option<String> {
+    profile::name(args, std::env::var("GRAINATLAS_PROFILE").ok().as_deref(), cfg!(debug_assertions))
 }
 
 /// The menu bar: the platform's usual menus, with File → New Tab (Cmd+T) and Close Tab (Cmd+W)
@@ -676,9 +691,17 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
-            if let Some(w) = app.get_webview_window("main") {
-                geometry::restore(&w);
+            let config = app.config().app.windows.iter().find(|w| w.label == "main")
+                .ok_or("main window configuration is missing")?;
+            let mut builder = tauri::WebviewWindowBuilder::from_config(app, config)?;
+            if let Some(name) = launch_profile(&std::env::args().skip(1).collect::<Vec<_>>()) {
+                let directory = app.path().app_local_data_dir()?.join("profiles").join(profile::directory_name(&name));
+                std::fs::create_dir_all(&directory)?;
+                builder = builder.data_store_identifier(profile::identifier(&name))
+                    .data_directory(directory).title(format!("{} ({name})", config.title));
             }
+            let w = builder.build()?;
+            geometry::restore(&w);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -719,6 +742,7 @@ pub fn run() {
             area_signal,
             segment_warning,
             segment,
+            segment_missing,
             grain_at,
             split_grain,
             merge_grains,
