@@ -230,6 +230,16 @@ export class WasmCore implements Core {
     return this.call('toneLut', { tone });
   }
 
+  async areaSignal(areaId: string): Promise<'cl' | 'bse'> {
+    await this.ready();
+    return this.call('areaSignal', { areaId });
+  }
+
+  async segmentWarning(areaId: string, params: SegmentParams, grains: Grain[]): Promise<string | null> {
+    await this.ready();
+    return this.call('segmentWarning', { areaId, params, grains });
+  }
+
   async segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]> {
     await this.ready();
     return this.call('segment', { areaId, params, previous, outline });

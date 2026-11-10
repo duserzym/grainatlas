@@ -109,6 +109,8 @@ export interface AreaParams {
 export interface OutlinePad { margin_um: number; smooth: boolean }
 
 export interface SegmentParams {
+  /** null (or absent in older projects) selects the area metadata. */
+  signal?: 'cl' | 'bse' | null;
   /** 'both': bright grains plus grains brighter or darker than the local epoxy (CL-dark zircons). */
   polarity: 'bright' | 'dark' | 'both';
   method: 'background' | 'otsu';

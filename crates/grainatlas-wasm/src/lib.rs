@@ -104,6 +104,12 @@ impl Session {
     pub fn export_png(&self, area_id: &str, tone: &str) -> Result<Vec<u8>, JsError> {
         self.0.export_png(area_id, tone).map_err(err)
     }
+    pub fn area_signal(&self, area_id: &str) -> Result<String, JsError> {
+        self.0.area_signal(area_id).map_err(err)
+    }
+    pub fn segment_warning(&mut self, area_id: &str, params: &str, grains: &str) -> Result<String, JsError> {
+        self.0.segment_warning(area_id, params, grains).map_err(err)
+    }
     pub fn segment(&mut self, area_id: &str, params: &str, previous: &str, outline: &str) -> Result<String, JsError> {
         self.0.segment(area_id, params, previous, outline).map_err(err)
     }

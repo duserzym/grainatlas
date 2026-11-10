@@ -301,7 +301,7 @@ mod tests {
             }
         }
         let img = Gray { w, h, px: px.iter().map(|&v| f32::from(v) / 255.0).collect() };
-        (px, WorkImage { img, cov: vec![true; w * h], um_per_px: 1.0 })
+        (px, WorkImage { tiles_um: Vec::new(), signal: crate::segment::Signal::Cl, img, cov: vec![true; w * h], um_per_px: 1.0 })
     }
 
     #[test]

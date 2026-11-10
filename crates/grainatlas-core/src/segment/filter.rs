@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Artifact, Grain, Polarity, SegmentParams, WorkImage, morph, shape, watershed};
+use super::{Artifact, Grain, Polarity, SegmentParams, Signal, WorkImage, morph, shape, watershed};
 use crate::image::Gray;
 use crate::photometric::background::gaussian_blur;
 
@@ -40,6 +40,9 @@ pub struct ShapeStats {
 /// Measures of the deviation image, kept for the report.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Analysis {
+    /// Raw-intensity span used to normalize the deviation thresholds.
+    #[serde(skip)]
+    pub intensity_span: f32,
     /// Robust noise of the deviation from the local epoxy level (normalised units).
     pub sigma: f32,
     /// Bright and dark thresholds on the deviation.
@@ -295,7 +298,7 @@ pub fn analyse(w: &WorkImage, p: &SegmentParams, r: f64) -> Analysis {
     let mut bubbles = Vec::new();
     let mut bubble_grains = Vec::new();
     let mut bubble_mask = vec![false; iw * ih];
-    if p.flag_bubbles && p.polarity != Polarity::Dark {
+    if p.bubbles_enabled(w) && p.polarity != Polarity::Dark {
         // A bubble with a grey, textured middle breaks up in the dark mask: close and fill it.
         let solid = morph::fill_holes(&morph::close(&dark, iw, ih, ((4.0 / k).round() as usize).max(2)), iw, ih);
         let (lab, counts) = morph::components(&solid, iw, ih);
@@ -349,7 +352,7 @@ pub fn analyse(w: &WorkImage, p: &SegmentParams, r: f64) -> Analysis {
             }
         }
     }
-    Analysis { sigma, t_bright, t_dark: td, bubbles, bubble_grains, dev: Some(dev), dark, bubble_mask }
+    Analysis { intensity_span: span, sigma, t_bright, t_dark: td, bubbles, bubble_grains, dev: Some(dev), dark, bubble_mask }
 }
 
 /// Mean of `img` in a ring `width_um` wide just outside a grain's outline.
@@ -389,7 +392,7 @@ fn bubble_zone(an: &Analysis, iw: usize, ih: usize, k: f64) -> Vec<bool> {
 pub fn clean_mask(mask: &[bool], w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) -> Option<Vec<bool>> {
     let (iw, ih) = (w.img.w, w.img.h);
     let k = w.um_per_px;
-    let bubbles = !an.bubbles.is_empty() && p.polarity != Polarity::Dark;
+    let bubbles = p.bubbles_enabled(w) && !an.bubbles.is_empty() && p.polarity != Polarity::Dark;
     let seam = if p.flag_slivers { (rel::seam_open(r) / k).round() as usize } else { 0 };
     let seam = if seam > p.open_px { seam } else { 0 };
     if !bubbles && seam == 0 {
@@ -495,6 +498,96 @@ pub fn contrast_fraction(dev: &Gray, g: &Grain, k: f64, tb: f32, td: f32) -> f64
         }
     }
     if n == 0 { 0.0 } else { on as f64 / n as f64 }
+}
+
+/// Fraction of the closed outline following an interior tile boundary. Opposing edges of
+/// overlapping neighbours bound a band: blending can put the exposure step anywhere in it.
+/// Only the common edge extent counts; unshared outer coverage edges never make a band.
+/// Segments must stay in the band and within about 14 degrees of its axis. Lengths, rather
+/// than vertex counts, keep the result independent of outline simplification.
+pub fn tile_edge_fraction(g: &Grain, tiles: &[[f64; 4]], tol_um: f64) -> f64 {
+    let tol = tol_um.max(0.0);
+    // (normal axis, normal low/high, along-edge low/high).
+    let mut bands = Vec::new();
+    for (i, a) in tiles.iter().enumerate() {
+        for b in &tiles[i + 1..] {
+            for axis in 0..2 {
+                let along = 1 - axis;
+                let lo = a[along].max(b[along]);
+                let hi = a[along + 2].min(b[along + 2]);
+                if lo >= hi {
+                    continue;
+                }
+                let (left, right) = if a[axis] < b[axis] { (a, b) } else { (b, a) };
+                // Both tiles extend past the other on one side. Identical outer edges,
+                // gaps and corner-only contacts give no interior boundary.
+                if left[axis] < right[axis] && left[axis + 2] < right[axis + 2] && right[axis] <= left[axis + 2] {
+                    bands.push((axis, right[axis] - tol, left[axis + 2] + tol, lo - tol, hi + tol));
+                }
+                // Unequal/contained footprints can have an interior edge without a
+                // facing neighbour edge. Count that line, without widening to the
+                // whole containing tile. Equal outer edges remain excluded.
+                for (tile, other) in [(a, b), (b, a)] {
+                    for edge in [tile[axis], tile[axis + 2]] {
+                        if other[axis] < edge && edge < other[axis + 2] {
+                            bands.push((axis, edge - tol, edge + tol, lo - tol, hi + tol));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (mut aligned, mut perimeter) = (0.0, 0.0);
+    for (a, b) in g.polygon_um.iter().zip(g.polygon_um.iter().cycle().skip(1)).take(g.polygon_um.len()) {
+        let length = (a[0] - b[0]).hypot(a[1] - b[1]);
+        perimeter += length;
+        if bands.iter().any(|&(axis, lo, hi, start, end)| {
+            let along = 1 - axis;
+            (a[axis] - b[axis]).abs() <= 0.25 * (a[along] - b[along]).abs() && [a, b].iter().all(|q| q[axis] >= lo && q[axis] <= hi && q[along] >= start && q[along] <= end)
+        }) {
+            aligned += length;
+        }
+    }
+    if perimeter > 0.0 { aligned / perimeter } else { 0.0 }
+}
+
+// Measured at max(6 um, 2 work px): the 775/279 um BSE grains give 0.236/0.245;
+// the HJ17/HH12 exposure blocks give 0.535, 0.497 and 0.306. Keep a gap on both sides.
+const BLOCK_TILE_EDGE_FRACTION: f64 = 0.28;
+
+fn away_from_tile_edges(g: &Grain, w: &WorkImage) -> bool {
+    !w.tiles_um.is_empty() && tile_edge_fraction(g, &w.tiles_um, 6.0_f64.max(2.0 * w.um_per_px)) < BLOCK_TILE_EDGE_FRACTION
+}
+
+/// A large uniform BSE grain can fill the running background window. In that case its
+/// interior falsely measures as epoxy. Compare non-boxy candidates with the exterior epoxy
+/// too, using the same normalized bright/dark thresholds as `contrast_fraction`. Boxy steps
+/// retain their local measurement, and CL retains every original measurement.
+fn block_contrast(g: &Grain, w: &WorkImage, p: &SegmentParams, an: &Analysis, contrast: f64) -> f64 {
+    if p.resolved_signal(w) != Signal::Bse || contrast >= 0.5 || box_fraction(g, 3.0) > 0.45 {
+        return contrast;
+    }
+    let k = w.um_per_px;
+    let level = ring_mean(&w.img, g, k, 12.0) as f32;
+    let span = an.intensity_span.max(1e-4);
+    let (mask, bw, bh, o) = shape::rasterize(g, k, 0);
+    let (mut on, mut n) = (0usize, 0usize);
+    for y in 0..bh {
+        for x in 0..bw {
+            let (gx, gy) = (o.0 + x, o.1 + y);
+            if mask[y * bw + x] && gx < w.img.w && gy < w.img.h && w.cov[gy * w.img.w + gx] {
+                let v = (w.img.px[gy * w.img.w + gx] - level) / span;
+                n += 1;
+                if v > an.t_bright || v < -an.t_dark { on += 1; }
+            }
+        }
+    }
+    contrast.max(if n == 0 { 0.0 } else { on as f64 / n as f64 })
+}
+
+fn should_split_block(g: &Grain, w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64, contrast: f64) -> bool {
+    g.eq_diameter_um > rel::block_split(r)
+        && (p.resolved_signal(w) == Signal::Cl || !away_from_tile_edges(g, w) || block_contrast(g, w, p, an, contrast) < 0.5 || box_fraction(g, 3.0) > 0.45)
 }
 
 /// A bright exposure-step tile block (or the step region next to one): larger than
@@ -609,11 +702,13 @@ pub fn is_crescent(g: &Grain, s: &ShapeStats, dev: &Gray, k: f64, tb: f32, r: f6
 
 /// Why `g` is an artifact, if it is (as the `flag_*` switches allow). Specks are decided
 /// later, against the grains that remain.
-fn verdict(g: &Grain, p: &SegmentParams, an: &Analysis, k: f64, r: f64) -> Option<Artifact> {
+fn verdict(g: &Grain, w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) -> Option<Artifact> {
+    let k = w.um_per_px;
+    let signal = p.resolved_signal(w);
     let dev = an.dev.as_ref();
     let s = shape_stats(g, k);
     let bright = dev.is_none_or(|d| mean_inside(d, g, k) > 0.0);
-    if p.flag_bubbles
+    if p.flag_bubbles && signal == Signal::Cl
         && p.polarity != Polarity::Dark
         && ((bright && (is_bubble_halo(g, &an.bubbles, r) || dev.is_some_and(|d| is_crescent(g, &s, d, k, an.t_bright, r)))) || is_bubble_rim(g, &s, dev, k, an.t_bright, rel::rim_max(r)))
     {
@@ -621,7 +716,7 @@ fn verdict(g: &Grain, p: &SegmentParams, an: &Analysis, k: f64, r: f64) -> Optio
     }
     // A large bubble on its own: round, dark, and ringed by a bright halo in the epoxy (a CL-dark
     // zircon sits in plain epoxy).
-    if p.flag_bubbles
+    if p.flag_bubbles && signal == Signal::Cl
         && p.polarity != Polarity::Dark
         && !bright
         && g.eq_diameter_um <= 1.5 * r
@@ -636,8 +731,16 @@ fn verdict(g: &Grain, p: &SegmentParams, an: &Analysis, k: f64, r: f64) -> Optio
     if p.flag_slivers && is_sliver(g, contrast) {
         return Some(Artifact::Sliver);
     }
-    if p.flag_blocks && is_block(g, contrast, !bright, p.max_size_um, r) {
-        return Some(Artifact::Block);
+    if p.flag_blocks {
+        if signal == Signal::Bse && should_split_block(g, w, p, an, r, contrast) {
+            return Some(Artifact::Block);
+        }
+        let contrast = if signal == Signal::Bse && away_from_tile_edges(g, w) {
+            block_contrast(g, w, p, an, contrast)
+        } else { contrast };
+        if is_block(g, contrast, !bright, p.max_size_um, r) {
+            return Some(Artifact::Block);
+        }
     }
     None
 }
@@ -681,7 +784,28 @@ fn split_blob(g: &Grain, w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64
 /// exposure-step block with real grains inside) are flagged as blocks, and their raw parts are
 /// added to be joined into whole grains and classified on their own.
 pub fn split_blocks(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) {
-    let big: Vec<usize> = (0..grains.len()).filter(|&i| grains[i].is_grain() && grains[i].eq_diameter_um > rel::block_split(r)).collect();
+    let big: Vec<usize> = (0..grains.len())
+        .filter(|&i| {
+            let g = &grains[i];
+            if !g.is_grain() || g.eq_diameter_um <= rel::block_split(r) {
+                return false;
+            }
+            let contrast = an.dev.as_ref().map_or(1.0, |d| contrast_fraction(d, g, w.um_per_px, an.t_bright, an.t_dark));
+            if p.resolved_signal(w) == Signal::Bse && std::env::var_os("GRAINATLAS_DEBUG_SEG").is_some() {
+                eprintln!(
+                    "seg oversized BSE eqd_um={:.2} bbox_um={:?} contrast={:.4} block_contrast={:.4} tile_edge_fraction={:.4} tol_um={:.2} split={}",
+                    g.eq_diameter_um,
+                    g.bbox_um,
+                    contrast,
+                    block_contrast(g, w, p, an, contrast),
+                    tile_edge_fraction(g, &w.tiles_um, 6.0_f64.max(2.0 * w.um_per_px)),
+                    6.0_f64.max(2.0 * w.um_per_px),
+                    should_split_block(g, w, p, an, r, contrast)
+                );
+            }
+            should_split_block(g, w, p, an, r, contrast)
+        })
+        .collect();
     let mut parts = Vec::new();
     for i in big {
         grains[i].artifact = Some(Artifact::Block);
@@ -714,7 +838,7 @@ pub fn drop_nested(grains: &mut Vec<Grain>) {
 /// every grain.
 pub fn classify(grains: &mut [Grain], w: &WorkImage, p: &SegmentParams, an: &Analysis, r: f64) {
     let k = w.um_per_px;
-    let verdicts: Vec<Option<Artifact>> = crate::util::par_map(grains.len(), |i| if grains[i].is_grain() { verdict(&grains[i], p, an, k, r) } else { grains[i].artifact });
+    let verdicts: Vec<Option<Artifact>> = crate::util::par_map(grains.len(), |i| if grains[i].is_grain() { verdict(&grains[i], w, p, an, r) } else { grains[i].artifact });
     for (g, v) in grains.iter_mut().zip(verdicts) {
         g.artifact = v;
     }
@@ -936,7 +1060,7 @@ fn circle_outside(mask: &[bool], bw: usize, bh: usize, c: [f64; 2], rad: f64) ->
 /// grain (which keeps its id), the bubble is added as an artifact, and the analysis learns it
 /// so its halo pieces are flagged too.
 pub fn detach_bubbles(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams, an: &mut Analysis, r: f64) {
-    if !p.flag_bubbles || p.polarity == Polarity::Dark {
+    if !p.bubbles_enabled(w) || p.polarity == Polarity::Dark {
         return;
     }
     let Some(dev) = an.dev.clone() else { return };

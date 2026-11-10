@@ -37,6 +37,7 @@ pub type Clock<'a> = &'a dyn Fn() -> f64;
 /// Reads the tiles of `area` and records their hashes in `rec`.
 pub fn read_tiles(pkg: &dyn Package, area: usize, rec: &mut AreaRecord) -> crate::Result<Vec<Tile>> {
     let tiles = pkg.tiles(area)?;
+    if let Some(meta) = pkg.info().areas.get(area) { rec.merge_metadata(meta); }
     for (t, r) in tiles.iter().zip(rec.tiles.iter_mut()) {
         r.sha256 = t.sha256.clone();
         r.w = t.image.w;
@@ -285,7 +286,15 @@ pub fn area_files(rec: &AreaRecord, out: &AreaOutput) -> Vec<(String, Vec<u8>)> 
 
 /// Work image for segmentation from a stitched area.
 pub fn work_image(out: &AreaOutput, rec: &AreaRecord, scale: usize) -> crate::segment::WorkImage {
-    crate::segment::WorkImage::new(&out.linear, &out.coverage, rec.um_per_px(), scale)
+    let mut w = crate::segment::WorkImage::new(&out.linear, &out.coverage, rec.um_per_px(), scale);
+    w.signal = rec.signal();
+    let k = rec.um_per_px();
+    // Use the integer blend positions, not stage priors or the sub-pixel stitch solution.
+    // Placement also has the merged field sizes when inputs were HDR-grouped.
+    w.tiles_um = out.placement.tiles.iter().map(|t| {
+        [t.x as f64 * k, t.y as f64 * k, (t.x as f64 + t.w as f64) * k, (t.y as f64 + t.h as f64) * k]
+    }).collect();
+    w
 }
 
 /// Segments a stitched area, keeping ids and numbers of `previous` grains that still match.

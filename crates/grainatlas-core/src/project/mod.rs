@@ -191,8 +191,29 @@ impl AreaRecord {
             placement: None,
             photometric: None,
             mosaic: None,
-            area_meta: a.meta.clone(),
+            area_meta: Self::metadata(a),
         }
+    }
+
+    fn metadata(a: &AreaMeta) -> BTreeMap<String, String> {
+        let mut meta = a.meta.clone();
+        if !meta.contains_key("zag.ABCCHistory.SignalType1")
+            && a.tiles.iter().any(|t| crate::segment::signal_from_meta(&t.meta) == Some(crate::segment::Signal::Bse))
+        {
+            meta.insert("tile.SignalName".into(), "BSE".into());
+        }
+        meta
+    }
+
+    /// Older project records may predate saved sidecar metadata. Fill missing keys from the
+    /// opened package so Auto works identically for fresh and reopened areas.
+    pub(crate) fn merge_metadata(&mut self, a: &AreaMeta) {
+        for (key, value) in Self::metadata(a) { self.area_meta.entry(key).or_insert(value); }
+    }
+
+    /// Signal from the area's instrument metadata, with CL as the compatibility fallback.
+    pub fn signal(&self) -> crate::segment::Signal {
+        crate::segment::signal_from_meta(&self.area_meta).unwrap_or_default()
     }
 
     /// Mosaic micrometres per pixel.

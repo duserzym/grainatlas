@@ -67,6 +67,8 @@ pub struct Session {
     src: Option<Arc<dyn Source>>,
     pkg: Option<Box<dyn Package>>,
     pub project: Option<Project>,
+    /// Saved project location supplied by the native host for print provenance.
+    pub project_path: String,
     pub outputs: BTreeMap<String, AreaOutput>,
     work: BTreeMap<String, (usize, WorkImage)>,
     /// Absolute paths of loose files opened by path (desktop), recorded in the project.
@@ -88,6 +90,7 @@ impl Session {
             src: None,
             pkg: None,
             project: None,
+            project_path: String::new(),
             outputs: BTreeMap::new(),
             work: BTreeMap::new(),
             origin_files: Vec::new(),
@@ -130,7 +133,7 @@ impl Session {
         }
         for (id, (_, w)) in &self.work {
             let a = areas.entry(id.clone()).or_default();
-            a.work = w.img.px.capacity() * size_of::<f32>() + w.cov.capacity();
+            a.work = w.img.px.capacity() * size_of::<f32>() + w.cov.capacity() + w.tiles_um.capacity() * size_of::<[f64; 4]>();
         }
         for ((id, _), imgs) in &self.small {
             areas.entry(id.clone()).or_default().small += imgs
@@ -260,9 +263,15 @@ impl Session {
             p.package.name == info.name && p.package.kind == info.kind && (info.kind != readers::kind::LOOSE || p.areas.iter().map(|a| a.id.as_str()).eq(ids.iter().copied()))
         });
         if !keep {
+            self.project_path.clear();
             self.project = Some(Project::new(info, &self.path, created));
         }
         if let Some(p) = self.project.as_mut() {
+            for area in &info.areas {
+                if let Some(rec) = p.area_mut(&area.id) {
+                    rec.merge_metadata(area);
+                }
+            }
             p.package.kind = info.kind.clone();
             p.package.loose = loose;
             p.package.files = if info.kind == readers::kind::LOOSE { self.origin_files.clone() } else { Vec::new() };
@@ -271,8 +280,17 @@ impl Session {
     }
 
     pub fn load_project(&mut self, json: &str) -> Result<()> {
-        self.project = Some(Project::from_json(json)?);
+        let project = Project::from_json(json)?;
+        if self.project.as_ref().is_none_or(|old| old.uuid != project.uuid) {
+            self.project_path.clear();
+        }
+        self.project = Some(project);
         Ok(())
+    }
+
+    /// Metadata signal for Auto, regardless of a saved segmentation override.
+    pub fn area_signal(&self, area_id: &str) -> Result<String> {
+        serde_json::to_string(&self.rec(area_id)?.signal()).map_err(invalid)
     }
 
     pub fn project_json(&self) -> Result<String> {
@@ -526,6 +544,15 @@ impl Session {
         self.rec(area_id).map_or(2, |a| a.params.segment.work_scale)
     }
 
+    /// The shared profile warning for the UI after segmentation, including the actual threshold.
+    pub fn segment_warning(&mut self, area_id: &str, params: &str, grains: &str) -> Result<String> {
+        let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
+        let grains: Vec<Grain> = serde_json::from_str(grains).map_err(invalid)?;
+        let w = self.work_for(area_id, p.work_scale)?;
+        let warning = crate::segment::summary_warning(&grains, p.resolved_signal(w), area_id, crate::segment::grain_mask(w, &p).1);
+        serde_json::to_string(&warning).map_err(invalid)
+    }
+
     pub fn segment(&mut self, area_id: &str, params: &str, previous: &str, outline: &str) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
         let prev: Vec<Grain> = if previous.trim().is_empty() { Vec::new() } else { serde_json::from_str(previous).map_err(invalid)? };
@@ -548,9 +575,10 @@ impl Session {
 
     pub fn split_grain(&mut self, area_id: &str, grain: &str, line: [f64; 4]) -> Result<String> {
         let g: Grain = serde_json::from_str(grain).map_err(invalid)?;
-        let scale = self.seg_scale(area_id);
-        let w = self.work_for(area_id, scale)?;
-        serde_json::to_string(&crate::segment::split_grain(w, &g, line, 0.8)).map_err(invalid)
+        let params = self.rec(area_id)?.params.segment.clone();
+        let w = self.work_for(area_id, params.work_scale)?;
+        let signal = params.resolved_signal(w);
+        serde_json::to_string(&crate::segment::split_grain_for_signal(w, &g, line, 0.8, signal)).map_err(invalid)
     }
 
     pub fn merge_grains(&mut self, area_id: &str, grains: &str) -> Result<String> {
@@ -828,6 +856,8 @@ mod memory_tests {
                 (
                     1,
                     WorkImage {
+                        tiles_um: Vec::new(),
+                        signal: crate::segment::Signal::Cl,
                         img: Gray {
                             w: 2,
                             h: 2,

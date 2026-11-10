@@ -19,6 +19,36 @@ use uuid::Uuid;
 use crate::image::Gray;
 use crate::photometric::background::{gaussian_blur, otsu};
 
+/// Image signal used to select the artifact rules. Unknown metadata retains the CL rules.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Signal {
+    #[default]
+    Cl,
+    Bse,
+}
+
+impl Signal {
+    pub fn label(self) -> &'static str {
+        match self { Self::Cl => "CL", Self::Bse => "BSE" }
+    }
+}
+
+/// TM4000's zag history is authoritative. CL tile sidecars can say `SignalName=SE`;
+/// only a BSE tile name is a useful fallback, and only without a zag signal key.
+pub fn signal_from_meta(meta: &std::collections::BTreeMap<String, String>) -> Option<Signal> {
+    if let Some(value) = meta.get("zag.ABCCHistory.SignalType1") {
+        let value = value.trim().to_ascii_uppercase();
+        return if value.starts_with("BSE") { Some(Signal::Bse) }
+            else if value == "UVD" || value.contains("CL") { Some(Signal::Cl) }
+            else { None };
+    }
+    meta.iter().find_map(|(key, value)| {
+        ((key == "SignalName" || key.ends_with(".SignalName"))
+            && value.trim().to_ascii_uppercase().starts_with("BSE")).then_some(Signal::Bse)
+    })
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Polarity {
@@ -46,6 +76,9 @@ pub enum ThresholdMethod {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SegmentParams {
+    /// None selects the area metadata, falling back to CL for unknown signals.
+    #[serde(default)]
+    pub signal: Option<Signal>,
     pub polarity: Polarity,
     pub method: ThresholdMethod,
     /// Background method: threshold = bg + max(noise_k · σ, contrast_frac · (p99.5 − bg)).
@@ -103,6 +136,7 @@ pub struct SegmentParams {
 impl Default for SegmentParams {
     fn default() -> Self {
         Self {
+            signal: None,
             polarity: Polarity::Bright,
             method: ThresholdMethod::Background,
             noise_k: 6.0,
@@ -129,6 +163,43 @@ impl Default for SegmentParams {
             max_size_um: 0.0,
         }
     }
+}
+
+impl SegmentParams {
+    /// CL retains today's defaults (auto signal). BSE pins the signal and disables bubble
+    /// finding because charging shadows and pits have no CL halos. Bright polarity, already
+    /// the default, suits BSE; an explicitly selected Both still runs the CL-dark supplement.
+    pub fn for_signal(signal: Signal) -> Self {
+        match signal {
+            Signal::Cl => Self::default(),
+            Signal::Bse => Self { signal: Some(signal), flag_bubbles: false, ..Self::default() },
+        }
+    }
+
+    pub fn resolved_signal(&self, w: &WorkImage) -> Signal {
+        self.signal.unwrap_or(w.signal)
+    }
+
+    pub fn bubbles_enabled(&self, w: &WorkImage) -> bool {
+        self.flag_bubbles && self.resolved_signal(w) == Signal::Cl
+    }
+}
+
+/// Shared warning text for CLI and UI summaries. The threshold is the actual primary-mask
+/// threshold (including automatic thresholds), before outline padding or manual decisions.
+pub fn summary_warning(grains: &[Grain], signal: Signal, area: &str, threshold: f32) -> Option<String> {
+    if grains.is_empty() {
+        return Some(format!("no grains found in {area} ({}): threshold {threshold:.4}; check the polarity, the signal profile and that the area shows grains", signal.label()));
+    }
+    let mut rules = std::collections::BTreeMap::new();
+    for reason in grains.iter().filter_map(|g| g.artifact) {
+        *rules.entry(reason).or_insert(0usize) += 1;
+    }
+    let flagged: usize = rules.values().sum();
+    if flagged * 5 < grains.len() * 4 { return None; }
+    let mostly = rules.iter().max_by_key(|(_, n)| **n)?.0.label();
+    let other = match signal { Signal::Cl => "bse", Signal::Bse => "cl" };
+    Some(format!("{flagged} of {} detections flagged, mostly {mostly}: the {} profile may not fit this area; try --signal {other}", grains.len(), signal.label()))
 }
 
 /// Why a detection is not a grain. Artifacts stay in the grain list, unnumbered and dimmed, so
@@ -203,6 +274,9 @@ impl Grain {
 
 /// Segmentation input: the corrected mosaic reduced to work resolution.
 pub struct WorkImage {
+    /// Tile footprints [x0, y0, x1, y1] in mosaic micrometres, at blend placement.
+    pub tiles_um: Vec<[f64; 4]>,
+    pub signal: Signal,
     pub img: Gray,
     pub cov: Vec<bool>,
     /// Micrometres per work pixel.
@@ -214,7 +288,7 @@ impl WorkImage {
         let k = scale.max(1);
         let img = linear.downsample(k);
         let covg = Gray { w: linear.w, h: linear.h, px: coverage.to_vec() }.downsample(k);
-        WorkImage { cov: covg.px.iter().map(|&c| c >= 0.5).collect(), img, um_per_px: mosaic_um_per_px * k as f64 }
+        WorkImage { tiles_um: Vec::new(), signal: Signal::Cl, cov: covg.px.iter().map(|&c| c >= 0.5).collect(), img, um_per_px: mosaic_um_per_px * k as f64 }
     }
 }
 
@@ -333,7 +407,7 @@ pub fn grains_of_mask(w: &WorkImage, p: &SegmentParams, mask: &[bool]) -> Vec<Gr
 pub fn segment(w: &WorkImage, p: &SegmentParams, previous: &[Grain]) -> Vec<Grain> {
     let (mask, _) = grain_mask(w, p);
     let first = grains_of_mask(w, p, &mask);
-    let flags = p.flag_bubbles || p.flag_slivers || p.flag_blocks || p.flag_specks;
+    let flags = p.bubbles_enabled(w) || p.flag_slivers || p.flag_blocks || p.flag_specks;
     let mut grains = first.clone();
     if p.polarity == Polarity::Both || flags {
         let mut r = if p.reference_size_um > 0.0 { p.reference_size_um } else { filter::reference_size(&first) };
@@ -553,6 +627,10 @@ pub fn grain_at(w: &WorkImage, p: &SegmentParams, x_um: f64, y_um: f64) -> Optio
 
 /// Splits a grain along a line (um). Returns the pieces larger than 5 % of the grain.
 pub fn split_grain(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64) -> Vec<Grain> {
+    split_grain_for_signal(w, g, line, simplify_px, w.signal)
+}
+
+pub(crate) fn split_grain_for_signal(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64, signal: Signal) -> Vec<Grain> {
     let (mask, bw, bh, origin) = shape::rasterize(g, w.um_per_px, 2);
     let mut m = mask;
     // Cut: clear pixels within 1 px of the line.
@@ -585,7 +663,7 @@ pub fn split_grain(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64) -
         if let Some(mut ng) = shape::grain_from_mask(&part, bw, bh, origin, w, simplify_px, true) {
             ng.number = 0;
             // One cut detaches a bubble: a round part far darker than the epoxy is flagged.
-            if filter::looks_like_bubble(&ng, g, w) {
+            if signal == Signal::Cl && filter::looks_like_bubble(&ng, g, w) {
                 ng.artifact = Some(Artifact::Bubble);
                 ng.manual = false;
             }

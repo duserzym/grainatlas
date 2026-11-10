@@ -151,7 +151,7 @@ mod tests {
     use super::*;
 
     fn scene() -> WorkImage {
-        WorkImage { img: Gray { w: 240, h: 180, px: vec![0.5; 240 * 180] }, cov: vec![true; 240 * 180], um_per_px: 2.0 }
+        WorkImage { tiles_um: Vec::new(), signal: crate::segment::Signal::Cl, img: Gray { w: 240, h: 180, px: vec![0.5; 240 * 180] }, cov: vec![true; 240 * 180], um_per_px: 2.0 }
     }
 
     fn block(w: &WorkImage, x: usize, y: usize, width: usize, height: usize, number: u32) -> Grain {

@@ -123,6 +123,12 @@ export class TauriCore implements Core {
   async toneLut(tone: ToneParams): Promise<Uint8Array> {
     return bytes(await this.call<ArrayBuffer>('tone_lut', { tone: JSON.stringify(tone) }));
   }
+  async areaSignal(areaId: string): Promise<'cl' | 'bse'> {
+    return JSON.parse(await this.call<string>('area_signal', { areaId }));
+  }
+  async segmentWarning(areaId: string, params: SegmentParams, grains: Grain[]): Promise<string | null> {
+    return JSON.parse(await this.call<string>('segment_warning', { areaId, params: JSON.stringify(params), grains: JSON.stringify(grains) }));
+  }
   async segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]> {
     return JSON.parse(await this.call<string>('segment', { areaId, params: JSON.stringify(params), previous: JSON.stringify(previous), outline: JSON.stringify(outline) }));
   }

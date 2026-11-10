@@ -47,6 +47,10 @@ export interface Core {
   histogram(areaId: string): Promise<Uint32Array>;
   retone(areaId: string, tone: ToneParams): Promise<MosaicJson>;
   toneLut(tone: ToneParams): Promise<Uint8Array>;
+  /** Metadata signal used by Auto (unknown metadata falls back to CL). */
+  areaSignal(areaId: string): Promise<'cl' | 'bse'>;
+  /** Shared warning text after segmentation, or null when the profile fits. */
+  segmentWarning(areaId: string, params: SegmentParams, grains: Grain[]): Promise<string | null>;
   segment(areaId: string, params: SegmentParams, previous: Grain[], outline: OutlinePad): Promise<Grain[]>;
   /** Click-grow a grain at a point (manual add). */
   grainAt(areaId: string, xUm: number, yUm: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null>;

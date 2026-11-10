@@ -140,6 +140,7 @@ async fn open_project(state: State<'_, AppState>, tab: u32, path: String) -> Res
     let info = {
         let mut s = t.lock();
         s.load_project(&pj).map_err(e)?;
+        s.project_path = file.canonicalize().map_err(e)?.display().to_string();
         s.origin_files = if is_loose { loose_files.iter().map(|p| p.display().to_string()).collect() } else { Vec::new() };
         let probe = s.open_source(src, &pkg, &now_iso()).map_err(e)?;
         if is_loose {
@@ -276,6 +277,16 @@ async fn export_png(state: State<'_, AppState>, tab: u32, area_id: String, tone:
 }
 
 #[tauri::command]
+fn area_signal(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<String> {
+    state.tab(tab).lock().area_signal(&area_id).map_err(e)
+}
+
+#[tauri::command]
+async fn segment_warning(state: State<'_, AppState>, tab: u32, area_id: String, params: String, grains: String) -> Res<String> {
+    state.tab(tab).lock().segment_warning(&area_id, &params, &grains).map_err(e)
+}
+
+#[tauri::command]
 async fn segment(state: State<'_, AppState>, tab: u32, area_id: String, params: String, previous: String, outline: String) -> Res<String> {
     let t = state.tab(tab);
     t.lock().segment(&area_id, &params, &previous, &outline).map_err(e)
@@ -407,6 +418,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
             }
             std::fs::write(&p, bytes).map_err(e)?;
         }
+        t.lock().project_path = dir.canonicalize().map_err(e)?.display().to_string();
         return Ok(Some(dir.display().to_string()));
     }
     let v: serde_json::Value = serde_json::from_str(&project).map_err(e)?;
@@ -434,6 +446,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
         }
         std::fs::write(&p, bytes).map_err(e)?;
     }
+    t.lock().project_path = dir.canonicalize().map_err(e)?.display().to_string();
     Ok(Some(dir.display().to_string()))
 }
 
@@ -465,6 +478,7 @@ async fn save_project_file(app: AppHandle, state: State<'_, AppState>, tab: u32,
     let tmp = target.with_extension("gaproj.tmp");
     std::fs::write(&tmp, pretty).map_err(e)?;
     std::fs::rename(&tmp, &target).map_err(e)?;
+    t.lock().project_path = target.canonicalize().map_err(e)?.display().to_string();
     Ok(Some(target.display().to_string()))
 }
 
@@ -706,6 +720,8 @@ pub fn run() {
             retone,
             tone_lut,
             export_png,
+            area_signal,
+            segment_warning,
             segment,
             grain_at,
             split_grain,
