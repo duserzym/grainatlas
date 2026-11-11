@@ -58,7 +58,7 @@ export const WHEEL_ZOOM = 0.0015;
 export const PINCH_ZOOM = 0.01;
 /** Pixels per wheel "line" (deltaMode 1) and the movement that turns a click into a pan. */
 const LINE_PX = 33;
-const CLICK_SLOP = 4;
+export const CLICK_SLOP = 4;
 /** Arrow-key nudge in screen pixels (Shift: larger). */
 export const NUDGE_PX = 60;
 export const NUDGE_BIG_PX = 240;

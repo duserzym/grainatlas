@@ -6,7 +6,10 @@
   import { app, current, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toMosaic, toScreen, type View } from '../lib/canvas/view';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
+  import { pick, selectAll, addMany, clickHow, type PickHow, type Sel } from '../lib/selection';
+  import { CLICK_SLOP } from '../lib/canvas/gestures';
+  import SpotBatchDialog from '../components/SpotBatchDialog.svelte';
   import { spotContrast, type Contrast } from '../lib/canvas/contrast';
   import type { Core } from '../lib/core/core';
   import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
@@ -51,6 +54,14 @@
   let cursorScreen = $state<[number, number] | null>(null);
   const cursorUm = $derived(cursorScreen && view ? toMosaic(view, ...cursorScreen).map((x) => x * umPerPx) as [number, number] : null);
   let selGrains = $state<string[]>([]);
+  let spotAnchor: string | null = null;
+  let grainAnchor: string | null = null;
+  let side = $state<HTMLElement>();
+  let spotSort = $state<'name' | 'diameter' | null>(null);
+  let batch = $state<{ numbering: boolean; ids: string[] } | null>(null);
+  let rectangle = $state<{ x: number; y: number; x2: number; y2: number; moved: boolean } | null>(null);
+  let collapseSpot: string | null = null;
+  let pressScreen: [number, number] | null = null;
   let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser' | 'checks'>('spots');
   $effect(() => {
     if (app.checksRequested) { tab = 'checks'; app.checksRequested = false; }
@@ -133,6 +144,11 @@
     areaId;
     hoverId = null;
     infoId = null;
+    spotAnchor = null;
+    grainAnchor = null;
+    selGrains = [];
+    rectangle = null;
+    batch = null;
     if (infoTimer) clearTimeout(infoTimer);
     infoTimer = null;
   });
@@ -175,8 +191,13 @@
     const ids = project && Object.hasOwn(reviewSpots.projects, project) ? reviewSpots.projects[project] : null;
     return ids ? new Set(ids) : null;
   });
-  const spots = $derived(app.spots.filter((s) => s.area_id === areaId && (!reviewVisible || reviewVisible.has(s.id))));
+  const areaSpots = $derived(app.spots.filter((s) => s.area_id === areaId));
+  const spots = $derived(areaSpots.filter((s) => !reviewVisible || reviewVisible.has(s.id)));
+  const tableSpots = $derived(spotSort === 'name' ? [...spots].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+    : spotSort === 'diameter' ? [...spots].sort((a, b) => a.diameter_um - b.diameter_um) : spots);
+  const tableArtifacts = $derived(artifacts.filter((g) => !showOnlyNew || g.added));
   const visibleGrains = $derived(grains.filter((g) => app.showNeighbourGrains || !owners.get(g.id)?.duplicate_of));
+  const tableGrains = $derived(visibleGrains.filter((g) => !showOnlyNew || g.added));
   const outlinedGrains = $derived(reviewVisible
     ? visibleGrains.filter(g => spots.some(s => s.grain_number === g.number))
     : visibleGrains);
@@ -264,8 +285,69 @@
   /** screen px → um at the current zoom */
   const k = $derived(view ? umPerPx / view.zoom : 1);
   const rotDeg = $derived(view ? (view.rot * 180) / Math.PI : 0);
-  const selSpots = $derived(app.spots.filter((s) => app.selection.includes(s.id)));
-  const selectedHere = $derived(selSpots.filter((s) => s.area_id === areaId).length);
+  const selSpots = $derived(areaSpots.filter((s) => app.selection.includes(s.id)));
+  const selectedHere = $derived(selSpots.length);
+  const diameterRange = $derived.by(() => {
+    if (!selSpots.length) return '';
+    const lo = Math.min(...selSpots.map((s) => s.diameter_um)), hi = Math.max(...selSpots.map((s) => s.diameter_um));
+    return `⌀ ${lo}${lo === hi ? '' : `–${hi}`} µm`;
+  });
+  const selectedGrains = $derived(detections.filter((g) => selGrains.includes(g.id)));
+
+  async function scrollAnchor(kind: 'spot' | 'grain', id: string | null) {
+    if (!id || (kind === 'spot' ? tab !== 'spots' : tab !== 'grains')) return;
+    await tick();
+    const row = side?.querySelector<HTMLElement>(`[data-${kind}-id="${CSS.escape(id)}"]`);
+    if (!row) return;
+    const details = row.closest('details');
+    if (details && !details.open) { details.open = true; await tick(); }
+    const r = row.getBoundingClientRect();
+    for (let parent = row.parentElement; parent && parent !== side; parent = parent.parentElement) {
+      if (!['auto', 'scroll', 'hidden'].includes(getComputedStyle(parent).overflowY)) continue;
+      const clip = parent.getBoundingClientRect();
+      if (r.top < clip.top || r.bottom > clip.bottom) { row.scrollIntoView({ block: 'nearest' }); return; }
+    }
+  }
+  function setSpotSelection(sel: Sel, canvas = false) {
+    app.selection = sel.ids;
+    spotAnchor = sel.anchor;
+    selGrains = [];
+    if (canvas) void scrollAnchor('spot', spotAnchor);
+  }
+  function setGrainSelection(sel: Sel, canvas = false) {
+    selGrains = sel.ids;
+    grainAnchor = sel.anchor;
+    app.selection = [];
+    if (canvas) void scrollAnchor('grain', grainAnchor);
+  }
+  function pickSpot(id: string, how: PickHow, canvas = false) {
+    setSpotSelection(pick(tableSpots.map((s) => s.id), { ids: app.selection.filter((id) => areaSpots.some((s) => s.id === id)), anchor: spotAnchor }, id, how), canvas);
+  }
+  function spotRow(s: Spot, e: MouseEvent) {
+    const how = clickHow(e, true);
+    panel.open = true;
+    pickSpot(s.id, how);
+    if (how === 'only') centerOnUm(s.x_um, s.y_um);
+  }
+  function grainRow(g: Grain, e: MouseEvent) {
+    const how = clickHow(e, true);
+    const order = g.artifact ? tableArtifacts : tableGrains;
+    panel.open = true;
+    setGrainSelection(pick(order.map((g) => g.id), { ids: selGrains, anchor: grainAnchor }, g.id, how));
+    if (how === 'only') centerOnUm(g.centroid_um[0], g.centroid_um[1], Math.max(g.bbox_um[2] - g.bbox_um[0], g.bbox_um[3] - g.bbox_um[1], g.artifact ? 150 : 0));
+  }
+  function openBatch(numbering: boolean) {
+    if (!ro && selSpots.length) batch = { numbering, ids: selSpots.map((s) => s.id) };
+  }
+  function applyBatch(replacements: Spot[]) {
+    if (ro) return;
+    const byId = new Map(replacements.map((s) => [s.id, s]));
+    app.checkpoint();
+    app.spots = app.spots.map((s) => byId.get(s.id) ?? s);
+    app.persist();
+    batch = null;
+    app.notice = `Renamed ${replacements.length} spots (⌘Z undoes).`;
+  }
   const activeIds = $derived(gesture?.ids ?? []);
   const autoColour = $derived(app.settings.spot_cursor_colour === 'auto');
   let contrasts = $state<Record<string, Contrast>>({});
@@ -378,11 +460,11 @@
     const flagged = added.filter((g) => g.artifact).length;
     app.notice = added.length ? `Added ${plural(added.length - flagged, 'grain', 'grains')}${flagged ? ` and ${flagged} flagged` : ''}. Review the dashed outlines; ⌘Z undoes.` : 'No missed grains found.';
   }
-  function acceptAdded(id?: string) {
+  function acceptAdded(ids?: string[]) {
     if (!areaId) return;
     app.checkpoint();
     app.grains = { ...app.grains, [areaId]: detections.map((g) => {
-      if (!g.added || (id && g.id !== id)) return g;
+      if (!g.added || (ids && !ids.includes(g.id))) return g;
       const { added, ...accepted } = g;
       return accepted;
     }) };
@@ -395,10 +477,12 @@
     app.spots = relinkSpots(app.spots, areaId, app.grains[areaId]);
   }
   /** Keeps a flagged detection as a grain (the next number); re-runs keep it too. */
-  function keepAsGrain(id: string) {
-    const n = Math.max(0, ...grains.map((g) => g.number)) + 1;
-    setGrains(detections.map((g) => (g.id === id ? { ...g, artifact: undefined, kept: true, number: n } : g)), true);
+  function keepAsGrains(ids: string[]) {
+    if (!detections.some((g) => g.artifact && ids.includes(g.id))) return;
+    let n = Math.max(0, ...grains.map((g) => g.number));
+    setGrains(detections.map((g) => (g.artifact && ids.includes(g.id) ? { ...g, artifact: undefined, kept: true, number: ++n } : g)), true);
   }
+  function keepAsGrain(id: string) { keepAsGrains(selGrains.includes(id) ? selGrains : [id]); }
   /** Marks the selected grains as artifacts (unnumbered, left off sheets); re-runs keep the mark. */
   function markArtifact() {
     if (!selGrains.length) return;
@@ -418,6 +502,7 @@
     if (!core || !areaId || selGrains.length < 2) return;
     const id = areaId;
     const targets = grains.filter((g) => selGrains.includes(g.id)).map((g) => $state.snapshot(g) as Grain);
+    if (targets.length < 2) return;
     const m = await app.run('Merging grains', () => core!.mergeGrains(id, targets));
     if (!m) return;
     setGrains([...grains.filter((g) => !selGrains.includes(g.id)), m].sort((a, b) => a.number - b.number));
@@ -570,7 +655,7 @@
   function addSpot(s: Spot) {
     app.checkpoint();
     app.spots = [...app.spots, s];
-    app.selection = [s.id];
+    setSpotSelection({ ids: [s.id], anchor: s.id }, true);
     app.nextN = s.n + 1;
     app.lastPlaced = { id: s.id, n: s.n };
     const clash = app.spots.find((q) => q.id !== s.id && q.name === s.name);
@@ -617,9 +702,8 @@
     app.checkpoint();
     app.spots = app.spots.map((s) => {
       if (!ids.includes(s.id)) return s;
-      const g = grainAt(app.grains[s.area_id] ?? [], s.x_um, s.y_um);
       const sample = useCurrent.has(`${s.area_id}\n${s.sample}`) ? currentSample(s.area_id) : s.sample;
-      return { ...s, sample, grain_id: g?.id ?? null, grain_number: g?.number ?? null, name: formatName(patternFor(s.area_id), sample, g?.number ?? null, s.n) };
+      return { ...s, sample, name: formatName(patternFor(s.area_id), sample, s.grain_number, s.n) };
     });
     const clashes = app.spots.filter((s, i, ss) => ss.some((q, j) => i !== j && (q.name === s.name || (q.sample === s.sample && q.n === s.n))));
     if (clashes.length) app.notice = `Naming clashes: ${clashes.map((s) => s.name).join(', ')}`;
@@ -755,12 +839,13 @@
   function press(p: CanvasPoint): boolean {
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const ev = p.ev as PointerEvent;
+    collapseSpot = null;
+    pressScreen = [p.sx, p.sy];
     if (ro && app.tool !== 'measure') {
       // Read-only: a press selects a spot, nothing moves.
       const s = hitSpot(x, y);
       if (!s) return false;
-      app.selection = [s.id];
-      panel.open = true;
+      pickSpot(s.id, clickHow(ev, false), true);
       return true;
     }
     if (app.tool === 'grain-split') {
@@ -791,7 +876,7 @@
       drawing = { kind: app.tool === 'measure' ? 'measure' : (app.tool as SpotKind), x: sx, y: sy, x2: sx, y2: sy };
       return true;
     }
-    const h = hitHandle(x, y);
+    const h = ev.shiftKey || ev.metaKey || ev.ctrlKey ? null : hitHandle(x, y);
     if (h) {
       gesture = { mode: 'resize', ids: [h.id], startX: x, startY: y, orig: new Map([[h.id, { x: h.x_um, y: h.y_um, x2: h.x2_um, y2: h.y2_um, d: h.diameter_um }]]), dirty: false };
       return true;
@@ -803,9 +888,15 @@
         deleteSelection();
         return true;
       }
-      if (ev.shiftKey) app.selection = app.selection.includes(s.id) ? app.selection.filter((i) => i !== s.id) : [...app.selection, s.id];
-      else if (!app.selection.includes(s.id)) app.selection = [s.id];
-      const ids = app.selection.filter((i) => app.spots.some((q) => q.id === i));
+      const how = clickHow(ev, false);
+      if (how === 'only' && app.selection.includes(s.id)) {
+        collapseSpot = s.id;
+        spotAnchor = s.id;
+        selGrains = [];
+        void scrollAnchor('spot', s.id);
+      } else pickSpot(s.id, how, true);
+      if (!app.selection.includes(s.id)) return true;
+      const ids = app.selection.filter((i) => areaSpots.some((q) => q.id === i));
       gesture = { mode: 'move', ids, startX: x, startY: y, orig: new Map(app.spots.filter((q) => ids.includes(q.id)).map((q) => [q.id, { x: q.x_um, y: q.y_um, x2: q.x2_um, y2: q.y2_um, d: q.diameter_um }])), dirty: false };
       return true;
     }
@@ -820,10 +911,18 @@
       gesture = { mode: 'move', ids: [l.id], startX: x, startY: y, orig: new Map([[l.id, { x: l.x_um, y: l.y_um, x2: null, y2: null, d: 0 }]]), dirty: false };
       return true;
     }
+    if (ev.shiftKey && !ev.ctrlKey && !ev.metaKey && (app.tool === 'select' || app.tool === 'spot')) {
+      rectangle = { x: p.sx, y: p.sy, x2: p.sx, y2: p.sy, moved: false };
+      return true;
+    }
     return false;
   }
 
   function drag(p: CanvasPoint) {
+    if (rectangle) {
+      rectangle = { ...rectangle, x2: p.sx, y2: p.sy, moved: rectangle.moved || Math.hypot(p.sx - rectangle.x, p.sy - rectangle.y) > CLICK_SLOP };
+      return;
+    }
     const x = p.x * umPerPx, y = p.y * umPerPx;
     if (splitLine) {
       splitLine = [splitLine[0], splitLine[1], x, y];
@@ -849,6 +948,7 @@
     }
     if (!gesture) return;
     if (!gesture.dirty) {
+      if (pressScreen && Math.hypot(p.sx - pressScreen[0], p.sy - pressScreen[1]) <= CLICK_SLOP) return;
       app.checkpoint();
       gesture.dirty = true;
     }
@@ -880,8 +980,23 @@
     });
   }
 
-  async function release() {
+  async function release(p: CanvasPoint) {
     snapHint = null;
+    if (rectangle) {
+      const r = rectangle;
+      rectangle = null;
+      if (!r.moved && Math.hypot(p.sx - r.x, p.sy - r.y) <= CLICK_SLOP) { await click(p); return; }
+      if (!view) return;
+      const contains = (x: number, y: number) => {
+        const [sx, sy] = toScreen(view!, x / umPerPx, y / umPerPx);
+        return sx >= Math.min(r.x, p.sx) && sx <= Math.max(r.x, p.sx) && sy >= Math.min(r.y, p.sy) && sy <= Math.max(r.y, p.sy);
+      };
+      if (tab === 'grains') {
+        const visible = [...tableGrains, ...(app.layers.artifacts ? tableArtifacts : [])];
+        setGrainSelection(addMany({ ids: selGrains, anchor: grainAnchor }, visible.filter((g) => contains(...g.centroid_um)).map((g) => g.id)), true);
+      } else setSpotSelection(addMany({ ids: selSpots.map((s) => s.id), anchor: spotAnchor }, areaSpots.filter((s) => contains(s.x_um, s.y_um)).map((s) => s.id)), true);
+      return;
+    }
     if (lasso) {
       // A single freehand drag closes on release; click by click it stays open.
       if (lasso.clicks === 1 && lasso.dragged && lasso.pts.length > 4) await finishLasso();
@@ -914,7 +1029,7 @@
     }
     if (gesture?.dirty) {
       // Re-link moved spots to the grain they now sit on (names are kept).
-      const ids = gesture.ids;
+      const ids = gesture.mode === 'move' ? gesture.ids : [];
       app.spots = app.spots.map((s) => {
         if (!ids.includes(s.id)) return s;
         const g = grainAt(app.grains[s.area_id] ?? [], s.x_um, s.y_um);
@@ -922,7 +1037,9 @@
       });
       app.persist();
     }
+    if (gesture && !gesture.dirty && collapseSpot) pickSpot(collapseSpot, 'only', true);
     gesture = null;
+    collapseSpot = null;
   }
 
   async function doSplit(line: [number, number, number, number]) {
@@ -990,15 +1107,14 @@
       return;
     }
     // Select / other tools on empty space: select a grain or clear.
-    app.selection = [];
     measure = null;
     const g = grainAt(detections, x, y, app.layers.artifacts);
-    const multi = ev.shiftKey || ev.metaKey;
+    const how = clickHow(ev, false);
     if (!g) {
-      if (!multi) selGrains = [];
+      if (how === 'only') { app.selection = []; selGrains = []; spotAnchor = null; grainAnchor = null; }
       return;
     }
-    selGrains = multi ? (selGrains.includes(g.id) ? selGrains.filter((s) => s !== g.id) : [...selGrains, g.id]) : [g.id];
+    setGrainSelection(pick([...tableGrains, ...tableArtifacts].map((g) => g.id), { ids: selGrains, anchor: grainAnchor }, g.id, how), true);
   }
 
   // ---- hand-edited outlines -------------------------------------------------------------
@@ -1077,12 +1193,12 @@
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const s = hitSpot(x, y) ?? null;
     if (s && ro) {
-      app.selection = [s.id];
+      pickSpot(s.id, 'only', true);
       return true;
     }
     if (ro) return false;
     if (s) {
-      app.selection = [s.id];
+      pickSpot(s.id, 'only', true);
       startEdit(s.id);
       return true;
     }
@@ -1139,7 +1255,7 @@
 
   // ---- keyboard --------------------------------------------------------------------------
   function key(e: KeyboardEvent) {
-    if (app.checkPrompt || app.renamePrompt) return;
+    if (app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
     const mod = e.metaKey || e.ctrlKey;
@@ -1152,6 +1268,12 @@
         app.tool = 'select';
       } else if (e.key.toLowerCase() === 'm') app.tool = 'measure';
       else if (e.key.toLowerCase() === 'v') app.tool = 'select';
+      return;
+    }
+    if (mod && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      if (tab === 'grains') setGrainSelection(selectAll([...tableGrains, ...(app.layers.artifacts ? tableArtifacts : [])].map((g) => g.id)), true);
+      else setSpotSelection(selectAll(areaSpots.map((s) => s.id)), true);
       return;
     }
     if (mod && e.key.toLowerCase() === 'z') {
@@ -1181,6 +1303,7 @@
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
     else if (e.key === ']') viewer?.rotateBy(Math.PI / 12);
     else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
       if (!deleteSelection() && selGrains.length) deleteGrains();
     } else if (e.key.startsWith('Arrow') && selSpots.length) {
       e.preventDefault();
@@ -1189,11 +1312,14 @@
       app.checkpoint();
       app.spots = app.spots.map((s) => (app.selection.includes(s.id) ? { ...s, x_um: s.x_um + dx, y_um: s.y_um + dy, x2_um: s.x2_um == null ? null : s.x2_um + dx, y2_um: s.y2_um == null ? null : s.y2_um + dy } : s));
     } else if (e.key === 'Escape') {
+      e.preventDefault();
+      if (!app.selection.length && !selGrains.length) app.tool = 'select';
       app.selection = [];
       selGrains = [];
+      spotAnchor = null;
+      grainAnchor = null;
       measure = null;
       editing = null;
-      app.tool = 'select';
     }
   }
 
@@ -1201,15 +1327,15 @@
     app.diameter = d;
     if (selSpots.length) {
       app.checkpoint();
-      app.spots = app.spots.map((s) => (app.selection.includes(s.id) ? { ...s, diameter_um: d } : s));
+      app.spots = app.spots.map((s) => (s.area_id === areaId && app.selection.includes(s.id) ? { ...s, diameter_um: d } : s));
     }
   }
 
   const cursor = $derived(app.tool === 'select' ? 'default' : app.tool === 'delete' ? 'not-allowed' : 'crosshair');
   const fmt = (v: number | null | undefined, d = 0) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
   const toolList: { id: Tool; label: string; key: string; title: string }[] = [
-    { id: 'select', label: 'Select', key: 'V', title: 'Select and move; drag empty space to pan' },
-    { id: 'spot', label: 'Spot', key: 'S', title: 'Click to place a spot' },
+    { id: 'select', label: 'Select', key: 'V', title: 'Select and move; Cmd/Ctrl-click toggles; Shift-click adds (table: range); Shift-drag empty space selects a rectangle; Cmd/Ctrl+A selects all; Escape clears selection and keeps the tool (press again for Select); Delete/Backspace removes selection; drag empty space to pan' },
+    { id: 'spot', label: 'Spot', key: 'S', title: 'Click to place a spot; Cmd/Ctrl-click toggles; Shift-click adds; Shift-drag empty space selects a rectangle' },
     { id: 'line', label: 'Line', key: 'L', title: 'Drag to draw a line scan' },
     { id: 'raster', label: 'Raster', key: 'R', title: 'Drag to draw a raster area' },
     { id: 'measure', label: 'Measure', key: 'M', title: 'Drag to measure a distance' },
@@ -1220,8 +1346,31 @@
 
 <svelte:window onkeydown={key} />
 
+{#snippet spotBatchButtons(testids = false)}
+  <div class="row">
+    <button onclick={() => openBatch(true)} disabled={ro} data-testid={testids ? 'batch-renumber' : undefined}>Renumber…</button>
+    <button onclick={() => openBatch(false)} disabled={ro} data-testid={testids ? 'batch-rename' : undefined}>Sample or pattern…</button>
+    <button class="danger" onclick={deleteSelection} disabled={ro} data-testid={testids ? 'batch-delete' : undefined}>Delete</button>
+  </div>
+{/snippet}
+{#snippet grainBatchButtons()}
+  <div class="row">
+    <button onclick={markArtifact} disabled={ro || !selectedGrains.some((g) => !g.artifact)}>Not a grain</button>
+    <button onclick={() => keepAsGrains(selGrains)} disabled={ro || !selectedGrains.some((g) => g.artifact)}>Keep as grain</button>
+    <button onclick={merge} disabled={ro || noPixels || selectedGrains.filter((g) => !g.artifact).length < 2}>Merge</button>
+    <button onclick={() => acceptAdded(selGrains)} disabled={ro || !selectedGrains.some((g) => g.added)}>Accept</button>
+    <button class="danger" onclick={deleteGrains} disabled={ro}>Delete</button>
+  </div>
+{/snippet}
+{#if batch}
+  <SpotBatchDialog spots={areaSpots.filter((s) => batch!.ids.includes(s.id))} project={app.spots} {grains} tableIds={tableSpots.map((s) => s.id)} pattern={patternFor(areaId ?? '')} numbering={batch.numbering} onapply={applyBatch} oncancel={() => batch = null} />
+{/if}
+
 {#if core && tiles && areaId && mosaic}
   <div class="canvas" class:folded={app.layout.sideCollapsed}>
+    {#if rectangle?.moved}
+      <div class="selection-rectangle" style:left="{Math.min(rectangle.x, rectangle.x2)}px" style:top="{Math.min(rectangle.y, rectangle.y2)}px" style:width="{Math.abs(rectangle.x2 - rectangle.x)}px" style:height="{Math.abs(rectangle.y2 - rectangle.y)}px"></div>
+    {/if}
     {#key areaId}
       {@const viewerArea = areaId}
       <Viewer bind:this={viewer} bind:view={() => view, (next) => setAreaView(viewerArea, next)} core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
@@ -1402,10 +1551,10 @@
     </div>
 
     {#if panel.open && (focus || focusGrain)}
-      <FloatingPanel title={focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}
+      <FloatingPanel title={selSpots.length > 1 ? `${selSpots.length} spots` : selGrains.length > 1 ? `${selGrains.length} grains` : focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}
         passive={passiveInfo}
         minimized={app.layout.infoCollapsed} onminimize={() => { app.layout.infoCollapsed = !app.layout.infoCollapsed; app.saveLayout(); }}>
-          {#if focus && resultsBy[focus.id]}
+          {#if selSpots.length < 2 && focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
           <div class="resbox" data-testid="spot-results">
             <div class="resdate"><span class="num">{fmtValue(r.date)}</span> <span class="faint">{r.date ? `${r.date.method ?? r.date.metric} · ${r.date.utype ?? '2σ'}${r.date.passes === false ? ' · fails filters' : ''}` : 'no date yet'}</span></div>
@@ -1423,7 +1572,16 @@
           </div>
         {/if}
         <fieldset class="plain" disabled={ro}>
-        {#if focus}
+        {#if selSpots.length > 1}
+          <p>{selSpots[0].name} → {selSpots[selSpots.length - 1].name}</p>
+          <p class="faint small">Samples: {[...new Set(selSpots.map((s) => s.sample))].join(', ') || '–'}</p>
+          <p>{diameterRange}</p>
+          <div class="field">Diameter µm <SizeBox value={selSpots[0].diameter_um} onchange={setDiameter} label="Selected spots diameter µm" testid="size-panel" disabled={ro} /></div>
+          {@render spotBatchButtons()}
+        {:else if selGrains.length > 1}
+          <p>{selectedGrains.length} grains selected</p>
+          {@render grainBatchButtons()}
+        {:else if focus}
           {@const st = stageOf(app.project?.areas.find((a) => a.id === focus.area_id) ?? null, focus.x_um, focus.y_um)}
           <div class="two">
             <label class="field">Name <input type="text" value={focus.name} onchange={(e) => updateSpot(focus.id, { name: e.currentTarget.value })} data-testid="panel-name" /></label>
@@ -1485,7 +1643,7 @@
           {#if selGrains.includes(focusGrain.id)}
             <div class="row">
               {#if focusGrain.added}
-                <button onclick={() => acceptAdded(focusGrain!.id)} data-testid="accept-grain">Accept</button>
+                <button onclick={() => acceptAdded([focusGrain!.id])} data-testid="accept-grain">Accept</button>
               {/if}
               {#if !focusGrain.artifact}
                 <button onclick={markArtifact} title="Unnumbered, left off print sheets and spots; Find again keeps the mark" data-testid="card-not-grain">Not a grain</button>
@@ -1503,7 +1661,7 @@
         <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" aria-expanded={false} data-testid="side-expand">‹ Panel</button>
       </aside>
     {:else}
-    <aside class="glass side" data-ui>
+    <aside bind:this={side} class="glass side" data-ui>
       <div class="panel-heading">
         <span>Image panels</span>
         <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away" aria-label="Fold the side panel" aria-expanded={true} data-testid="side-collapse">›</button>
@@ -1520,6 +1678,13 @@
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
       <fieldset class="plain tabbody" disabled={ro && tab !== 'link' && tab !== 'checks'}>
       {#if tab === 'spots'}
+        {#if selectedHere > 1}
+          <div class="panel">
+            <span data-testid="spot-sel-count">{selectedHere} selected</span>
+            <p class="faint small">{diameterRange}</p>
+            {@render spotBatchButtons(true)}
+          </div>
+        {/if}
         {#if !ro}
         <div class="two">
           <label class="field">Sample <input type="text" value={sample} onchange={(e) => setSample(e.currentTarget.value)} data-testid="sample" /></label>
@@ -1538,10 +1703,10 @@
         {/if}
         <div class="list">
           <table class="data">
-            <thead><tr><th>Name</th><th>⌀ (µm)</th></tr></thead>
+            <thead><tr><th aria-sort={spotSort === 'name' ? 'ascending' : 'none'}><button class="link" onclick={() => spotSort = spotSort === 'name' ? null : 'name'}>Name</button></th><th aria-sort={spotSort === 'diameter' ? 'ascending' : 'none'}><button class="link" onclick={() => spotSort = spotSort === 'diameter' ? null : 'diameter'}>⌀ (µm)</button></th></tr></thead>
             <tbody>
-              {#each spots as s (s.id)}
-                <tr class:selected={app.selection.includes(s.id)} onclick={(e) => { app.selection = e.shiftKey ? [...app.selection, s.id] : [s.id]; panel.open = true; centerOnUm(s.x_um, s.y_um); }}>
+              {#each tableSpots as s (s.id)}
+                <tr data-spot-id={s.id} class:selected={app.selection.includes(s.id)} onclick={(e) => spotRow(s, e)}>
                   <td>{s.name}</td><td class="num">{s.diameter_um}</td>
                 </tr>
               {:else}
@@ -1695,9 +1860,12 @@
           <button onclick={exportGrains} disabled={!grains.length}>Grain CSV</button>
         </div>
         <div class="row">
+          {#if selGrains.length}<span data-testid="grain-sel-count">{selGrains.length} selected</span>{/if}
           <button onclick={refine} disabled={!selGrains.length || noPixels} title="GrabCut on the selected grains">Refine</button>
-          <button onclick={merge} disabled={selGrains.length < 2 || noPixels} title="Shift-click grains to select several">Merge</button>
+          <button onclick={merge} disabled={selectedGrains.filter((g) => !g.artifact).length < 2 || noPixels} title="Shift-click grains to select several">Merge</button>
           <button onclick={markArtifact} disabled={!selGrains.some((id) => grains.some((g) => g.id === id))} title="Not a grain: unnumbered, left off print sheets and spots" data-testid="mark-artifact">Not a grain</button>
+          <button onclick={() => keepAsGrains(selGrains)} disabled={!selectedGrains.some((g) => g.artifact)}>Keep as grain</button>
+          <button onclick={() => acceptAdded(selGrains)} disabled={!selectedGrains.some((g) => g.added)}>Accept</button>
           <button class="danger" onclick={deleteGrains} disabled={!selGrains.length}>Delete</button>
         </div>
         {#if addedCount}
@@ -1714,8 +1882,8 @@
           <table class="data">
             <thead><tr><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
             <tbody>
-              {#each visibleGrains.filter((g) => !showOnlyNew || g.added) as g (g.id)}
-                <tr class:selected={selGrains.includes(g.id)} onclick={(e) => { selGrains = e.shiftKey ? [...selGrains, g.id] : [g.id]; app.selection = []; panel.open = true; centerOnUm(g.centroid_um[0], g.centroid_um[1], Math.max(g.bbox_um[2] - g.bbox_um[0], g.bbox_um[3] - g.bbox_um[1])); }}>
+              {#each tableGrains as g (g.id)}
+                <tr data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
                   <td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
                   <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
@@ -1729,8 +1897,8 @@
             <table class="data">
               <thead><tr><th>why</th><th>⌀ µm</th><th></th></tr></thead>
               <tbody>
-                {#each artifacts.filter((g) => !showOnlyNew || g.added) as g (g.id)}
-                  <tr class:selected={selGrains.includes(g.id)} onclick={() => { selGrains = [g.id]; app.selection = []; panel.open = true; centerOnUm(g.centroid_um[0], g.centroid_um[1], Math.max(g.bbox_um[2] - g.bbox_um[0], g.bbox_um[3] - g.bbox_um[1], 150)); }}>
+                {#each tableArtifacts as g (g.id)}
+                  <tr data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
                     <td title={ARTIFACT_LABELS[g.artifact!]}>{g.artifact}</td><td class="num">{fmt(g.eq_diameter_um)}</td>
                     <td><button class="link" onclick={(e) => { e.stopPropagation(); keepAsGrain(g.id); }} data-testid="keep-artifact">Keep as grain</button></td>
                   </tr>
@@ -1811,6 +1979,9 @@
 {/if}
 
 <style>
+  .selection-rectangle { position: absolute; pointer-events: none; z-index: 6; border: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  tr[data-spot-id], tr[data-grain-id] { user-select: none; -webkit-user-select: none; }
+
   .check-group { min-width: 0; }
   .check-group h4 { margin: var(--space-2) 0; }
   .check-row { display: grid; gap: var(--space-1); margin-bottom: var(--space-2); }
@@ -1879,7 +2050,8 @@
   .spot-entry, .layers, .tabs, .panel-heading { flex: none; }
   .spot-entry { font-size: 0.82rem; }
   .entry-body { display: grid; gap: var(--space-1); padding-block: var(--space-1); }
-  .next-entry { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: var(--space-2); align-items: center; }
+  .next-entry { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: var(--space-2); align-items: end; }
+  .next-entry > div { padding-bottom: 0.45rem; }
   .next-entry .field { min-width: 0; }
   .next-entry .mono { overflow-wrap: anywhere; }
   .clash { color: var(--warning); }

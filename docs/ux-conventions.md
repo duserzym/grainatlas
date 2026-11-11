@@ -45,6 +45,14 @@ Firefox has no `wheelDeltaY` and reports notches with `deltaMode` 1. Plots
 inside a scrolling page (laicpmsdb's timeline) are not image views: plain
 wheel keeps scrolling the page there, ctrl + wheel zooms.
 
+**Selecting several.** Cmd-click (macOS) or Ctrl-click toggles a spot or
+grain. Shift-click selects a range in a table and adds on the Canvas.
+Shift+drag on empty space draws a selection rectangle in the Canvas; all
+other drags follow the gesture table above. Cmd/Ctrl+A selects all spots
+in the current area, or visible grains in the Grains tab. Escape clears
+the selection and keeps the tool; with no selection it switches to Select.
+Delete or Backspace deletes the selected spots, or the selected grains.
+
 ## 3. One click for a good result; every control still there; Reset
 
 - An **Auto** button gives a result that is hard to get wrong, computed from
