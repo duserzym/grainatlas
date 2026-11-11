@@ -92,6 +92,56 @@ pub struct Tile {
     pub image: Gray,
     pub depth: Depth,
     pub sha256: String,
+    /// Capture status computed once from the decoded image.
+    pub failed: bool,
+}
+
+/// Detects a blank capture in one pass over decoded, normalized grey pixels. A tile fails
+/// when its population standard deviation is below 0.5 on the 0..255 grey scale, or
+/// more than 99.5% of its pixels have the same decoded value (up to 16-bit precision).
+/// No sampling: even a small non-constant remainder must satisfy the stated thresholds.
+pub fn failed_capture(image: &Gray) -> bool {
+    let mut hist = vec![0usize; 65536];
+    let (mut sum, mut squares) = (0u128, 0u128);
+    for &v in &image.px {
+        let value = (v.clamp(0.0, 1.0) * 65535.0).round() as usize;
+        sum += value as u128;
+        squares += (value as u64 * value as u64) as u128;
+        hist[value] += 1;
+    }
+    let n = image.px.len() as u128;
+    // 16-bit / 257 is the 0..255 scale. Integer comparisons keep both strict
+    // thresholds exact, including a 0.5-grey standard deviation near white.
+    n == 0 || 4 * (squares * n - sum * sum) < 257 * 257 * n * n
+        || hist.into_iter().max().unwrap_or(0) as u128 * 200 > 199 * n
+}
+
+#[cfg(test)]
+mod failed_tests {
+    use super::*;
+
+    #[test]
+    fn blank_and_low_variance_captures_fail() {
+        for value in [0, 1, 127, 255] {
+            assert!(failed_capture(&Gray::from_u8(100, 100, &vec![value; 10000])));
+        }
+        let g = Gray { w: 100, h: 1, px: (0..100).map(|i| (100.0 + (i % 2) as f32 * 0.9) / 255.0).collect() };
+        assert!(failed_capture(&g));
+        // Exactly 0.5 grey levels is accepted.
+        assert!(!failed_capture(&Gray::from_u8(2, 1, &[0, 1])));
+        assert!(!failed_capture(&Gray::from_u8(2, 1, &[254, 255])));
+    }
+
+    #[test]
+    fn dominant_value_threshold_is_strict_and_independent_of_variance() {
+        let mut px = vec![0; 10000];
+        px[..50].fill(255);
+        assert!(!failed_capture(&Gray::from_u8(100, 100, &px)));
+        px[49] = 0;
+        assert!(failed_capture(&Gray::from_u8(100, 100, &px)));
+        let px: Vec<_> = (0..10000).map(|i| (i % 256) as u8).collect();
+        assert!(!failed_capture(&Gray::from_u8(100, 100, &px)));
+    }
 }
 
 /// The reader interface (plan section 6.1).
@@ -110,7 +160,8 @@ pub trait Package: Send + Sync {
         let mut meta = m.clone();
         meta.w = image.w;
         meta.h = image.h;
-        Ok(Tile { meta, image, depth, sha256 })
+        let failed = failed_capture(&image);
+        Ok(Tile { meta, image, depth, sha256, failed })
     }
     fn tiles_ctl(&self, area: usize, ctl: &crate::Ctl) -> Result<Vec<Tile>> {
         let n = self.info().areas.get(area).map_or(0, |a| a.tiles.len());

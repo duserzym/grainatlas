@@ -72,6 +72,7 @@ export interface PairResult {
 }
 
 export interface TilePlacement {
+  failed?: boolean;
   index: number; prior: [number, number]; pos: [number, number];
   x: number; y: number; w: number; h: number; drift: [number, number];
 }
@@ -150,6 +151,7 @@ export interface PhotometricResult {
 }
 
 export interface StitchSummary {
+  failed_tiles?: number[];
   mosaic: MosaicJson;
   placement: Placement;
   photometric: PhotometricResult;
@@ -256,6 +258,7 @@ export interface AreaRecord {
   sample: string;
   pixel_size_nm: number;
   stage_sign: [number, number];
+  failed_tiles?: number[];
   tiles: { file: string; sha256: string; pos_um: [number, number]; stage_nm: [number, number] | null; pixel_size_nm: number; w: number; h: number }[];
   params: AreaParams;
   placement: Placement | null;
@@ -348,6 +351,9 @@ export interface BandRecord {
 /** The `print_sheet` frame: paper sheet ↔ mosaic (not the laser stage registration). */
 export interface PrintRegistration {
   frame: 'print_sheet';
+  layout?: 'whole_area' | '';
+  grid_step_um?: number | null;
+  grid_origin_um?: [number, number] | null;
   note: string;
   package: string;
   project: string;
@@ -385,6 +391,32 @@ export interface GrainOwner {
 }
 
 export interface Ownership { grains: GrainOwner[]; samples: { sample: string; areas: string[] }[] }
+
+export interface WholeParams {
+  paper: string;
+  orientation: 'auto' | 'landscape' | 'portrait';
+  margin_mm: number;
+  um_per_mm: 'auto' | number;
+  dpi: number;
+  grid: boolean;
+  title: string;
+  lab: string;
+  registration_file: string;
+  area_id: string;
+  name: string;
+  project: string;
+  printed: string;
+}
+export interface WholeResult {
+  pages: string[];
+  registration: PrintRegistration;
+  stats: {
+    sheets: number; orientation: string; um_per_mm: number; minimum_um_per_mm: number;
+    image_rect_mm: number[]; gutter_rect_mm: number[]; embedded_px: number[]; embedded_dpi: number[];
+    source_pixel_um: number; smallest_detail_300_um: number; smallest_detail_600_um: number;
+    stage_corners_mm: ([number, number] | null)[];
+  };
+}
 
 export interface SheetResult { pages: string[]; registration: PrintRegistration; stats: SheetStats; ownership: Ownership }
 

@@ -696,6 +696,15 @@ async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grai
     }).await.map_err(e)?
 }
 
+/// Whole area on one sheet (pages, print_sheet registration and stats).
+#[tauri::command]
+async fn print_whole(state: State<'_, AppState>, tab: u32, params: String, tone: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.print_whole(&params, &tone)).map_err(e)
+    }).await.map_err(e)?
+}
+
 /// Drops the open package and project (a project opened from a server becomes a local copy).
 #[tauri::command]
 async fn blank(state: State<'_, AppState>, tab: u32, name: String) -> Res<()> {
@@ -904,6 +913,7 @@ pub fn run() {
             reset_window,
             ownership,
             print_sheets,
+            print_whole,
         ])
         .build(tauri::generate_context!())
         .expect("error while running grainatlas")

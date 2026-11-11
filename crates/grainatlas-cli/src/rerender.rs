@@ -203,7 +203,11 @@ pub fn run(path: &Path, areas: &[String], background: &str, dry_run: bool) -> Re
         let output = &session.outputs[id];
         let before = saved.mosaic.as_ref().expect("validated mosaic");
         let after = &output.mosaic_json;
-        if rec.placement != saved.placement || Some(&output.placement) != saved.placement.as_ref()
+        let mut previous = saved.placement.clone();
+        if let Some(pl) = &mut previous {
+            for (t, now) in pl.tiles.iter_mut().zip(&output.placement.tiles) { t.failed = now.failed; }
+        }
+        if rec.placement != previous || Some(&output.placement) != previous.as_ref()
             || before.w != after.w || before.h != after.h || before.um_per_px != after.um_per_px || before.origin_um != after.origin_um
         {
             bail!("{id}: recomputed geometry differs from saved geometry; nothing was written");
@@ -213,6 +217,14 @@ pub fn run(path: &Path, areas: &[String], background: &str, dry_run: bool) -> Re
         // example an old fallback reason) and misrepresent the newly rendered pixels.
         area["photometric"] = serde_json::to_value(&rec.photometric)?;
         area["mosaic"] = serde_json::to_value(after)?;
+        if !rec.failed_tiles.is_empty() || area.get("failed_tiles").is_some() {
+            area["failed_tiles"] = json!(rec.failed_tiles);
+        }
+        for (i, t) in output.placement.tiles.iter().enumerate() {
+            if t.failed || area["placement"]["tiles"][i].get("failed").is_some() {
+                area["placement"]["tiles"][i]["failed"] = json!(t.failed);
+            }
+        }
         if params.photometric != saved.params.photometric {
             area["params"]["photometric"]["background"] = json!(params.photometric.background);
             if background == "on" {

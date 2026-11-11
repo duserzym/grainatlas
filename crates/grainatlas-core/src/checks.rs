@@ -197,6 +197,14 @@ pub fn check_project(
     labels: Option<&[String]>,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
+    for area in &project.areas {
+        for &index in &area.failed_tiles {
+            let file = area.tiles.get(index).map_or("unknown file", |t| t.file.as_str());
+            let mut f = finding("failed_tile", &[], format!("{}: tile {index} ({file}): blank capture, left out", area.id));
+            f.area_id = Some(area.id.clone());
+            out.push(f);
+        }
+    }
     let missing: Vec<_> = project.areas.iter().filter(|a| !grains.contains_key(&a.id)).map(|a| a.id.as_str()).collect();
     if !missing.is_empty() {
         out.push(finding("never_segmented", &[], format!("{} of {} areas have never been segmented: {}", missing.len(), project.areas.len(), missing.join(", "))));

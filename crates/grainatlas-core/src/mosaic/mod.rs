@@ -73,6 +73,9 @@ pub struct PairResult {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TilePlacement {
     pub index: usize,
+    /// Blank capture: retained at its stage prior, with no contribution to the mosaic.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
     /// Prior top-left position in mosaic pixels.
     pub prior: [f64; 2],
     /// Solved sub-pixel top-left position in mosaic pixels.
@@ -94,6 +97,28 @@ pub struct Placement {
     pub height: usize,
     pub rms_residual: f64,
     pub max_residual: f64,
+}
+
+impl Placement {
+    /// Compact active fields and remap pair endpoints; image buffers can stay borrowed or move.
+    pub(crate) fn active(&self) -> (Self, Vec<usize>) {
+        let ids: Vec<_> = self.tiles.iter().enumerate().filter(|(_, t)| !t.failed).map(|(i, _)| i).collect();
+        let mut map = vec![None; self.tiles.len()];
+        let mut out = self.clone();
+        out.tiles = ids.iter().enumerate().map(|(j, &i)| {
+            map[i] = Some(j);
+            let mut t = self.tiles[i].clone();
+            t.index = j;
+            t
+        }).collect();
+        out.pairs = self.pairs.iter().filter_map(|p| {
+            let mut p = p.clone();
+            p.a = map[p.a]?;
+            p.b = map[p.b]?;
+            Some(p)
+        }).collect();
+        (out, ids)
+    }
 }
 
 /// Prior placement from positions (um) and pixel size, in mosaic pixels.
@@ -189,9 +214,15 @@ pub fn consensus(pairs: &mut [PairResult], n_tiles: usize, tol: f64, strong_psr:
 
 /// Full stitch of one area's tiles.
 pub fn stitch(area: &AreaMeta, tiles: &[Gray], p: &StitchParams, ctl: &Ctl) -> crate::Result<Placement> {
+    let failed: Vec<_> = tiles.iter().map(crate::readers::failed_capture).collect();
+    stitch_with_failed(area, tiles, &failed, p, ctl)
+}
+
+/// Stitch using capture status computed while reading each tile, without rescanning pixels.
+pub fn stitch_with_failed(area: &AreaMeta, tiles: &[Gray], failed: &[bool], p: &StitchParams, ctl: &Ctl) -> crate::Result<Placement> {
     let prior = prior_px(area);
     let sizes: Vec<(usize, usize)> = tiles.iter().map(|t| (t.w, t.h)).collect();
-    let pairs = neighbour_pairs(&prior, &sizes);
+    let pairs: Vec<_> = neighbour_pairs(&prior, &sizes).into_iter().filter(|&(a, b, _)| !failed[a] && !failed[b]).collect();
     let max_drift_px = p.max_drift_um * 1000.0 / area.pixel_size_nm.max(1e-9);
     let n = pairs.len().max(1);
     let done = std::sync::Mutex::new(0usize);
@@ -234,6 +265,7 @@ pub fn stitch(area: &AreaMeta, tiles: &[Gray], p: &StitchParams, ctl: &Ctl) -> c
         h = h.max(y + sizes[i].1 as i64);
         tp.push(TilePlacement {
             index: i,
+            failed: failed[i],
             prior: prior[i],
             pos: [sx, sy],
             x,

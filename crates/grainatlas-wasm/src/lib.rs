@@ -174,6 +174,10 @@ impl Session {
     pub fn print_sheets(&self, params: &str, grains: &str, tone: &str) -> Result<String, JsError> {
         self.0.print_sheets(params, grains, tone).map_err(err)
     }
+    /// Whole area on one sheet (WholeParams and tone JSON); no grains required.
+    pub fn print_whole(&self, params: &str, tone: &str) -> Result<String, JsError> {
+        self.0.print_whole(params, tone).map_err(err)
+    }
     /// Header metadata of the open package for print sheets.
     pub fn sheet_meta(&self) -> Result<String, JsError> {
         self.0.sheet_meta().map_err(err)

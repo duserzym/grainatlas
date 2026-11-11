@@ -43,6 +43,7 @@ pub type Clock<'a> = &'a dyn Fn() -> f64;
 pub fn read_tiles(pkg: &dyn Package, area: usize, rec: &mut AreaRecord) -> crate::Result<Vec<Tile>> {
     let tiles = pkg.tiles(area)?;
     if let Some(meta) = pkg.info().areas.get(area) { rec.merge_metadata(meta); }
+    rec.failed_tiles = tiles.iter().filter(|t| t.failed).map(|t| t.meta.index).collect();
     for (t, r) in tiles.iter().zip(rec.tiles.iter_mut()) {
         r.sha256 = t.sha256.clone();
         r.w = t.image.w;
@@ -60,6 +61,7 @@ pub fn read_tiles_ctl(
 ) -> crate::Result<Vec<Tile>> {
     let tiles = pkg.tiles_ctl(area, ctl)?;
     if let Some(meta) = pkg.info().areas.get(area) { rec.merge_metadata(meta); }
+    rec.failed_tiles = tiles.iter().filter(|t| t.failed).map(|t| t.meta.index).collect();
     for (t, r) in tiles.iter().zip(rec.tiles.iter_mut()) {
         r.sha256 = t.sha256.clone();
         r.w = t.image.w;
@@ -72,6 +74,7 @@ pub fn read_tiles_ctl(
 /// field HDR-merged), with their metadata.
 pub struct Inputs {
     pub imgs: Vec<Gray>,
+    pub failed: Vec<bool>,
     pub meta: crate::readers::AreaMeta,
 }
 
@@ -94,6 +97,8 @@ pub fn inputs(rec: &AreaRecord, tiles: &[Tile]) -> Inputs {
         let imgs: Vec<Gray> = groups
             .iter()
             .map(|g| {
+                let good: Vec<_> = g.iter().copied().filter(|&i| !tiles[i].failed).collect();
+                let g = if good.is_empty() { g } else { &good };
                 if g.len() == 1 {
                     tiles[g[0]].image.clone()
                 } else {
@@ -108,7 +113,8 @@ pub fn inputs(rec: &AreaRecord, tiles: &[Tile]) -> Inputs {
     } else {
         (tiles.iter().map(|t| t.image.clone()).collect(), meta)
     };
-    Inputs { imgs, meta }
+    let failed = groups.iter().map(|g| g.iter().all(|&i| tiles[i].failed)).collect();
+    Inputs { imgs, meta, failed }
 }
 
 /// Runs the whole pipeline on decoded tiles.
@@ -119,10 +125,10 @@ pub fn run(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, ctl: &Ctl,
 /// The whole pipeline, with the area's grains for per-grain tone normalisation.
 pub fn run_with(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, grains: &[Grain], ctl: &Ctl, clock: Clock, timings: &mut Timings,
 ) -> crate::Result<AreaOutput> {
-    let Inputs { imgs, meta } = inputs(rec, tiles);
+    let Inputs { imgs, meta, failed } = inputs(rec, tiles);
     let t0 = clock();
     ctl.report("stitch", 0.0);
-    let placement = mosaic::stitch(&meta, &imgs, &params.stitch, ctl)?;
+    let placement = mosaic::stitch_with_failed(&meta, &imgs, &failed, &params.stitch, ctl)?;
     ctl.report("stitch", 1.0);
     timings.steps.push(("stitch".into(), clock() - t0));
     ctl.check()?;
@@ -139,10 +145,10 @@ pub fn run_owned(
     clock: Clock,
     timings: &mut Timings,
 ) -> crate::Result<AreaOutput> {
-    let Inputs { imgs, meta } = inputs_owned(rec, tiles);
+    let Inputs { imgs, meta, failed } = inputs_owned(rec, tiles);
     let t0 = clock();
     ctl.report("stitch", 0.0);
-    let placement = mosaic::stitch(&meta, &imgs, &params.stitch, ctl)?;
+    let placement = mosaic::stitch_with_failed(&meta, &imgs, &failed, &params.stitch, ctl)?;
     ctl.report("stitch", 1.0);
     timings.steps.push(("stitch".into(), clock() - t0));
     ctl.check()?;
@@ -159,6 +165,7 @@ pub fn inputs_owned(rec: &AreaRecord, tiles: Vec<Tile>) -> Inputs {
     }
     let mut result = inputs(rec, &[]);
     result.meta.tiles = tiles.iter().map(|t| t.meta.clone()).collect();
+    result.failed = tiles.iter().map(|t| t.failed).collect();
     result.imgs = tiles.into_iter().map(|t| t.image).collect();
     result
 }
@@ -243,7 +250,10 @@ pub fn rebuild_heavy(
         progress: &progress,
     };
     let ctl = &inner;
-    let Inputs { imgs, .. } = inputs_owned(rec, tiles);
+    let Inputs { imgs, failed, .. } = inputs_owned(rec, tiles);
+    let mut placement = placement.clone();
+    for (t, failed) in placement.tiles.iter_mut().zip(failed) { t.failed = failed; }
+    let placement = &placement;
     ctl.check()?;
     ctl.report("photometric", 0.0);
     let (corrected, photo) = crate::photometric::correct_ctl(placement, &imgs, &rec.params.photometric, ctl)?;

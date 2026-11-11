@@ -3,10 +3,10 @@
   // browser print dialog as a fallback. Two styles: print sheets (every grain of
   // the mount once, at a fixed scale, with a mount map and the print_sheet
   // registration for hand spot registration) and the grain / area layout.
-  import { untrack } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { download } from '../lib/files';
-  import type { Grain, LayoutParams, LayoutResult, SheetParams, SheetResult, Spot, Label, ToneParams } from '../lib/core/types';
+  import { wholePrintOptions } from '../lib/whole-print';
+  import type { Grain, LayoutParams, LayoutResult, SheetParams, SheetResult, WholeParams, WholeResult, Spot, Label, ToneParams } from '../lib/core/types';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
 
   /** Preview pixels per paper millimetre (zooming in re-rasterises the SVG page). */
@@ -32,8 +32,13 @@
     dpi: 300,
     by_number: false,
   });
-  // Print sheets need grains: without any, open on the grain / area layout.
-  let style = $state<'sheets' | 'layout'>(untrack(() => stitchedIds.some((id) => (app.grains[id] ?? []).length > 0)) ? 'sheets' : 'layout');
+  let style = $state<'sheets' | 'layout'>('sheets');
+  let sheetMode = $state<'grains' | 'whole'>('grains');
+  let orientation = $state<WholeParams['orientation']>('auto');
+  let wholeScale = $state<number | 'auto'>('auto');
+  let grid = $state(true);
+  let wholeArea = $state(app.areaId ?? '');
+  let whole = $state<WholeResult | null>(null);
   let sheet = $state<SheetParams>({
     paper: 'tabloid',
     landscape: true,
@@ -63,6 +68,7 @@
   const hasGrains = $derived(stitchedIds.some((id) => (app.grains[id] ?? []).length > 0));
 
   $effect(() => {
+    if (!stitchedIds.includes(wholeArea)) wholeArea = stitchedIds[0] ?? '';
     if (!params.title && app.pkg) params.title = app.pkg.name;
     if (!hasGrains && params.items === 'grains') params.items = 'areas';
   });
@@ -78,17 +84,30 @@
     p.registration_file = `${exportName}_print_registration.json`;
     p.project = projectFile;
     p.printed = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
-    const r = await app.run('Laying out print sheets', () => core.printSheets(p, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.tone) as Record<string, ToneParams>));
+    const tones = $state.snapshot(app.tone) as Record<string, ToneParams>;
+    sheets = null;
+    whole = null;
+    result = null;
+    const r = sheetMode === 'whole'
+      ? await app.run('Laying out whole area', () => core.printWhole(wholePrintOptions(p, { areaId: wholeArea, orientation, scale: wholeScale, grid }), tones))
+      : await app.run('Laying out print sheets', () => core.printSheets(p, $state.snapshot(app.grains) as Record<string, Grain[]>, tones));
     if (!r) return;
-    app.ownership = r.ownership;
+    if ('ownership' in r) {
+      app.ownership = r.ownership;
+      sheets = r;
+      whole = null;
+    } else {
+      whole = r;
+      sheets = null;
+    }
     for (const u of urls) URL.revokeObjectURL(u);
     urls = r.pages.map((s) => URL.createObjectURL(new Blob([s], { type: 'image/svg+xml' })));
-    sheets = r;
-    result = { pages: r.pages, um_per_mm: r.registration.um_per_mm, items: r.stats.bands, paper_mm: r.registration.paper_mm };
+    result = { pages: r.pages, um_per_mm: r.registration.um_per_mm, items: 'bands' in r.stats ? r.stats.bands : 1, paper_mm: r.registration.paper_mm };
     pageIdx = 0;
   }
   function registration() {
-    if (sheets) download(JSON.stringify(sheets.registration, null, 1), sheets.registration.registration_file || sheets.registration.package + '_print_registration.json', 'application/json');
+    const r = whole ?? sheets;
+    if (r) download(JSON.stringify(r.registration, null, 1), r.registration.registration_file || r.registration.package + '_print_registration.json', 'application/json');
   }
 
   async function generate() {
@@ -96,6 +115,7 @@
     const p = $state.snapshot(params) as LayoutParams;
     if (!p.area_ids.length) p.area_ids = stitchedIds;
     sheets = null;
+    whole = null;
     const r = await app.run('Laying out pages', () =>
       core.layout(p, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.spots) as Spot[], $state.snapshot(app.labels) as Label[], $state.snapshot(app.tone) as Record<string, ToneParams>),
     );
@@ -111,7 +131,7 @@
     const core = await app.core;
     const pages = $state.snapshot(result.pages) as string[];
     const bytes = await app.run('Writing PDF', () => core.pdf(pages));
-    const what = style === 'sheets' ? `grain_sheets_${sheet.paper}` : `${params.items}_${params.paper}`;
+    const what = style === 'sheets' ? `${whole ? 'whole_area' : 'grain_sheets'}_${sheet.paper}` : `${params.items}_${params.paper}`;
     if (bytes) download(bytes, `${app.pkg?.name ?? 'grainatlas'}_${what}.pdf`, 'application/pdf');
   }
   function svgs() {
@@ -143,7 +163,15 @@
       <label class="check"><input type="radio" bind:group={style} value="layout" data-testid="style-layout" /> Grains or areas</label>
     </div>
     {#if style === 'sheets'}
+      <label class="field">Print
+        <select bind:value={sheetMode} data-testid="sheet-mode" onchange={() => { sheets = null; whole = null; result = null; }}>
+          <option value="grains">Grain sheets</option>
+          <option value="whole">Whole area, one sheet</option>
+        </select>
+      </label>
+      {#if sheetMode === 'grains'}
       <p class="muted small-text">Grains are printed in continuous pieces of the mosaic with their neighbours. Where a piece must be cut, a greyed strip repeats the other side.</p>
+      {/if}
       <label class="field">Title <input type="text" bind:value={sheet.title} placeholder={app.pkg?.name ?? ''} /></label>
       <label class="field">Lab and operator <input type="text" bind:value={sheet.lab} placeholder="e.g. Boise State Isotope Geology Lab · Y. Zhang" /></label>
       <div class="two">
@@ -155,8 +183,27 @@
             <option value="a4">A4</option>
           </select>
         </label>
+        {#if sheetMode === 'whole'}
+        <label class="field">Scale (µm per mm) <input type="number" min="0" step="0.5" bind:value={() => typeof wholeScale === 'number' ? wholeScale : undefined, (v) => wholeScale = v && v > 0 ? v : 'auto'} placeholder="auto (fit area)" data-testid="whole-scale" /></label>
+        {:else}
         <label class="field">Scale (µm per mm) <input type="number" min="0" step="0.5" bind:value={() => (typeof sheet.um_per_mm === 'number' && sheet.um_per_mm > 0 ? sheet.um_per_mm : undefined), (value) => (sheet.um_per_mm = value && value > 0 ? value : 'auto')} placeholder="auto (from grain size)" data-testid="sheet-scale" title="Empty: the median grain prints about 15 mm across, on a round scale." /></label>
+        {/if}
       </div>
+      {#if sheetMode === 'whole'}
+      <label class="field">Area
+        <select bind:value={wholeArea} data-testid="whole-area">
+          {#each stitchedIds as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
+        </select>
+      </label>
+      <div class="two">
+        <label class="field">Orientation
+          <select bind:value={orientation} data-testid="whole-orientation">
+            <option value="auto">Auto</option><option value="landscape">Landscape</option><option value="portrait">Portrait</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" bind:checked={grid} data-testid="whole-grid" /> grid</label>
+      </div>
+      {:else}
       <div class="two">
         <label class="field">Smallest grain (µm) <input type="number" min="0" bind:value={sheet.min_grain_um} /></label>
         <label class="field">Keep grains together within (µm) <input type="number" min="0" step="10" bind:value={() => sheet.context_um || undefined, (value) => sheet.context_um = value ?? 0} placeholder="auto (3 grain sizes)" data-testid="sheet-context" title="Grains closer than this stay in one band, and a larger value costs paper." /></label>
@@ -173,11 +220,17 @@
           <span class="swatch" style="background: rgb({sheet.enhance.strip_grey},{sheet.enhance.strip_grey},{sheet.enhance.strip_grey})"></span>
         </label>
       {/if}
-      <button class="primary" onclick={generateSheets} disabled={!hasGrains} title={hasGrains ? '' : 'Find grains first'} data-testid="sheets">Make print sheets</button>
+      {/if}
+      <button class="primary" onclick={generateSheets} disabled={sheetMode === 'whole' ? !wholeArea : !hasGrains} title={sheetMode === 'grains' && !hasGrains ? 'Find grains first' : ''} data-testid="sheets">{sheetMode === 'whole' ? 'Make whole-area sheet' : 'Make print sheets'}</button>
+      {#if whole}
+        <p class="faint small" data-testid="whole-stats">1 sheet, {whole.stats.orientation}, <b>1 mm = {whole.registration.um_per_mm} µm</b>. Source pixel {whole.stats.source_pixel_um.toFixed(2)} µm; smallest detail about {Math.round(whole.stats.smallest_detail_300_um)} µm at 300 dpi, {Math.round(whole.stats.smallest_detail_600_um)} µm at 600 dpi.</p>
+      {/if}
       {#if sheets}
         {@const st = sheets.stats}
         <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>{sheets.registration.auto_scale ? ` (auto: median grain ${Math.round(sheets.registration.auto_scale.median_um)} µm prints ${(sheets.registration.auto_scale.median_um / sheets.registration.um_per_mm).toFixed(1)} mm)` : ''}{sheets.registration.spot_sizes_left_off_um?.length ? `, spot key without ${sheets.registration.spot_sizes_left_off_um.join(', ')} µm` : ''}; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{st.strays ? `, ${st.strays} strays left off` : ''}{st.isolated ? `, ${st.isolated} grains with fewer than two neighbours in their band` : ''}{st.cuts ? `, ${st.cuts} cuts with repeated strips` : ''}{st.forced_cuts ? `, ${st.forced_cuts} forced cuts` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}{st.grains_unmarked ? `, ${st.grains_unmarked} grains visible but not marked` : ''}{st.bands_outside_body ? `, ${st.bands_outside_body} bands outside the sheet body` : ''}.</p>
         <p class="faint small">Header {st.header_mm[0]} mm on sheet 1, {st.header_mm[1]} mm after; band fill {(st.fill.band_area * 100).toFixed(1)}%, line width {(st.fill.line_width * 100).toFixed(1)}%, repeated {(st.fill.repeated * 100).toFixed(1)}% (worst band {(st.worst_repeated_fraction * 100).toFixed(1)}%), empty rows inside bands {(st.fill.empty_epoxy * 100).toFixed(1)}%; blank below this sheet's last line {st.height_budget[pageIdx]?.blank_below_mm.toFixed(1) ?? '0'} mm.</p>
+      {/if}
+      {#if sheets || whole}
         <div class="two">
           <button onclick={pdf} data-testid="export-pdf">Export PDF</button>
           <button onclick={registration} data-testid="export-registration">Registration</button>

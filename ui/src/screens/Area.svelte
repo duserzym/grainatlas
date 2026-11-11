@@ -153,11 +153,13 @@
               preview={app.preview[meta.id] ?? null} onlevel={(l) => (app.drawLevel = l)} onclick={tileClick}>
               {#snippet overlay(v)}
                 {#each boxes as b (b.i)}
-                  <g class="tile" class:sel={tileSel === b.i}>
+                  {@const failed = placement?.tiles[b.i]?.failed ?? summary?.failed_tiles?.includes(b.i) ?? false}
+                  <g class="tile" class:sel={tileSel === b.i} class:failed>
+                    {#if failed}<title>tile {b.i}: blank capture, left out</title>{/if}
                     {#if !summary && thumbs[`${meta.id}/${b.i}`]}
                       <image href={thumbs[`${meta.id}/${b.i}`]} x={b.x} y={b.y} width={b.w} height={b.h} opacity="0.92" />
                     {/if}
-                    {#if showTiles || !summary}<rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" />{/if}
+                    {#if showTiles || !summary || failed}<rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" />{/if}
                     {#if showTiles || !summary}<text x={b.x + 8 / v.zoom} y={b.y + 18 / v.zoom} font-size={13 / v.zoom}>{b.i}</text>{/if}
                   </g>
                 {/each}
@@ -367,6 +369,11 @@
   }
   .grid :global(.tile.sel rect) {
     stroke: var(--ov-number);
+    stroke-width: 2.5;
+    opacity: 1;
+  }
+  .grid :global(.tile.failed rect) {
+    stroke: var(--warning);
     stroke-width: 2.5;
     opacity: 1;
   }

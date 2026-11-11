@@ -169,8 +169,9 @@ fn tile_stats(t: &Gray) -> TileStats {
 /// A tile mostly off the mount (BSE: dark beyond the mount edge) or mostly grain (CL-bright
 /// grains) has its largest peak elsewhere; taking that for background would pull it to the
 /// level of the others and print the whole tile as a bright or dark panel.
-fn tiles_stats(tiles: &[Gray], neighbours: &[Vec<usize>]) -> Vec<TileStats> {
-    let hists: Vec<Vec<f64>> = crate::util::par_map(tiles.len(), |i| smoothed_hist(&tiles[i]));
+fn tiles_stats(tiles: &[impl std::borrow::Borrow<Gray>], neighbours: &[Vec<usize>]) -> Vec<TileStats> {
+    let tiles: Vec<&Gray> = tiles.iter().map(|g| g.borrow()).collect();
+    let hists: Vec<Vec<f64>> = crate::util::par_map(tiles.len(), |i| smoothed_hist(tiles[i]));
     let pks: Vec<Vec<usize>> = hists.iter().map(|h| peaks(h)).collect();
     crate::util::par_map(tiles.len(), |i| {
         let mut mi = pks[i].first().copied().unwrap_or(128);
@@ -188,7 +189,7 @@ fn tiles_stats(tiles: &[Gray], neighbours: &[Vec<usize>]) -> Vec<TileStats> {
                 mi = p;
             }
         }
-        tile_stats_at(&tiles[i], bin_value(mi))
+        tile_stats_at(tiles[i], bin_value(mi))
     })
 }
 
@@ -311,13 +312,14 @@ type Correction = (Vec<Gray>, JointSolution, Vec<f32>, Vec<f32>);
 
 pub fn correct_ctl(
     pl: &Placement,
-    tiles: &[Gray],
+    tiles: &[impl std::borrow::Borrow<Gray>],
     bp: &BackgroundParams,
     fixed: &Fixed,
     overrides: &[(usize, Option<f32>, Option<f32>)],
     ctl: &crate::Ctl,
 ) -> crate::Result<Correction> {
     ctl.check()?;
+    let tiles: Vec<&Gray> = tiles.iter().map(|g| g.borrow()).collect();
     let n = tiles.len();
     let block = (bp.cell / 2).max(4) as i64;
 
@@ -343,11 +345,11 @@ pub fn correct_ctl(
             }
         }
     }
-    let stats: Vec<TileStats> = tiles_stats(tiles, &neighbours);
+    let stats: Vec<TileStats> = tiles_stats(&tiles, &neighbours);
     // Step rectangles: the overlaps, with their inner edges moved onto the step lines found in
     // the tile's background, and the step lines that no overlap edge explains.
     let lines: Vec<Cuts> = crate::util::try_par_map(n, ctl, |i| {
-        Ok(if fixed.skip[i] { (Vec::new(), Vec::new()) } else { step_lines(&tiles[i], &stats[i]) })
+        Ok(if fixed.skip[i] { (Vec::new(), Vec::new()) } else { step_lines(tiles[i], &stats[i]) })
     })?;
     if std::env::var_os("GRAINATLAS_DEBUG_STEPS").is_some() {
         for (i, l) in lines.iter().enumerate() {
@@ -385,7 +387,7 @@ pub fn correct_ctl(
         .collect();
     // Stage 1: every tile flattened on its own.
     let flat: Vec<Option<(Gray, f32)>> = crate::util::try_par_map(n, ctl, |i| {
-        Ok(if fixed.skip[i] { None } else { flatten_tile(&tiles[i], &stats[i], &cuts[i], (block / 2).max(4)) })
+        Ok(if fixed.skip[i] { None } else { flatten_tile(tiles[i], &stats[i], &cuts[i], (block / 2).max(4)) })
     })?;
     let mut range1 = vec![0.0f32; n];
     let leveled: Vec<Gray> = flat
@@ -396,7 +398,7 @@ pub fn correct_ctl(
                 range1[i] = r;
                 g
             }
-            None => tiles[i].clone(),
+            None => (*tiles[i]).clone(),
         })
         .collect();
     // Stage 2: gains, offsets, surfaces and overlap steps of all tiles together.
@@ -1147,7 +1149,7 @@ mod tests {
         let leveled = tiles_stats(&[flat], &[Vec::new()]);
         assert_ne!(raw[0].mode, leveled[0].mode, "scene must change the stage-two histogram bin");
         let pl = Placement {
-            tiles: vec![crate::mosaic::TilePlacement { index: 0, prior: [0.0; 2], pos: [0.0; 2], x: 0, y: 0, w, h, drift: [0.0; 2] }],
+            tiles: vec![crate::mosaic::TilePlacement { failed: false, index: 0, prior: [0.0; 2], pos: [0.0; 2], x: 0, y: 0, w, h, drift: [0.0; 2] }],
             pairs: Vec::new(), width: w, height: h, rms_residual: 0.0, max_residual: 0.0,
         };
         let bp = BackgroundParams { cell: 32, ..Default::default() };

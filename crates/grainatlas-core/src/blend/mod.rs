@@ -52,6 +52,15 @@ pub fn blend(
     fill: f32,
     ctl: &Ctl,
 ) -> crate::Result<(Gray, Vec<f32>)> {
+    ctl.check()?;
+    if pl.tiles.iter().any(|t| t.failed) {
+        let (active, _) = pl.active();
+        let tiles = tiles.into_iter().zip(&pl.tiles).filter(|(_, t)| !t.failed).map(|(g, _)| g).collect();
+        if active.tiles.is_empty() {
+            return Ok((Gray::filled(pl.width, pl.height, fill), vec![0.0; pl.width * pl.height]));
+        }
+        return blend(&active, tiles, p, fill, ctl);
+    }
     let (w, h) = (pl.width, pl.height);
     ctl.report("seams", 0.0);
     let (px, cov) = match p.mode {
@@ -268,7 +277,7 @@ mod tests {
             w, h, px: (0..w*h).map(|j| ((j * 47 + i * 19 + j / w * 7) % 251) as f32 / 255.0).collect(),
         }).collect();
         let pl = Placement { width: 140, height: 107, tiles: rects.iter().enumerate().map(|(index, &(x, y, w, h))| TilePlacement {
-            index, x, y, w, h, pos: [x as f64, y as f64], prior: [x as f64, y as f64], drift: [0.0; 2],
+            failed: false, index, x, y, w, h, pos: [x as f64, y as f64], prior: [x as f64, y as f64], drift: [0.0; 2],
         }).collect(), pairs: Vec::new(), rms_residual: 0.0, max_residual: 0.0 };
         for seam_factor in [1, 3, 8, 16] {
             let weights = reference_weights(&pl, &tiles, seam_factor);

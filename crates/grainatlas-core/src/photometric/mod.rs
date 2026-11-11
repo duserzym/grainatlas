@@ -88,7 +88,8 @@ pub struct PhotometricResult {
 /// its centre among all tiles covering them (ties go to the lower index). Sample at most about
 /// 64 x 64 pixels per tile; this is a panel-level guard, not a second full-image analysis.
 /// Returns (global spread, largest overlapping-neighbour difference) for joint and affine.
-fn background_level_comparison(pl: &Placement, raw: &[Gray], joint: &[Gray], stats: &[joint::TileStats], gain: &[f32], offset: &[f32]) -> [(f32, f32); 2] {
+fn background_level_comparison(pl: &Placement, raw: &[impl std::borrow::Borrow<Gray>], joint: &[Gray], stats: &[joint::TileStats], gain: &[f32], offset: &[f32]) -> [(f32, f32); 2] {
+    let raw: Vec<&Gray> = raw.iter().map(|g| g.borrow()).collect();
     let n = raw.len();
     let mut neighbours = vec![Vec::new(); n];
     for a in 0..n {
@@ -163,7 +164,7 @@ fn joint_is_worse(joint: (f32, f32), affine: (f32, f32)) -> bool {
 }
 
 /// Overlap samples between placed tiles: (tile a, tile b, value a, value b).
-fn overlap_samples(pl: &Placement, tiles: &[Gray], step: usize) -> Vec<(usize, usize, f32, f32)> {
+fn overlap_samples(pl: &Placement, tiles: &[&Gray], step: usize) -> Vec<(usize, usize, f32, f32)> {
     let mut out = Vec::new();
     for p in &pl.pairs {
         let (ta, tb) = (&pl.tiles[p.a], &pl.tiles[p.b]);
@@ -193,7 +194,7 @@ fn overlap_samples(pl: &Placement, tiles: &[Gray], step: usize) -> Vec<(usize, u
 /// the RMS of the difference of `block` x `block` px means, which leaves out noise and small
 /// misregistration and measures what shows as tile blocks and exposure steps.
 pub fn overlap_metrics(pl: &Placement, tiles: &[Gray], block: usize) -> (f32, f32) {
-    let px = rms(&overlap_samples(pl, tiles, 3), &vec![1.0; tiles.len()], &vec![0.0; tiles.len()]);
+    let px = rms(&overlap_samples(pl, &tiles.iter().collect::<Vec<_>>(), 3), &vec![1.0; tiles.len()], &vec![0.0; tiles.len()]);
     let b = block.max(4) as i64;
     let (mut s, mut n) = (0.0f64, 0usize);
     for p in &pl.pairs {
@@ -329,7 +330,8 @@ pub fn solve_dense(mut a: Vec<f64>, mut b: Vec<f64>, n: usize) -> Option<Vec<f64
 }
 
 /// Applies the correction: gain/offset (automatic, then overrides), then background leveling.
-/// Returns corrected tiles and the result record.
+/// Returns corrected tiles and the result record. Failed placements keep dimension-only
+/// entries with empty pixels; blending omits them before accessing pixels.
 pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams,
 ) -> (Vec<Gray>, PhotometricResult) {
     correct_ctl(pl, tiles, p, &crate::Ctl::NONE).expect("uncancelled correction")
@@ -341,8 +343,36 @@ pub fn correct_ctl(
     p: &PhotometricParams,
     ctl: &crate::Ctl,
 ) -> crate::Result<(Vec<Gray>, PhotometricResult)> {
+    let (active, ids) = pl.active();
+    let refs: Vec<_> = ids.iter().map(|&i| &tiles[i]).collect();
+    let mut params = p.clone();
+    params.overrides = p.overrides.iter().filter_map(|ov| {
+        let index = ids.iter().position(|&i| i == ov.index)?;
+        Some(TileOverride { index, ..ov.clone() })
+    }).collect();
+    let (out, mut res) = correct_refs(&active, &refs, &params, ctl)?;
+    if ids.len() == tiles.len() { return Ok((out, res)); }
+    let expand = |values: &[f32], default: f32| {
+        let mut all = vec![default; tiles.len()];
+        for (&i, &v) in ids.iter().zip(values) { all[i] = v; }
+        all
+    };
+    res.auto_gain = expand(&res.auto_gain, 1.0);
+    res.auto_offset = expand(&res.auto_offset, 0.0);
+    res.gain = expand(&res.gain, 1.0);
+    res.offset = expand(&res.offset, 0.0);
+    res.background_range = expand(&res.background_range, 0.0);
+    let mut out = out.into_iter();
+    let all = pl.tiles.iter().map(|t| {
+        if t.failed { Gray { w: t.w, h: t.h, px: Vec::new() } } else { out.next().expect("active tile") }
+    }).collect();
+    Ok((all, res))
+}
+
+fn correct_refs(pl: &Placement, tiles: &[&Gray], p: &PhotometricParams, ctl: &crate::Ctl) -> crate::Result<(Vec<Gray>, PhotometricResult)> {
     ctl.check()?;
     let n = tiles.len();
+    if n == 0 { return Ok((Vec::new(), PhotometricResult::default())); }
     let samples = overlap_samples(pl, tiles, 3);
     let (ag, ao) = match p.model {
         GainModel::Affine => fit_affine(n, &samples, p.regularisation),
@@ -422,7 +452,7 @@ pub fn correct_ctl(
         } else {
             out
         };
-        let after = overlap_samples(pl, &out, 3);
+        let after = overlap_samples(pl, &out.iter().collect::<Vec<_>>(), 3);
         res.overlap_rms_after = rms(&after, &vec![1.0; n], &vec![0.0; n]);
         ctl.check()?;
         return Ok((out, res));
@@ -440,7 +470,7 @@ pub fn correct_ctl(
         res.background_median = median;
         res.background_range = ranges;
     }
-    let after_samples = overlap_samples(pl, &out, 3);
+    let after_samples = overlap_samples(pl, &out.iter().collect::<Vec<_>>(), 3);
     res.overlap_rms_before = before;
     res.overlap_rms_after = rms(&after_samples, &vec![1.0; n], &vec![0.0; n]);
     ctl.check()?;
@@ -458,7 +488,7 @@ mod tests {
             for c in 0..cols {
                 let (x, y) = ((c * w * 3 / 4) as i64, (r * h * 3 / 4) as i64);
                 let pos = [x as f64, y as f64];
-                tiles.push(TilePlacement { index: tiles.len(), prior: pos, pos, x, y, w, h, drift: [0.0; 2] });
+                tiles.push(TilePlacement { failed: false, index: tiles.len(), prior: pos, pos, x, y, w, h, drift: [0.0; 2] });
             }
         }
         Placement { tiles, pairs: Vec::new(), width: (cols - 1) * w * 3 / 4 + w, height: (rows - 1) * h * 3 / 4 + h, rms_residual: 0.0, max_residual: 0.0 }

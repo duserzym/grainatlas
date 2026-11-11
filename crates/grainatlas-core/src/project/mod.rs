@@ -111,6 +111,9 @@ pub struct AreaRecord {
     pub pixel_size_nm: f64,
     pub stage_sign: [f64; 2],
     pub tiles: Vec<TileRef>,
+    /// Original package indices of blank captures, before any HDR grouping.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_tiles: Vec<usize>,
     #[serde(default)]
     pub params: AreaParams,
     /// Solved placement (drift per tile, pair residuals).
@@ -187,6 +190,7 @@ impl AreaRecord {
                 .iter()
                 .map(|t| TileRef { file: t.file.clone(), sha256: String::new(), pos_um: t.pos_um, stage_nm: t.stage_nm, pixel_size_nm: t.pixel_size_nm, w: t.w, h: t.h })
                 .collect(),
+            failed_tiles: Vec::new(),
             params: AreaParams::default(),
             placement: None,
             photometric: None,

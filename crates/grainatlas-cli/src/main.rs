@@ -464,9 +464,10 @@ fn main() -> Result<()> {
                 let rec = project.area_mut(&a.id).expect("area");
                 let tiles = pipeline::read_tiles(pkg.as_ref(), ai, rec)?;
                 let inputs = pipeline::inputs(rec, &tiles);
-                let placement = grainatlas_core::mosaic::stitch(
+                let placement = grainatlas_core::mosaic::stitch_with_failed(
                     &inputs.meta,
                     &inputs.imgs,
+                    &inputs.failed,
                     &sets[0].1.stitch,
                     &Ctl::NONE,
                 )?;
@@ -744,7 +745,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
                 .join(", ")
         );
         summary.push(serde_json::json!({
-            "area": area.id, "tiles": tile_count, "w": o.linear.w, "h": o.linear.h,
+            "area": area.id, "failed_tiles": rec.failed_tiles, "tiles": tile_count, "w": o.linear.w, "h": o.linear.h,
             "pairs": o.placement.pairs.len(), "pairs_measured": pairs_used,
             "rms_px": o.placement.rms_residual, "max_px": o.placement.max_residual,
             "ms": total, "steps": timings.steps, "sha256": o.mosaic_json.sha256,

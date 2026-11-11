@@ -663,5 +663,11 @@ stats}`; use `layout::pdf::pdf_from_svgs(&pages)` for PDF. Hosts can override
 `printed` (the current UTC date by default), and should choose `name` or
 `registration_file` before rendering. The call borrows only
 resident base pixels, so it works after heavy-buffer eviction. It reports
-an error if the selected area has no stitched mosaic. This task does not
-add a Tauri command or a UI control.
+an error if the selected area has no stitched mosaic.
+
+In the app, Layout → Print sheets offers Grain sheets (default) and Whole
+area, one sheet. Whole-area printing selects a stitched area without requiring
+grains, with auto, landscape or portrait orientation, automatic fit or a fixed
+µm/mm scale, and a grid checkbox. PDF and registration use the same export
+controls as grain sheets. Both the desktop blocking pool and browser worker
+call `Session::print_whole`; the base mosaic remains available after eviction.

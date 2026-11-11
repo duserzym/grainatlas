@@ -399,7 +399,7 @@ impl Session {
         let summary = serde_json::json!({
             "mosaic": out.mosaic_json,
             "placement": out.placement,
-            "photometric": rec.photometric,
+            "photometric": rec.photometric, "failed_tiles": rec.failed_tiles,
             "timings": timings.steps,
         });
         self.outputs.insert(area_id.to_string(), out);
@@ -444,7 +444,8 @@ impl Session {
             ctl.report("read", 1.0);
             ctl.check()?;
             timings.steps.push(("read".into(), clock() - t0));
-            let placement = rec.placement.clone().expect("placement");
+            let mut placement = rec.placement.clone().expect("placement");
+            for (t, failed) in placement.tiles.iter_mut().zip(inputs.failed) { t.failed = failed; }
             let grains = self.grains.get(area_id).map_or(&[][..], |g| g.as_slice());
             let out = pipeline::finish(rec, inputs.imgs, placement, &p, grains, ctl, clock, &mut timings,
             )?;
@@ -455,7 +456,7 @@ impl Session {
         self.trim(None);
         let rec = self.rec(area_id)?;
         let o = self.out(area_id)?;
-        Ok(serde_json::json!({ "mosaic": o.mosaic_json, "placement": o.placement, "photometric": rec.photometric, "timings": timings.steps }).to_string())
+        Ok(serde_json::json!({ "mosaic": o.mosaic_json, "placement": o.placement, "photometric": rec.photometric, "failed_tiles": rec.failed_tiles, "timings": timings.steps }).to_string())
     }
 
     /// A live preview of `params` on a stitched area, downsampled `2^level` times (an 8-byte

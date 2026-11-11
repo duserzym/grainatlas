@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, OutlinePad, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, OutlinePad, WholeParams, WholeResult, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
 
 import wasmUrl from './pkg/grainatlas_bg.wasm?url';
 
@@ -377,6 +377,11 @@ export class WasmCore implements Core {
   async ownership(grains: Record<string, Grain[]>): Promise<Ownership> {
     await this.ready();
     return this.call('ownership', { grains });
+  }
+
+  async printWhole(params: WholeParams, tone: Record<string, ToneParams>): Promise<WholeResult> {
+    await this.ready();
+    return this.call('printWhole', { params, tone });
   }
 
   async printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult> {

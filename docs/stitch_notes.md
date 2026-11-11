@@ -161,3 +161,13 @@ is corrected by the consensus. The dropped step then lands 7 px from the
 package's placement, within the spread of the stage's own left-right steps
 (up to ~10 px here). Pairs inside loops are untouched (the fixture mosaic
 hash did not change).
+
+When tiles are decoded, blank captures are detected in one pass: population
+standard deviation below 0.5 grey levels (on a 0–255 scale), or more than
+99.5 % of pixels sharing one value. A failed tile stays in the placement
+list with `failed: true` at its stage prior, but takes no part in pair
+registration, photometric correction, background leveling or blending. Its
+footprint has only the neighbours’ overlap and no-data elsewhere, with zero
+coverage. `failed_tiles` lists the original tile indices in stitch summaries
+and project area metadata; `grainatlas check` warns with the index and file
+name, and the Area screen outlines the failed tile in the warning colour.
