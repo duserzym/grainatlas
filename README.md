@@ -1,10 +1,104 @@
 # grainatlas
 
-Open-source stitching, correction, segmentation, spot-placement and print-layout
-tool for SEM grain-mount images (CL, BSE, SE) used to plan LA-ICP-MS sessions.
-One Rust core, delivered as a static web page (wasm in a Web Worker) and as a
-desktop app (Tauri 2, native multithreaded core) from the same Svelte
-interface. Companion to [laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
+Stitch, tone, segment, spot and print SEM grain-mount images (CL, BSE, SE) for
+LA-ICP-MS sessions. One Rust core runs as a static web page (wasm in a Web
+Worker) and as a desktop app (Tauri 2, native and multithreaded) behind the
+same Svelte interface. Nothing leaves your computer: packages are read
+in place. Companion to [laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
+
+![grainatlas: CL zircon grains outlined on the canvas, with spots named sample-n](docs/images/07-dark.webp)
+
+## Workflow
+
+The screenshots are of the bundled test fixture: one 3 × 2 tile area of a
+Hitachi TM4000 CL package at 150×. `make screenshots` takes them again.
+
+### 1. Open a package
+
+Drop a folder on the window, or choose one. grainatlas reads a TM4000 Zigzag
+package (`.zag`, one subfolder per area), a single area folder, any folder of
+images with a `positions.csv`, or loose images with a scale you type once.
+Several packages or saved projects open as tabs.
+
+![Open screen](docs/images/01-open.webp)
+
+### 2. Stitch and tone
+
+**Stitch all areas** places the tiles from the stage positions, refines every
+overlap and solves the whole area at once (the residuals are shown on the
+mosaic). Gain, offset, beam-exposure steps and background are corrected in
+one solve. **Auto** sets the tone from the histogram; every control re-renders
+the mosaic live, and **After ⇄** compares with the raw tiles.
+
+![Area screen after stitching and Auto tone](docs/images/02-stitch-tone.webp)
+
+### 3. Find the grains
+
+On the **Canvas**, **Grains → Find grains** outlines every grain. For CL,
+choose "brighter or darker" so CL-dark zircons are found too. Epoxy bubbles,
+tile-seam slivers, exposure blocks and specks are flagged rather than deleted:
+they show dimmed with their reason, and one click keeps one as a grain.
+Grains are numbered in reading order, stable across re-runs. Grains that a
+neighbouring area also captured are dashed in that area's colour.
+
+![Grains found on the canvas](docs/images/03-grains.webp)
+
+### 4. Make the final call by hand
+
+You decide what a grain is.
+
+| Tool | Key | What it does |
+|------|-----|--------------|
+| **Delete** | D | Click a grain to remove it. The grain card also has **Not a grain** and **Delete grain**. |
+| **Outline** | O | Draw a lasso, freehand or click by click; it snaps to grain edges (hold ⌘ for no snap). Close it with a double-click, Enter or a click on the first point. A new outline replaces the grain under it; ⇧ adds to that grain, ⌥ cuts from it. |
+| **Brush** | B | Paint a grain larger at a size in µm; ⌥ erases. |
+| **+Grain**, **Split** | G, K | Add a grain at a click; split touching grains. |
+
+**Find again** keeps the grains you drew, and ⌘Z undoes any edit.
+
+![Outlining a grain click by click with edge snapping](docs/images/04-outline.webp)
+
+### 5. Place spots
+
+With the **Spot** tool (S), click a grain to place a laser spot. The size box
+(toolbar and the side panel's **Spot entry**) sets the diameter: arrows step
+1 µm (⇧ 5, ⌥ 0.5), typed values such as 40.5 are kept, keys 1–6 pick a preset.
+Spots are named from a pattern, `{sample}-{n}` by default. Within a working
+session `n` counts up across samples and areas, like an instrument run number;
+Spot entry shows the next name and warns when it is already used. Type **Next
+n** to start anywhere, or tick "restart at 1 for each sample". Drag a spot to
+move it, drag its ring to resize it, and export the spots as CSV or GeoJSON.
+
+Select several spots (or grains) to edit them together: ⌘-click toggles,
+⇧-click selects a range in a table and adds on the canvas, ⇧-drag on empty
+space draws a rectangle, ⌘A selects all in the area, Esc clears. The selection
+then takes a new diameter, **Renumber…** (from a start number, in table,
+placement or row order, with a preview and a check for names used twice),
+**Sample or pattern…** or Delete, each one undo step.
+
+![Spots named HJ-GC1-1 … HJ-GC1-6, with a spot card open](docs/images/05-spots.webp)
+
+### 6. Print sheets for the laser session
+
+**Layout → Make print sheets** puts every grain of the mount on paper once, at
+one scale (tabloid, 1 mm = 8 µm by default):
+
+- Each sample is cut into bands straight out of the mosaic.
+- Each sheet carries the instrument header, a mount map and the laser spot
+  sizes at print scale.
+- **Export** writes the PDF and its `print_registration.json`, which maps
+  every band back to the mosaic.
+
+**Save project** (⌘S) writes the project back into the `.grainatlas` folder
+it came from.
+
+![A tabloid print sheet](docs/images/06-sheets.webp)
+
+After the session, laicpmsdb's results show on the spots. A fiducial fit maps
+the mosaic to the laser stage and writes the spot list (see "laicpmsdb and the
+laser" below).
+
+## What it does, in detail
 
 Status: roadmap phases 1–11 of `ARCHITECTURE_PLAN.md` are implemented (readers
 and stitching, photometric correction, web UI, segmentation and scale, spots,
@@ -12,8 +106,6 @@ print layout, desktop, the laicpmsdb link, atlas bundles, results overlay and
 laser registration), except a reader for a second instrument (phase 8, waiting
 for example files) and an adapter for the lab's laser software (phase 11,
 waiting for its name and an example file).
-
-## What it does
 
 1. Opens a Hitachi TM4000 Zigzag package (`.zag`, UTF-16LE `.ini` and per-tile
    `.txt`, unknown keys kept), one TM4000 area folder on its own (scale and
@@ -31,7 +123,8 @@ waiting for its name and an example file).
    after segmentation each grain's tone can be matched to the area or to one
    grain.
 3. Finds and numbers grains (reading order, stable across re-runs), with
-   GrabCut refinement and manual add, split, merge and renumber; scale bars
+   GrabCut refinement and manual add, split, merge and renumber; hand editing
+   with an edge-snapping lasso and a brush, kept across re-runs; scale bars
    per grain; grain table CSV. The artifact rules follow the image signal
    (CL or BSE, read from the TM4000 metadata, overridable in the Grains tab;
    `docs/print_sheets.md`). The Grains tab says when an area has never been
@@ -44,8 +137,9 @@ waiting for its name and an example file).
    It requires an existing grain list and cannot be combined with `--missing`.
 4. Places laser spots, lines and rasters on an infinite canvas with the mouse
    or trackpad alone (click to place, drag to move, drag the ring to resize,
-   double-click to rename), named from a pattern such as
-   `{sample}-{grain}-{n}`, with UUIDv7 ids; exports CSV and GeoJSON.
+   double-click to rename), named from a pattern, `{sample}-{n}` by default (n continues across
+   samples within a session, or per sample when chosen), with UUIDv7 ids;
+   batch edits of the selection; exports CSV and GeoJSON.
 5. Packs grains or areas onto Letter, Tabloid, A4 or A3 pages with labels,
    scale bars, spots and cut marks; exports PDF and SVG.
 6. Registers reference images (photos of annotated printouts, post-laser
@@ -301,11 +395,18 @@ crates/grainatlas-cli    `grainatlas` command line
 ui/                    Svelte 5 + TypeScript + Vite; src/lib/core/{wasm,tauri}.ts implement the Core interface
 tauri/                 Tauri 2 desktop shell (src-tauri)
 tests/fixtures/        one TM4000 area (6 tiles) for tests; tests/golden/ the fixture mosaic hash
-docs/                  ADRs, stitch notes, legacy workflow, UX conventions, laser adapters
+docs/                  ADRs, stitch notes, legacy workflow, UX conventions, laser adapters; images/ README screenshots
+site/                  project website (static, no build step)
 ```
 
 Code only lives here. Image data stays on the lab NAS or your laptop; the only
-images in this repository are the small test fixture under `tests/fixtures/`.
+images in this repository are the small test fixture under `tests/fixtures/`
+and the README screenshots in `docs/images/` (WebP, about 600 KB in all,
+taken of that fixture by `make screenshots`).
+
+The project website lives in `site/` (`make site` assembles it in
+`target/site`); it is published to GitHub Pages only by running the Pages
+workflow by hand.
 
 License: MIT. Image algorithms reused from
 [storytold/photocraft](https://github.com/storytold/photocraft) (MIT OR

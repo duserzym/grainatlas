@@ -24,6 +24,7 @@ Thumbs.db
 *.grainatlas/
 !tests/fixtures/**
 !docs/**/*.png
+!docs/images/*.webp
 !ui/public/**
 !ui/static/**
 /ui/src/lib/core/pkg/
