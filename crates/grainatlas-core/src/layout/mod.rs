@@ -6,6 +6,7 @@
 
 pub mod pdf;
 pub mod sheets;
+pub mod whole;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

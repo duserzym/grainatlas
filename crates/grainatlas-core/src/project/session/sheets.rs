@@ -16,6 +16,40 @@ fn parse<T: serde::de::DeserializeOwned + Default>(s: &str) -> Result<T> {
 }
 
 impl Session {
+    /// Whole area on one sheet. WholeParams JSON and `{area_id: ToneParams}` JSON;
+    /// returns `{pages, registration, stats}`. Only borrows the base mosaic, even
+    /// after heavy-buffer eviction. Hosts turn pages into PDF with pdf_from_svgs.
+    pub fn print_whole(&self, params_json: &str, tone_json: &str) -> Result<String> {
+        let p: crate::layout::whole::WholeParams = parse(params_json)?;
+        let tone: BTreeMap<String, ToneParams> = parse(tone_json)?;
+        let project = self
+            .project
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("no project".into()))?;
+        let rec = p.select_area(&project.areas)?;
+        let o = self
+            .outputs
+            .get(&rec.id)
+            .ok_or_else(|| Error::Invalid(format!("area {} has no stitched mosaic", rec.id)))?;
+        let area = SheetArea {
+            rec,
+            img: super::pipeline::area_image(rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)),
+        };
+        let mut meta = self.meta()?;
+        if let Ok(pkg) = self.pkg() {
+            let mut info = pkg.info().clone();
+            info.areas.retain(|a| a.id == rec.id);
+            meta = sheets::sheet_meta(&info);
+        }
+        meta.areas = 1;
+        meta.tiles = rec.tiles.len();
+        meta.um_per_px = rec.um_per_px();
+        let mut r = crate::layout::whole::whole_sheet(&p, &area, &meta)?;
+        r.registration.project_uuid = Some(project.uuid);
+        r.registration.project_path = self.project_path.clone();
+        serde_json::to_string(&r).map_err(invalid)
+    }
+
     /// Cross-area ownership of the UI's grains (`{area_id: [Grain]}` JSON) with
     /// [`OwnershipParams`] JSON ("" = defaults). Returns [`ownership::Ownership`] JSON: for every
     /// detection its owner area and, for a duplicate, the owner's grain id; and the samples.

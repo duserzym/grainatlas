@@ -11,6 +11,7 @@ mod legacy;
 mod import;
 mod segment;
 mod rerender;
+mod whole;
 use grainatlas_core::Ctl;
 use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
 use grainatlas_core::project::pipeline::{self, Timings};
@@ -37,7 +38,21 @@ enum Cmd {
         project: PathBuf,
         #[arg(long)]
         out: PathBuf,
-        /// SheetParams JSON; missing fields use defaults.
+        /// sheets (default) or whole (one continuous area, no segmentation required).
+        #[arg(long, default_value = "sheets", value_parser = ["sheets", "grains", "whole"])]
+        layout: String,
+        #[arg(long)]
+        area: Option<String>,
+        #[arg(long, value_parser = ["auto", "landscape", "portrait"])]
+        orientation: Option<String>,
+        #[arg(long)]
+        dpi: Option<f64>,
+        #[arg(long)]
+        no_grid: bool,
+        /// Whole-area output stem (without directory or extension).
+        #[arg(long)]
+        name: Option<String>,
+        /// SheetParams or WholeParams JSON; missing fields use defaults.
         #[arg(long)]
         params: Option<PathBuf>,
         /// tabloid (default), letter, a4 or a3.
@@ -200,14 +215,14 @@ struct StitchOptions {
     /// Also segment grains (masks/<area>/, exports/<area>_grains.csv).
     #[arg(long)]
     segment: bool,
-    /// Also print (implies --segment). Paper: tabloid (default), letter, a4, a3.
+    /// Also print (implies --segment except with --print-style whole). Paper: tabloid (default), letter, a4, a3.
     /// Sheets (default): every owned grain of the package on landscape sheets at a fixed scale,
     /// exports/<package>_grain_sheets_<paper>.pdf with <package>_print_registration.json
     /// (frame print_sheet). With --print-style grains: one packed grain map per area,
     /// exports/<area>_grains.pdf.
     #[arg(long, value_name = "PAPER", num_args = 0..=1, default_missing_value = "tabloid")]
     print: Option<String>,
-    /// sheets (default) or grains.
+    /// sheets (default), grains, or whole (one area, no segmentation implied).
     #[arg(long, default_value = "sheets")]
     print_style: String,
     /// Print scale in um of sample per mm of paper (sheets: 0 = auto from the grain sizes; grains: 0 = fit).
@@ -251,12 +266,53 @@ fn main() -> Result<()> {
             project,
             out,
             params,
+            layout,
+            area,
+            orientation,
+            dpi,
+            no_grid,
+            name,
             paper,
             scale,
             svg,
             title,
             lab,
         } => {
+            if layout == "whole" {
+                let mut p: grainatlas_core::layout::whole::WholeParams = match params {
+                    Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
+                    None => Default::default(),
+                };
+                if let Some(v) = paper {
+                    p.paper = v;
+                }
+                if let Some(v) = scale {
+                    p.um_per_mm = v;
+                }
+                if let Some(v) = area {
+                    p.area_id = v;
+                }
+                if let Some(v) = orientation {
+                    p.orientation = v;
+                }
+                if let Some(v) = dpi {
+                    p.dpi = v;
+                }
+                if let Some(v) = name {
+                    p.name = v;
+                }
+                if let Some(v) = title {
+                    p.title = v;
+                }
+                if let Some(v) = lab {
+                    p.lab = v;
+                }
+                if no_grid {
+                    p.grid = false;
+                }
+                whole::render(&project, &out, p, svg)?;
+                return Ok(());
+            }
             let mut p: SheetParams = match params {
                 Some(path) => serde_json::from_str(&std::fs::read_to_string(&path)?)?,
                 None => SheetParams::default(),
@@ -600,11 +656,17 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         polarity,
         signal,
     } = options;
-    let sheets = print.is_some() && print_style != "grains";
-    if !matches!(print_style.as_str(), "sheets" | "grains") {
-        bail!("--print-style {print_style}: sheets or grains");
+    let sheets = print.is_some() && print_style == "sheets";
+    let whole_print = print.is_some() && print_style == "whole";
+    if !matches!(print_style.as_str(), "sheets" | "grains" | "whole") {
+        bail!("--print-style {print_style}: sheets, grains or whole");
     }
     let (pkg, only, root) = open(&folder)?;
+    if whole_print && only.is_none() && pkg.info().areas.len() != 1 {
+        bail!(
+            "whole-area printing requires one area; pass an area folder or use sheets --layout whole --area after stitching"
+        );
+    }
     let mut params: AreaParams = match params {
         Some(p) => serde_json::from_str(&std::fs::read_to_string(&p)?)?,
         None => AreaParams::default(),
@@ -687,7 +749,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
             "ms": total, "steps": timings.steps, "sha256": o.mosaic_json.sha256,
         }));
         let mut grains_n = None;
-        if segment || print.is_some() {
+        if segment || (print.is_some() && !whole_print) {
             let t = clock();
             let outline = (&project.settings).into();
             let rec = project.area_mut(&area.id).expect("area");
@@ -736,7 +798,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
                     o.base.as_ref().clone(),
                 ));
                 all_grains.insert(area.id.clone(), grains.clone());
-            } else if let Some(paper) = &print {
+            } else if let Some(paper) = print.as_ref().filter(|_| !whole_print) {
                 let t = clock();
                 let rec = project
                     .areas
@@ -769,6 +831,36 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
                     clock() - t
                 );
             }
+        }
+        if whole_print {
+            let rec = project
+                .areas
+                .iter()
+                .find(|a| a.id == area.id)
+                .expect("area");
+            let p = grainatlas_core::layout::whole::WholeParams {
+                paper: print.clone().expect("paper"),
+                um_per_mm: scale,
+                title: title.clone().unwrap_or_default(),
+                lab: lab.clone().unwrap_or_default(),
+                printed: now_rfc3339(),
+                project: out.file_name().unwrap_or_default().to_string_lossy().into(),
+                ..Default::default()
+            };
+            let mut info = pkg.info().clone();
+            info.areas.retain(|a| a.id == rec.id);
+            whole::export(
+                &out.join("exports"),
+                &out,
+                &project,
+                &p,
+                &SheetArea {
+                    rec,
+                    img: pipeline::area_image(rec, &o, &rec.params.tone),
+                },
+                &sheets::sheet_meta(&info),
+                false,
+            )?;
         }
         summary.last_mut().expect("summary")["grains"] = serde_json::json!(grains_n);
         let rec = project

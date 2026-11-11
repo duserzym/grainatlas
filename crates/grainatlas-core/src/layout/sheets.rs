@@ -193,7 +193,7 @@ pub fn sheet_meta(info: &PackageInfo) -> SheetMeta {
 }
 
 /// `um_per_mm` in JSON: a number, or "auto" (stored as 0).
-mod scale_serde {
+pub(super) mod scale_serde {
     use serde::{Deserialize, Deserializer, Serializer};
     pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
         if *v > 0.0 && v.is_finite() { s.serialize_f64(*v) } else { s.serialize_str("auto") }
@@ -327,6 +327,14 @@ pub struct PrintRegistration {
     /// "auto" or "fixed"; with auto, how the scale was chosen.
     #[serde(default)]
     pub scale: String,
+    /// Empty for grain sheets; "whole_area" for an uncut area.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub layout: String,
+    /// Whole-area grid spacing and top-left origin, in mosaic um.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_step_um: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_origin_um: Option<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_scale: Option<AutoScale>,
     /// Spot sizes (um) left off the key because they print too small to draw or tell apart.
@@ -473,7 +481,7 @@ const COMPACT_HEADER_MM: f64 = 36.0;
 /// and add at most 15% to the host rectangle. Neither bound scales with paper.
 const ORPHAN_GAP_FACTOR: f64 = 1.25;
 const ORPHAN_GROWTH: f64 = 0.15;
-const FOOTER_MM: f64 = 5.0;
+pub(super) const FOOTER_MM: f64 = 5.0;
 const LABEL_MM: f64 = 4.6;
 const NOTE_MM: f64 = 4.2;
 const RUN_GAP_MM: f64 = 7.0;
@@ -1247,6 +1255,9 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         paper_mm: [page.w_mm, page.h_mm],
         um_per_mm: k,
         scale: if auto.is_some() { "auto" } else { "fixed" }.into(),
+        layout: String::new(),
+        grid_step_um: None,
+        grid_origin_um: None,
         auto_scale: auto.clone(),
         spot_sizes_left_off_um: spots_off.clone(),
         sheet_origin: "sheet top-left corner, mm, y down".into(),

@@ -548,3 +548,120 @@ writes `exports/<package>_grain_sheets_tabloid.pdf`,
 In the app: Layout → Print sheets.
 
 `grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale auto|8] [--params sheet_params.json] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.
+
+## Whole area on one sheet (`layout::whole`)
+
+Use this mode for a thin section, slab, or any area that must be printed whole.
+It needs a stitched base mosaic and its tone, with no segmentation or grains.
+It is exempt from the context-first band rules because nothing is cut, moved
+or omitted: property 1 holds trivially. Grain-sheet layouts are unchanged.
+
+The image is the continuous, toned grey mosaic, embedded once. Its dimensions
+on paper are exactly its dimensions in mosaic um divided by `um_per_mm`.
+There is no rotation of the image. `orientation: "auto"` compares landscape
+and portrait paper and chooses the larger possible print scale, accounting
+for the 30 mm header, the grain sheets' 8 mm default margin and 5 mm footer,
+the 1 mm header clearance, and 12 mm tick/label gutters on every image edge.
+Auto rounds the required um/mm upward (coarser) to the first fitting value of
+`1, 1.25, 1.6, 2, 2.5, 3.2, 4, 5, 6.3, 8` times a power of ten. A fixed
+scale is used exactly; if it cannot fit, the error gives the fitting round
+scale. Paper presets are tabloid, letter, A4 and A3.
+
+The TM4000 example (19698 x 12657 px at 1.984375 um/px, approximately
+39.09 x 25.12 mm) fits one landscape tabloid at 125 um/mm. A scale bar is
+20 to 50 mm on paper. The header includes the title, sample, area, lab,
+acquisition metadata, mosaic size in px and mm, and the explicit printed
+ratio. The smallest printed detail is estimated as two printer dots:
+`2 * 25.4 / printer_dpi * um_per_mm` um of sample. At 125 um/mm this is
+about 21 um at 300 dpi or 11 um at 600 dpi. The source pixel size is shown
+separately; printing cannot recover detail missing from the source.
+The embedded image targets 600 dpi by default, using a fractional box-area
+filter after tone, rounded to integer pixel dimensions and capped at the
+source width and height independently. It is never upsampled. Stats include
+its pixel dimensions and actual dpi, the source pixel size, both detail
+estimates, the chosen orientation and scale, and image/gutter rectangles.
+
+The mosaic top-left is the coordinate origin, with x right and y down. All
+four edges have minor ticks every 1 mm of sample and labelled major ticks
+every 5 mm (labels are sample mm from the top-left). With `grid: true`, a
+light grey grid with a lighter halo overlays the mosaic. Its adaptive major
+step is the largest 1-2-5 sample distance no greater than 40 paper mm,
+giving full cells 16 to 40 mm across. On the example it coincides with the
+5 mm major ticks. Cell columns run A, B, ..., Z, AA, ... left to right;
+rows run 1, 2, ... top to bottom. Labels appear in the gutters on both
+opposite edges. Edge cells may be partial. Disabling the grid keeps the
+edge ticks and stage marks.
+
+Two arrows labelled `+X stage` and `+Y stage` show increasing stage
+coordinates: `stage_sign: [-1, -1]` means left and up. Corner stage X/Y
+coordinates in mm, to three decimals, come directly from
+`AreaRecord::stage_of`, the same nearest-tile-centre mosaic-to-stage mapping
+used by stage/laser export. If stage data or placement is absent the corner
+says that stage X/Y is unavailable; no calibration is invented.
+
+The registration is the existing `PrintRegistration` schema, frame
+`print_sheet`, with one band on sheet 1, the area and sample, empty `grains`,
+and the full `[0, 0, width_um, height_um]` mosaic rectangle. Its
+`sheet_rect_mm` is exactly the image rectangle, excluding gutters.
+`sheet_bodies` records the single body; `scale` is `"auto"` or `"fixed"`.
+The additional optional fields are `layout: "whole_area"`, `grid_step_um`
+and `grid_origin_um: [0, 0]`. Grain registrations omit these fields;
+older registrations deserialize with empty layout and no grid.
+
+For each axis, the existing mapping remains:
+
+```text
+mosaic_um = mosaic_rect_um[0:2]
+            + (sheet_mm - sheet_rect_mm[0:2]) * um_per_mm
+sheet_mm  = sheet_rect_mm[0:2]
+            + (mosaic_um - mosaic_rect_um[0:2]) / um_per_mm
+```
+
+For a grid label, convert the column to a zero-based index `c` (A = 0,
+B = 1, ..., AA = 26) and the row to `r` (1 = 0). Its top-left mosaic
+coordinate is `grid_origin_um + [c, r] * grid_step_um`. Add one step for
+the bottom-right and clip to the full mosaic rectangle. For example, with
+a 5000 um step, C4 is `[10000, 15000, 15000, 20000]` um. The core helper
+`layout::whole::grid_cell_rect` implements this mapping. There are no grid
+fields when the grid is off.
+
+```bash
+grainatlas sheets section.grainatlas --out /tmp/section-print \
+  --layout whole --area 001_section --paper tabloid --orientation auto \
+  --scale auto --dpi 600 --name section-plan --title "Section plan" \
+  --lab "Lab name" --svg
+```
+
+This writes `section-plan.pdf`, `section-plan_print_registration.json`,
+`section-plan_stats.json`, and optionally `section-plan.svg`. Without `--name`
+the stem is `<package>_whole_<paper>`. The footer names the exact registration
+filename and gives the printed date and page 1/1. The output directory must
+be outside the saved project, and the stem must have no directory. Use
+`--no-grid` to omit the grid; `--scale 125` fixes the scale. `--params` accepts
+WholeParams JSON, and explicit flags override it. `--area` defaults to the
+only project area; multiple areas require a selection even when only one
+has a saved mosaic. The default `--layout` remains grain sheets.
+
+To stitch and print a single area directly:
+
+```bash
+grainatlas stitch <single-area-folder> --out section.grainatlas \
+  --print tabloid --print-style whole
+```
+
+This writes the whole-area PDF, registration and stats under `exports/`.
+This style does not imply segmentation; an explicit `--segment` still runs
+it. A package with several areas must use an area folder, or stitch first
+and then select an area with `sheets --layout whole --area`.
+
+Shell/UI integration note: expose
+`print_whole(params_json: String, tone_json: String) -> Result<String>`
+through the shell, calling `Session::print_whole(&params_json, &tone_json)`.
+The tone JSON is `{area_id: ToneParams}`, as for `print_sheets`; missing
+areas use their saved tone. The returned JSON is `{pages, registration,
+stats}`; use `layout::pdf::pdf_from_svgs(&pages)` for PDF. Hosts can override
+`printed` (the current UTC date by default), and should choose `name` or
+`registration_file` before rendering. The call borrows only
+resident base pixels, so it works after heavy-buffer eviction. It reports
+an error if the selected area has no stitched mosaic. This task does not
+add a Tauri command or a UI control.
