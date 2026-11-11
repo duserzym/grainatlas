@@ -357,12 +357,15 @@ export interface PrintRegistration {
   spot_sizes_left_off_um?: number[];
   sheet_origin: string;
   mapping: string;
+  registration_file: string;
+  /** Envelope of the bodies; sheet_bodies is authoritative for each sheet. */
   body_rect_mm: [number, number, number, number];
+  sheet_bodies: { sheet: number; header_mm: number; body_rect_mm: [number, number, number, number] }[];
   strays: { area: string; id: string; number: number; eq_diameter_um: number; centroid_um: [number, number]; bbox_um: [number, number, number, number] }[];
   bands: BandRecord[];
 }
 
-export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; clusters: number; strays: number; bands_outside_body: number; fill: { band_area: number; line_width: number } }
+export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; clusters: number; strays: number; bands_outside_body: number; fill: { band_area: number; line_width: number; empty_epoxy: number }; header_mm: [number, number]; height_budget: { sheet: number; header_mm2: number; footer_margins_mm2: number; labels_notes_mm2: number; band_mm2: number; empty_epoxy_mm2: number; blank_below_mm: number; blank_right_mm2: number; other_line_mm2: number }[] }
 
 /** One detection and the area that owns the grain. */
 export interface GrainOwner {

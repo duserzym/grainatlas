@@ -4,7 +4,7 @@
 //!
 //! Per sample (top of the mount first), the owned grains of each area are
 //! linked into 2-D context clusters. Clusters stay whole whenever they fit a
-//! line, and small orphans join the nearest cluster that fits. Oversized clusters
+//! line, and small orphans join a neighbour only when the join is cheap. Oversized clusters
 //! are cut at empty gaps where possible, with marked repeated context strips.
 //! See "Layout rule: context first" in `docs/print_sheets.md`.
 //! Every band is an exact translation of
@@ -50,7 +50,7 @@ pub struct SheetParams {
     pub gap_break_um: f64,
     /// Neighbour box gap (um); 0 = max(3 * reference grain size, gap_break_um).
     pub context_um: f64,
-    /// Merge smaller clusters into the nearest cluster that fits a line or can absorb another cut.
+    /// Merge smaller components only across a cheap gap (see property 7 in docs/print_sheets.md).
     pub min_group: usize,
     /// Leave post-merge clusters with fewer owners off, except those tied for largest in their area; 0 disables.
     pub min_cluster_grains: usize,
@@ -328,13 +328,25 @@ pub struct PrintRegistration {
     pub spot_sizes_left_off_um: Vec<f64>,
     pub sheet_origin: String,
     pub mapping: String,
-    /// Body available to band images and line labels, in sheet mm.
+    /// Exact filename used by the footer and export, including case.
+    #[serde(default)]
+    pub registration_file: String,
+    /// Envelope of all sheet bodies, for older readers. Use sheet_bodies for bounds audits.
     #[serde(default)]
     pub body_rect_mm: [f64; 4],
+    #[serde(default)]
+    pub sheet_bodies: Vec<SheetBody>,
     /// Detections left in the project but omitted as dating targets.
     #[serde(default)]
     pub strays: Vec<StrayGrain>,
     pub bands: Vec<BandRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SheetBody {
+    pub sheet: usize,
+    pub header_mm: f64,
+    pub body_rect_mm: [f64; 4],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -376,6 +388,7 @@ pub struct BandGrain {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
 pub struct SheetStats {
     pub sheets: usize,
     pub bands: usize,
@@ -394,6 +407,10 @@ pub struct SheetStats {
     pub strays: usize,
     /// Band image area / available body area, and mean occupied line width / body width.
     pub fill: SheetFill,
+    /// Full and compact header heights, in mm.
+    pub header_mm: [f64; 2],
+    /// Mutually exclusive paper-area budget per sheet; empty epoxy is a subset of band area.
+    pub height_budget: Vec<HeightBudget>,
     /// Bands extending beyond the registered sheet body.
     pub bands_outside_body: usize,
     /// Printed grains missing an owner band or not whole in their owner band.
@@ -405,9 +422,26 @@ pub struct SheetStats {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
 pub struct SheetFill {
     pub band_area: f64,
     pub line_width: f64,
+    /// Fraction of band image area in rows farther than pad_um from any visible printed grain box.
+    pub empty_epoxy: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct HeightBudget {
+    pub sheet: usize,
+    pub header_mm2: f64,
+    pub footer_margins_mm2: f64,
+    pub labels_notes_mm2: f64,
+    pub band_mm2: f64,
+    pub empty_epoxy_mm2: f64,
+    pub blank_below_mm: f64,
+    pub blank_right_mm2: f64,
+    /// Inter-band gaps and space below shorter images on the same line.
+    pub other_line_mm2: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -418,7 +452,12 @@ pub struct SheetResult {
 }
 
 // Sheet geometry (mm).
-const HEADER_MM: f64 = 66.0;
+const FULL_HEADER_MM: f64 = 50.0;
+const COMPACT_HEADER_MM: f64 = 36.0;
+/// Cheap orphan joins bridge at most another quarter of the context distance,
+/// and add at most 15% to the host rectangle. Neither bound scales with paper.
+const ORPHAN_GAP_FACTOR: f64 = 1.25;
+const ORPHAN_GROWTH: f64 = 0.15;
 const FOOTER_MM: f64 = 5.0;
 const LABEL_MM: f64 = 4.6;
 const NOTE_MM: f64 = 4.2;
@@ -428,6 +467,27 @@ const LABEL_MIN_MM: f64 = 48.0;
 const INK: &str = "#1a1a1a";
 const GREY: &str = "#6b6b6b";
 const LIGHT: &str = "#bdbdbd";
+
+/// Allow a taller map only for many area labels; cap at the former 66 mm.
+fn header_heights(areas: &[SheetArea]) -> [f64; 2] {
+    let labels = areas.iter().map(|a| a.img.sample).collect::<std::collections::BTreeSet<_>>().len();
+    let map = (19.1 + labels as f64 * 2.7).min(66.0);
+    [FULL_HEADER_MM.max(map), COMPACT_HEADER_MM.max(map)]
+}
+
+/// Exact union of visible target-box row intervals, expanded by the band pad.
+/// A stray or an artifact never makes an empty row count as occupied.
+fn empty_rows_um(rect: [f64; 4], printed: &[&Grain], pad: f64) -> f64 {
+    let mut rows: Vec<_> = printed.iter().filter(|g| intersects(rect, g.bbox_um)).map(|g| ((g.bbox_um[1] - pad).max(rect[1]), (g.bbox_um[3] + pad).min(rect[3]))).collect();
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut end = rect[1];
+    let mut occupied = 0.0;
+    for (a, b) in rows {
+        occupied += (b - a.max(end)).max(0.0);
+        end = end.max(b);
+    }
+    (rect[3] - rect[1] - occupied).max(0.0)
+}
 
 /// Approximate width (mm) of DejaVu Sans text.
 fn text_w(s: &str, size: f64, bold: bool) -> f64 {
@@ -464,6 +524,13 @@ struct Run<'g> {
     x: f64,
     end: f64,
     pieces: Vec<Piece<'g>>,
+}
+
+fn finish_line<'g>(cur: &mut Vec<Run<'g>>, pg: &mut Vec<Vec<Run<'g>>>, height: &mut f64, k: f64) {
+    if !cur.is_empty() {
+        *height += LABEL_MM + cur.iter().flat_map(|r| &r.pieces).map(|q| q.h(k)).fold(0.0, f64::max) + NOTE_MM;
+        pg.push(std::mem::take(cur));
+    }
 }
 
 struct Piece<'g> {
@@ -558,7 +625,6 @@ fn clusters_of<'g>(gs: &[&'g Grain], c: f64, p: &SheetParams, img: &AreaImage, s
         let rect = piece_rect(&group, p.pad_um, img);
         clusters.push(Cluster { grains: group, rect });
     }
-    merge_intersections(&mut clusters, p.pad_um, img);
     loop {
         let pair = (0..clusters.len()).find_map(|i| {
             if clusters[i].grains.len() >= p.min_group {
@@ -570,6 +636,12 @@ fn clusters_of<'g>(gs: &[&'g Grain], c: f64, p: &SheetParams, img: &AreaImage, s
                     let mut gs = clusters[i].grains.clone();
                     gs.extend(&clusters[j].grains);
                     let r = piece_rect(&gs, p.pad_um, img);
+                    let host = clusters[j].rect;
+                    let area = |b: [f64; 4]| (b[2] - b[0]) * (b[3] - b[1]);
+                    let gap = clusters[i].grains.iter().flat_map(|a| clusters[j].grains.iter().map(move |b| box_gap(a.bbox_um, b.bbox_um))).fold(f64::INFINITY, f64::min);
+                    if gap > ORPHAN_GAP_FACTOR * c || area(r) > (1.0 + ORPHAN_GROWTH) * area(host) {
+                        return false;
+                    }
                     (0..2).any(|d| {
                         let extent = r[d + 2] - r[d];
                         let target = clusters[j].rect[d + 2] - clusters[j].rect[d];
@@ -584,7 +656,6 @@ fn clusters_of<'g>(gs: &[&'g Grain], c: f64, p: &SheetParams, img: &AreaImage, s
         let i = if j < i { i - 1 } else { i };
         clusters[i].grains.extend(other.grains);
         clusters[i].rect = piece_rect(&clusters[i].grains, p.pad_um, img);
-        merge_intersections(&mut clusters, p.pad_um, img);
     }
     let d = usize::from(img.w <= img.h);
     clusters.sort_by(|a, b| a.rect[d].total_cmp(&b.rect[d]).then(a.rect[1 - d].total_cmp(&b.rect[1 - d])));
@@ -842,8 +913,9 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     let page = if p.landscape { super::Paper { w_mm: base.w_mm.max(base.h_mm), h_mm: base.w_mm.min(base.h_mm) } } else { base };
     let m = p.margin_mm;
     let body_w = page.w_mm - 2.0 * m;
-    let body_h = page.h_mm - 2.0 * m - HEADER_MM - 1.0 - FOOTER_MM;
-    let mut stats = SheetStats::default();
+    let headers = header_heights(areas);
+    let body_h = |pi: usize| page.h_mm - 2.0 * m - headers[usize::from(pi > 0)] - 1.0 - FOOTER_MM;
+    let mut stats = SheetStats { header_mm: headers, ..Default::default() };
 
     // Printed grains per area: owned, within the size limits.
     let mut printed: Vec<Vec<&Grain>> = Vec::new();
@@ -874,7 +946,7 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     let k = auto.as_ref().map_or(p.um_per_mm, |a| a.um_per_mm).max(0.5);
     let (spots_shown, spots_off) = key_spots(&p.spot_sizes_um, k);
 
-    let band_h = body_h - LABEL_MM - NOTE_MM;
+    let band_h = body_h(1) - LABEL_MM - NOTE_MM;
     let mut strays = Vec::new();
     let mut area_clusters = Vec::new();
     let mut contexts = Vec::new();
@@ -883,6 +955,8 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         let r = reference_size(gs);
         let c = if p.context_um > 0.0 { p.context_um } else { (3.0 * r).max(p.gap_break_um) };
         let mut clusters = clusters_of(gs, c, p, img, [body_w * k, band_h * k]);
+        // Classify disconnected components before rectangle unions can rescue
+        // an off-row singleton inside a long, wandering row's bounding box.
         let largest = clusters.iter().map(|q| q.grains.len()).max().unwrap_or(0);
         clusters.retain(|q| {
             if q.grains.len() >= p.min_cluster_grains || q.grains.len() == largest {
@@ -891,6 +965,9 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
             strays.extend(q.grains.iter().map(|g| StrayGrain { area: areas[ai].rec.id.clone(), id: g.id, number: g.number, eq_diameter_um: g.eq_diameter_um, centroid_um: g.centroid_um, bbox_um: g.bbox_um }));
             false
         });
+        merge_intersections(&mut clusters, p.pad_um, img);
+        let d = usize::from(img.w <= img.h);
+        clusters.sort_by(|a, b| a.rect[d].total_cmp(&b.rect[d]).then(a.rect[1 - d].total_cmp(&b.rect[1 - d])));
         gs.retain(|g| !strays.iter().any(|s| s.area == areas[ai].rec.id && s.id == g.id));
         area_clusters.push(clusters);
         contexts.push((r, c));
@@ -922,7 +999,9 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
 
     // Context clusters → translated bands → lines. Spend a new line before
     // cutting any cluster which could have fitted whole on an empty line.
-    let mut lines: Vec<Vec<Run>> = Vec::new();
+    let mut pages: Vec<Vec<Vec<Run>>> = Vec::new();
+    let mut pg: Vec<Vec<Run>> = Vec::new();
+    let mut ph = 0.0;
     let mut cur: Vec<Run> = Vec::new();
     let mut lx = 0.0;
     for (sample, ais) in &samples {
@@ -952,12 +1031,12 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                     let whole = rest.w(k) <= body_w;
                     let need = if same { rest.w(k) } else { rest.w(k).max(LABEL_MIN_MM.min(label_w)) };
                     if !cur.is_empty() && ((whole && start + need > body_w) || (!whole && body_w - start < 0.4 * body_w)) {
-                        lines.push(std::mem::take(&mut cur));
+                        finish_line(&mut cur, &mut pg, &mut ph, k);
                         start = 0.0;
                     }
                     let parts = if rest.w(k) > body_w - start { cut_piece(&rest, 0, (body_w - start) * k, body_w * k, &cut, img) } else { None };
                     if parts.is_none() && start > 0.0 && rest.w(k) > body_w - start {
-                        lines.push(std::mem::take(&mut cur));
+                        finish_line(&mut cur, &mut pg, &mut ph, k);
                         lx = 0.0;
                         continue;
                     }
@@ -970,17 +1049,32 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                         // body. Preserve it and report the overflow in the audit.
                         None => (rest, None),
                     };
-                    let mut vertical = Vec::new();
-                    while q.h(k) > band_h {
-                        let Some((top, bottom)) = cut_piece(&q, 1, band_h * k, band_h * k, &cut, img) else { break };
-                        vertical.push(top);
-                        q = bottom;
-                        stats.cuts += 1;
-                    }
-                    vertical.push(q);
-                    let count = vertical.len();
-                    for (vi, mut q) in vertical.into_iter().enumerate() {
-                        let start = if vi == 0 { start } else { 0.0 };
+                    loop {
+                        let available = body_h(pages.len()) - ph - LABEL_MM - NOTE_MM;
+                        let full = body_h(pages.len()) - LABEL_MM - NOTE_MM;
+                        let mut tail = None;
+                        if q.h(k) > available + 1e-7 {
+                            if !cur.is_empty() {
+                                finish_line(&mut cur, &mut pg, &mut ph, k);
+                                start = 0.0;
+                                continue;
+                            }
+                            // Whole clusters which fit an empty body spend a
+                            // sheet. Already cut clusters may use the remainder.
+                            let parts = if q.h(k) > full || !q.cuts.is_empty() {
+                                cut_piece(&q, 1, available * k, full * k, &cut, img)
+                            } else { None };
+                            if let Some((top, bottom)) = parts {
+                                q = top;
+                                tail = Some(bottom);
+                                stats.cuts += 1;
+                            } else if !pg.is_empty() {
+                                pages.push(std::mem::take(&mut pg));
+                                ph = 0.0;
+                                start = 0.0;
+                                continue;
+                            }
+                        }
                         q.x = start;
                         let labelled = !cur.last().is_some_and(|r| r.area == ai);
                         // A removed inter-cluster stretch retains the existing
@@ -993,9 +1087,11 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                         lx = if labelled { end.max(start + label_w) } else { end };
                         cur.push(Run { sample: sample.clone(), area: ai, row: ri + 1, cont, labelled, x: start, end, pieces: vec![q] });
                         cont = true;
-                        if vi + 1 < count {
-                            lines.push(std::mem::take(&mut cur));
-                        }
+                        if let Some(bottom) = tail {
+                            finish_line(&mut cur, &mut pg, &mut ph, k);
+                            start = 0.0;
+                            q = bottom;
+                        } else { break; }
                     }
                     match next {
                         // A height slice can be much narrower than its
@@ -1008,11 +1104,13 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
             }
         }
     }
-    if !cur.is_empty() {
-        lines.push(cur);
+    finish_line(&mut cur, &mut pg, &mut ph, k);
+    if !pg.is_empty() {
+        pages.push(pg);
     }
-    stats.isolated = lines
+    stats.isolated = pages
         .iter()
+        .flatten()
         .flatten()
         .map(|r| {
             r.pieces
@@ -1031,23 +1129,6 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                 .sum::<usize>()
         })
         .sum();
-    let line_h = |ln: &Vec<Run>| LABEL_MM + ln.iter().flat_map(|r| &r.pieces).map(|q| q.h(k)).fold(0.0, f64::max) + NOTE_MM;
-    let mut pages: Vec<Vec<Vec<Run>>> = Vec::new();
-    let mut pg: Vec<Vec<Run>> = Vec::new();
-    let mut ph = 0.0;
-    for ln in lines {
-        let h = line_h(&ln);
-        if !pg.is_empty() && ph + h > body_h {
-            pages.push(std::mem::take(&mut pg));
-            ph = 0.0;
-        }
-        ph += h;
-        pg.push(ln);
-    }
-    if !pg.is_empty() {
-        pages.push(pg);
-    }
-
     // Band images (in parallel).
     let jobs: Vec<(usize, usize, usize, usize)> = pages
         .iter()
@@ -1068,7 +1149,7 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     let image_area: f64 = pages.iter().flatten().flatten().flat_map(|r| &r.pieces).map(|q| q.w(k) * q.h(k)).sum();
     let line_width: f64 = pages.iter().flatten().flatten().flat_map(|r| &r.pieces).map(|q| q.w(k)).sum();
     if stats.sheets > 0 {
-        stats.fill.band_area = image_area / (stats.sheets as f64 * body_w * body_h);
+        stats.fill.band_area = image_area / ((0..stats.sheets).map(body_h).sum::<f64>() * body_w);
     }
     if line_count > 0 {
         stats.fill.line_width = line_width / (line_count as f64 * body_w);
@@ -1089,7 +1170,9 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         spot_sizes_left_off_um: spots_off.clone(),
         sheet_origin: "sheet top-left corner, mm, y down".into(),
         mapping: "mosaic_um = mosaic_rect_um[0:2] + (sheet_mm - sheet_rect_mm[0:2]) * um_per_mm".into(),
-        body_rect_mm: [m, m + HEADER_MM + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM],
+        registration_file: if p.registration_file.is_empty() { format!("{}_print_registration.json", meta.package) } else { p.registration_file.clone() },
+        body_rect_mm: [m, m + headers[usize::from(stats.sheets > 1)] + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM],
+        sheet_bodies: (0..stats.sheets).map(|pi| SheetBody { sheet: pi + 1, header_mm: headers[usize::from(pi > 0)], body_rect_mm: [m, m + headers[usize::from(pi > 0)] + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM] }).collect(),
         strays,
         bands: Vec::new(),
     };
@@ -1124,12 +1207,23 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         );
         // Bands on this sheet, for the map.
         let mut band_rects: Vec<(usize, [f64; 4])> = Vec::new();
-        let mut y = m + HEADER_MM + 1.0;
+        let header_mm = headers[usize::from(pi > 0)];
+        let mut y = m + header_mm + 1.0;
+        let mut budget = HeightBudget { sheet: pi + 1, header_mm2: header_mm * body_w, footer_margins_mm2: w * h - body_w * (h - 2.0 * m) + (FOOTER_MM + 1.0) * body_w, ..Default::default() };
         for ln in pg {
             let bh = ln.iter().flat_map(|r| &r.pieces).map(|q| q.h(k)).fold(0.0, f64::max);
             let itop = y + LABEL_MM;
+            budget.labels_notes_mm2 += (LABEL_MM + NOTE_MM) * body_w;
+            let right = ln.iter().map(|r| r.end).fold(0.0, f64::max);
+            let band_area: f64 = ln.iter().flat_map(|r| &r.pieces).map(|q| q.w(k) * q.h(k)).sum();
+            budget.band_mm2 += band_area;
+            budget.blank_right_mm2 += (body_w - right).max(0.0) * bh;
+            budget.other_line_mm2 += right * bh - band_area;
             for run in ln {
                 let a = &areas[run.area];
+                for q in &run.pieces {
+                    budget.empty_epoxy_mm2 += empty_rows_um(q.rect, &printed[run.area], p.pad_um) / k * q.w(k);
+                }
                 let (rx0, rx1) = (m + run.x, m + if run.labelled { run.end.max(run.x + 20.0) } else { run.end });
                 let ly = y + LABEL_MM - 1.5;
                 if run.labelled {
@@ -1210,24 +1304,21 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
             let _ = write!(s, r##"<path d="M{m} {ny:.2} H{:.2}" stroke="#e3e3e3" stroke-width="0.2" stroke-dasharray="0.6 1.2"/>"##, w - m);
             y = itop + bh + NOTE_MM;
         }
-        header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &printed, ownership, &stats, k, &scale_note, &spots_off);
-        mount_map(&mut s, p, page, areas, &printed, &here, &band_rects, &|ai| sample_of(ai), &view);
+        budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - y).max(0.0);
+        stats.height_budget.push(budget);
+        header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &printed, ownership, &stats, k, &scale_note, &spots_off, header_mm);
+        mount_map(&mut s, p, page, areas, &printed, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm);
         // Footer and corner registration marks.
-        let fy = h - m + 0.5;
-        let reg_file = if p.registration_file.is_empty() { format!("{}_print_registration.json", meta.package) } else { p.registration_file.clone() };
+        let fy = h - m - 2.0;
+        let reg_file = &reg.registration_file;
         let proj = if p.project.is_empty() { String::new() } else { format!("grainatlas project {} · ", p.project) };
-        let _ = write!(
-            s,
-            r#"<text x="{:.2}" y="{fy:.2}" font-size="2.1" fill="{GREY}">{}</text><text x="{:.2}" y="{fy:.2}" font-size="2.1" fill="{GREY}" text-anchor="end">{} · sheet {}/{n}</text>"#,
-            m + 7.0,
-            esc(&format!(
-                "{proj}registration {reg_file} (frame print_sheet; bands are translated mosaic crops, corner ticks mark their edges){}",
-                if meta.source.is_empty() { String::new() } else { format!(" · source {}", meta.source) }
-            )),
-            w - m - 7.0,
-            esc(&meta.package),
-            pi + 1
-        );
+        // Two baselines fit the existing footer. Keep the filename whole and
+        // put the long acquisition path on its own line, also on letter paper.
+        let footer = format!("{proj}registration {reg_file} · frame print_sheet");
+        let _ = write!(s, r#"<text x="{:.2}" y="{fy:.2}" font-size="2.1" fill="{GREY}">{}</text><text x="{:.2}" y="{fy:.2}" font-size="2.1" fill="{GREY}" text-anchor="end">{} · sheet {}/{n}</text>"#, m + 7.0, esc(&footer), w - m - 7.0, esc(&meta.package), pi + 1);
+        if !meta.source.is_empty() {
+            let _ = write!(s, r#"<text x="{:.2}" y="{:.2}" font-size="2.1" fill="{GREY}">source {}</text>"#, m + 7.0, fy + 2.4, esc(&meta.source));
+        }
         for (cx, cy) in [(m - 3.0, m - 3.0), (w - m + 3.0, m - 3.0), (m - 3.0, h - m + 3.0), (w - m + 3.0, h - m + 3.0)] {
             let _ = write!(
                 s,
@@ -1238,6 +1329,9 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         }
         s.push_str("</svg>");
         svgs.push(s);
+    }
+    if image_area > 0.0 {
+        stats.fill.empty_epoxy = stats.height_budget.iter().map(|b| b.empty_epoxy_mm2).sum::<f64>() / image_area;
     }
     let check = audit(&reg, &printed, areas);
     stats.grains_cut = check.cut;
@@ -1259,7 +1353,7 @@ pub struct Audit {
 pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetArea]) -> Audit {
     // Older registrations have no body rectangle; at least check the paper.
     let body = if reg.body_rect_mm[2] > reg.body_rect_mm[0] { reg.body_rect_mm } else { [0.0, 0.0, reg.paper_mm[0], reg.paper_mm[1]] };
-    let mut result = Audit { outside_body: reg.bands.iter().filter(|b| !contains(body, b.sheet_rect_mm) || b.sheet_rect_mm.iter().any(|v| !v.is_finite())).count(), ..Audit::default() };
+    let mut result = Audit { outside_body: reg.bands.iter().filter(|b| !contains(reg.sheet_bodies.iter().find(|s| s.sheet == b.sheet).map_or(body, |s| s.body_rect_mm), b.sheet_rect_mm) || b.sheet_rect_mm.iter().any(|v| !v.is_finite())).count(), ..Audit::default() };
     for (ai, gs) in printed.iter().enumerate() {
         let bands: Vec<&BandRecord> = reg.bands.iter().filter(|b| b.area == areas[ai].rec.id).collect();
         for g in gs {
@@ -1364,17 +1458,18 @@ fn header(
     k: f64,
     scale_note: &str,
     spots_off: &[f64],
+    header_mm: f64,
 ) {
     let m = p.margin_mm;
-    let map_w = map_width(page, areas);
+    let map_w = map_width(page, areas, header_mm);
     let text_r = page.w_mm - m - map_w - 6.0;
     let title = if p.title.is_empty() { meta.package.clone() } else { p.title.clone() };
     let _ = write!(s, r#"<text x="{m}" y="{:.2}" font-size="6" font-weight="bold" fill="{INK}">{}</text>"#, m + 6.0, esc(&title));
-    let _ = write!(s, r#"<text x="{:.2}" y="{:.2}" font-size="4.2" font-weight="bold" fill="{INK}" text-anchor="end">Sheet {sheet} / {sheets}</text>"#, text_r, m + 5.6);
+    let _ = write!(s, r#"<text x="{:.2}" y="{:.2}" font-size="4.2" font-weight="bold" fill="{INK}" text-anchor="end">Sheet {sheet} / {sheets}</text>"#, page.w_mm - m, m + 5.6);
     let _ = write!(
         s,
         r#"<text x="{:.2}" y="{:.2}" font-size="2.3" fill="{GREY}" text-anchor="end">{} grains · {} bands · {} duplicates left to their owner area{}{}{}</text>"#,
-        text_r,
+        page.w_mm - m,
         m + 10.0,
         stats.grains,
         stats.bands,
@@ -1429,7 +1524,8 @@ fn header(
         proc.push("unsharp mask".into());
     }
     proc.push(if p.enhance.strip { format!("background stripped to grey {} where safe", p.enhance.strip_grey) } else { "background kept".into() });
-    kv.push(("Print", proc.join(" · ")));
+    let processing = proc.join(" · ");
+    if sheet == 1 { kv.push(("Print", processing.clone())); }
     let mut pkg = meta.package.clone();
     if !meta.comment.is_empty() {
         pkg += &format!(" · comment: {}", meta.comment);
@@ -1437,7 +1533,7 @@ fn header(
     if !p.lab.is_empty() {
         pkg += &format!(" · {}", p.lab);
     }
-    kv.push(("Package", pkg));
+    if sheet == 1 { kv.push(("Package", pkg)); } else { kv.clear(); }
     let col_w = (text_r - m) / 2.0;
     for (i, (key, val)) in kv.iter().enumerate() {
         // Six short values in two columns, then Print and Package on lines of their own.
@@ -1451,9 +1547,12 @@ fn header(
             esc(val)
         );
     }
+    if sheet > 1 {
+        let _ = write!(s, r#"<text x="{m}" y="{:.2}" font-size="2.5" fill="{INK}">{}</text><text x="{m}" y="{:.2}" font-size="2.1" fill="{GREY}">acquisition details on sheet 1</text>"#, m + 14.0, esc(&processing), m + 18.0);
+    }
     // On this sheet.
     let mut x = m;
-    let mut y = m + 13.5 + 5.0 * 4.2 + 2.8;
+    let mut y = m + if sheet == 1 { 36.0 } else { 22.0 };
     let _ = write!(s, r#"<text x="{x:.2}" y="{y:.2}" font-size="2.1" fill="{GREY}">ON THIS SHEET</text>"#);
     x += 25.0;
     for sn in here {
@@ -1478,7 +1577,7 @@ fn header(
         x += tw;
     }
     // Laser spot sizes at print scale.
-    let sy = m + HEADER_MM - 9.0;
+    let sy = m + header_mm - 7.0;
     let _ = write!(s, r#"<text x="{m}" y="{:.2}" font-size="2.1" fill="{GREY}">LASER SPOT Ø AT PRINT SCALE (µm)</text>"#, sy - 1.0);
     let mut cx = m + 52.0;
     for &d in &p.spot_sizes_um {
@@ -1498,7 +1597,7 @@ fn header(
         let list = spots_off.iter().map(|d| super::fmt_num(*d)).collect::<Vec<_>>().join(", ");
         let _ = write!(s, r#"<text x="{:.2}" y="{:.2}" font-size="2" fill="{GREY}">{list} µm left off: too small to draw or tell apart at this scale</text>"#, cx + 2.0, sy - 1.0);
     }
-    let _ = write!(s, r#"<path d="M{m} {:.2} H{text_r:.2}" stroke="{LIGHT}" stroke-width="0.3"/>"#, m + HEADER_MM - 0.5);
+    let _ = write!(s, r#"<path d="M{m} {:.2} H{text_r:.2}" stroke="{LIGHT}" stroke-width="0.3"/>"#, m + header_mm - 0.5);
 }
 
 /// Area boxes in the SEM view (stage axes signed like the mosaic), um.
@@ -1522,7 +1621,7 @@ fn area_boxes(areas: &[SheetArea]) -> Vec<Option<[f64; 4]>> {
 const MAP_LABEL_MM: f64 = 26.0;
 
 /// Width of the map box: the mount at the full header height plus its labels, within limits.
-fn map_width(page: super::Paper, areas: &[SheetArea]) -> f64 {
+fn map_width(page: super::Paper, areas: &[SheetArea], header_mm: f64) -> f64 {
     let all: Vec<[f64; 4]> = area_boxes(areas).into_iter().flatten().collect();
     let max = (page.w_mm * 0.42).min(180.0);
     if all.is_empty() {
@@ -1530,7 +1629,7 @@ fn map_width(page: super::Paper, areas: &[SheetArea]) -> f64 {
     }
     let w = all.iter().map(|b| b[2]).fold(f64::NEG_INFINITY, f64::max) - all.iter().map(|b| b[0]).fold(f64::INFINITY, f64::min);
     let h = all.iter().map(|b| b[3]).fold(f64::NEG_INFINITY, f64::max) - all.iter().map(|b| b[1]).fold(f64::INFINITY, f64::min);
-    ((HEADER_MM - 7.5) * w / h.max(1.0) + MAP_LABEL_MM + 6.0).clamp(90.0, max)
+    ((header_mm - 19.5) * w / h.max(1.0) + MAP_LABEL_MM + 6.0).clamp(75.0, max)
 }
 
 /// Vector map of the mount's areas in the SEM view (stage axes signed like the mosaic), this
@@ -1546,10 +1645,11 @@ fn mount_map(
     bands: &[(usize, [f64; 4])],
     sample_of: &dyn Fn(usize) -> String,
     view: &dyn Fn(usize, &Grain) -> Option<[f64; 2]>,
+    header_mm: f64,
 ) {
     let m = p.margin_mm;
-    let (bw, bh) = (map_width(page, areas), HEADER_MM - 1.5);
-    let (bx, by) = (page.w_mm - m - bw, m);
+    let (bw, bh) = (map_width(page, areas, header_mm), header_mm - 13.5);
+    let (bx, by) = (page.w_mm - m - bw, m + 12.0);
     let boxes = area_boxes(areas);
     let _ = write!(s, r#"<rect x="{bx:.2}" y="{by:.2}" width="{bw:.2}" height="{bh:.2}" rx="1.5" fill="none" stroke="{LIGHT}" stroke-width="0.3"/>"#);
     let all: Vec<[f64; 4]> = boxes.iter().flatten().copied().collect();
@@ -1630,14 +1730,15 @@ fn mount_map(
     }
     labels.sort_by(|a, b| a.2.total_cmp(&b.2));
     let gap = 2.7;
-    let mut ys: Vec<f64> = labels.iter().map(|l| l.2).collect();
+    let mut ys: Vec<f64> = labels.iter().map(|l| l.2.clamp(by + 2.3, by + bh - 6.0)).collect();
     for i in 1..ys.len() {
         ys[i] = ys[i].max(ys[i - 1] + gap);
     }
-    // Shift the column up when it runs off the bottom of the map.
-    let over = ys.last().map_or(0.0, |&y| y - (by + bh - 7.0)).max(0.0);
-    for y in ys.iter_mut() {
-        *y -= over;
+    // Compress unused gaps from the bottom rather than translating the whole
+    // column: a far last area must not push the first label above the map.
+    if let Some(last) = ys.last_mut() { *last = last.min(by + bh - 6.0); }
+    for i in (0..ys.len().saturating_sub(1)).rev() {
+        ys[i] = ys[i].min(ys[i + 1] - gap);
     }
     let col = tx(x1) + 3.0;
     for ((sn, rx, ry, on), y) in labels.iter().zip(&ys) {

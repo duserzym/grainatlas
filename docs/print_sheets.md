@@ -69,13 +69,18 @@ The properties every layout must keep, each checked by a test in
    the grains at the cut keep their neighbours on both lines, and no grain is
    counted or spotted twice. A wider strip (`c / 2`) showed whole large grains
    twice and cost 16 % of every line on mount L.
-7. **No small orphans.** A break (a removed empty stretch, marked "//") never
-   leaves a group of fewer than `min_group` grains (default 3: a grain and two
-   neighbours) on its own when merging the group into the nearest band of the
-   same area still fits a line, or when that band is cut anyway and the merge
-   adds at most one line of width. Why: a lone grain on paper has nothing to be
-   found by; the 2026-11 Grenville S sheets had 17 of 325 grains alone in
-   their band.
+7. **Only cheap orphan joins.** Before rectangle merging, a disconnected
+   group of fewer than `min_group` grains (default 3) joins its nearest
+   affordable group of the same area. The closest pair of grain boxes must
+   have a gap at most `1.25 c`, and the union of the pixel-snapped, padded
+   rectangles must add at most 15 % to the host's rectangle area. The union
+   must still fit a line, or add at most one line of extent to a host that
+   already needs cuts. Both cost limits apply, regardless of paper size.
+   Otherwise the group stays separate and the stray rule (11) decides whether
+   it prints. Why: a far detection must not buy a broad strip of bare epoxy
+   merely because the enlarged rectangle fits the paper. The extra quarter
+   of `c` admits modest breaks near a long row; the area bound stops an
+   off-row singleton from making the whole row tall.
 8. **Breaks only at long gaps.** An empty stretch is removed only where it is
    longer than `c`. Why: shorter gaps hold the next grain inside the view the
    operator matches.
@@ -86,8 +91,8 @@ The properties every layout must keep, each checked by a test in
     mosaic); bands of different areas and samples may share a line, each with
     its label. Grains near an area edge owned by the neighbouring area keep only
     the neighbours in that area's mosaic.
-11. **Strays stay off the paper.** After rectangle merging and the orphan merge
-    (7), a cluster owning fewer than `min_cluster_grains` grains (default 5)
+11. **Strays stay off the paper.** After the cheap orphan joins (7), and before
+    rectangle merging, a connected component owning fewer than `min_cluster_grains` grains (default 5)
     gets no band, unless it is tied for the largest cluster in its area. Setting
     this parameter to 0 disables the rule. Why: a panel for a lone off-row
     detection costs a sheet line and is not a dating target. The grain stays in
@@ -98,8 +103,11 @@ The properties every layout must keep, each checked by a test in
     separately, and per-area grain counts include only printed targets. Keeping
     the largest clusters, including ties, protects areas with only a few grains.
     The threshold 5 removes the separate 1 to 3 detection groups on both Sandbox
-    mounts and S's four-detection off-row group after orphan merging, without
-    applying an increasing cutoff to densely populated areas.
+    mounts and S's four-detection off-row group, without applying an increasing
+    cutoff to densely populated areas. Testing before rectangle merging is
+    necessary: a long row's global bounding box can enclose a disconnected
+    off-row detection which stretches a local cut piece. After omission,
+    intersecting rectangles of retained components merge until stable (4).
 
 The layout reports `isolated`: printed grains with fewer than two other grains
 of their area visible in the band that owns them. It is shown in the sheet
@@ -381,7 +389,7 @@ printed: artifacts and duplicates are left off, and the stats count both. A prin
 check (`audit`) counts grains missing from an owner band or not whole in it,
 grains owned by more than one band, and whole visible grains absent from both
 ownership and context. It also counts `bands_outside_body`, using the recorded
-`body_rect_mm` in sheet coordinates, including the repeated strips and pixel
+`sheet_bodies[].body_rect_mm` in sheet coordinates, including repeated strips and pixel
 rounding (all four counts must be 0). An individual grain that cannot fit at the
 requested fixed scale remains whole and triggers this audit; change scale or
 paper before printing such a result. Samples are ordered top of the
@@ -390,15 +398,21 @@ samples may share a line, each with its label.
 
 The layout follows [context first](#layout-rule-context-first): printed grains
 form 2-D clusters through box gaps of at most `context_um` (0 uses the larger
-of three reference grain sizes and `gap_break_um`). Intersecting padded cluster
-rectangles merge until stable. Groups smaller than `min_group` (default 3)
-join the nearest cluster when their union fits a full line or adds at most one
-line to an already oversized cluster. Remaining clusters smaller than
-`min_cluster_grains` (default 5) are strays, except those tied for largest in
-their area. Clusters follow the mosaic's long axis and stay whole whenever they fit a full line, even when that
+of three reference grain sizes and `gap_break_um`). Groups smaller than
+`min_group` (default 3) join their nearest affordable group only across a
+pairwise grain-box gap of at most `1.25 c` and with at most 15 % growth of the
+host's padded rectangle area, subject to the existing line-size bound (7).
+Remaining components smaller than `min_cluster_grains` (default 5) are strays,
+except those tied for largest in their area. Only then do intersecting retained
+padded rectangles merge until stable. This order prevents a far detection
+inside a long row's global rectangle from stretching its local cut pieces. Clusters follow the mosaic's long axis and stay whole whenever they fit a full line, even when that
 spends a new line. Short remainders can share a line with the next cluster or
 cut piece, including the next area; a height cut does not force a new line when
-its final piece leaves enough width. Empty stretches between clusters become
+its final piece leaves enough width. Lines use the actual remaining height of
+the current sheet. A cut cluster may also take a height cut near that remaining
+line end, using the same gap, ownership and repeated-strip rules (5, 6). A
+whole cluster which fits an empty body spends a new sheet instead of being cut
+to fill a partly used one. Areas and pieces retain their reading order. Empty stretches between clusters become
 breaks marked "//" with their length. Bands of the same area on one line share one sample/area
 label, with no grain numbers.
 
@@ -427,9 +441,27 @@ of the same area in their band), `strays` and the four audit counts.
 `fill.band_area` is band image area divided by the available body area across
 all sheets; `fill.line_width` is the mean sum of band image widths on a line
 divided by body width. Labels, line gaps and inter-band gaps are excluded from
-the numerator. The body is recorded in registration as `body_rect_mm`; it
-starts at the existing header clearance and ends before the footer. A failing
-bounds audit can inflate fill, so check the audit before interpreting it.
+the numerator. The denominator sums the real body area of every sheet.
+Registration records `sheet_bodies`, each with `sheet` (1-based), `header_mm`
+and `body_rect_mm` (`x0, y0, x1, y1`). Bodies start 1 mm below their header and
+end before the unchanged 5 mm footer. The legacy `body_rect_mm` is the envelope
+of all bodies (exact for a single sheet); it is useful for older readers but
+cannot audit individual sheets. The audit uses the per-sheet record, falling
+back to the legacy rectangle, or paper bounds for older registrations.
+A failing bounds audit can inflate fill, so check the audit before interpreting it.
+
+Stats record the full and compact `header_mm` heights and `height_budget` for
+every sheet. Area fields are in mm²: `header_mm2`, `footer_margins_mm2` (also
+includes the 1 mm header clearance), `labels_notes_mm2`, `band_mm2`,
+`blank_right_mm2` (to the right of the last image on each line), and
+`other_line_mm2` (gaps and space below shorter images). Together with
+`blank_below_mm` times body width, these partition the paper area. The last
+line includes its 4.2 mm notes allowance. `empty_epoxy_mm2` is a subset of band
+area: full-width rows farther than `pad_um` (default 22 µm) from every visible
+printed grain box in that band. It excludes strays and artifacts, and includes
+owned and repeated context targets. This row measure identifies tall empty
+strips; it does not claim to measure every background pixel between grains.
+`fill.empty_epoxy` divides that area by total band image area.
 
 Every band carries a 100 µm (or 50 µm) scale bar inside its owned part, left of
 any right-hand repeated strip, and corner ticks. The header has the instrument
@@ -439,9 +471,25 @@ size, capture times), the sample legend, laser spot circles at print scale and
 the mount map: area boxes from stage coordinates in the SEM view, this sheet's
 samples dark with their grains as white dots and its bands outlined.
 Everything is black, white and grey. Corner marks sit in the sheet margins.
+Sheet 1 retains the full acquisition block in a 50 mm header. Subsequent sheets
+use a 36 mm header with title, sheet number, counts, scale and processing,
+"acquisition details on sheet 1", the samples on that sheet, the laser key
+and the mount map. Text sizes are unchanged. The map occupies a lower panel
+below the title and counts; its labels stay inside it. For mounts with many
+sample labels, either header can grow to `19.1 + 2.7 × labels` mm, capped at
+66 mm; both heights are recorded. The measured Sandbox and Grenville XL mounts,
+and the letter-size Sandbox render, use 50 mm and 36 mm. No margins, footer
+height or print scale change.
 
 The registration sidecar (`<package>_print_registration.json`) is the
-`print_sheet` frame, separate from the laser stage registration. In this example,
+`print_sheet` frame, separate from the laser stage registration. Its
+`registration_file` gives the exact export filename, including case, and is
+used both by the footer and the UI download. Exports preserve the saved project
+folder's spelling when it differs from the native package name only by case
+(`Sandbox_S.grainatlas` versus `sandbox_s.zag`); other package names stay as
+saved. The CLI also honours an explicit `registration_file` parameter. Renaming
+a delivered sidecar after rendering cannot update a printed footer; choose the
+export name before rendering. In this example,
 `row: 1` identifies the area's first cluster; further bands cut from that cluster
 also use `row: 1`. `context` and `repeated_um` are empty because this band has no
 cuts:

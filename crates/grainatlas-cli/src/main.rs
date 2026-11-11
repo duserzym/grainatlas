@@ -949,12 +949,19 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
             ..Default::default()
         },
     };
-    let name = &project.package.name;
+    // A project may preserve the intended filename case while the native ZAG
+    // uses lowercase (Sandbox_S.grainatlas versus sandbox_s.zag). Do not
+    // otherwise rename the package or its exported files.
+    let name = folder.file_stem().and_then(|s| s.to_str())
+        .filter(|s| s.eq_ignore_ascii_case(&project.package.name))
+        .unwrap_or(&project.package.name);
     p.project = folder
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_default();
-    p.registration_file = format!("{name}_print_registration.json");
+    if p.registration_file.is_empty() {
+        p.registration_file = format!("{name}_print_registration.json");
+    }
     p.printed = now_rfc3339()
         .replace('T', " ")
         .trim_end_matches('Z')
