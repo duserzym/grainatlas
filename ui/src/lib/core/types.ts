@@ -230,6 +230,7 @@ export interface Settings {
   /** Unused by the UI (the theme is the viewer's preference, not the project's). */
   theme?: string;
   snap: boolean;
+  n_per_sample: boolean;
   outline_margin_um: number;
   outline_smooth: boolean;
 }

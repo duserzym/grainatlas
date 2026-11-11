@@ -11,8 +11,9 @@
   import type { Core } from '../lib/core/core';
   import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
-  import { formatName, grainAt, relinkSpots, linkUnlinkedSpots, newId, nextN, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
+  import { formatName, grainAt, relinkSpots, linkUnlinkedSpots, newId, nextNumber, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import FloatingPanel from '../components/FloatingPanel.svelte';
+  import SizeBox from '../components/SizeBox.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
   import { mountSpotDocuments, postSpots, spotLink } from '../lib/laicpmsdb';
   import MountPicker from '../components/MountPicker.svelte';
@@ -110,6 +111,31 @@
   // Open state per visit; the position is remembered (app.layout, ux-conventions rule 7).
   let panel = $state({ open: true });
   let hoverId = $state<string | null>(null);
+  let infoId = $state<string | null>(null);
+  let infoTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingInfo: string | null = null;
+  function updateInfo(target: string | null) {
+    if (target === infoId) {
+      if (infoTimer) clearTimeout(infoTimer);
+      infoTimer = null;
+      return;
+    }
+    if (infoTimer && pendingInfo === target) return;
+    if (infoTimer) clearTimeout(infoTimer);
+    pendingInfo = target;
+    infoTimer = setTimeout(() => {
+      infoTimer = null;
+      if (hoverId === target) infoId = target;
+    }, 250);
+  }
+  onDestroy(() => { if (infoTimer) clearTimeout(infoTimer); });
+  $effect(() => {
+    areaId;
+    hoverId = null;
+    infoId = null;
+    if (infoTimer) clearTimeout(infoTimer);
+    infoTimer = null;
+  });
   let snapHint = $state<SnapTarget | null>(null);
   // In-progress gestures.
   let splitLine = $state<[number, number, number, number] | null>(null);
@@ -123,13 +149,6 @@
   let stroke = $state<{ pts: [number, number][]; op: EditOp } | null>(null);
   let snapEdges = $state(true);
   let brushUm = $state(20);
-  // A typed "Next n" belongs to the sample it was typed for.
-  let nextNSample: string | null = null;
-  $effect(() => {
-    const s = sample;
-    if (nextNSample !== null && s !== nextNSample) app.nextN = null;
-    nextNSample = s;
-  });
   $effect(() => {
     if (app.tool !== 'grain-outline') lasso = null;
     if (app.tool !== 'grain-brush') stroke = null;
@@ -236,11 +255,17 @@
     return `${note}${o.outside_drawn ? '; outside every drawn area' : ''}`;
   }
   const sample = $derived(area?.sample || area?.name || '');
+  const automaticN = $derived(nextNumber(app.spots, sample, app.settings.n_per_sample));
+  const nextRun = $derived(app.nextN ?? automaticN);
+  const nextPosition = $derived(drawing ? [drawing.x, drawing.y] as [number, number] : snapHint ? [snapHint.x, snapHint.y] as [number, number] : cursorUm);
+  const nextName = $derived(formatName(patternFor(areaId ?? ''), sample, nextPosition ? grainAt(grains, ...nextPosition)?.number ?? null : null, nextRun));
+  const nextNameClash = $derived(app.spots.some((s) => s.name === nextName));
   const refOverlay = $derived(areaId ? (app.overlays[areaId] ?? null) : null);
   /** screen px → um at the current zoom */
   const k = $derived(view ? umPerPx / view.zoom : 1);
   const rotDeg = $derived(view ? (view.rot * 180) / Math.PI : 0);
   const selSpots = $derived(app.spots.filter((s) => app.selection.includes(s.id)));
+  const selectedHere = $derived(selSpots.filter((s) => s.area_id === areaId).length);
   const activeIds = $derived(gesture?.ids ?? []);
   const autoColour = $derived(app.settings.spot_cursor_colour === 'auto');
   let contrasts = $state<Record<string, Contrast>>({});
@@ -274,7 +299,7 @@
     return activeColour(id) === '#111' ? '#fff' : '#111';
   }
   const focus = $derived.by(() => {
-    const id = app.selection[0] ?? hoverId;
+    const id = app.selection[0] ?? (selGrains.length ? null : infoId);
     return app.spots.find((s) => s.id === id) ?? null;
   });
   // ---- results overlay (GET /v1/mounts/{id}/results; memory only) ------------------------------
@@ -306,7 +331,8 @@
     else app.notice = `Acquisition ${id}: open it in laicpmsdb (no server set here).`;
   }
 
-  const focusGrain = $derived(!focus ? (detections.find((g) => g.id === (selGrains[0] ?? hoverId)) ?? null) : null);
+  const focusGrain = $derived(!focus ? (detections.find((g) => g.id === (selGrains[0] ?? infoId)) ?? null) : null);
+  const passiveInfo = $derived(!selSpots.length && !selGrains.length);
 
   $effect(() => {
     const t = areaId ? app.tone[areaId] : null;
@@ -521,8 +547,7 @@
         state.focusGrain = { area: ownerId, id: grainId, flash: true };
       } };
     }
-    const n = app.nextN ?? nextN(app.spots, sample);
-    if (app.nextN != null) app.nextN = n + 1;
+    const n = nextRun;
     return {
       id: newId(),
       area_id: areaId!,
@@ -546,6 +571,10 @@
     app.checkpoint();
     app.spots = [...app.spots, s];
     app.selection = [s.id];
+    app.nextN = s.n + 1;
+    app.lastPlaced = { id: s.id, n: s.n };
+    const clash = app.spots.find((q) => q.id !== s.id && q.name === s.name);
+    if (clash) app.notice = `${s.name} is already used by another spot in this project (${clash.sample || areaLabel(clash.area_id)}). Set Next n to continue elsewhere; ⌘Z undoes.`;
   }
   function updateSpot(id: string, patch: Partial<Spot>, checkpoint = true) {
     if (checkpoint) app.checkpoint();
@@ -1069,11 +1098,13 @@
     cursorScreen = p ? [p.sx, p.sy] : null;
     if (!p) {
       hoverId = null;
+      updateInfo(null);
       return;
     }
     const x = p.x * umPerPx, y = p.y * umPerPx;
     lassoHover = lasso ? [x, y] : null;
     hoverId = hitSpot(x, y)?.id ?? grainAt(detections, x, y, app.layers.artifacts)?.id ?? null;
+    updateInfo(hoverId);
     if (app.tool === 'spot' && app.settings.snap && !(p.ev as MouseEvent).altKey) {
       const prev = app.spots.filter((s) => s.area_id === areaId).at(-1) ?? null;
       snapHint = snap(x, y, snapTargets(grains, prev, app.diameter), 12 * k);
@@ -1212,13 +1243,13 @@
             {/if}
             {#if app.layers.outlines && app.layers.artifacts}
               {#each artifacts as g (g.id)}
-                <polygon class="grain artifact" class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid="grain-artifact"><title>Not a grain: {ARTIFACT_LABELS[g.artifact!]} (select it and Keep as grain to restore)</title></polygon>
+                <polygon class="grain artifact" class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid="grain-artifact" />
               {/each}
             {/if}
             {#if app.layers.outlines}
               {#each outlinedGrains as g (g.id)}
                 {@const own = owners.get(g.id)}
-                <polygon class="grain" class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} style:--grain-owner={own?.duplicate_of ? ownerColourToken(own.owner_area, app.project?.areas ?? []) : undefined} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined}><title>{ownerNote(g)}</title></polygon>
+                <polygon class="grain" class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} style:--grain-owner={own?.duplicate_of ? ownerColourToken(own.owner_area, app.project?.areas ?? []) : undefined} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined} />
               {/each}
             {/if}
             {#if flashingSpot}
@@ -1340,13 +1371,10 @@
         <button class="icon" aria-pressed={app.tool === t.id} title="{t.title} ({t.key})" onclick={() => (app.tool = t.id)} data-testid="tool-{t.id}">{t.label}</button>
       {/each}
       <span class="sep" class:hidden={ro}></span>
-      <label class="diam" class:hidden={ro} title="Spot diameter (µm); 1–6 pick a preset">
+      <div class="diam" class:hidden={ro}>
         ⌀
-        <select value={String(app.diameter)} onchange={(e) => setDiameter(+e.currentTarget.value)}>
-          {#each [...new Set([...app.settings.spot_presets_um, app.diameter])].sort((a, b) => a - b) as d (d)}<option value={String(d)}>{d}</option>{/each}
-        </select>
-        <input type="number" min="1" step="0.5" value={app.diameter} onchange={(e) => setDiameter(+e.currentTarget.value)} aria-label="Diameter µm" />µm
-      </label>
+        <SizeBox value={app.diameter} onchange={setDiameter} label="Spot diameter (µm) for the next spot and the selected spots; keys 1–6 pick a preset" testid="size-toolbar" />
+      </div>
       {#if !noPixels}
         <span class="sep"></span>
         <button class="icon" title="Add grain: click inside it (G)" aria-pressed={app.tool === 'grain-add'} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
@@ -1375,6 +1403,7 @@
 
     {#if panel.open && (focus || focusGrain)}
       <FloatingPanel title={focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}
+        passive={passiveInfo}
         minimized={app.layout.infoCollapsed} onminimize={() => { app.layout.infoCollapsed = !app.layout.infoCollapsed; app.saveLayout(); }}>
           {#if focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
@@ -1400,8 +1429,8 @@
             <label class="field">Name <input type="text" value={focus.name} onchange={(e) => updateSpot(focus.id, { name: e.currentTarget.value })} data-testid="panel-name" /></label>
             <label class="field" title="The spot's number; the name follows the pattern">n <input type="number" min="1" value={focus.n} onchange={(e) => setSpotN(focus.id, Math.max(1, Math.round(+e.currentTarget.value)))} data-testid="panel-n" /></label>
           </div>
+          <div class="field">Diameter µm <SizeBox value={focus.diameter_um} onchange={(d) => updateSpot(focus.id, { diameter_um: d })} label="Diameter µm" testid="size-panel" disabled={ro} /></div>
           <div class="two">
-            <label class="field">Diameter µm <input type="number" min="1" step="0.5" value={focus.diameter_um} onchange={(e) => updateSpot(focus.id, { diameter_um: +e.currentTarget.value })} /></label>
             <label class="field">Kind
               <select value={focus.kind} onchange={(e) => updateSpot(focus.id, { kind: e.currentTarget.value as SpotKind })}><option value="spot">spot</option><option value="line" disabled={focus.x2_um == null}>line</option><option value="raster" disabled={focus.x2_um == null}>raster</option></select>
             </label>
@@ -1499,17 +1528,6 @@
         <label class="field">Name pattern for this area
           <input type="text" value={app.settings.area_patterns?.[areaId!] ?? ''} placeholder={app.settings.naming_pattern} onchange={(e) => setAreaPattern(e.currentTarget.value)} data-testid="area-pattern" />
         </label>
-        <div class="presets">
-          {#each app.settings.spot_presets_um as d, i (d)}
-            <button class="icon" aria-pressed={app.diameter === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
-          {/each}
-        </div>
-        <div class="two">
-          <label class="field" title="Start this sample's next spot at this number (for example after other samples' spots took the numbers in between, or a Qtegra run number); later spots count up from it. Empty = one more than this sample's highest">Next n
-            <input type="number" min="1" placeholder="auto ({nextN(app.spots, sample)})" data-testid="next-n" value={app.nextN ?? ''} oninput={(e) => (app.nextN = e.currentTarget.value === '' ? null : Math.max(1, Math.round(+e.currentTarget.value)))} />
-          </label>
-          <label class="check"><input type="checkbox" bind:checked={app.settings.snap} onchange={() => app.saveSettings()} /> snap (⌥ = free)</label>
-        </div>
         <div class="row">
           <button onclick={() => exportSpots('csv')} disabled={!app.spots.length} data-testid="export-csv">Spots CSV</button>
           <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
@@ -1629,7 +1647,7 @@
             </tbody>
           </table>
           {#if refOverlay.pairs.length > 3}<p class="muted">Fit RMS <b class="num">{refOverlay.rms_um.toFixed(1)} µm</b> over {refOverlay.pairs.length} pairs.</p>{/if}
-          <p class="faint small-text">Then use the Spot tool with a pattern such as <code>{'{sample}_{n}'}</code> and set "Next n" to the run number before each click, so spot names equal the instrument labels.</p>
+          <p class="faint small-text">Use the Spot tool with a pattern such as <code>{'{sample}_{n}'}</code> and set Next n to the instrument run number; it counts up across samples unless restart is on.</p>
         {/if}
       {:else if segParams}
         <details class="params" onchange={() => app.persist()}>
@@ -1723,6 +1741,28 @@
         {/if}
       {/if}
       </fieldset>
+      {#if !ro}
+      <details class="spot-entry" open={app.layout.spotEntryOpen} ontoggle={(e) => { app.layout.spotEntryOpen = e.currentTarget.open; app.saveLayout(); }}>
+        <summary>Spot entry</summary>
+        <div class="entry-body">
+          <div class="diam">⌀ <SizeBox value={app.diameter} onchange={setDiameter} label="Spot diameter (µm) for the next spot and the selected spots" testid="size-side" /></div>
+          <span class="faint small">{selectedHere ? `next spot and ${selectedHere} selected` : 'next spot'}</span>
+          <div class="presets">
+            {#each app.settings.spot_presets_um as d, i (d)}
+              <button class="icon" aria-pressed={app.diameter === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
+            {/each}
+          </div>
+          <div class="next-entry">
+            <label class="field" title="Next n counts up across samples unless restart is on; clear it to continue above the highest existing number.">Next n
+              <input type="number" min="1" placeholder="auto ({automaticN})" data-testid="next-n" value={app.nextN ?? ''} oninput={(e) => { const n = e.currentTarget.valueAsNumber; app.nextN = Number.isFinite(n) ? Math.max(1, Math.round(n)) : null; }} />
+            </label>
+            <div class:clash={nextNameClash}><span class="mono" data-testid="next-name">{nextName}</span>{#if nextNameClash} <span data-testid="next-name-clash">already used</span>{/if}</div>
+          </div>
+          <label class="check"><input type="checkbox" bind:checked={app.settings.snap} onchange={() => app.saveSettings()} /> snap (⌥ = free)</label>
+          <label class="check"><input type="checkbox" bind:checked={app.settings.n_per_sample} onchange={() => { app.nextN = null; app.saveSettings(); app.persist(); }} /> restart at 1 for each sample</label>
+        </div>
+      </details>
+      {/if}
       <details class="layers" open={app.layout.layersOpen} ontoggle={(e) => { app.layout.layersOpen = e.currentTarget.open; app.saveLayout(); }}>
         <summary>Layers</summary>
         <div class="two">
@@ -1836,6 +1876,13 @@
     gap: var(--space-2);
     overflow: hidden;
   }
+  .spot-entry, .layers, .tabs, .panel-heading { flex: none; }
+  .spot-entry { font-size: 0.82rem; }
+  .entry-body { display: grid; gap: var(--space-1); padding-block: var(--space-1); }
+  .next-entry { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: var(--space-2); align-items: center; }
+  .next-entry .field { min-width: 0; }
+  .next-entry .mono { overflow-wrap: anywhere; }
+  .clash { color: var(--warning); }
   .tabs,
   .row,
   .presets {

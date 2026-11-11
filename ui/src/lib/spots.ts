@@ -14,9 +14,32 @@ export function formatName(pattern: string, sample: string, grain: number | null
   });
 }
 
-/** The next `{n}` of a sample: one more than the highest of its spots (each sample counts on its own). */
+/** The next `{n}` of a sample: one more than the highest of its spots. */
 export function nextN(spots: Spot[], sample: string): number {
   return spots.reduce((m, s) => (s.sample === sample ? Math.max(m, s.n || 0) : m), 0) + 1;
+}
+
+export function projectNextN(spots: Spot[]): number {
+  return spots.reduce((m, s) => Math.max(m, s.n || 0), 0) + 1;
+}
+
+export function nextNumber(spots: Spot[], sample: string, perSample: boolean): number {
+  return perSample ? nextN(spots, sample) : projectNextN(spots);
+}
+
+/** Decimal entry accepts either separator and at most two decimal places. */
+export function parseDiameter(text: string): number | null {
+  const s = text.trim().replace(',', '.');
+  if (!/^\d+(?:\.\d{0,2})?$/.test(s)) return null;
+  const d = Number(s);
+  return d >= 1 && d <= 500 ? d : null;
+}
+
+/** Move strictly to the next grid point, including from an off-grid diameter. */
+export function stepDiameter(value: number, direction: number, step: number): number {
+  const grid = value / step;
+  const next = direction > 0 ? Math.floor(grid + 1e-9) + 1 : Math.ceil(grid - 1e-9) - 1;
+  return Math.min(500, Math.max(1, Math.round(next * step * 100) / 100));
 }
 
 export function inside(poly: [number, number][], px: number, py: number) {

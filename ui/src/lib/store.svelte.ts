@@ -42,6 +42,7 @@ export const DEFAULT_SETTINGS: Settings = {
   spot_cursor_colour: 'auto',
   user: '',
   snap: true,
+  n_per_sample: false,
   outline_margin_um: 4,
   outline_smooth: false,
 };
@@ -99,9 +100,10 @@ export interface LayoutPrefs {
   infoCollapsed: boolean;
   menuCollapsed: boolean;
   layersOpen: boolean;
+  spotEntryOpen: boolean;
 }
 const LAYOUT_KEY = 'grainatlas.layout';
-export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, infoCollapsed: false, menuCollapsed: false, layersOpen: false };
+export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, infoCollapsed: false, menuCollapsed: false, layersOpen: false, spotEntryOpen: true };
 
 function loadLayout(): LayoutPrefs {
   try {
@@ -192,8 +194,9 @@ class AppState {
   checkPrompt = $state<{ summary: string; answer: (proceed: boolean) => void } | null>(null);
   spots = $state<Spot[]>([]);
   overlays = $state<Record<string, Overlay>>({});
-  /** Set to force the next spot's {n} (legacy run numbers); null = continue. */
+  /** This session's next run number; null = one above the project's (or sample's) highest. */
   nextN = $state<number | null>(null);
+  lastPlaced = $state<{ id: string; n: number } | null>(null);
   labels = $state<Label[]>([]);
   private selected = $state<string[]>([]);
   /** A command's provenance survives until the selection changes. */
@@ -318,10 +321,38 @@ class AppState {
   liveKeys: Record<string, string> = {};
   /** The Canvas view of this tab (restored when the tab is shown again). */
   savedView: { areaId: string; view: import('./canvas/view').View } | null = null;
+  /** Tab-owned effects survive screen changes and are disposed when this tab closes. */
+  readonly stopNumbering: () => void;
 
   constructor(id: number) {
     this.id = id;
     this.core = newCore(id);
+    this.stopNumbering = $effect.root(() => {
+      let context: { area: string | null; sample: string } | null = null;
+      let project: string | null = null;
+      $effect(() => {
+        const uuid = this.project?.uuid ?? null;
+        if (uuid !== project) {
+          this.nextN = null;
+          this.lastPlaced = null;
+          project = uuid;
+        }
+      });
+      $effect(() => {
+        const area = this.areaId;
+        const record = this.project?.areas.find((a) => a.id === area);
+        const sample = record?.sample || record?.name || '';
+        if (this.settings.n_per_sample && context && (context.area !== area || context.sample !== sample)) this.nextN = null;
+        context = { area, sample };
+      });
+      $effect(() => {
+        const last = this.lastPlaced;
+        if (last && !this.spots.some((s) => s.id === last.id)) {
+          if (this.nextN === last.n + 1) this.nextN = last.n;
+          this.lastPlaced = null;
+        }
+      });
+    });
   }
 
   /** The tab's name: the project, else the package or the published bundle. */
@@ -496,6 +527,9 @@ class AppState {
   adopt(p: Project) {
     this.settings.naming_pattern = p.settings?.naming_pattern ?? this.settings.naming_pattern;
     this.settings.area_patterns = p.settings?.area_patterns ?? {};
+    this.settings.n_per_sample = p.settings?.n_per_sample ?? false;
+    this.nextN = null;
+    this.lastPlaced = null;
     this.findings = [];
     this.checkLabels = null;
     this.checkLabelsError = null;
@@ -563,6 +597,7 @@ class Tabs {
     const i = this.list.findIndex((t) => t.id === id);
     if (i < 0) return;
     const [t] = this.list.slice(i, i + 1);
+    t.stopNumbering();
     const list = this.list.filter((x) => x.id !== id);
     this.list = list;
     if (this.activeId === id) {

@@ -22,6 +22,7 @@ pub struct Settings {
     /// Kept for older projects; the theme is each viewer's own preference (UI storage).
     pub theme: String,
     pub snap: bool,
+    pub n_per_sample: bool,
     pub outline_margin_um: f64,
     pub outline_smooth: bool,
 }
@@ -37,6 +38,7 @@ impl Default for Settings {
             user: String::new(),
             theme: "light".into(),
             snap: true,
+            n_per_sample: false,
             outline_margin_um: 4.0,
             outline_smooth: false,
         }
