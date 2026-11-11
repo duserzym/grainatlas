@@ -3,12 +3,29 @@ use std::sync::TryLockError;
 
 use super::{AppState, Ordering, Session};
 use grainatlas_core::project::session::DEFAULT_HEAVY_BUDGET;
+use tauri::{AppHandle, Emitter};
+use grainatlas_core::Ctl;
+use super::Progress;
 
 impl AppState {
     /// Run an allocating operation, then enforce the window budget even on error.
     /// Return owned results so the caller's session lock is released before trimming.
     pub(super) fn with_session<T>(&self, tab: u32, f: impl FnOnce(&mut Session) -> T) -> T {
         self.with_session_budget(tab, DEFAULT_HEAVY_BUDGET, f)
+    }
+
+    /// Called only from a blocking command. Reset cancellation after acquiring the
+    /// session, so a queued command cannot clear the running command's cancel flag.
+    pub(super) fn with_session_ctl<T>(&self, app: &AppHandle, tab: u32, f: impl FnOnce(&mut Session, &Ctl) -> T) -> T {
+        let t = self.tab(tab);
+        self.with_session(tab, |s| {
+            t.cancel.store(false, Ordering::SeqCst);
+            let cancel = || t.cancel.load(Ordering::SeqCst);
+            let progress = |stage: &str, fraction: f32| {
+                let _ = app.emit("grainatlas://progress", Progress { tab, stage: stage.to_string(), fraction });
+            };
+            f(s, &Ctl { cancel: &cancel, progress: &progress })
+        })
     }
 
     fn with_session_budget<T>(&self, tab: u32, budget: usize, f: impl FnOnce(&mut Session) -> T) -> T {
@@ -115,7 +132,7 @@ mod tests {
         assert_eq!(state.tab(0).lock().memory_report().budget, usize::MAX);
         // A failing operation still enforces the window budget.
         let result = state.with_session_budget(1, bytes, |s| {
-            s.histogram(&area).unwrap();
+            s.retone(&area, "{}").unwrap();
             Err::<(), _>("after allocation")
         });
         assert!(result.is_err());

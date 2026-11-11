@@ -27,6 +27,11 @@ pub struct AreaOutput {
     pub coverage: Vec<f32>,
     /// 8-bit base mosaic after the tone curve, shared with pyramid level 0.
     pub base: std::sync::Arc<Vec<u8>>,
+    /// Resident summaries survive eviction of linear and coverage.
+    pub histogram: Vec<u32>,
+    pub auto_tone: crate::photometric::ToneParams,
+    pub auto_photometric: crate::photometric::PhotometricParams,
+    pub auto_blend: crate::blend::BlendParams,
     pub pyramid: Pyramid,
     pub mosaic_json: MosaicJson,
 }
@@ -37,6 +42,23 @@ pub type Clock<'a> = &'a dyn Fn() -> f64;
 /// Reads the tiles of `area` and records their hashes in `rec`.
 pub fn read_tiles(pkg: &dyn Package, area: usize, rec: &mut AreaRecord) -> crate::Result<Vec<Tile>> {
     let tiles = pkg.tiles(area)?;
+    if let Some(meta) = pkg.info().areas.get(area) { rec.merge_metadata(meta); }
+    for (t, r) in tiles.iter().zip(rec.tiles.iter_mut()) {
+        r.sha256 = t.sha256.clone();
+        r.w = t.image.w;
+        r.h = t.image.h;
+    }
+    Ok(tiles)
+}
+
+/// Read with cancellation between decoded tiles.
+pub fn read_tiles_ctl(
+    pkg: &dyn Package,
+    area: usize,
+    rec: &mut AreaRecord,
+    ctl: &Ctl,
+) -> crate::Result<Vec<Tile>> {
+    let tiles = pkg.tiles_ctl(area, ctl)?;
     if let Some(meta) = pkg.info().areas.get(area) { rec.merge_metadata(meta); }
     for (t, r) in tiles.iter().zip(rec.tiles.iter_mut()) {
         r.sha256 = t.sha256.clone();
@@ -95,20 +117,57 @@ pub fn run(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, ctl: &Ctl,
 }
 
 /// The whole pipeline, with the area's grains for per-grain tone normalisation.
-pub fn run_with(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, grains: &[Grain], ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
+pub fn run_with(rec: &mut AreaRecord, tiles: &[Tile], params: &AreaParams, grains: &[Grain], ctl: &Ctl, clock: Clock, timings: &mut Timings,
+) -> crate::Result<AreaOutput> {
     let Inputs { imgs, meta } = inputs(rec, tiles);
     let t0 = clock();
     ctl.report("stitch", 0.0);
     let placement = mosaic::stitch(&meta, &imgs, &params.stitch, ctl)?;
+    ctl.report("stitch", 1.0);
     timings.steps.push(("stitch".into(), clock() - t0));
     ctl.check()?;
     finish(rec, imgs, placement, params, grains, ctl, clock, timings)
 }
 
+/// Consumes decoded tiles before stitching/correction, avoiding a second resident tile set.
+pub fn run_owned(
+    rec: &mut AreaRecord,
+    tiles: Vec<Tile>,
+    params: &AreaParams,
+    grains: &[Grain],
+    ctl: &Ctl,
+    clock: Clock,
+    timings: &mut Timings,
+) -> crate::Result<AreaOutput> {
+    let Inputs { imgs, meta } = inputs_owned(rec, tiles);
+    let t0 = clock();
+    ctl.report("stitch", 0.0);
+    let placement = mosaic::stitch(&meta, &imgs, &params.stitch, ctl)?;
+    ctl.report("stitch", 1.0);
+    timings.steps.push(("stitch".into(), clock() - t0));
+    ctl.check()?;
+    finish(rec, imgs, placement, params, grains, ctl, clock, timings)
+}
+
+/// Move ordinary fields; HDR grouping retains the existing merge arithmetic.
+pub fn inputs_owned(rec: &AreaRecord, tiles: Vec<Tile>) -> Inputs {
+    if hdr_groups(&tiles.iter().map(|t| t.meta.clone()).collect::<Vec<_>>())
+        .iter()
+        .any(|g| g.len() > 1)
+    {
+        return inputs(rec, &tiles);
+    }
+    let mut result = inputs(rec, &[]);
+    result.meta.tiles = tiles.iter().map(|t| t.meta.clone()).collect();
+    result.imgs = tiles.into_iter().map(|t| t.image).collect();
+    result
+}
+
 /// Everything after the stitch, on a solved placement: photometric correction, blend, tone,
 /// pyramid. A change of correction, blending or tone re-runs only this (no re-stitch).
 #[allow(clippy::too_many_arguments)]
-pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, params: &AreaParams, grains: &[Grain], ctl: &Ctl, clock: Clock, timings: &mut Timings) -> crate::Result<AreaOutput> {
+pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, params: &AreaParams, grains: &[Grain], ctl: &Ctl, clock: Clock, timings: &mut Timings,
+) -> crate::Result<AreaOutput> {
     let mut t0 = clock();
     let mut lap = |name: &str, timings: &mut Timings| {
         let t = clock();
@@ -116,8 +175,9 @@ pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, param
         t0 = t;
     };
     ctl.report("photometric", 0.0);
-    let (corrected, photo) = crate::photometric::correct(&placement, &imgs, &params.photometric);
+    let (corrected, photo) = crate::photometric::correct_ctl(&placement, &imgs, &params.photometric, ctl)?;
     drop(imgs);
+    ctl.report("photometric", 1.0);
     lap("photometric", timings);
     ctl.check()?;
     let fill = if params.photometric.background { photo.background_median } else { median_of(&corrected) };
@@ -127,10 +187,16 @@ pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, param
     ctl.check()?;
 
     ctl.report("tone", 0.0);
+    let auto_tone =
+        crate::photometric::tone::auto(&linear, Some(&coverage), rec.um_per_px(), &params.tone);
     let base = tone_base_with(&linear, &coverage, &params.tone, grains, rec.um_per_px());
+    let histogram = base_histogram(&base, &coverage);
+    ctl.report("tone", 1.0);
     lap("tone", timings);
     let mosaic_json_sha = crate::util::sha256_hex(&base);
+    ctl.report("pyramid", 0.0);
     let pyramid = Pyramid::build(linear.w, linear.h, base);
+    ctl.report("pyramid", 1.0);
     lap("pyramid", timings);
     let base = pyramid.levels[0].1.clone();
     let mosaic_json = MosaicJson {
@@ -147,7 +213,13 @@ pub fn finish(rec: &mut AreaRecord, imgs: Vec<Gray>, placement: Placement, param
     rec.placement = Some(placement.clone());
     rec.photometric = Some(photo);
     rec.mosaic = Some(mosaic_json.clone());
-    Ok(AreaOutput { placement, linear, coverage, base, pyramid, mosaic_json })
+    Ok(AreaOutput { placement, linear, coverage, base,
+        histogram,
+        auto_tone,
+        auto_photometric: params.photometric.clone(),
+        auto_blend: params.blend.clone(),
+        pyramid, mosaic_json,
+    })
 }
 
 /// Deterministic rehydration from the original package and the stored solved placement.
@@ -157,10 +229,25 @@ pub fn rebuild_heavy(
     placement: &Placement,
     ctl: &Ctl,
 ) -> crate::Result<(Gray, Vec<f32>)> {
-    let Inputs { imgs, .. } = inputs(rec, &tiles);
-    // inputs owns its pixels; release the decoded source copies before correction/blending.
-    drop(tiles);
-    let (corrected, photo) = crate::photometric::correct(placement, &imgs, &rec.params.photometric);
+    ctl.report("rebuilding mosaic", 0.0);
+    let progress = |stage: &str, f: f32| {
+        let f = match stage {
+            "seams" => 0.4 + 0.15 * f,
+            "blend" => 0.55 + 0.45 * f,
+            _ => 0.1 + 0.3 * f,
+        };
+        ctl.report("rebuilding mosaic", f);
+    };
+    let inner = Ctl {
+        cancel: ctl.cancel,
+        progress: &progress,
+    };
+    let ctl = &inner;
+    let Inputs { imgs, .. } = inputs_owned(rec, tiles);
+    ctl.check()?;
+    ctl.report("photometric", 0.0);
+    let (corrected, photo) = crate::photometric::correct_ctl(placement, &imgs, &rec.params.photometric, ctl)?;
+    ctl.report("photometric", 1.0);
     drop(imgs);
     let fill = if rec.params.photometric.background {
         photo.background_median
@@ -177,7 +264,13 @@ pub fn tone_base(linear: &Gray, coverage: &[f32], p: &crate::photometric::TonePa
 
 /// `tone_base`, then per-grain normalisation inside the grain masks when enabled
 /// (`um_per_px` of `linear`).
-pub fn tone_base_with(linear: &Gray, coverage: &[f32], p: &crate::photometric::ToneParams, grains: &[Grain], um_per_px: f64) -> Vec<u8> {
+pub fn tone_base_with(linear: &Gray, coverage: &[f32], p: &crate::photometric::ToneParams, grains: &[Grain], um_per_px: f64,
+) -> Vec<u8> {
+    if !p.clahe && !p.grain_norm.enabled {
+        let (lo, hi) = crate::photometric::tone::stretch_levels(linear, Some(coverage), p);
+        let k = 1.0 / (hi - lo);
+        return linear.px.iter().map(|&v| crate::util::to_u8(((v - lo) * k).clamp(0.0, 1.0))).collect();
+    }
     let mut g = linear.clone();
     crate::photometric::tone::stretch(&mut g, Some(coverage), p);
     if p.clahe {
@@ -236,10 +329,12 @@ pub fn scale_placement(pl: &Placement, small: &[Gray], k: usize) -> Placement {
 }
 
 /// Rebuilds base, pyramid and mosaic.json after a tone change (no re-stitch).
-pub fn retone(rec: &mut AreaRecord, out: &mut AreaOutput, tone: &crate::photometric::ToneParams, grains: &[Grain]) {
+pub fn retone(rec: &mut AreaRecord, out: &mut AreaOutput, tone: &crate::photometric::ToneParams, grains: &[Grain],
+) {
     let base = tone_base_with(&out.linear, &out.coverage, tone, grains, rec.um_per_px());
     out.pyramid = Pyramid::build(out.linear.w, out.linear.h, base);
     out.base = out.pyramid.levels[0].1.clone();
+    out.histogram = base_histogram(&out.base, &out.coverage);
     out.mosaic_json.sha256 = crate::util::sha256_hex(&out.base);
     out.mosaic_json.levels = out.pyramid.infos();
     rec.params.tone = tone.clone();
@@ -327,4 +422,15 @@ pub fn area_image<'a>(rec: &'a AreaRecord, out: &'a AreaOutput, tone: &crate::ph
         lut: crate::photometric::tone::lut(tone),
         um_per_px: rec.um_per_px(),
     }
+}
+
+/// Histogram of the displayed base over covered pixels (same threshold as before eviction).
+pub fn base_histogram(base: &[u8], coverage: &[f32]) -> Vec<u32> {
+    let mut h = vec![0; 256];
+    for (&v, &c) in base.iter().zip(coverage) {
+        if c >= 0.5 {
+            h[v as usize] += 1;
+        }
+    }
+    h
 }

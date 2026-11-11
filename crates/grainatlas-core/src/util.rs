@@ -105,3 +105,19 @@ pub fn leading_f64(s: &str) -> Option<f64> {
 pub fn to_u8(v: f32) -> u8 {
     (v * 255.0 + 0.5).clamp(0.0, 255.0) as u8
 }
+
+/// Cancellation boundaries around independently allocated tile work, preserving index order.
+pub fn try_par_map<T: Send>(
+    n: usize,
+    ctl: &crate::Ctl,
+    f: impl Fn(usize) -> crate::Result<T> + Sync + Send,
+) -> crate::Result<Vec<T>> {
+    par_map(n, |i| {
+        ctl.check()?;
+        let value = f(i)?;
+        ctl.check()?;
+        Ok(value)
+    })
+    .into_iter()
+    .collect()
+}

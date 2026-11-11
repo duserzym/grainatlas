@@ -194,7 +194,8 @@ pub fn stitch(area: &AreaMeta, tiles: &[Gray], p: &StitchParams, ctl: &Ctl) -> c
     let pairs = neighbour_pairs(&prior, &sizes);
     let max_drift_px = p.max_drift_um * 1000.0 / area.pixel_size_nm.max(1e-9);
     let n = pairs.len().max(1);
-    let done = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(0usize);
+    ctl.report("correlate", 0.0);
     let results: Vec<PairResult> = crate::util::par_map(pairs.len(), |k| {
         let (a, b, dir) = pairs[k];
         let pd = [prior[b][0] - prior[a][0], prior[b][1] - prior[a][1]];
@@ -204,12 +205,17 @@ pub fn stitch(area: &AreaMeta, tiles: &[Gray], p: &StitchParams, ctl: &Ctl) -> c
             Some((_, psr)) => (None, psr),
             None => (None, 0.0),
         };
-        let c = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        ctl.report("correlate", c as f32 / n as f32);
+        {
+            // Serialize count and delivery; parallel completions cannot emit 0.4 after 0.5.
+            let mut count = done.lock().unwrap_or_else(|p| p.into_inner());
+            *count += 1;
+            ctl.report("correlate", *count as f32 / n as f32);
+        }
         PairResult { a, b, dir: dir.to_string(), prior: pd, measured, psr, used: measured.is_some(), residual: 0.0 }
     });
     ctl.check()?;
     let mut results = results;
+    ctl.report("correlate", 1.0);
     consensus(&mut results, prior.len(), p.consensus_px, 3.0 * p.min_psr);
     let (pos, results) = solve::solve(&prior, results, p.outlier_px);
     let mut tp = Vec::new();

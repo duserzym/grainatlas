@@ -88,23 +88,29 @@ pub fn otsu(values: impl Iterator<Item = f32>) -> f32 {
 
 /// Levels every tile in place. Returns the median background and each tile's surface range.
 pub fn level(tiles: &mut [Gray], skip: &[bool], p: &BackgroundParams) -> (f32, Vec<f32>) {
+    level_ctl(tiles, skip, p, &crate::Ctl::NONE).expect("uncancelled leveling")
+}
+
+pub fn level_ctl(tiles: &mut [Gray], skip: &[bool], p: &BackgroundParams, ctl: &crate::Ctl) -> crate::Result<(f32, Vec<f32>)> {
+    ctl.check()?;
     let thr = p.threshold.unwrap_or_else(|| otsu(tiles.iter().flat_map(|t| t.px.iter().step_by(7).copied())));
     if p.edge_steps {
-        let steps: Vec<EdgeSteps> = crate::util::par_map(tiles.len(), |i| if skip.get(i).copied().unwrap_or(false) { EdgeSteps::default() } else { detect_edge_steps(&tiles[i], thr, p.dilate) });
+        let steps: Vec<EdgeSteps> = crate::util::try_par_map(tiles.len(), ctl, |i| Ok(if skip.get(i).copied().unwrap_or(false) { EdgeSteps::default() } else { detect_edge_steps(&tiles[i], thr, p.dilate) }))?;
         for (t, st) in tiles.iter_mut().zip(&steps) {
             st.apply(t);
         }
     }
-    let surfaces: Vec<Option<Gray>> = crate::util::par_map(tiles.len(), |i| if skip.get(i).copied().unwrap_or(false) { None } else { surface(&tiles[i], thr, p) });
+    let surfaces: Vec<Option<Gray>> = crate::util::try_par_map(tiles.len(), ctl, |i| Ok(if skip.get(i).copied().unwrap_or(false) { None } else { surface(&tiles[i], thr, p) }))?;
     // Mosaic median background from the surfaces.
     let mut all: Vec<f32> = surfaces.iter().flatten().flat_map(|s| s.px.iter().step_by(31).copied()).collect();
     if all.is_empty() {
-        return (0.0, vec![0.0; tiles.len()]);
+        return Ok((0.0, vec![0.0; tiles.len()]));
     }
     all.sort_by(f32::total_cmp);
     let median = all[all.len() / 2];
     let mut ranges = Vec::with_capacity(tiles.len());
     for (t, s) in tiles.iter_mut().zip(&surfaces) {
+        ctl.check()?;
         match s {
             Some(s) => {
                 let (mn, mx) = s.px.iter().fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
@@ -116,7 +122,7 @@ pub fn level(tiles: &mut [Gray], skip: &[bool], p: &BackgroundParams) -> (f32, V
             None => ranges.push(0.0),
         }
     }
-    (median, ranges)
+    Ok((median, ranges))
 }
 
 /// Smooth background surface of one tile at full resolution, or `None` if it has too little

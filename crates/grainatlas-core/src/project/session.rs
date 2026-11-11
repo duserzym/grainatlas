@@ -65,6 +65,8 @@ static HEAVY_USE: AtomicUsize = AtomicUsize::new(1);
 
 pub struct Session {
     last_heavy_use: usize,
+    /// Number of attempted heavy rehydrations, for diagnostics and regression tests.
+    pub rebuild_heavy_calls: usize,
     heavy_budget: usize,
     recent: VecDeque<String>,
     /// Files handed over one by one (browser) before `open`.
@@ -90,6 +92,7 @@ impl Session {
     pub fn new(name: &str) -> Session {
         Session {
             last_heavy_use: 0,
+            rebuild_heavy_calls: 0,
             heavy_budget: DEFAULT_HEAVY_BUDGET,
             recent: VecDeque::new(),
             mem: MemSource::new(name),
@@ -174,7 +177,7 @@ impl Session {
     }
 
     /// Monotonic heavy/work/preview-use stamp, comparable across sessions.
-    /// Zero means no such use yet. Eviction and resident-only reads do not touch it.
+    /// Zero means no recorded area use yet. Eviction and pyramid/PNG reads do not touch it.
     pub fn last_heavy_use(&self) -> usize {
         self.last_heavy_use
     }
@@ -216,7 +219,8 @@ impl Session {
     }
 
     /// Restore only the pre-tone mosaic; resident pixels and project metadata never change.
-    fn ensure_heavy(&mut self, id: &str) -> Result<()> {
+    fn ensure_heavy(&mut self, id: &str, ctl: &Ctl) -> Result<()> {
+        ctl.check()?;
         self.touch(id);
         if self.out(id)?.linear.px.is_empty() {
             // Make room before allocating the replacement, including the oversized-area case.
@@ -225,6 +229,9 @@ impl Session {
             self.heavy_budget = budget.saturating_sub(needed);
             self.trim(Some(id));
             self.heavy_budget = budget;
+            self.rebuild_heavy_calls += 1;
+            ctl.report("rebuilding mosaic", 0.0);
+            ctl.check()?;
             let rec = self.rec(id)?;
             let pkg = self.pkg()?;
             let ai = pkg
@@ -234,10 +241,24 @@ impl Session {
                 .position(|a| a.id == id)
                 .ok_or_else(|| Error::NotFound(id.into()))?;
             let (linear, coverage) =
-                pipeline::rebuild_heavy(rec, pkg.tiles(ai)?, &self.out(id)?.placement, &Ctl::NONE)?;
+                pipeline::rebuild_heavy(rec, pkg.tiles_ctl(ai, ctl)?, &self.out(id)?.placement,
+                ctl,
+            )?;
+            let auto_tone = crate::photometric::tone::auto(
+                &linear,
+                Some(&coverage),
+                rec.um_per_px(),
+                &rec.params.tone,
+            );
+            let auto_photometric = rec.params.photometric.clone();
+            let auto_blend = rec.params.blend.clone();
             let o = self.outputs.get_mut(id).expect("stitched");
             o.linear = linear;
             o.coverage = coverage;
+            o.auto_tone = auto_tone;
+            o.auto_photometric = auto_photometric;
+            o.auto_blend = auto_blend;
+            ctl.report("rebuilding mosaic", 1.0);
         }
         self.trim(Some(id));
         Ok(())
@@ -352,7 +373,8 @@ impl Session {
     }
 
     /// Runs the whole pipeline for one area (`params` = AreaParams JSON, "" = the project's).
-    pub fn stitch(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock) -> Result<String> {
+    pub fn stitch(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock,
+    ) -> Result<String> {
         let pkg = self.pkg.as_deref().ok_or_else(|| Error::Invalid("no package".into()))?;
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
         let ai = pkg.info().areas.iter().position(|a| a.id == area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
@@ -368,10 +390,12 @@ impl Session {
         let mut timings = Timings::default();
         let t0 = clock();
         ctl.report("read", 0.0);
-        let tiles = pipeline::read_tiles(pkg, ai, rec)?;
+        let tiles = pipeline::read_tiles_ctl(pkg, ai, rec, ctl)?;
+        ctl.report("read", 1.0);
+        ctl.check()?;
         timings.steps.push(("read".into(), clock() - t0));
         let grains = self.grains.get(area_id).map_or(&[][..], |g| g.as_slice());
-        let out = pipeline::run_with(rec, &tiles, &params, grains, ctl, clock, &mut timings)?;
+        let out = pipeline::run_owned(rec, tiles, &params, grains, ctl, clock, &mut timings)?;
         let summary = serde_json::json!({
             "mosaic": out.mosaic_json,
             "placement": out.placement,
@@ -389,7 +413,8 @@ impl Session {
     /// Applies new parameters to a stitched area with as little work as possible: tone only →
     /// re-tone; correction or blending → re-run from the solved placement (no re-stitch); stitch
     /// parameters → full stitch. Returns the same summary as `stitch`.
-    pub fn recompute(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock) -> Result<String> {
+    pub fn recompute(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock,
+    ) -> Result<String> {
         let p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
         let Some(rec) = self.project.as_ref().and_then(|pr| pr.areas.iter().find(|a| a.id == area_id)) else {
             return self.stitch(area_id, params, ctl, clock);
@@ -403,7 +428,9 @@ impl Session {
         let mut timings = Timings::default();
         if rendered && rec.params.photometric == p.photometric && rec.params.blend == p.blend {
             let t0 = clock();
-            self.retone(area_id, &serde_json::to_string(&p.tone).map_err(invalid)?)?;
+            self.retone_with_ctl(area_id, &serde_json::to_string(&p.tone).map_err(invalid)?,
+                ctl,
+            )?;
             timings.steps.push(("tone".into(), clock() - t0));
         } else {
             let pkg = self.pkg.as_deref().ok_or_else(|| Error::Invalid("no package".into()))?;
@@ -412,13 +439,15 @@ impl Session {
             let rec = project.area_mut(area_id).expect("area");
             let t0 = clock();
             ctl.report("read", 0.0);
-            let tiles = pipeline::read_tiles(pkg, ai, rec)?;
-            let inputs = pipeline::inputs(rec, &tiles);
-            drop(tiles);
+            let tiles = pipeline::read_tiles_ctl(pkg, ai, rec, ctl)?;
+            let inputs = pipeline::inputs_owned(rec, tiles);
+            ctl.report("read", 1.0);
+            ctl.check()?;
             timings.steps.push(("read".into(), clock() - t0));
             let placement = rec.placement.clone().expect("placement");
             let grains = self.grains.get(area_id).map_or(&[][..], |g| g.as_slice());
-            let out = pipeline::finish(rec, inputs.imgs, placement, &p, grains, ctl, clock, &mut timings)?;
+            let out = pipeline::finish(rec, inputs.imgs, placement, &p, grains, ctl, clock, &mut timings,
+            )?;
             self.outputs.insert(area_id.to_string(), out);
             self.work.remove(area_id);
         }
@@ -432,13 +461,35 @@ impl Session {
     /// A live preview of `params` on a stitched area, downsampled `2^level` times (an 8-byte
     /// w/h header, then 8-bit pixels): the whole mosaic at that pyramid level.
     pub fn preview(&mut self, area_id: &str, params: &str, level: usize) -> Result<Vec<u8>> {
+        self.preview_with_ctl(area_id, params, level, &Ctl::NONE)
+    }
+
+    pub fn preview_with_ctl(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        level: usize,
+        ctl: &Ctl,
+    ) -> Result<Vec<u8>> {
+        let result = self.preview_controlled(area_id, params, level, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn preview_controlled(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        level: usize,
+        ctl: &Ctl,
+    ) -> Result<Vec<u8>> {
         let p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
         let k = 1usize << level.min(12);
         let rec = self.rec(area_id)?.clone();
         let placement = rec.placement.clone().ok_or_else(|| Error::Invalid(format!("{area_id} is not stitched")))?;
         self.touch(area_id);
         if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
-            self.ensure_heavy(area_id)?;
+            self.ensure_heavy(area_id, ctl)?;
             let (w, h, px) = pipeline::preview_tone(
                 self.out(area_id)?, &p.tone, k, self.grains_of(area_id), rec.um_per_px(),
             );
@@ -455,7 +506,8 @@ impl Session {
             self.small.retain(|(a, _), _| a != area_id);
             self.small.insert(key.clone(), small);
         }
-        let (w, h, px) = pipeline::preview(&self.small[&key], &placement, &p, k, self.grains_of(area_id), rec.um_per_px());
+        let (w, h, px) = pipeline::preview(&self.small[&key], &placement, &p, k, self.grains_of(area_id), rec.um_per_px(),
+        );
         self.trim(None);
         Ok(with_header(w, h, &px))
     }
@@ -477,25 +529,49 @@ impl Session {
     /// leave it (so Auto gives the same answer whatever was set before). The caller applies them
     /// like any edit.
     pub fn auto_params(&mut self, area_id: &str, params: &str) -> Result<String> {
+        self.auto_params_with_ctl(area_id, params, &Ctl::NONE)
+    }
+
+    pub fn auto_params_with_ctl(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.auto_params_controlled(area_id, params, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn auto_params_controlled(&mut self, area_id: &str, params: &str, ctl: &Ctl) -> Result<String> {
         let mut p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
         p.photometric.background = true;
         self.out(area_id)?;
         self.touch(area_id);
         let rec = self.rec(area_id)?.clone();
-        let tone = if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
-            self.ensure_heavy(area_id)?;
-            let o = self.out(area_id)?;
-            crate::photometric::tone::auto(&o.linear, Some(&o.coverage), rec.um_per_px(), &p.tone)
+        let o = self.out(area_id)?;
+        let mut tone = if o.auto_photometric == p.photometric &&o.auto_blend == p.blend {
+            o.auto_tone.clone()
         } else {
-            // The current mosaic is corrected differently: render the linear mosaic Auto will give.
+            ctl.check()?;
+            self.rebuild_heavy_calls += 1;
             let pkg = self.pkg()?;
             let ai = pkg.info().areas.iter().position(|a| a.id == area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
             let mut r = rec.clone();
+            r.params = p.clone();
             let placement = r.placement.clone().ok_or_else(|| Error::Invalid(format!("{area_id} is not stitched")))?;
-            let inputs = pipeline::inputs(&r, &pkg.tiles(ai)?);
-            let out = pipeline::finish(&mut r, inputs.imgs, placement, &p, &[], &Ctl::NONE, &|| 0.0, &mut Timings::default())?;
-            crate::photometric::tone::auto(&out.linear, Some(&out.coverage), rec.um_per_px(), &p.tone)
+            ctl.report("rebuilding mosaic", 0.0);
+            let rebuild_ctl = ctl;
+            let (linear, coverage) = pipeline::rebuild_heavy(&r, pkg.tiles_ctl(ai, ctl)?, &placement, rebuild_ctl)?;
+            let tone =
+                crate::photometric::tone::auto(&linear, Some(&coverage), rec.um_per_px(), &p.tone);
+            let o = self.outputs.get_mut(area_id).expect("stitched");
+            o.auto_tone = tone.clone();
+            o.auto_photometric = p.photometric.clone();
+            o.auto_blend = p.blend.clone();
+            tone
         };
+        tone.grain_norm = p.tone.grain_norm.clone();
         p.tone = tone;
         self.trim(None);
         serde_json::to_string(&p).map_err(invalid)
@@ -511,25 +587,30 @@ impl Session {
     }
 
     pub fn histogram(&mut self, area_id: &str) -> Result<Vec<u32>> {
-        self.ensure_heavy(area_id)?;
-        let o = self.out(area_id)?;
-        let mut h = vec![0u32; 256];
-        for (v, c) in o.base.iter().zip(&o.coverage) {
-            if *c >= 0.5 {
-                h[*v as usize] += 1;
-            }
-        }
-        self.trim(None);
-        Ok(h)
+        // This read touches the LRU stamp for backwards-compatible usage ordering,
+        // but never allocates heavy pixels.
+        self.touch(area_id);
+        Ok(self.out(area_id)?.histogram.clone())
     }
 
     pub fn retone(&mut self, area_id: &str, tone: &str) -> Result<String> {
+        self.retone_with_ctl(area_id, tone, &Ctl::NONE)
+    }
+
+    pub fn retone_with_ctl(&mut self, area_id: &str, tone: &str, ctl: &Ctl) -> Result<String> {
+        let result = self.retone_controlled(area_id, tone, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn retone_controlled(&mut self, area_id: &str, tone: &str, ctl: &Ctl) -> Result<String> {
         let tone: ToneParams = serde_json::from_str(tone).map_err(invalid)?;
-        self.ensure_heavy(area_id)?;
+        self.ensure_heavy(area_id, ctl)?;
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
         let rec = project.area_mut(area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
         let o = self.outputs.get_mut(area_id).ok_or_else(|| Error::Invalid("not stitched".into()))?;
-        pipeline::retone(rec, o, &tone, self.grains.get(area_id).map_or(&[][..], |g| g.as_slice()));
+        pipeline::retone(rec, o, &tone, self.grains.get(area_id).map_or(&[][..], |g| g.as_slice()),
+        );
         let json = serde_json::to_string(&o.mosaic_json).map_err(invalid);
         self.trim(None);
         json
@@ -547,11 +628,11 @@ impl Session {
         self.project.as_ref().and_then(|p| p.areas.iter().find(|a| a.id == area_id)).ok_or_else(|| Error::NotFound(area_id.into()))
     }
 
-    fn work_for(&mut self, area_id: &str, scale: usize) -> Result<&WorkImage> {
+    fn work_for(&mut self, area_id: &str, scale: usize, ctl: &Ctl) -> Result<&WorkImage> {
         self.touch(area_id);
         let fresh = !matches!(self.work.get(area_id), Some((s, _)) if *s == scale);
         if fresh {
-            self.ensure_heavy(area_id)?;
+            self.ensure_heavy(area_id, ctl)?;
             let w = pipeline::work_image(self.out(area_id)?, self.rec(area_id)?, scale);
             self.work.insert(area_id.to_string(), (scale, w));
         }
@@ -579,63 +660,225 @@ impl Session {
 
     /// The shared profile warning for the UI after segmentation, including the actual threshold.
     pub fn segment_warning(&mut self, area_id: &str, params: &str, grains: &str) -> Result<String> {
+        self.segment_warning_with_ctl(area_id, params, grains, &Ctl::NONE)
+    }
+
+    pub fn segment_warning_with_ctl(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        grains: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.segment_warning_controlled(area_id, params, grains, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn segment_warning_controlled(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        grains: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
         let grains: Vec<Grain> = serde_json::from_str(grains).map_err(invalid)?;
-        let w = self.work_for(area_id, p.work_scale)?;
-        let warning = crate::segment::summary_warning(&grains, p.resolved_signal(w), area_id, crate::segment::grain_mask(w, &p).1);
+        let w = self.work_for(area_id, p.work_scale, ctl)?;
+        let warning = crate::segment::summary_warning(&grains, p.resolved_signal(w), area_id, crate::segment::grain_mask(w, &p).1,
+        );
         serde_json::to_string(&warning).map_err(invalid)
     }
 
-    pub fn segment(&mut self, area_id: &str, params: &str, previous: &str, outline: &str) -> Result<String> {
+    pub fn segment(&mut self, area_id: &str, params: &str, previous: &str, outline: &str,
+    ) -> Result<String> {
+        self.segment_with_ctl(area_id, params, previous, outline, &Ctl::NONE)
+    }
+
+    pub fn segment_with_ctl(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        previous: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.segment_controlled(area_id, params, previous, outline, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn segment_controlled(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        previous: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
         let prev: Vec<Grain> = if previous.trim().is_empty() { Vec::new() } else { serde_json::from_str(previous).map_err(invalid)? };
         let outline = Self::outline_args(outline)?;
-        let grains = crate::segment::segment_padded(self.work_for(area_id, p.work_scale)?, &p, &prev, outline);
+        let grains = crate::segment::segment_padded(self.work_for(area_id, p.work_scale, ctl)?, &p, &prev, outline,
+        );
         if let Some(rec) = self.project.as_mut().and_then(|pr| pr.area_mut(area_id)) {
             rec.params.segment = p;
         }
         serde_json::to_string(&grains).map_err(invalid)
     }
 
-    pub fn segment_missing(&mut self, area_id: &str, params: &str, existing: &str, outline: &str) -> Result<String> {
+    pub fn segment_missing(&mut self, area_id: &str, params: &str, existing: &str, outline: &str,
+    ) -> Result<String> {
+        self.segment_missing_with_ctl(area_id, params, existing, outline, &Ctl::NONE)
+    }
+
+    pub fn segment_missing_with_ctl(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        existing: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.segment_missing_controlled(area_id, params, existing, outline, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn segment_missing_controlled(
+        &mut self,
+        area_id: &str,
+        params: &str,
+        existing: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
         let prev: Vec<Grain> = if existing.trim().is_empty() { Vec::new() } else { serde_json::from_str(existing).map_err(invalid)? };
         let outline = Self::outline_args(outline)?;
-        let grains = crate::segment::add_missing(self.work_for(area_id, p.work_scale)?, &p, &prev, outline);
+        let grains = crate::segment::add_missing(self.work_for(area_id, p.work_scale, ctl)?, &p, &prev, outline,
+        );
         if let Some(rec) = self.project.as_mut().and_then(|pr| pr.area_mut(area_id)) {
             rec.params.segment = p;
         }
         serde_json::to_string(&grains).map_err(invalid)
     }
 
-    pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str, outline: &str) -> Result<String> {
+    pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str, outline: &str,
+    ) -> Result<String> {
+        self.grain_at_with_ctl(area_id, x_um, y_um, params, outline, &Ctl::NONE)
+    }
+
+    pub fn grain_at_with_ctl(
+        &mut self,
+        area_id: &str,
+        x_um: f64,
+        y_um: f64,
+        params: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.grain_at_controlled(area_id, x_um, y_um, params, outline, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn grain_at_controlled(
+        &mut self,
+        area_id: &str,
+        x_um: f64,
+        y_um: f64,
+        params: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
         let p: SegmentParams = serde_json::from_str(params).map_err(invalid)?;
-        let w = self.work_for(area_id, p.work_scale)?;
+        let w = self.work_for(area_id, p.work_scale, ctl)?;
         let outline = Self::outline_args(outline)?;
         // Click-grow has no neighbouring labels in its API; clip plain growth to coverage.
-        let grain = crate::segment::grain_at(w, &p, x_um, y_um).map(|g| crate::segment::pad_outlines(w, &[g], outline, p.simplify_px, |_| true).remove(0));
+        let grain = crate::segment::grain_at(w, &p, x_um, y_um).map(|g| {
+            crate::segment::pad_outlines(w, &[g], outline, p.simplify_px, |_| true).remove(0)
+        });
         serde_json::to_string(&grain).map_err(invalid)
     }
 
     pub fn split_grain(&mut self, area_id: &str, grain: &str, line: [f64; 4]) -> Result<String> {
+        self.split_grain_with_ctl(area_id, grain, line, &Ctl::NONE)
+    }
+
+    pub fn split_grain_with_ctl(
+        &mut self,
+        area_id: &str,
+        grain: &str,
+        line: [f64; 4],
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.split_grain_controlled(area_id, grain, line, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn split_grain_controlled(
+        &mut self,
+        area_id: &str,
+        grain: &str,
+        line: [f64; 4],
+        ctl: &Ctl,
+    ) -> Result<String> {
         let g: Grain = serde_json::from_str(grain).map_err(invalid)?;
         let params = self.rec(area_id)?.params.segment.clone();
-        let w = self.work_for(area_id, params.work_scale)?;
+        let w = self.work_for(area_id, params.work_scale, ctl)?;
         let signal = params.resolved_signal(w);
-        serde_json::to_string(&crate::segment::split_grain_for_signal(w, &g, line, 0.8, signal)).map_err(invalid)
+        serde_json::to_string(&crate::segment::split_grain_for_signal(w, &g, line, 0.8, signal,
+        )).map_err(invalid)
     }
 
     pub fn merge_grains(&mut self, area_id: &str, grains: &str) -> Result<String> {
+        self.merge_grains_with_ctl(area_id, grains, &Ctl::NONE)
+    }
+
+    pub fn merge_grains_with_ctl(
+        &mut self,
+        area_id: &str,
+        grains: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.merge_grains_controlled(area_id, grains, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn merge_grains_controlled(
+        &mut self,
+        area_id: &str,
+        grains: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
         let gs: Vec<Grain> = serde_json::from_str(grains).map_err(invalid)?;
         let scale = self.seg_scale(area_id);
-        let w = self.work_for(area_id, scale)?;
+        let w = self.work_for(area_id, scale, ctl)?;
         serde_json::to_string(&crate::segment::merge_grains(w, &gs, 0.8)).map_err(invalid)
     }
 
     pub fn refine_grain(&mut self, area_id: &str, grain: &str) -> Result<String> {
+        self.refine_grain_with_ctl(area_id, grain, &Ctl::NONE)
+    }
+
+    pub fn refine_grain_with_ctl(
+        &mut self,
+        area_id: &str,
+        grain: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.refine_grain_controlled(area_id, grain, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn refine_grain_controlled(&mut self, area_id: &str, grain: &str, ctl: &Ctl) -> Result<String> {
         let g: Grain = serde_json::from_str(grain).map_err(invalid)?;
         let scale = self.seg_scale(area_id);
-        let w = self.work_for(area_id, scale)?;
+        let w = self.work_for(area_id, scale, ctl)?;
         let out = crate::segment::refine_grain(w, &g, 0.8).unwrap_or(g);
         serde_json::to_string(&out).map_err(invalid)
     }
@@ -650,25 +893,82 @@ impl Session {
 
     /// A grain from a drawn outline: `op` is `new`, `add` (to `base`) or `cut` (from `base`).
     /// `null` when nothing is left.
-    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str, outline: &str) -> Result<String> {
+    pub fn outline_grain(&mut self, area_id: &str, polygon: &str, base: &str, op: &str, outline: &str,
+    ) -> Result<String> {
+        self.outline_grain_with_ctl(area_id, polygon, base, op, outline, &Ctl::NONE)
+    }
+
+    pub fn outline_grain_with_ctl(
+        &mut self,
+        area_id: &str,
+        polygon: &str,
+        base: &str,
+        op: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.outline_grain_controlled(area_id, polygon, base, op, outline, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn outline_grain_controlled(
+        &mut self,
+        area_id: &str,
+        polygon: &str,
+        base: &str,
+        op: &str,
+        outline: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
         let poly: Vec<[f64; 2]> = serde_json::from_str(polygon).map_err(invalid)?;
         let (base, op) = Self::edit_args(base, op)?;
         let scale = self.seg_scale(area_id);
-        let w = self.work_for(area_id, scale)?;
+        let w = self.work_for(area_id, scale, ctl)?;
         let outline = Self::outline_args(outline)?;
-        serde_json::to_string(&crate::segment::edit::outline_grain_padded(w, &poly, base.as_ref(), op, 0.8, outline)).map_err(invalid)
+        serde_json::to_string(&crate::segment::edit::outline_grain_padded(w, &poly, base.as_ref(), op, 0.8, outline,
+        )).map_err(invalid)
     }
 
     /// A grain from a brush stroke (um, diameter `size_um`) grown to the nearby edges.
-    pub fn brush_grain(&mut self, area_id: &str, stroke: &str, size_um: f64, base: &str, op: &str) -> Result<String> {
+    pub fn brush_grain(&mut self, area_id: &str, stroke: &str, size_um: f64, base: &str, op: &str,
+    ) -> Result<String> {
+        self.brush_grain_with_ctl(area_id, stroke, size_um, base, op, &Ctl::NONE)
+    }
+
+    pub fn brush_grain_with_ctl(
+        &mut self,
+        area_id: &str,
+        stroke: &str,
+        size_um: f64,
+        base: &str,
+        op: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
+        let result = self.brush_grain_controlled(area_id, stroke, size_um, base, op, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn brush_grain_controlled(
+        &mut self,
+        area_id: &str,
+        stroke: &str,
+        size_um: f64,
+        base: &str,
+        op: &str,
+        ctl: &Ctl,
+    ) -> Result<String> {
         let stroke: Vec<[f64; 2]> = serde_json::from_str(stroke).map_err(invalid)?;
         let (base, op) = Self::edit_args(base, op)?;
         let scale = self.seg_scale(area_id);
-        self.work_for(area_id, scale)?;
+        self.work_for(area_id, scale, ctl)?;
         let w = &self.work.get(area_id).expect("made above").1;
         let o = self.out(area_id)?;
-        let v = crate::segment::edit::View { w: o.linear.w, h: o.linear.h, px: &o.base, um_per_px: self.rec(area_id)?.um_per_px() };
-        serde_json::to_string(&crate::segment::edit::brush_grain(w, &v, &stroke, size_um, base.as_ref(), op, 0.8)).map_err(invalid)
+        let v = crate::segment::edit::View { w: o.linear.w, h: o.linear.h, px: &o.base, um_per_px: self.rec(area_id)?.um_per_px(),
+        };
+        serde_json::to_string(&crate::segment::edit::brush_grain(w, &v, &stroke, size_um, base.as_ref(), op, 0.8,
+        )).map_err(invalid)
     }
 
     fn outline_args(outline: &str) -> Result<crate::segment::OutlinePad> {
@@ -736,18 +1036,39 @@ impl Session {
     /// All files of the project folder (plan section 5.4) for a full project JSON that also
     /// carries the UI's grains, spots and labels under `grainatlas_ui`.
     pub fn project_files(&mut self, full_project_json: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        self.project_files_with_ctl(full_project_json, &Ctl::NONE)
+    }
+
+    pub fn project_files_with_ctl(
+        &mut self,
+        full_project_json: &str,
+        ctl: &Ctl,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let result = self.project_files_controlled(full_project_json, ctl);
+        self.trim(None);
+        result
+    }
+
+    fn project_files_controlled(
+        &mut self,
+        full_project_json: &str,
+        ctl: &Ctl,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
         let v: serde_json::Value = serde_json::from_str(full_project_json).map_err(invalid)?;
-        let mut files = vec![("project.json".to_string(), serde_json::to_vec_pretty(&v).map_err(invalid)?)];
+        let mut files = vec![("project.json".to_string(), serde_json::to_vec_pretty(&v).map_err(invalid)?,
+        )];
         let ui = &v["grainatlas_ui"];
         let spots = serde_json::json!({ "spots": ui["spots"], "labels": ui["labels"] });
-        files.push(("spots.json".into(), serde_json::to_vec_pretty(&spots).map_err(invalid)?));
+        files.push(("spots.json".into(), serde_json::to_vec_pretty(&spots).map_err(invalid)?,
+        ));
         let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
         for rec in project.areas.clone() {
-            let Some(o) = self.outputs.get(&rec.id) else { continue };
+            let Some(o) = self.outputs.get(&rec.id) else { continue;
+            };
             files.extend(pipeline::area_files(&rec, o));
             let grains: Vec<Grain> = serde_json::from_value(ui["grains"][&rec.id].clone()).unwrap_or_default();
             if !grains.is_empty() {
-                self.ensure_heavy(&rec.id)?;
+                self.ensure_heavy(&rec.id, ctl)?;
                 files.extend(pipeline::mask_files(&rec, self.out(&rec.id)?, &grains));
                 self.trim(None);
             }

@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use grainatlas_core::Ctl;
 use grainatlas_core::project::session::{self, Session};
 use grainatlas_core::source::{DirSource, FileListSource, Source};
 use serde::Serialize;
@@ -45,13 +44,13 @@ impl Tab {
 
 /// The sessions of the window's tabs, by tab id. A tab's session is made on its first command
 /// and dropped by `close_tab`; each has its own lock, so tabs stitch and edit independently.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct AppState {
-    tabs: Mutex<HashMap<u32, Arc<Tab>>>,
+    tabs: Arc<Mutex<HashMap<u32, Arc<Tab>>>>,
     /// Paths from the OS's open-file events not yet taken by the page (`take_opened`).
-    opened: Mutex<Vec<String>>,
+    opened: Arc<Mutex<Vec<String>>>,
     /// Serializes short eviction passes, never running commands.
-    memory_trim: Mutex<()>,
+    memory_trim: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -93,25 +92,28 @@ struct Progress {
 /// files of an area). Returns the core's probe JSON: opened, or needs a scale.
 #[tauri::command]
 async fn open_paths(state: State<'_, AppState>, tab: u32, paths: Vec<String>) -> Res<String> {
-    let t = state.tab(tab);
-    let ps: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    let (src, path, files): (Arc<dyn Source>, PathBuf, Vec<String>) = match ps.as_slice() {
-        [one] if one.is_dir() => (Arc::new(DirSource::new(one).map_err(e)?), one.clone(), Vec::new()),
-        [] => return Err("nothing chosen".into()),
-        _ => {
-            let dir = ps[0].parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            (Arc::new(FileListSource::new(&ps).map_err(e)?), dir, paths.clone())
-        }
-    };
-    let out = {
-        let mut s = t.lock();
-        s.origin_files = files;
-        let out = s.open_source(src, &path.display().to_string(), &now_iso()).map_err(e)?;
-        t.evictable.store(0, Ordering::Relaxed);
-        out
-    };
-    *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(path);
-    Ok(out)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        let ps: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        let (src, path, files): (Arc<dyn Source>, PathBuf, Vec<String>) = match ps.as_slice() {
+            [one] if one.is_dir() => (Arc::new(DirSource::new(one).map_err(e)?), one.clone(), Vec::new()),
+            [] => return Err("nothing chosen".into()),
+            _ => {
+                let dir = ps[0].parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                (Arc::new(FileListSource::new(&ps).map_err(e)?), dir, paths.clone())
+            }
+        };
+        let out = {
+            let mut s = t.lock();
+            s.origin_files = files;
+            let out = s.open_source(src, &path.display().to_string(), &now_iso()).map_err(e)?;
+            t.evictable.store(0, Ordering::Relaxed);
+            out
+        };
+        *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(path);
+        Ok(out)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
@@ -122,7 +124,10 @@ async fn open_path(state: State<'_, AppState>, tab: u32, path: String) -> Res<St
 /// Loose images of the last open, with the scale the user gave (LooseSpec JSON).
 #[tauri::command]
 async fn open_loose(state: State<'_, AppState>, tab: u32, spec: String) -> Res<String> {
-    state.with_session(tab, |s| s.open_loose(&spec, &now_iso())).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.open_loose(&spec, &now_iso())).map_err(e)
+    }).await.map_err(e)?
 }
 
 /// Opens a project: a `<name>.grainatlas/` folder (its project.json) or a `<name>.gaproj` project
@@ -131,111 +136,129 @@ async fn open_loose(state: State<'_, AppState>, tab: u32, spec: String) -> Res<S
 /// their saved placements.
 #[tauri::command]
 async fn open_project(state: State<'_, AppState>, tab: u32, path: String) -> Res<String> {
-    let t = state.tab(tab);
-    let file = PathBuf::from(&path);
-    let file = if file.is_dir() { file.join("project.json") } else { file };
-    let modified_ms = std::fs::metadata(&file).and_then(|m| m.modified()).map_err(e)?
-        .duration_since(std::time::UNIX_EPOCH).map_err(e)?.as_millis();
-    let pj = std::fs::read_to_string(&file).map_err(|x| format!("{path}: {x}"))?;
-    let v: serde_json::Value = serde_json::from_str(&pj).map_err(e)?;
-    let pkg = v["package"]["path"].as_str().ok_or("project.json has no package path")?.to_string();
-    // Loose images reopen from their recorded paths with the recorded scale.
-    let loose_files: Vec<PathBuf> = v["package"]["files"].as_array().map(|a| a.iter().filter_map(|f| f.as_str().map(PathBuf::from)).collect()).unwrap_or_default();
-    let is_loose = v["package"]["kind"] == "loose";
-    let src: Arc<dyn Source> = if is_loose && !loose_files.is_empty() {
-        Arc::new(FileListSource::new(&loose_files).map_err(|x| format!("images of {pkg}: {x}"))?)
-    } else {
-        Arc::new(DirSource::new(&pkg).map_err(|x| format!("package {pkg}: {x}"))?)
-    };
-    let info = {
-        let mut s = t.lock();
-        s.load_project(&pj).map_err(e)?;
-        s.project_path = file.canonicalize().map_err(e)?.display().to_string();
-        s.origin_files = if is_loose { loose_files.iter().map(|p| p.display().to_string()).collect() } else { Vec::new() };
-        let probe = s.open_source(src, &pkg, &now_iso()).map_err(e)?;
-        t.evictable.store(0, Ordering::Relaxed);
-        if is_loose {
-            let spec = serde_json::to_string(&v["package"]["loose"]).map_err(e)?;
-            s.open_loose(&spec, &now_iso()).map_err(e)?
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        let file = PathBuf::from(&path);
+        let file = if file.is_dir() { file.join("project.json") } else { file };
+        let modified_ms = std::fs::metadata(&file).and_then(|m| m.modified()).map_err(e)?
+            .duration_since(std::time::UNIX_EPOCH).map_err(e)?.as_millis();
+        let pj = std::fs::read_to_string(&file).map_err(|x| format!("{path}: {x}"))?;
+        let v: serde_json::Value = serde_json::from_str(&pj).map_err(e)?;
+        let pkg = v["package"]["path"].as_str().ok_or("project.json has no package path")?.to_string();
+        // Loose images reopen from their recorded paths with the recorded scale.
+        let loose_files: Vec<PathBuf> = v["package"]["files"].as_array().map(|a| a.iter().filter_map(|f| f.as_str().map(PathBuf::from)).collect()).unwrap_or_default();
+        let is_loose = v["package"]["kind"] == "loose";
+        let src: Arc<dyn Source> = if is_loose && !loose_files.is_empty() {
+            Arc::new(FileListSource::new(&loose_files).map_err(|x| format!("images of {pkg}: {x}"))?)
         } else {
-            let p: serde_json::Value = serde_json::from_str(&probe).map_err(e)?;
-            if p["status"] != "opened" {
-                return Err(format!("{pkg} is not a package any more"));
+            Arc::new(DirSource::new(&pkg).map_err(|x| format!("package {pkg}: {x}"))?)
+        };
+        let info = {
+            let mut s = t.lock();
+            s.load_project(&pj).map_err(e)?;
+            s.project_path = file.canonicalize().map_err(e)?.display().to_string();
+            s.origin_files = if is_loose { loose_files.iter().map(|p| p.display().to_string()).collect() } else { Vec::new() };
+            let probe = s.open_source(src, &pkg, &now_iso()).map_err(e)?;
+            t.evictable.store(0, Ordering::Relaxed);
+            if is_loose {
+                let spec = serde_json::to_string(&v["package"]["loose"]).map_err(e)?;
+                s.open_loose(&spec, &now_iso()).map_err(e)?
+            } else {
+                let p: serde_json::Value = serde_json::from_str(&probe).map_err(e)?;
+                if p["status"] != "opened" {
+                    return Err(format!("{pkg} is not a package any more"));
+                }
+                p["info"].to_string()
             }
-            p["info"].to_string()
-        }
-    };
-    *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(PathBuf::from(&pkg));
-    Ok(serde_json::json!({ "info": serde_json::from_str::<serde_json::Value>(&info).map_err(e)?, "project": v, "modified_ms": modified_ms }).to_string())
+        };
+        *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = Some(PathBuf::from(&pkg));
+        Ok(serde_json::json!({ "info": serde_json::from_str::<serde_json::Value>(&info).map_err(e)?, "project": v, "modified_ms": modified_ms }).to_string())
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn load_project(state: State<'_, AppState>, tab: u32, json: String) -> Res<()> {
-    let t = state.tab(tab);
-    t.lock().load_project(&json).map_err(e)
+async fn load_project(state: State<'_, AppState>, tab: u32, json: String) -> Res<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().load_project(&json).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn project_json(state: State<'_, AppState>, tab: u32) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().project_json().map_err(e)
+async fn project_json(state: State<'_, AppState>, tab: u32) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().project_json().map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn navigation(state: State<'_, AppState>, tab: u32) -> Response {
-    let t = state.tab(tab);
-    Response::new(t.lock().navigation())
+async fn navigation(state: State<'_, AppState>, tab: u32) -> Res<Response> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        Ok(Response::new(t.lock().navigation()))
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
 async fn tile_thumb(state: State<'_, AppState>, tab: u32, area: usize, tile: usize, max: usize) -> Res<Response> {
-    let t = state.tab(tab);
-    t.lock().tile_thumb(area, tile, max).map(Response::new).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().tile_thumb(area, tile, max).map(Response::new).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
 async fn stitch(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, params: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.cancel.store(false, Ordering::SeqCst);
-    let cancel = t.cancel.clone();
-    let start = Instant::now();
-    let prog = |stage: &str, fraction: f32| {
-        let _ = app.emit("grainatlas://progress", Progress { tab, stage: stage.to_string(), fraction });
-    };
-    let canc = || cancel.load(Ordering::SeqCst);
-    let clock = || start.elapsed().as_secs_f64() * 1000.0;
-    let ctl = Ctl { cancel: &canc, progress: &prog };
-    state.with_session(tab, |s| s.stitch(&area_id, &params, &ctl, &clock)).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| {
+            let start = Instant::now();
+            let clock = || start.elapsed().as_secs_f64() * 1000.0;
+            s.stitch(&area_id, &params, ctl, &clock)
+        }).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
 async fn recompute(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, params: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.cancel.store(false, Ordering::SeqCst);
-    let cancel = t.cancel.clone();
-    let start = Instant::now();
-    let prog = |stage: &str, fraction: f32| {
-        let _ = app.emit("grainatlas://progress", Progress { tab, stage: stage.to_string(), fraction });
-    };
-    let canc = || cancel.load(Ordering::SeqCst);
-    let clock = || start.elapsed().as_secs_f64() * 1000.0;
-    let ctl = Ctl { cancel: &canc, progress: &prog };
-    state.with_session(tab, |s| s.recompute(&area_id, &params, &ctl, &clock)).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| {
+            let start = Instant::now();
+            let clock = || start.elapsed().as_secs_f64() * 1000.0;
+            s.recompute(&area_id, &params, ctl, &clock)
+        }).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn preview(state: State<'_, AppState>, tab: u32, area_id: String, params: String, level: usize) -> Res<Response> {
-    state.with_session(tab, |s| s.preview(&area_id, &params, level)).map(Response::new).map_err(e)
+async fn preview(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, params: String, level: usize) -> Res<Response> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.preview_with_ctl(&area_id, &params, level, ctl)).map(Response::new).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn auto_params(state: State<'_, AppState>, tab: u32, area_id: String, params: String) -> Res<String> {
-    state.with_session(tab, |s| s.auto_params(&area_id, &params)).map_err(e)
+async fn auto_params(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, params: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.auto_params_with_ctl(&area_id, &params, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn set_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<()> {
-    state.with_session(tab, |s| s.set_grains(&area_id, &grains)).map_err(e)
+async fn set_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.set_grains(&area_id, &grains)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
@@ -251,24 +274,36 @@ fn cancel(state: State<'_, AppState>, tab: u32) {
 
 #[tauri::command]
 async fn pyramid_tile(state: State<'_, AppState>, tab: u32, area_id: String, level: usize, col: usize, row: usize) -> Res<Response> {
-    let t = state.tab(tab);
-    t.lock().pyramid_tile(&area_id, level, col, row).map(Response::new).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().pyramid_tile(&area_id, level, col, row).map(Response::new).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn memory_report(state: State<'_, AppState>, tab: u32) -> Res<String> {
-    let t = state.tab(tab);
-    serde_json::to_string(&t.lock().memory_report()).map_err(e)
+async fn memory_report(state: State<'_, AppState>, tab: u32) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        serde_json::to_string(&t.lock().memory_report()).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn histogram(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<Vec<u32>> {
-    state.with_session(tab, |s| s.histogram(&area_id)).map_err(e)
+async fn histogram(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<Vec<u32>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.histogram(&area_id)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn retone(state: State<'_, AppState>, tab: u32, area_id: String, tone: String) -> Res<String> {
-    state.with_session(tab, |s| s.retone(&area_id, &tone)).map_err(e)
+async fn retone(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, tone: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.retone_with_ctl(&area_id, &tone, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
@@ -278,63 +313,102 @@ fn tone_lut(tone: String) -> Res<Response> {
 
 #[tauri::command]
 async fn export_png(state: State<'_, AppState>, tab: u32, area_id: String, tone: String) -> Res<Response> {
-    let t = state.tab(tab);
-    t.lock().export_png(&area_id, &tone).map(Response::new).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().export_png(&area_id, &tone).map(Response::new).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn area_signal(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<String> {
-    state.tab(tab).lock().area_signal(&area_id).map_err(e)
+async fn area_signal(state: State<'_, AppState>, tab: u32, area_id: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.tab(tab).lock().area_signal(&area_id).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn segment_warning(state: State<'_, AppState>, tab: u32, area_id: String, params: String, grains: String) -> Res<String> {
-    state.with_session(tab, |s| s.segment_warning(&area_id, &params, &grains)).map_err(e)
+async fn segment_warning(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, params: String, grains: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.segment_warning_with_ctl(&area_id, &params, &grains, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn segment(state: State<'_, AppState>, tab: u32, area_id: String, params: String, previous: String, outline: String) -> Res<String> {
-    state.with_session(tab, |s| s.segment(&area_id, &params, &previous, &outline)).map_err(e)
+async fn segment(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, params: String, previous: String, outline: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.segment_with_ctl(&area_id, &params, &previous, &outline, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn segment_missing(state: State<'_, AppState>, tab: u32, area_id: String, params: String, existing: String, outline: String) -> Res<String> {
-    state.with_session(tab, |s| s.segment_missing(&area_id, &params, &existing, &outline)).map_err(e)
+async fn segment_missing(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, params: String, existing: String, outline: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.segment_missing_with_ctl(&area_id, &params, &existing, &outline, ctl)).map_err(e)
+    }).await.map_err(e)?
+}
+
+#[allow(clippy::too_many_arguments)] // AppHandle is injected; keep the existing IPC arguments.
+#[tauri::command]
+async fn grain_at(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, x: f64, y: f64, params: String, outline: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.grain_at_with_ctl(&area_id, x, y, &params, &outline, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn grain_at(state: State<'_, AppState>, tab: u32, area_id: String, x: f64, y: f64, params: String, outline: String) -> Res<String> {
-    state.with_session(tab, |s| s.grain_at(&area_id, x, y, &params, &outline)).map_err(e)
+async fn split_grain(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, grain: String, line: [f64; 4]) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.split_grain_with_ctl(&area_id, &grain, line, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn split_grain(state: State<'_, AppState>, tab: u32, area_id: String, grain: String, line: [f64; 4]) -> Res<String> {
-    state.with_session(tab, |s| s.split_grain(&area_id, &grain, line)).map_err(e)
-}
-
-#[tauri::command]
-async fn merge_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<String> {
-    state.with_session(tab, |s| s.merge_grains(&area_id, &grains)).map_err(e)
+async fn merge_grains(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.merge_grains_with_ctl(&area_id, &grains, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
 async fn snap_outline(state: State<'_, AppState>, tab: u32, area_id: String, path: String, width_um: f64, contrast: f64) -> Res<String> {
-    state.with_session(tab, |s| s.snap_outline(&area_id, &path, width_um, contrast)).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.snap_outline(&area_id, &path, width_um, contrast)).map_err(e)
+    }).await.map_err(e)?
+}
+
+#[allow(clippy::too_many_arguments)] // AppHandle is injected; keep the existing IPC arguments.
+#[tauri::command]
+async fn outline_grain(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, polygon: String, base: String, op: String, outline: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.outline_grain_with_ctl(&area_id, &polygon, &base, &op, &outline, ctl)).map_err(e)
+    }).await.map_err(e)?
+}
+
+#[allow(clippy::too_many_arguments)] // AppHandle is injected; keep the existing IPC arguments.
+#[tauri::command]
+async fn brush_grain(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, stroke: String, size_um: f64, base: String, op: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.brush_grain_with_ctl(&area_id, &stroke, size_um, &base, &op, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn outline_grain(state: State<'_, AppState>, tab: u32, area_id: String, polygon: String, base: String, op: String, outline: String) -> Res<String> {
-    state.with_session(tab, |s| s.outline_grain(&area_id, &polygon, &base, &op, &outline)).map_err(e)
-}
-
-#[tauri::command]
-async fn brush_grain(state: State<'_, AppState>, tab: u32, area_id: String, stroke: String, size_um: f64, base: String, op: String) -> Res<String> {
-    state.with_session(tab, |s| s.brush_grain(&area_id, &stroke, size_um, &base, &op)).map_err(e)
-}
-
-#[tauri::command]
-async fn refine_grain(state: State<'_, AppState>, tab: u32, area_id: String, grain: String) -> Res<String> {
-    state.with_session(tab, |s| s.refine_grain(&area_id, &grain)).map_err(e)
+async fn refine_grain(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, grain: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session_ctl(&app, tab, |s, ctl| s.refine_grain_with_ctl(&area_id, &grain, ctl)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
@@ -343,32 +417,47 @@ fn renumber(grains: String, tolerance: f64, from: String) -> Res<String> {
 }
 
 #[tauri::command]
-fn export_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().export_grains(&area_id, &grains).map_err(e)
+async fn export_grains(state: State<'_, AppState>, tab: u32, area_id: String, grains: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().export_grains(&area_id, &grains).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn check_project(state: State<'_, AppState>, tab: u32, project: String, labels: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().check_project(&project, &labels).map_err(e)
+async fn check_project(state: State<'_, AppState>, tab: u32, project: String, labels: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().check_project(&project, &labels).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn export_spots(state: State<'_, AppState>, tab: u32, spots: String, grains: String, format: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().export_spots(&spots, &grains, &format).map_err(e)
+async fn export_spots(state: State<'_, AppState>, tab: u32, spots: String, grains: String, format: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().export_spots(&spots, &grains, &format).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn set_link(state: State<'_, AppState>, tab: u32, mount_id: String, samples: String) -> Res<()> {
-    let t = state.tab(tab);
-    t.lock().set_link(&mount_id, &samples).map_err(e)
+async fn set_link(state: State<'_, AppState>, tab: u32, mount_id: String, samples: String) -> Res<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().set_link(&mount_id, &samples).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
 async fn layout(state: State<'_, AppState>, tab: u32, params: String, grains: String, spots: String, labels: String, tone: String) -> Res<String> {
-    state.with_session(tab, |s| s.layout(&params, &grains, &spots, &labels, &tone)).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.layout(&params, &grains, &spots, &labels, &tone)).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
@@ -378,7 +467,9 @@ fn register(pairs: String) -> Res<String> {
 
 #[tauri::command]
 async fn pdf(pages: String) -> Res<Response> {
-    session::pdf_from_svgs(&pages).map(Response::new).map_err(e)
+    tauri::async_runtime::spawn_blocking(move || {
+        session::pdf_from_svgs(&pages).map(Response::new).map_err(e)
+    }).await.map_err(e)?
 }
 
 /// Saves bytes (raw request body) under a name chosen in a native save dialog.
@@ -386,6 +477,7 @@ async fn pdf(pages: String) -> Res<Response> {
 /// the dialog starts). Returns the path, or null if cancelled.
 #[tauri::command]
 async fn save_bytes(app: AppHandle, state: State<'_, AppState>, request: Request<'_>) -> Res<Option<String>> {
+    let state = state.inner().clone();
     let tab = request.headers().get("x-tab").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
     let t = state.tab(tab);
     let raw = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or("grainatlas-export");
@@ -394,62 +486,68 @@ async fn save_bytes(app: AppHandle, state: State<'_, AppState>, request: Request
         InvokeBody::Raw(b) => b.clone(),
         InvokeBody::Json(v) => v.as_str().map(|s| s.as_bytes().to_vec()).unwrap_or_default(),
     };
-    let mut d = app.dialog().file().set_file_name(&name);
-    if let Some(dir) = t.package_dir() {
-        d = d.set_directory(dir);
-    }
-    let Some(path) = d.blocking_save_file() else { return Ok(None) };
-    let path = path.into_path().map_err(e)?;
-    std::fs::write(&path, bytes).map_err(e)?;
-    Ok(Some(path.display().to_string()))
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut d = app.dialog().file().set_file_name(&name);
+        if let Some(dir) = t.package_dir() {
+            d = d.set_directory(dir);
+        }
+        let Some(path) = d.blocking_save_file() else { return Ok(None) };
+        let path = path.into_path().map_err(e)?;
+        std::fs::write(&path, bytes).map_err(e)?;
+        Ok(Some(path.display().to_string()))
+    }).await.map_err(e)?
 }
 
 /// Writes the project folder `<name>.grainatlas/` (plan section 5.4) next to the package, or in a
 /// folder chosen in a dialog. `project` is the full project JSON (with the UI's grains and spots).
 #[tauri::command]
 async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, ask: bool, dir: Option<String>) -> Res<Option<String>> {
-    let t = state.tab(tab);
-    // A project opened from its folder is saved back into that folder, wherever it is.
-    if let Some(d) = dir.filter(|d| !ask && !d.is_empty()) {
-        let dir = PathBuf::from(d);
-        let files = state.with_session(tab, |s| s.project_files(&project)).map_err(e)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        // A project opened from its folder is saved back into that folder, wherever it is.
+        if let Some(d) = dir.filter(|d| !ask && !d.is_empty()) {
+            let dir = PathBuf::from(d);
+            let files = state.with_session_ctl(&app, tab, |s, ctl| s.project_files_with_ctl(&project, ctl)).map_err(e)?;
+            for (rel, bytes) in files {
+                let p = dir.join(rel);
+                if let Some(q) = p.parent() {
+                    std::fs::create_dir_all(q).map_err(e)?;
+                }
+                std::fs::write(&p, bytes).map_err(e)?;
+            }
+            t.lock().project_path = dir.canonicalize().map_err(e)?.display().to_string();
+            return Ok(Some(dir.display().to_string()));
+        }
+        let v: serde_json::Value = serde_json::from_str(&project).map_err(e)?;
+        let name = v["name"].as_str().unwrap_or("project").to_string();
+        let pkg_parent = t.package_dir();
+        let parent = match (ask, pkg_parent) {
+            (false, Some(p)) => p,
+            (_, start) => {
+                let mut d = app.dialog().file().set_title("Folder for the .grainatlas project");
+                if let Some(s) = start {
+                    d = d.set_directory(s);
+                }
+                match d.blocking_pick_folder() {
+                    Some(p) => p.into_path().map_err(e)?,
+                    None => return Ok(None),
+                }
+            }
+        };
+        let dir = parent.join(format!("{name}.grainatlas"));
+        let files = state.with_session_ctl(&app, tab, |s, ctl| s.project_files_with_ctl(&project, ctl)).map_err(e)?;
         for (rel, bytes) in files {
             let p = dir.join(rel);
-            if let Some(q) = p.parent() {
-                std::fs::create_dir_all(q).map_err(e)?;
+            if let Some(d) = p.parent() {
+                std::fs::create_dir_all(d).map_err(e)?;
             }
             std::fs::write(&p, bytes).map_err(e)?;
         }
         t.lock().project_path = dir.canonicalize().map_err(e)?.display().to_string();
-        return Ok(Some(dir.display().to_string()));
-    }
-    let v: serde_json::Value = serde_json::from_str(&project).map_err(e)?;
-    let name = v["name"].as_str().unwrap_or("project").to_string();
-    let pkg_parent = t.package_dir();
-    let parent = match (ask, pkg_parent) {
-        (false, Some(p)) => p,
-        (_, start) => {
-            let mut d = app.dialog().file().set_title("Folder for the .grainatlas project");
-            if let Some(s) = start {
-                d = d.set_directory(s);
-            }
-            match d.blocking_pick_folder() {
-                Some(p) => p.into_path().map_err(e)?,
-                None => return Ok(None),
-            }
-        }
-    };
-    let dir = parent.join(format!("{name}.grainatlas"));
-    let files = state.with_session(tab, |s| s.project_files(&project)).map_err(e)?;
-    for (rel, bytes) in files {
-        let p = dir.join(rel);
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d).map_err(e)?;
-        }
-        std::fs::write(&p, bytes).map_err(e)?;
-    }
-    t.lock().project_path = dir.canonicalize().map_err(e)?.display().to_string();
-    Ok(Some(dir.display().to_string()))
+        Ok(Some(dir.display().to_string()))
+    }).await.map_err(e)?
 }
 
 /// Writes the project file `<name>.gaproj`: the project record alone (parameters, placements,
@@ -458,30 +556,33 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
 /// before; otherwise next to the package, or in a save dialog when `ask`.
 #[tauri::command]
 async fn save_project_file(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, path: Option<String>, ask: bool) -> Res<Option<String>> {
-    let t = state.tab(tab);
-    let v: serde_json::Value = serde_json::from_str(&project).map_err(e)?;
-    let name = format!("{}.gaproj", v["name"].as_str().filter(|s| !s.is_empty()).unwrap_or("project"));
-    let target = match (path, ask, t.package_dir()) {
-        (Some(p), false, _) => PathBuf::from(p),
-        (_, false, Some(dir)) => dir.join(&name),
-        (prev, _, dir) => {
-            let mut d = app.dialog().file().set_file_name(&name).add_filter("grainatlas project", &["gaproj"]);
-            if let Some(start) = prev.as_ref().and_then(|p| PathBuf::from(p).parent().map(|q| q.to_path_buf())).or(dir) {
-                d = d.set_directory(start);
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        let v: serde_json::Value = serde_json::from_str(&project).map_err(e)?;
+        let name = format!("{}.gaproj", v["name"].as_str().filter(|s| !s.is_empty()).unwrap_or("project"));
+        let target = match (path, ask, t.package_dir()) {
+            (Some(p), false, _) => PathBuf::from(p),
+            (_, false, Some(dir)) => dir.join(&name),
+            (prev, _, dir) => {
+                let mut d = app.dialog().file().set_file_name(&name).add_filter("grainatlas project", &["gaproj"]);
+                if let Some(start) = prev.as_ref().and_then(|p| PathBuf::from(p).parent().map(|q| q.to_path_buf())).or(dir) {
+                    d = d.set_directory(start);
+                }
+                match d.blocking_save_file() {
+                    Some(p) => p.into_path().map_err(e)?,
+                    None => return Ok(None),
+                }
             }
-            match d.blocking_save_file() {
-                Some(p) => p.into_path().map_err(e)?,
-                None => return Ok(None),
-            }
-        }
-    };
-    let pretty = serde_json::to_vec_pretty(&v).map_err(e)?;
-    // Write next to the target and rename, so a crash never leaves half a project.
-    let tmp = target.with_extension("gaproj.tmp");
-    std::fs::write(&tmp, pretty).map_err(e)?;
-    std::fs::rename(&tmp, &target).map_err(e)?;
-    t.lock().project_path = target.canonicalize().map_err(e)?.display().to_string();
-    Ok(Some(target.display().to_string()))
+        };
+        let pretty = serde_json::to_vec_pretty(&v).map_err(e)?;
+        // Write next to the target and rename, so a crash never leaves half a project.
+        let tmp = target.with_extension("gaproj.tmp");
+        std::fs::write(&tmp, pretty).map_err(e)?;
+        std::fs::rename(&tmp, &target).map_err(e)?;
+        t.lock().project_path = target.canonicalize().map_err(e)?.display().to_string();
+        Ok(Some(target.display().to_string()))
+    }).await.map_err(e)?
 }
 
 /// Projects the OS asked to open (Finder double-click, Open With, dropped on the Dock icon),
@@ -494,46 +595,52 @@ fn take_opened(state: State<'_, AppState>) -> Vec<String> {
 /// The atlas bundle as zip bytes (`<project_id>.atlas/…`), for publishing to laicpmsdb.
 #[tauri::command]
 async fn atlas_zip(state: State<'_, AppState>, tab: u32, project: String, options: String) -> Res<Response> {
-    let t = state.tab(tab);
-    Ok(Response::new(t.lock().atlas_zip(&project, &options).map_err(e)?))
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        Ok(Response::new(t.lock().atlas_zip(&project, &options).map_err(e)?))
+    }).await.map_err(e)?
 }
 
 /// Saves the atlas bundle: a `<project_id>.atlas/` folder in a chosen folder, or a zip through the
 /// save dialog. Returns the path written, or null when cancelled.
 #[tauri::command]
 async fn save_atlas(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, options: String, zip: bool) -> Res<Option<String>> {
-    let t = state.tab(tab);
-    let id = serde_json::from_str::<serde_json::Value>(&project).map_err(e)?["uuid"].as_str().unwrap_or("project").to_string();
-    let start = t.package_dir();
-    if zip {
-        let bytes = t.lock().atlas_zip(&project, &options).map_err(e)?;
-        let mut d = app.dialog().file().set_file_name(format!("{id}.atlas.zip"));
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        let id = serde_json::from_str::<serde_json::Value>(&project).map_err(e)?["uuid"].as_str().unwrap_or("project").to_string();
+        let start = t.package_dir();
+        if zip {
+            let bytes = t.lock().atlas_zip(&project, &options).map_err(e)?;
+            let mut d = app.dialog().file().set_file_name(format!("{id}.atlas.zip"));
+            if let Some(s) = start {
+                d = d.set_directory(s);
+            }
+            let Some(path) = d.blocking_save_file() else { return Ok(None) };
+            let path = path.into_path().map_err(e)?;
+            std::fs::write(&path, bytes).map_err(e)?;
+            return Ok(Some(path.display().to_string()));
+        }
+        let files = t.lock().atlas_files(&project, &options).map_err(e)?;
+        let mut d = app.dialog().file().set_title("Folder for the .atlas bundle");
         if let Some(s) = start {
             d = d.set_directory(s);
         }
-        let Some(path) = d.blocking_save_file() else { return Ok(None) };
-        let path = path.into_path().map_err(e)?;
-        std::fs::write(&path, bytes).map_err(e)?;
-        return Ok(Some(path.display().to_string()));
-    }
-    let files = t.lock().atlas_files(&project, &options).map_err(e)?;
-    let mut d = app.dialog().file().set_title("Folder for the .atlas bundle");
-    if let Some(s) = start {
-        d = d.set_directory(s);
-    }
-    let Some(parent) = d.blocking_pick_folder() else { return Ok(None) };
-    let dir = parent.into_path().map_err(e)?.join(format!("{id}.atlas"));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(e)?;
-    }
-    for (rel, bytes) in files {
-        let p = dir.join(rel);
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d).map_err(e)?;
+        let Some(parent) = d.blocking_pick_folder() else { return Ok(None) };
+        let dir = parent.into_path().map_err(e)?.join(format!("{id}.atlas"));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(e)?;
         }
-        std::fs::write(&p, bytes).map_err(e)?;
-    }
-    Ok(Some(dir.display().to_string()))
+        for (rel, bytes) in files {
+            let p = dir.join(rel);
+            if let Some(d) = p.parent() {
+                std::fs::create_dir_all(d).map_err(e)?;
+            }
+            std::fs::write(&p, bytes).map_err(e)?;
+        }
+        Ok(Some(dir.display().to_string()))
+    }).await.map_err(e)?
 }
 
 /// Settings → Reset layout: the window back to its default size, centred.
@@ -553,40 +660,57 @@ fn laser_adapters() -> String {
 }
 
 #[tauri::command]
-fn set_laser(state: State<'_, AppState>, tab: u32, area_id: String, registration: String) -> Res<()> {
-    let t = state.tab(tab);
-    t.lock().set_laser(&area_id, &registration).map_err(e)
+async fn set_laser(state: State<'_, AppState>, tab: u32, area_id: String, registration: String) -> Res<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().set_laser(&area_id, &registration).map_err(e)
+    }).await.map_err(e)?
 }
 
 #[tauri::command]
-fn laser_export(state: State<'_, AppState>, tab: u32, spots: String, area_id: String, adapter: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().laser_export(&spots, &area_id, &adapter).map_err(e)
+async fn laser_export(state: State<'_, AppState>, tab: u32, spots: String, area_id: String, adapter: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().laser_export(&spots, &area_id, &adapter).map_err(e)
+    }).await.map_err(e)?
 }
 
 /// Which area owns each detected grain (cross-area duplicates).
 #[tauri::command]
 async fn ownership(state: State<'_, AppState>, tab: u32, grains: String) -> Res<String> {
-    let t = state.tab(tab);
-    t.lock().ownership(&grains, "").map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().ownership(&grains, "").map_err(e)
+    }).await.map_err(e)?
 }
 
 /// Print sheets of the mount (pages, print_sheet registration, stats, ownership).
 #[tauri::command]
 async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grains: String, tone: String) -> Res<String> {
-    state.with_session(tab, |s| s.print_sheets(&params, &grains, &tone)).map_err(e)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.print_sheets(&params, &grains, &tone)).map_err(e)
+    }).await.map_err(e)?
 }
 
 /// Drops the open package and project (a project opened from a server becomes a local copy).
 #[tauri::command]
-fn blank(state: State<'_, AppState>, tab: u32, name: String) {
-    let t = state.tab(tab);
-    {
-        let mut s = t.lock();
-        *s = Session::new(&name);
-        t.evictable.store(0, Ordering::Relaxed);
-    }
-    *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = None;
+async fn blank(state: State<'_, AppState>, tab: u32, name: String) -> Res<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        {
+            let mut s = t.lock();
+            *s = Session::new(&name);
+            t.evictable.store(0, Ordering::Relaxed);
+        }
+        *t.package_path.lock().unwrap_or_else(|x| x.into_inner()) = None;
+
+        Ok(())
+    }).await.map_err(e)?
 }
 
 /// A tab closed: its session (package, mosaics) is dropped; a step still running is cancelled.
@@ -598,9 +722,12 @@ fn close_tab(state: State<'_, AppState>, tab: u32) {
 }
 
 #[tauri::command]
-fn record_published(state: State<'_, AppState>, tab: u32, published: String) -> Res<()> {
-    let t = state.tab(tab);
-    t.lock().record_published(&published).map_err(e)
+async fn record_published(state: State<'_, AppState>, tab: u32, published: String) -> Res<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        t.lock().record_published(&published).map_err(e)
+    }).await.map_err(e)?
 }
 
 fn percent_decode(s: &str) -> String {

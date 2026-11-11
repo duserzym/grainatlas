@@ -302,7 +302,22 @@ fn frac(block: [i64; 4], r: [i64; 4]) -> f64 {
 /// `overrides` are manual (tile, gain, offset) that replace the solved ones; the automatic values
 /// are returned as well. Returns (tiles, solution after overrides, automatic gains, offsets).
 #[allow(clippy::type_complexity)]
-pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fixed, overrides: &[(usize, Option<f32>, Option<f32>)]) -> (Vec<Gray>, JointSolution, Vec<f32>, Vec<f32>) {
+pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fixed, overrides: &[(usize, Option<f32>, Option<f32>)],
+) -> (Vec<Gray>, JointSolution, Vec<f32>, Vec<f32>) {
+    correct_ctl(pl, tiles, bp, fixed, overrides, &crate::Ctl::NONE).expect("uncancelled correction")
+}
+
+type Correction = (Vec<Gray>, JointSolution, Vec<f32>, Vec<f32>);
+
+pub fn correct_ctl(
+    pl: &Placement,
+    tiles: &[Gray],
+    bp: &BackgroundParams,
+    fixed: &Fixed,
+    overrides: &[(usize, Option<f32>, Option<f32>)],
+    ctl: &crate::Ctl,
+) -> crate::Result<Correction> {
+    ctl.check()?;
     let n = tiles.len();
     let block = (bp.cell / 2).max(4) as i64;
 
@@ -316,7 +331,8 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
     for a in 0..n {
         for b in a + 1..n {
             let (ra, rb) = (rect(a), rect(b));
-            let r = [ra[0].max(rb[0]), ra[1].max(rb[1]), ra[2].min(rb[2]), ra[3].min(rb[3])];
+            let r = [ra[0].max(rb[0]), ra[1].max(rb[1]), ra[2].min(rb[2]), ra[3].min(rb[3]),
+            ];
             if r[2] > r[0] && r[3] > r[1] {
                 neighbours[a].push(b);
                 neighbours[b].push(a);
@@ -330,7 +346,9 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
     let stats: Vec<TileStats> = tiles_stats(tiles, &neighbours);
     // Step rectangles: the overlaps, with their inner edges moved onto the step lines found in
     // the tile's background, and the step lines that no overlap edge explains.
-    let lines: Vec<Cuts> = crate::util::par_map(n, |i| if fixed.skip[i] { (Vec::new(), Vec::new()) } else { step_lines(&tiles[i], &stats[i]) });
+    let lines: Vec<Cuts> = crate::util::try_par_map(n, ctl, |i| {
+        Ok(if fixed.skip[i] { (Vec::new(), Vec::new()) } else { step_lines(&tiles[i], &stats[i]) })
+    })?;
     if std::env::var_os("GRAINATLAS_DEBUG_STEPS").is_some() {
         for (i, l) in lines.iter().enumerate() {
             eprintln!("tile {i}: mode {:.4} band {:.4} x {:?} y {:?}", stats[i].mode, stats[i].band, l.0, l.1);
@@ -349,7 +367,10 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
                 }
                 ls.iter().filter(|l| (l.0 - e).abs() <= SNAP).min_by_key(|l| (l.0 - e).abs()).map_or(e, |l| l.0)
             };
-            let rects: Vec<[i64; 4]> = nb[i].iter().map(|(_, r)| [snap(r[0], w, &xs), snap(r[1], h, &ys), snap(r[2], w, &xs), snap(r[3], h, &ys)]).collect();
+            let rects: Vec<[i64; 4]> = nb[i].iter().map(|(_, r)| {
+                    [snap(r[0], w, &xs), snap(r[1], h, &ys), snap(r[2], w, &xs), snap(r[3], h, &ys),
+                    ]
+                }).collect();
             // The step lines stay cuts themselves (cell_cuts merges duplicates).
             (rects, xs, ys)
         })
@@ -357,12 +378,15 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
         .into_iter()
         .enumerate()
         .map(|(i, (rects, wx, wy))| {
-            cuts.push(cell_cuts(&rects, &wx, &wy, tiles[i].w as i64, tiles[i].h as i64));
+            cuts.push(cell_cuts(&rects, &wx, &wy, tiles[i].w as i64, tiles[i].h as i64,
+            ));
             rects
         })
         .collect();
     // Stage 1: every tile flattened on its own.
-    let flat: Vec<Option<(Gray, f32)>> = crate::util::par_map(n, |i| if fixed.skip[i] { None } else { flatten_tile(&tiles[i], &stats[i], &cuts[i], (block / 2).max(4)) });
+    let flat: Vec<Option<(Gray, f32)>> = crate::util::try_par_map(n, ctl, |i| {
+        Ok(if fixed.skip[i] { None } else { flatten_tile(&tiles[i], &stats[i], &cuts[i], (block / 2).max(4)) })
+    })?;
     let mut range1 = vec![0.0f32; n];
     let leveled: Vec<Gray> = flat
         .into_iter()
@@ -377,7 +401,8 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
         .collect();
     // Stage 2: gains, offsets, surfaces and overlap steps of all tiles together.
     let leveled_stats = tiles_stats(&leveled, &neighbours);
-    let mut sol = solve(pl, &leveled, block, fixed, nb, steps, &cuts, &leveled_stats, &stats);
+    let mut sol = solve(pl, &leveled, block, fixed, nb, steps, &cuts, &leveled_stats, &stats,
+    );
     // Both application stages use the raw mode/band. Stage-two fitting still uses the
     // leveled background statistics, but its overlap mask and application must not shift
     // the fade thresholds after stage one.
@@ -394,8 +419,16 @@ pub fn correct(pl: &Placement, tiles: &[Gray], bp: &BackgroundParams, fixed: &Fi
             sol.offset[i] = v;
         }
     }
-    let out = crate::util::par_map(n, |i| sol.apply(i, &leveled[i]));
-    (out, sol, auto_gain, auto_offset)
+    let out = leveled
+        .into_iter()
+        .enumerate()
+        .map(|(i, tile)| {
+            ctl.check()?;
+            Ok(sol.apply(i, &tile))
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+    ctl.check()?;
+    Ok((out, sol, auto_gain, auto_offset))
 }
 
 /// The joint solve over all tiles (stage 2 of `correct`); `steps` are each tile's overlap

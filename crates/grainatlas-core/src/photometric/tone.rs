@@ -36,11 +36,19 @@ impl Default for ToneParams {
 /// CLAHE with a tile of about a grain (250 µm) and a clip limit (1.5 to 3) from the histogram of
 /// the stretched mosaic (low contrast → more enhancement, already spread → gentle), levels and gamma
 /// neutral. Per-grain normalisation is left as it was. `cov` marks pixels inside the mosaic.
-pub fn auto(linear: &Gray, cov: Option<&[f32]>, um_per_px: f64, current: &ToneParams) -> ToneParams {
+pub fn auto(linear: &Gray, cov: Option<&[f32]>, um_per_px: f64, current: &ToneParams,
+) -> ToneParams {
     let mut t = ToneParams { low_pct: 0.5, high_pct: 99.8, black: 0.0, white: 1.0, gamma: 1.0, clahe: true, grain_norm: current.grain_norm.clone(), ..ToneParams::default() };
-    let mut g = linear.clone();
-    stretch(&mut g, cov, &t);
-    let h = histogram(&g, cov, 256);
+    let (lo, hi) = stretch_levels(linear, cov, &t);
+    let k = 1.0 / (hi - lo);
+    let mut h = vec![0; 256];
+    for (i, &v) in linear.px.iter().enumerate() {
+        if cov.is_some_and(|c| c[i] < 0.5) {
+            continue;
+        }
+        let v = ((v - lo) * k).clamp(0.0, 1.0);
+        h[((v.clamp(0.0, 1.0) * 255.0) + 0.5) as usize] += 1;
+    }
     let spread = percentile(&h, 95.0) - percentile(&h, 5.0);
     // 1.5 (already spread) to 3 (narrow); capped so a dark mount background's noise is not pumped up.
     t.clahe_clip = ((1.5 + 1.5 * (1.0 - spread).powi(2)) * 4.0).round() / 4.0;
@@ -81,15 +89,20 @@ pub fn percentile(h: &[u64], pct: f32) -> f32 {
 
 /// Percentile stretch to 0..1 (values clamp). Returns the (low, high) levels used.
 pub fn stretch(g: &mut Gray, cov: Option<&[f32]>, p: &ToneParams) -> (f32, f32) {
+    let (lo, hi) = stretch_levels(g, cov, p);
+    let k = 1.0 / (hi - lo);
+    for v in g.px.iter_mut() {
+        *v = ((*v - lo) * k).clamp(0.0, 1.0);
+    }
+    (lo, hi)
+}
+
+pub(crate) fn stretch_levels(g: &Gray, cov: Option<&[f32]>, p: &ToneParams) -> (f32, f32) {
     let h = histogram(g, cov, 4096);
     let lo = percentile(&h, p.low_pct);
     let mut hi = percentile(&h, p.high_pct);
     if hi <= lo + 1e-4 {
         hi = lo + 1e-4;
-    }
-    let k = 1.0 / (hi - lo);
-    for v in g.px.iter_mut() {
-        *v = ((*v - lo) * k).clamp(0.0, 1.0);
     }
     (lo, hi)
 }
@@ -138,7 +151,6 @@ pub fn clahe(g: &mut Gray, tile: usize, clip: f32) {
         }
         m
     });
-    let src = g.px.clone();
     let w = g.w;
     crate::util::par_rows(&mut g.px, w, |y, row| {
         let fy = (y as f32 + 0.5) / tile as f32 - 0.5;
@@ -150,7 +162,7 @@ pub fn clahe(g: &mut Gray, tile: usize, clip: f32) {
             let x0 = fx.floor().clamp(0.0, (tw - 1) as f32) as usize;
             let x1 = (x0 + 1).min(tw - 1);
             let ax = (fx - x0 as f32).clamp(0.0, 1.0);
-            let b = (src[y * w + x].clamp(0.0, 1.0) * 255.0 + 0.5) as usize;
+            let b = (o.clamp(0.0, 1.0) * 255.0 + 0.5) as usize;
             let v00 = maps[y0 * tw + x0][b];
             let v10 = maps[y0 * tw + x1][b];
             let v01 = maps[y1 * tw + x0][b];

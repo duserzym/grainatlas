@@ -208,3 +208,64 @@ is left as a decision.
 - UI regression tests: `ui/unit/tiles.test.ts`, `ui/tests/memory.spec.ts`.
 - Desktop window eviction policy and tests: `tauri/src-tauri/src/memory.rs`.
 - This report: `docs/memory.md`.
+
+## Large single areas, 2026-11-11
+
+Every output retains a covered-pixel base histogram and an Auto tone summary.
+The histogram uses coverage >= 0.5 and is refreshed whenever base pixels change.
+Auto is keyed by photometric and blend parameters; grain normalisation is copied
+from the request. Both summaries survive heavy eviction. Unchanged Auto and
+histogram reads do not rebuild an oversized mosaic.
+
+Necessary rebuilds accept `Ctl`, report `rebuilding mosaic`, and check cancel
+between decoded/corrected tiles, seam searches and blend bands/levels. Desktop
+commands acquire session locks and do pixel/file work on Tauri's blocking pool.
+Cancel only sets the tab's atomic flag. The wasm API retains its existing calls
+and uses `Ctl::NONE` for these operations.
+
+The 304-tile synthetic regression uses 128 x 96 px tiles, 20 % overlap and
+TM4000 UTF-16 sidecars. Its coarse correlation runs at full resolution because
+the reduced overlap would be below the 16 px correlation minimum. It uses tile
+background correction with fixed gains to keep CI short; fixture tests still
+exercise joint correction and golden hashes. Tests cover progress ordering,
+summary parity without rebuilding, cancellation/recovery and completed-operation
+budgets. Sparse seam grids and bounded multiband are also compared bit for bit
+with the pinned upstream implementation, including holes and contained tiles.
+
+Generate the full 1280 x 960 px workload outside the repository:
+
+```sh
+cargo run --release -p grainatlas-core --example large_area -- /tmp/grainatlas-large
+cargo build --release -p grainatlas-cli
+/usr/bin/time -l target/release/grainatlas stitch /tmp/grainatlas-large \
+  --out /tmp/grainatlas-large-output --no-pyramid
+```
+
+The mosaic is 19712 x 12480 px (246 Mpx), at 1.984 um/px. Allocation accounting
+before the change: each decoded/corrected tile set is 1.49 GB, linear and coverage
+are 0.98 GB each, dense seam luma/coverage reserves 5.84 GB, and multiband permits
+5 GiB of bands alongside 2.62 GB of accumulators. Base/pyramid total 0.33 GB.
+These allocations overlap; reservation sizes differ from measured RSS and footprint.
+The new path moves decoded tiles, stores seam luma only over covered tile cells,
+generates seam weights on demand, omits opaque alpha planes, bounds estimated band
+batches to 256 MiB on native (at least one tile; one at a time on wasm), releases
+consumed tiles and reuses collapse bands.
+Auto and ordinary base tone no longer copy the full f32 mosaic; CLAHE maps in place.
+
+Release CLI, same generated package, `--no-pyramid` (pyramids built but not written):
+
+| run | wall | maximum resident set size | peak memory footprint |
+| --- | --- | --- | --- |
+| before | 13.53 s | 5,725,782,016 bytes | 11,816,759,680 bytes |
+| after | 17.72 s | 3,891,724,288 bytes | 3,967,767,304 bytes |
+
+Footprint fell 66.4 %; wall time rose 4.19 s. The full-size mosaic SHA-256 is
+identical (`883a1be0f1f2766e5c0a96a81541a306a36d9afcb745b163f0b4abbc5cb9f161`).
+Native/wasm fixture, Auto/grain and bundle hashes also match the original binary.
+Memory columns: `/usr/bin/time -l` ("maximum resident set size", "peak memory
+footprint"). On the real thin-section package (TM4000, one area of 19 x 16 tiles,
+19698 x 12657 px, 2026-11-11) the release CLI stitch went from 15.4 s, 5.49 GB
+RSS and 11.95 GB peak footprint to 10.5 s, 4.11 GB and 4.11 GB, with the same
+mosaic SHA-256. In the desktop app (`--profile test`) the stitch and the
+histogram now run off the main thread and the histogram needs no rebuild; before,
+the main thread spent about 10 s in two `histogram` rebuilds after the stitch.

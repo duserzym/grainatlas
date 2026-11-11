@@ -112,6 +112,10 @@ pub trait Package: Send + Sync {
         meta.h = image.h;
         Ok(Tile { meta, image, depth, sha256 })
     }
+    fn tiles_ctl(&self, area: usize, ctl: &crate::Ctl) -> Result<Vec<Tile>> {
+        let n = self.info().areas.get(area).map_or(0, |a| a.tiles.len());
+        crate::util::try_par_map(n, ctl, |i| self.tile(area, i))
+    }
     /// All tiles of an area, in index order (decoded in parallel on native).
     fn tiles(&self, area: usize) -> Result<Vec<Tile>> {
         let n = self.info().areas.get(area).map_or(0, |a| a.tiles.len());

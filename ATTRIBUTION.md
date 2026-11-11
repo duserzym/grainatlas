@@ -20,6 +20,12 @@
     grain outlines to edges, and `segment::quick::quick_select` (Quick
     Selection) for the grain brush (`crates/grainatlas-core/src/segment/edit.rs`),
     with `photocraft-geom`'s `Rect` at the same commit.
+  Adapted from `panorama/blend.rs` at that commit, with the upstream notice in
+  `crates/grainatlas-core/src/blend/LICENSE-photocraft-MIT`: the sparse seam
+  grid (`blend/seams.rs`) and the bounded-memory multiband (`blend/bounded.rs`),
+  which keep the upstream arithmetic and accumulation order (tests compare
+  them bit for bit with the dependency) while holding far less memory for
+  areas of hundreds of tiles.
   Any function copied in the future keeps a comment naming its origin and
   the commit.
 - `svg2pdf` and `pdf-writer` (typst project, MIT OR Apache-2.0) convert the

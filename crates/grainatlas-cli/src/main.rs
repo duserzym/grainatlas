@@ -712,7 +712,8 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         let t0 = clock();
         let tiles = pipeline::read_tiles(pkg.as_ref(), ai, rec)?;
         timings.steps.push(("read".into(), clock() - t0));
-        let mut o = pipeline::run(rec, &tiles, &params, &Ctl::NONE, &clock, &mut timings)?;
+        let tile_count = tiles.len();
+        let mut o = pipeline::run_owned(rec, tiles, &params, &[], &Ctl::NONE, &clock, &mut timings)?;
         if auto {
             let tone = grainatlas_core::photometric::tone::auto(
                 &o.linear,
@@ -727,7 +728,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         eprintln!(
             "{}: {} tiles, {}x{} px, pairs {}/{} measured, rms {:.3} px, max {:.3} px, {:.0} ms ({})",
             area.id,
-            tiles.len(),
+            tile_count,
             o.linear.w,
             o.linear.h,
             pairs_used,
@@ -743,7 +744,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
                 .join(", ")
         );
         summary.push(serde_json::json!({
-            "area": area.id, "tiles": tiles.len(), "w": o.linear.w, "h": o.linear.h,
+            "area": area.id, "tiles": tile_count, "w": o.linear.w, "h": o.linear.h,
             "pairs": o.placement.pairs.len(), "pairs_measured": pairs_used,
             "rms_px": o.placement.rms_residual, "max_px": o.placement.max_residual,
             "ms": total, "steps": timings.steps, "sha256": o.mosaic_json.sha256,

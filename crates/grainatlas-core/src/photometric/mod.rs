@@ -330,7 +330,18 @@ pub fn solve_dense(mut a: Vec<f64>, mut b: Vec<f64>, n: usize) -> Option<Vec<f64
 
 /// Applies the correction: gain/offset (automatic, then overrides), then background leveling.
 /// Returns corrected tiles and the result record.
-pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gray>, PhotometricResult) {
+pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams,
+) -> (Vec<Gray>, PhotometricResult) {
+    correct_ctl(pl, tiles, p, &crate::Ctl::NONE).expect("uncancelled correction")
+}
+
+pub fn correct_ctl(
+    pl: &Placement,
+    tiles: &[Gray],
+    p: &PhotometricParams,
+    ctl: &crate::Ctl,
+) -> crate::Result<(Vec<Gray>, PhotometricResult)> {
+    ctl.check()?;
     let n = tiles.len();
     let samples = overlap_samples(pl, tiles, 3);
     let (ag, ao) = match p.model {
@@ -340,7 +351,8 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
                 .tiles
                 .iter()
                 .zip(tiles)
-                .map(|(t, g)| RoiImage { x0: t.x as i32, y0: t.y as i32, w: g.w, h: g.h, ch: 1, px: g.px.clone(), alpha: vec![1.0; g.w * g.h] })
+                .map(|(t, g)| RoiImage { x0: t.x as i32, y0: t.y as i32, w: g.w, h: g.h, ch: 1, px: g.px.clone(), alpha: vec![1.0; g.w * g.h],
+                })
                 .collect();
             let ph = photometric(&imgs, None, true, false);
             ((0..n).map(|i| 1.0 / ph.gains[i][0]).collect(), vec![0.0; n])
@@ -361,18 +373,22 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
     }
     let before = rms(&samples, &vec![1.0; n], &vec![0.0; n]);
     if p.background && p.background_params.method == background::LevelMethod::Joint {
-        let skip: Vec<bool> = (0..n).map(|i| p.overrides.iter().any(|ov| ov.index == i && ov.no_background)).collect();
+        let skip: Vec<bool> = (0..n).map(|i| {
+                p.overrides.iter().any(|ov| ov.index == i && ov.no_background)
+            }).collect();
         let fixed_gain = match p.model {
             GainModel::Affine => None,
             _ => Some(ag.as_slice()),
         };
-        let fixed = joint::Fixed { gain: fixed_gain, skip: &skip, regularisation: p.regularisation };
+        let fixed = joint::Fixed { gain: fixed_gain, skip: &skip, regularisation: p.regularisation,
+        };
         let overrides: Vec<(usize, Option<f32>, Option<f32>)> = p.overrides.iter().filter(|ov| ov.index < n).map(|ov| (ov.index, ov.gain, ov.offset)).collect();
-        let (out, sol, auto_gain, auto_offset) = joint::correct(pl, tiles, &p.background_params, &fixed, &overrides);
+        let (out, sol, auto_gain, auto_offset) = joint::correct_ctl(pl, tiles, &p.background_params, &fixed, &overrides, ctl)?;
         // Compare the background-disabled path with the same model and overrides, reusing
         // fitted gains/offsets and raw statistics. Compute affine pixels only on the stride;
         // materialise the full affine result only if the guard selects it.
-        let [(level_spread_joint, joint_step), (level_spread_affine, affine_step)] = background_level_comparison(pl, tiles, &out, &sol.raw_stats, &g, &o);
+        let [(level_spread_joint, joint_step), (level_spread_affine, affine_step),
+        ] = background_level_comparison(pl, tiles, &out, &sol.raw_stats, &g, &o);
         let mut res = PhotometricResult {
             auto_gain,
             auto_offset,
@@ -388,11 +404,14 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
         };
         // A single neighbour can worsen while the area becomes flatter overall. Reject
         // joint only when its largest step worsens meaningfully and its spread does not improve.
-        let out = if joint_is_worse((level_spread_joint, joint_step), (level_spread_affine, affine_step)) {
+        let out = if joint_is_worse((level_spread_joint, joint_step), (level_spread_affine, affine_step),
+        ) {
             res.fallback = Some(format!("background leveling left larger tile steps than none ({:.1} vs {:.1} grey); used gain and offset only", joint_step * 255.0, affine_step * 255.0));
-            let affine = crate::util::par_map(n, |i| Gray {
+            let affine = crate::util::try_par_map(n, ctl, |i| {
+                Ok(Gray {
                 w: tiles[i].w, h: tiles[i].h, px: tiles[i].px.iter().map(|&v| v * g[i] + o[i]).collect(),
-            });
+            })
+            })?;
             res.auto_gain = ag;
             res.auto_offset = ao;
             res.gain = g;
@@ -405,24 +424,27 @@ pub fn correct(pl: &Placement, tiles: &[Gray], p: &PhotometricParams) -> (Vec<Gr
         };
         let after = overlap_samples(pl, &out, 3);
         res.overlap_rms_after = rms(&after, &vec![1.0; n], &vec![0.0; n]);
-        return (out, res);
+        ctl.check()?;
+        return Ok((out, res));
     }
-    let mut out: Vec<Gray> = tiles
-        .iter()
-        .enumerate()
-        .map(|(i, t)| Gray { w: t.w, h: t.h, px: t.px.iter().map(|&v| v * g[i] + o[i]).collect() })
-        .collect();
+    let mut out: Vec<Gray> = crate::util::try_par_map(n, ctl, |i| {
+        let t = &tiles[i];
+        Ok(Gray { w: t.w, h: t.h, px: t.px.iter().map(|&v| v * g[i] + o[i]).collect() })
+    })?;
     let mut res = PhotometricResult { auto_gain: ag, auto_offset: ao, gain: g, offset: o, ..Default::default() };
     if p.background {
-        let skip: Vec<bool> = (0..n).map(|i| p.overrides.iter().any(|ov| ov.index == i && ov.no_background)).collect();
-        let (median, ranges) = background::level(&mut out, &skip, &p.background_params);
+        let skip: Vec<bool> = (0..n).map(|i| {
+                p.overrides.iter().any(|ov| ov.index == i && ov.no_background)
+            }).collect();
+        let (median, ranges) = background::level_ctl(&mut out, &skip, &p.background_params, ctl)?;
         res.background_median = median;
         res.background_range = ranges;
     }
     let after_samples = overlap_samples(pl, &out, 3);
     res.overlap_rms_before = before;
     res.overlap_rms_after = rms(&after_samples, &vec![1.0; n], &vec![0.0; n]);
-    (out, res)
+    ctl.check()?;
+    Ok((out, res))
 }
 
 #[cfg(test)]
