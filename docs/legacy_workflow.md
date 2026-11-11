@@ -202,6 +202,13 @@ for API details and that checkout's command help for arguments:
 
 - `manage.py register_mounts`: register the visit's mounts and retain their ids; see [workflow_api.md](../../laicpmsdb/docs/workflow_api.md).
 - `manage.py publish_atlas`: publish each atlas bundle against its mount; see [workflow_api.md](../../laicpmsdb/docs/workflow_api.md).
+
+`grainatlas atlas` re-stitches a package with defaults and finds new grains, so its bundle
+does not match a project that was edited in the app. For a saved project use
+`grainatlas atlas-project <name>.grainatlas --out <name>.zip [--mount-id <mount>]`: it renders
+every area from the saved placement, parameters and tone and carries the project's own ids,
+grains, spots and labels, as the app's Publish does. It only reads the project folder, so the
+project's `laicpmsdb.published` list is not updated; publishing once from the app records it.
 - `manage.py attach_files`: attach source images, annotated printouts and other visit records; see [workflow_api.md](../../laicpmsdb/docs/workflow_api.md).
 - `manage.py ingest_session`: ingest the canonical Qtegra session export or per-spot folder, with labels matching the placed spots; see [workflow_api.md](../../laicpmsdb/docs/workflow_api.md).
 

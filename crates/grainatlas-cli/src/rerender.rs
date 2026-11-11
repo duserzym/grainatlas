@@ -110,6 +110,40 @@ fn install(file: &Path, stage: &Path, ids: &[String], stamp: &str, version: &Pro
     Ok(())
 }
 
+/// A session on the saved project's package with the saved project loaded: areas render from
+/// their saved placements without stitching again.
+pub(crate) fn open_saved(project: &Project, input: &str) -> Result<Session> {
+    let mut session = Session::new(&project.name);
+    session.load_project(input)?;
+    let loose_files: Vec<_> = project.package.files.iter().map(std::path::PathBuf::from).collect();
+    let is_loose = project.package.kind == "loose";
+    let src: Arc<dyn Source> = if is_loose && !loose_files.is_empty() {
+        Arc::new(FileListSource::new(&loose_files)?)
+    } else {
+        Arc::new(DirSource::new(&project.package.path).with_context(|| format!("package {}", project.package.path))?)
+    };
+    session.origin_files = project.package.files.clone();
+    let probe: Value = serde_json::from_str(&session.open_source(src, &project.package.path, &project.created)?)?;
+    if is_loose {
+        session.open_loose(&serde_json::to_string(&project.package.loose)?, &project.created)?;
+    } else if probe["status"] != "opened" {
+        bail!("{} is not a package any more", project.package.path);
+    }
+    if session.project.as_ref().is_none_or(|p| p.uuid != project.uuid) {
+        bail!("package {} does not match the saved project", project.package.path);
+    }
+    Ok(session)
+}
+
+/// The saved parameters of an area with the UI's tone, as the app renders it.
+pub(crate) fn saved_params(full: &Value, saved: &grainatlas_core::project::AreaRecord) -> Result<grainatlas_core::project::AreaParams> {
+    let mut params = saved.params.clone();
+    if let Some(tone) = full["grainatlas_ui"]["tone"].get(&saved.id).filter(|tone| !tone.is_null()) {
+        params.tone = serde_json::from_value(tone.clone()).with_context(|| format!("{}: UI tone", saved.id))?;
+    }
+    Ok(params)
+}
+
 pub fn run(path: &Path, areas: &[String], background: &str, dry_run: bool) -> Result<()> {
     let file = if path.is_dir() { path.join("project.json") } else { path.to_path_buf() };
     let out = file.parent().context("project has no parent folder")?;
@@ -148,25 +182,7 @@ pub fn run(path: &Path, areas: &[String], background: &str, dry_run: bool) -> Re
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
-    let mut session = Session::new(&project.name);
-    session.load_project(&input)?;
-    let loose_files: Vec<_> = project.package.files.iter().map(std::path::PathBuf::from).collect();
-    let is_loose = project.package.kind == "loose";
-    let src: Arc<dyn Source> = if is_loose && !loose_files.is_empty() {
-        Arc::new(FileListSource::new(&loose_files)?)
-    } else {
-        Arc::new(DirSource::new(&project.package.path).with_context(|| format!("package {}", project.package.path))?)
-    };
-    session.origin_files = project.package.files.clone();
-    let probe: Value = serde_json::from_str(&session.open_source(src, &project.package.path, &project.created)?)?;
-    if is_loose {
-        session.open_loose(&serde_json::to_string(&project.package.loose)?, &project.created)?;
-    } else if probe["status"] != "opened" {
-        bail!("{} is not a package any more", project.package.path);
-    }
-    if session.project.as_ref().is_none_or(|p| p.uuid != project.uuid) {
-        bail!("package {} does not match the saved project", project.package.path);
-    }
+    let mut session = open_saved(&project, &input)?;
     // Do not follow a mosaic symlink outside the saved project when replacing folders.
     for dir in std::iter::once(out.join("mosaic")).chain(selected.iter().map(|(_, a)| out.join("mosaic").join(&a.id))) {
         match std::fs::symlink_metadata(&dir) {
@@ -183,10 +199,7 @@ pub fn run(path: &Path, areas: &[String], background: &str, dry_run: bool) -> Re
     for (index, saved) in selected {
         let start = Instant::now();
         let id = &saved.id;
-        let mut params = saved.params.clone();
-        if let Some(tone) = full["grainatlas_ui"]["tone"].get(id).filter(|tone| !tone.is_null()) {
-            params.tone = serde_json::from_value(tone.clone()).with_context(|| format!("{id}: UI tone"))?;
-        }
+        let mut params = saved_params(&full, saved)?;
         match background {
             "on" => {
                 params.photometric.background = true;

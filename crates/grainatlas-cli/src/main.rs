@@ -11,6 +11,7 @@ mod legacy;
 mod import;
 mod segment;
 mod rerender;
+mod project_atlas;
 mod whole;
 use grainatlas_core::Ctl;
 use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
@@ -140,6 +141,23 @@ enum Cmd {
         /// Compute and report without writing.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Write the atlas bundle of a saved project (`<name>.grainatlas`) as a zip: areas rendered
+    /// from their saved placements and tone, with the project's grains, spots and labels, as the
+    /// app's Publish builds it. The project folder is only read.
+    AtlasProject {
+        project: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// laicpmsdb mount to record in atlas.json instead of the project's link.
+        #[arg(long)]
+        mount_id: Option<String>,
+        /// 100 = lossless WebP tiles, 90 to 99 = near-lossless.
+        #[arg(long, default_value_t = 100)]
+        quality: u8,
+        /// `exported` time in atlas.json (default now).
+        #[arg(long)]
+        exported: Option<String>,
     },
     /// Show the areas and tiles of a package without stitching.
     Info { folder: PathBuf },
@@ -352,6 +370,9 @@ fn main() -> Result<()> {
         Cmd::ImportGrains { project, from, areas, missing, dry_run } => import::run(&project, &from, &areas, missing, dry_run)?,
         Cmd::Segment { project, area, missing, add_missing, dry_run, signal } => segment::run(&project, &area, missing, add_missing, dry_run, signal.as_deref())?,
         Cmd::Rerender { project, areas, background, dry_run } => rerender::run(&project, &areas, &background, dry_run)?,
+        Cmd::AtlasProject { project, out, mount_id, quality, exported } => {
+            println!("{}", serde_json::to_string_pretty(&project_atlas::run(&project, &out, mount_id.as_deref(), quality, exported)?)?);
+        }
         Cmd::Check { project, json } => {
             let path = if project.is_dir() {
                 project.join("project.json")
