@@ -19,6 +19,43 @@ export type UpdateStatus =
   | { kind: 'error'; message: string }
   | { kind: 'unsupported'; reason: string; info?: UpdateInfo };
 
+/** Keep native updater diagnostics out of the user-facing status line. */
+export function friendlyUpdateError(raw: string): string {
+  if (/pubkey|public key|base64|decode|not configured/i.test(raw)) return 'Updates are not configured for this build yet.';
+  if (/404|release JSON|could not fetch a valid release|not found|no assets/i.test(raw)) return 'No release has been published yet.';
+  if (/error sending request|dns|connect|timed out|timeout|offline|network|failed to fetch|ENOTFOUND|URLError/i.test(raw)) {
+    return "Can't reach the update server. Check your internet connection and try again.";
+  }
+  const message = raw.trim();
+  return `The update check failed: ${message.length > 120 ? `${message.slice(0, 119)}…` : message}`;
+}
+
+/** Presentation only; checks and installation stay in the shared updater. */
+export function checkButtonView(status: UpdateStatus, version: string, autoDownload = true) {
+  const badge = status.kind === 'available' || status.kind === 'ready' || status.kind === 'unsupported' && !!status.info;
+  const busy = ['checking', 'downloading', 'installing'].includes(status.kind);
+  let text: string;
+  let action: 'download' | 'install' | 'releases' | null = null;
+  switch (status.kind) {
+    case 'idle': text = `Current version: v${version}`; break;
+    case 'checking': text = 'Checking for updates…'; break;
+    case 'none': text = `Up to date (v${version})`; break;
+    case 'available':
+      text = `Update available: v${status.info.version}`;
+      if (!autoDownload) action = 'download';
+      break;
+    case 'downloading': text = `Downloading v${status.info.version}…${status.pct === null ? '' : ` ${status.pct}%`}`; break;
+    case 'ready': text = `v${status.info.version} is ready`; action = 'install'; break;
+    case 'installing': text = `Installing v${status.info.version} and restarting…`; break;
+    case 'unsupported':
+      text = status.info ? `Update available: v${status.info.version}` : status.reason;
+      if (status.info) action = 'releases';
+      break;
+    case 'error': text = friendlyUpdateError(status.message); break;
+  }
+  return { text, action, badge, busy };
+}
+
 /** Semver precedence; build metadata does not affect ordering. */
 export function compareVersions(a: string, b: string): number {
   const parse = (v: string) => {

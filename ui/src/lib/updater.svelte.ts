@@ -1,6 +1,6 @@
 import { isHosted } from '@lab/bridge';
 import { isDesktop } from './core/core';
-import { loadPrefs, pickEndpoint, savePrefs, STABLE_ENDPOINT, transition, type UpdateEvent, type UpdateInfo, type UpdatePrefs, type UpdateStatus } from './updates';
+import { friendlyUpdateError, loadPrefs, pickEndpoint, savePrefs, STABLE_ENDPOINT, transition, type UpdateEvent, type UpdateInfo, type UpdatePrefs, type UpdateStatus } from './updates';
 
 const HOSTED_REASON = 'UPb Lab updates grainatlas with the shell.';
 const WEB_REASON = 'Updates come with the desktop app; the web page is always the version its server serves.';
@@ -10,10 +10,12 @@ function storage() {
 }
 const previewName = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)
   ? new URLSearchParams(window.location.search).get('update-preview') : null;
-export const updatePreview = ['none', 'available', 'downloading', 'ready', 'error', 'unsupported'].includes(previewName ?? '');
+export const updatePreview = ['idle', 'checking', 'none', 'available', 'downloading', 'ready', 'error', 'unsupported'].includes(previewName ?? '');
 const fake: UpdateInfo = { version: '0.2.0', currentVersion: '0.1.0', notes: 'Faster stitching, new checks', date: null, ready: false };
 function previewStatus(): UpdateStatus {
   switch (previewName) {
+    case 'idle': return { kind: 'idle' };
+    case 'checking': return { kind: 'checking' };
     case 'none': return { kind: 'none', checkedAt: Date.now() };
     case 'available': return { kind: 'available', info: fake };
     case 'downloading': return { kind: 'downloading', info: fake, pct: 43 };
@@ -39,9 +41,8 @@ export function setPrefs(patch: Partial<UpdatePrefs>) {
 function send(event: UpdateEvent) { updater.status = transition(updater.status, event); }
 function fail(error: unknown) {
   const raw = String(error);
-  const message = /pubkey|public key|base64|decode/i.test(raw) ? 'Updates are not configured for this build yet' : raw;
-  send({ type: 'failed', message });
-  setPrefs({ lastResult: `Update check failed: ${message}` });
+  send({ type: 'failed', message: raw });
+  setPrefs({ lastResult: friendlyUpdateError(raw) });
 }
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
@@ -58,7 +59,7 @@ async function endpoint() {
 }
 
 export async function check(manual = false): Promise<void> {
-  if (isHosted() || !updatePreview && !isDesktop()) return;
+  if (!updatePreview && (isHosted() || !isDesktop())) return;
   if (['checking', 'downloading', 'installing'].includes(updater.status.kind) || updater.status.kind === 'ready' && !manual) return;
   // Unsupported installed formats can still check and link to the download page.
   if (updater.status.kind === 'unsupported') updater.status = { kind: 'idle' };
@@ -66,8 +67,15 @@ export async function check(manual = false): Promise<void> {
   updater.manualNoneUntil = 0;
   setPrefs({ lastCheck: Date.now() });
   try {
-    if (!updatePreview) updater.supported = await invoke<boolean>('update_supported');
-    const info = updatePreview ? null : await invoke<UpdateInfo | null>('update_check', { endpoint: await endpoint() });
+    if (updatePreview) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      updater.status = previewName === 'idle' ? { kind: 'none', checkedAt: Date.now() } : previewStatus();
+      setPrefs({ lastCheck: Date.now(), lastResult: updater.status.kind === 'none' ? "You're up to date" : `Preview: ${updater.status.kind}` });
+      if (updater.status.kind === 'none' && manual) updater.manualNoneUntil = Date.now() + 5000;
+      return;
+    }
+    updater.supported = await invoke<boolean>('update_supported');
+    const info = await invoke<UpdateInfo | null>('update_check', { endpoint: await endpoint() });
     const checkedAt = Date.now();
     setPrefs({ lastCheck: checkedAt, lastResult: info ? `Version ${info.version} ${info.ready ? 'is ready to install' : 'is available'}` : "You're up to date" });
     send({ type: 'checked', info, checkedAt });
@@ -112,7 +120,7 @@ export function startScheduler(): () => void {
   let stopped = false;
   let first: ReturnType<typeof setTimeout> | undefined;
   let every: ReturnType<typeof setInterval> | undefined;
-  if (isHosted()) updater.status = { kind: 'unsupported', reason: HOSTED_REASON };
+  if (isHosted() && !updatePreview) updater.status = { kind: 'unsupported', reason: HOSTED_REASON };
   else if (!updatePreview && isDesktop()) {
     void (async () => {
       try {

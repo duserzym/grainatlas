@@ -2,7 +2,7 @@
   import { isHosted } from '@lab/bridge';
   import { isDesktop } from '../lib/core/core';
   import { check, download, install, setPrefs, updater, updatePreview } from '../lib/updater.svelte';
-  import { RELEASES_PAGE, type Channel } from '../lib/updates';
+  import { friendlyUpdateError, RELEASES_PAGE, type Channel } from '../lib/updates';
 
   const status = $derived(updater.status);
   const info = $derived('info' in status ? status.info : null);
@@ -13,7 +13,7 @@
     : status.kind === 'downloading' ? `Downloading ${status.info.version}${status.pct === null ? '' : `, ${status.pct}%`}`
     : status.kind === 'ready' ? `Version ${status.info.version} is ready to install`
     : status.kind === 'installing' ? 'Installing and restarting'
-    : status.kind === 'error' ? `Update check failed: ${status.message}`
+    : status.kind === 'error' ? friendlyUpdateError(status.message)
     : status.kind === 'unsupported' ? status.reason
     : 'Checks run automatically in the background.');
 </script>

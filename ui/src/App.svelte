@@ -19,6 +19,7 @@
   import ReplaceDialog from './components/ReplaceDialog.svelte';
   import StoredCopyDialog from './components/StoredCopyDialog.svelte';
   import ThemeSwitch from './components/ThemeSwitch.svelte';
+  import CheckUpdatesButton from './components/CheckUpdatesButton.svelte';
   import { handleShellCommand } from './lib/shellcmd';
   import { editCopy } from './lib/remote';
 
@@ -298,6 +299,7 @@
       {/each}
     </nav>
     <div class="right">
+      <CheckUpdatesButton />
       <ThemeSwitch />
       {#if app.readOnly}
         <button class="primary" onclick={editCopy} title="Make this published project a local, editable one (same project id)" data-testid="edit-copy">Edit a copy</button>
