@@ -57,3 +57,19 @@ Every automatic print layout keeps neighbouring grains together: a grain on
 paper is found by the grains around it. Read "Layout rule: context first" in
 `docs/print_sheets.md` before changing `crates/grainatlas-core/src/layout/`;
 its properties are tested and must not be loosened.
+
+## After a major update
+
+Rust and PyInstaller builds fill the disk quickly. Once the work is pushed and
+any app built from it is installed in `/Applications` and smoke-tested:
+
+1. Note free space (`df -h /`).
+2. Run `make clean-build`. It removes `target/` (native, wasm and Tauri builds, bundles, `target/release-web`). It keeps `ui/dist` (UPb Lab bundles it from here), `ui/src/lib/core/pkg` and `ui/node_modules`. It stops if a build
+   is still writing there, and prints free space before and after.
+3. Remove the worktrees and build checkouts you created for this work
+   (`git worktree remove`, then `git branch -d` for merged branches).
+4. Keep installed apps and review artifacts (screenshots, previews, print
+   files, COMMIT notes in `~/Github/lab-builds`). Never touch another
+   session's worktree, scratchpad or running build, project data or
+   databases.
+5. Report free space before and after.

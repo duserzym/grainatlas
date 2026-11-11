@@ -91,3 +91,12 @@ release-web: ui-build
 	mkdir -p $(RELEASE_DIR)
 	cd ui/dist && COPYFILE_DISABLE=1 tar -czf ../../$(RELEASE_DIR)/$(RELEASE_ASSET) $$(ls -A)
 	cd $(RELEASE_DIR) && $(SHA256) $(RELEASE_ASSET) | tee $(RELEASE_ASSET).sha256
+
+# After a major update (AGENTS.md): drop compilation output once the app is
+# installed. Keeps ui/dist (UPb Lab bundles it), the wasm pkg and node_modules.
+.PHONY: clean-build
+clean-build:
+	@if pgrep -f "$(CURDIR)/target/" >/dev/null; then echo "A build is writing to $(CURDIR)/target; not cleaning."; exit 1; fi
+	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (before)"}'
+	rm -rf ./target
+	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (after)"}'
