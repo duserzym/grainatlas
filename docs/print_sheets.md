@@ -43,9 +43,15 @@ The properties every layout must keep, each checked by a test in
    appears whole in two bands can be spotted twice.
 5. **Cuts go through empty gaps near the line end.** A cluster wider than a
    line (or taller than a page body) is cut. The cut is placed in an empty
-   column (row) within the last 30 % of the line: the one nearest the line end
-   among those at least `min(r, widest gap there)` wide, cut in its middle. A
-   cut crosses a grain only when no empty column exists there; then the grain
+   column (row) within the last 10 % of the line: the one nearest the line end
+   among those at least `min(r, widest gap there)` wide, cut in its middle.
+   Wide clusters are cut along x first, then each piece along y if necessary;
+   height follows the local grains instead of making a sparse full-width slice.
+   A cut keeps `min_group` owners on each side where possible; a short tail
+   moves the search window earlier. On a full line, if the window cannot yield
+   a fitting cut, search the full line before allowing fewer owners on a side.
+   Empty target pieces are never emitted. A cut crosses a grain only when no
+   empty column exists there; then the grain
    belongs to the side holding its centre and that band holds it whole. Each
    piece is only as tall as the grains it owns. Why: an empty gap is a place
    where the operator expects the pattern to stop; a gap near the line end and
@@ -57,7 +63,9 @@ The properties every layout must keep, each checked by a test in
    needs it, from the other side, under a thin black and white diagonal hatch
    with "repeated" written along it. Its registration lists the grains in the strip as
    `context`, not as its own. The hatch never covers a grain the band owns, and the
-   strip keeps its own tone (a white veil read as an odd bright panel). Why:
+   strip keeps its own tone (a white veil read as an odd bright panel). When
+   fitting a piece to its owners clips a context grain at an adjacent edge,
+   that visible fragment is also marked and registered as repeated. Why:
    the grains at the cut keep their neighbours on both lines, and no grain is
    counted or spotted twice. A wider strip (`c / 2`) showed whole large grains
    twice and cost 16 % of every line on mount L.
@@ -78,6 +86,20 @@ The properties every layout must keep, each checked by a test in
     mosaic); bands of different areas and samples may share a line, each with
     its label. Grains near an area edge owned by the neighbouring area keep only
     the neighbours in that area's mosaic.
+11. **Strays stay off the paper.** After rectangle merging and the orphan merge
+    (7), a cluster owning fewer than `min_cluster_grains` grains (default 5)
+    gets no band, unless it is tied for the largest cluster in its area. Setting
+    this parameter to 0 disables the rule. Why: a panel for a lone off-row
+    detection costs a sheet line and is not a dating target. The grain stays in
+    the project and can be spotted in the app. Registration lists each omitted
+    grain under `strays`, with its area, id, number, diameter, centroid and box
+    in mosaic µm. Image content inside another band's rectangle is preserved;
+    a stray is never registered as a target. The header and stats count strays
+    separately, and per-area grain counts include only printed targets. Keeping
+    the largest clusters, including ties, protects areas with only a few grains.
+    The threshold 5 removes the separate 1 to 3 detection groups on both Sandbox
+    mounts and S's four-detection off-row group after orphan merging, without
+    applying an increasing cutoff to densely populated areas.
 
 The layout reports `isolated`: printed grains with fewer than two other grains
 of their area visible in the band that owns them. It is shown in the sheet
@@ -358,7 +380,11 @@ sizes ([print scale](#layout-rule-print-scale)). Only grains are
 printed: artifacts and duplicates are left off, and the stats count both. A print
 check (`audit`) counts grains missing from an owner band or not whole in it,
 grains owned by more than one band, and whole visible grains absent from both
-ownership and context (all three must be 0). Samples are ordered top of the
+ownership and context. It also counts `bands_outside_body`, using the recorded
+`body_rect_mm` in sheet coordinates, including the repeated strips and pixel
+rounding (all four counts must be 0). An individual grain that cannot fit at the
+requested fixed scale remains whole and triggers this audit; change scale or
+paper before printing such a result. Samples are ordered top of the
 mount first; areas retain their sample's order. Bands of different areas and
 samples may share a line, each with its label.
 
@@ -366,21 +392,26 @@ The layout follows [context first](#layout-rule-context-first): printed grains
 form 2-D clusters through box gaps of at most `context_um` (0 uses the larger
 of three reference grain sizes and `gap_break_um`). Intersecting padded cluster
 rectangles merge until stable. Groups smaller than `min_group` (default 3)
-join the nearest cluster when their union fits a full line. Clusters follow the
-mosaic's long axis and stay whole whenever they fit a full line, even when that
-spends a new line. Empty stretches between clusters become breaks marked "//"
-with their length. Bands of the same area on one line share one sample/area
+join the nearest cluster when their union fits a full line or adds at most one
+line to an already oversized cluster. Remaining clusters smaller than
+`min_cluster_grains` (default 5) are strays, except those tied for largest in
+their area. Clusters follow the mosaic's long axis and stay whole whenever they fit a full line, even when that
+spends a new line. Short remainders can share a line with the next cluster or
+cut piece, including the next area; a height cut does not force a new line when
+its final piece leaves enough width. Empty stretches between clusters become
+breaks marked "//" with their length. Bands of the same area on one line share one sample/area
 label, with no grain numbers.
 
-Oversized clusters are cut vertically first, then horizontally, in the nearest
-empty gap at least `min(r, widest gap)` wide in the final 30 % before the
-available line ends. When no empty gap is available, a cut crosses the fewest
-boxes and assigns each grain by its centroid, extending its owner's rectangle
+Oversized clusters are cut along x first, then along y only where each width
+piece still needs it, in the nearest empty gap at least `min(r, widest gap)`
+wide in the final 10 % before the available line ends. When no empty gap is
+available, a cut crosses the fewest boxes and assigns each grain by its centroid, extending its owner's rectangle
 to hold the whole box. A cluster with at least `2 * min_group` grains keeps at
-least `min_group` owned grains in every piece. A small head spends a new line;
-a small tail moves the cut earlier, searching backwards from the position that
-leaves `min_group` grains, within 30 % of a full line. Smaller clusters retain
-their usual cuts.
+least `min_group` owned grains in every piece whenever a fitting cut permits it.
+A small head spends a new line; a small tail moves the cut earlier, searching backwards from the position that
+leaves `min_group` grains, within 10 % of a full line. If a full line still
+cannot be cut, search the whole line, then allow a smaller group rather than
+sending the band beyond the paper. Smaller clusters retain their usual cuts.
 
 Each side repeats `overlap_um` beyond the cut (0 uses `max(r, c / 3)`), included
 in the space needed on paper. If that strip holds no part of a grain box, it
@@ -392,7 +423,13 @@ other bands' visible `context`, and records mosaic strip rectangles in
 `repeated_um`. `row` is the area's 1-based cluster number in reading order;
 all bands cut from that cluster keep that number. Stats include `clusters`,
 `cuts` and `isolated` (owned grains with fewer than two other printed box centres
-of the same area in their band), alongside the three audit counts.
+of the same area in their band), `strays` and the four audit counts.
+`fill.band_area` is band image area divided by the available body area across
+all sheets; `fill.line_width` is the mean sum of band image widths on a line
+divided by body width. Labels, line gaps and inter-band gaps are excluded from
+the numerator. The body is recorded in registration as `body_rect_mm`; it
+starts at the existing header clearance and ends before the footer. A failing
+bounds audit can inflate fill, so check the audit before interpreting it.
 
 Every band carries a 100 µm (or 50 µm) scale bar inside its owned part, left of
 any right-hand repeated strip, and corner ticks. The header has the instrument

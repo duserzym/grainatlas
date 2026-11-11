@@ -865,17 +865,22 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         )?;
         let s = &r.stats;
         eprintln!(
-            "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice) in {:.0} ms",
+            "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, {} strays left off; fill: {:.1}% band area, {:.1}% line width; background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice, {} unmarked, {} bands outside body) in {:.0} ms",
             s.sheets,
             s.bands,
             s.grains,
             s.duplicates,
             s.artifacts,
             s.filtered,
+            s.strays,
+            s.fill.band_area * 100.0,
+            s.fill.line_width * 100.0,
             s.stripped,
             s.strip_refused,
             s.grains_cut,
             s.grains_twice,
+            s.grains_unmarked,
+            s.bands_outside_body,
             clock() - t
         );
         let ui = project
@@ -1017,17 +1022,22 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
     }
     let s = &r.stats;
     eprintln!(
-        "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice) in {:.0} ms",
+        "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, {} strays left off; fill: {:.1}% band area, {:.1}% line width; background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice, {} unmarked, {} bands outside body) in {:.0} ms",
         s.sheets,
         s.bands,
         s.grains,
         s.duplicates,
         s.artifacts,
         s.filtered,
+        s.strays,
+        s.fill.band_area * 100.0,
+        s.fill.line_width * 100.0,
         s.stripped,
         s.strip_refused,
         s.grains_cut,
         s.grains_twice,
+        s.grains_unmarked,
+        s.bands_outside_body,
         start.elapsed().as_secs_f64() * 1000.0
     );
     Ok(())

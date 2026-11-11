@@ -314,6 +314,8 @@ export interface SheetParams {
   gap_break_um: number;
   context_um: number;
   min_group: number;
+  /** Omit smaller post-merge clusters, preserving the area's largest; 0 disables. */
+  min_cluster_grains: number;
   overlap_um: number;
   min_grain_um: number;
   max_grain_um: number;
@@ -355,10 +357,12 @@ export interface PrintRegistration {
   spot_sizes_left_off_um?: number[];
   sheet_origin: string;
   mapping: string;
+  body_rect_mm: [number, number, number, number];
+  strays: { area: string; id: string; number: number; eq_diameter_um: number; centroid_um: [number, number]; bbox_um: [number, number, number, number] }[];
   bands: BandRecord[];
 }
 
-export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; clusters: number }
+export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; clusters: number; strays: number; bands_outside_body: number; fill: { band_area: number; line_width: number } }
 
 /** One detection and the area that owns the grain. */
 export interface GrainOwner {
