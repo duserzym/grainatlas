@@ -24,6 +24,8 @@ export interface RecentEntry {
   name: string;
   /** Saved project location; absent for packages opened alone. */
   path?: string;
+  /** Package folder, for packages opened alone (entries from before 2026-11-11 lack it). */
+  package_path?: string;
   when: string;
   areas: number;
   spots: number;

@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 mod geometry;
 mod memory;
 mod profile;
+mod recent;
 mod updater;
 use tauri_plugin_dialog::DialogExt;
 
@@ -718,6 +719,8 @@ pub fn run() {
             updater::update_status,
             updater::update_supported,
             startup,
+            recent::path_status,
+            recent::project_counts,
             open_path,
             open_paths,
             open_loose,
