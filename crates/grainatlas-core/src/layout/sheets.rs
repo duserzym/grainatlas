@@ -56,6 +56,10 @@ pub struct SheetParams {
     pub min_cluster_grains: usize,
     /// Repeated strip beyond a cut (um); 0 = max(reference grain size, context distance / 3).
     pub overlap_um: f64,
+    /// Minimum owners on either side of a cut; 0 uses min_cluster_grains.
+    pub min_cut_grains: usize,
+    /// Maximum union of repeated strips / band area on either side of a cut.
+    pub max_repeated_fraction: f64,
     /// Grains smaller than this (eq. diameter, um) are left off the sheets (debris).
     pub min_grain_um: f64,
     /// Grains larger than this are left off; 0 = no limit.
@@ -89,6 +93,8 @@ impl Default for SheetParams {
             min_group: 3,
             min_cluster_grains: 5,
             overlap_um: 0.0,
+            min_cut_grains: 0,
+            max_repeated_fraction: 1.0 / 3.0,
             min_grain_um: 35.0,
             max_grain_um: 0.0,
             spot_sizes_um: vec![15.0, 20.0, 25.0, 30.0, 35.0, 50.0],
@@ -363,6 +369,9 @@ pub struct BandRecord {
     /// Repeated strip rectangles in mosaic um.
     #[serde(default)]
     pub repeated_um: Vec<[f64; 4]>,
+    /// Cuts inherited by this band, in order (width, height_line, height_sheet).
+    #[serde(default)]
+    pub cut_sources: Vec<String>,
     /// x0, y0, x1, y1 on the sheet (mm, top-left origin, y down).
     pub sheet_rect_mm: [f64; 4],
     /// x0, y0, x1, y1 in the area's mosaic (um).
@@ -403,6 +412,10 @@ pub struct SheetStats {
     pub strip_refused: usize,
     pub isolated: usize,
     pub cuts: usize,
+    /// Necessary cuts for which neither direction could keep both panels worthwhile.
+    pub forced_cuts: usize,
+    /// Largest union of repeated strip area / band area.
+    pub worst_repeated_fraction: f64,
     pub clusters: usize,
     pub strays: usize,
     /// Band image area / available body area, and mean occupied line width / body width.
@@ -426,6 +439,8 @@ pub struct SheetStats {
 pub struct SheetFill {
     pub band_area: f64,
     pub line_width: f64,
+    /// Union of repeated strip area / band image area, over all bands.
+    pub repeated: f64,
     /// Fraction of band image area in rows farther than pad_um from any visible printed grain box.
     pub empty_epoxy: f64,
 }
@@ -541,6 +556,7 @@ struct Piece<'g> {
     /// Partition before extending across cuts. Its internal edges are cut positions.
     core: [f64; 4],
     cuts: Vec<(usize, f64)>,
+    cut_sources: Vec<String>,
     gap_after_um: Option<f64>,
 }
 
@@ -720,6 +736,9 @@ struct CutContext<'a, 'g> {
     overlap: f64,
     pad: f64,
     min_group: usize,
+    optional_min_group: usize,
+    source: &'static str,
+    max_repeated_fraction: f64,
     grains: &'a [&'g Grain],
 }
 
@@ -795,32 +814,87 @@ fn split_at<'g>(q: &Piece<'g>, d: usize, at: f64, cut: &CutContext, img: &AreaIm
     rc[d] = at;
     let mut cuts = q.cuts.clone();
     cuts.push((d, at));
-    Some((Piece { grains: left, x: 0.0, rect: lr, core: lc, cuts: cuts.clone(), gap_after_um: None }, Piece { grains: right, x: 0.0, rect: rr, core: rc, cuts, gap_after_um: None }))
+    let mut cut_sources = q.cut_sources.clone();
+    cut_sources.push(cut.source.into());
+    Some((Piece { grains: left, x: 0.0, rect: lr, core: lc, cuts: cuts.clone(), cut_sources: cut_sources.clone(), gap_after_um: None }, Piece { grains: right, x: 0.0, rect: rr, core: rc, cuts, cut_sources, gap_after_um: None }))
 }
 
-/// Prefer the final 10 % of the line. On a full line, widen the search before
-/// relaxing minimum ownership: a small slice still must fit the paper.
-/// Whole boxes, repeated context and outward pixel snapping are never relaxed.
-fn cut_piece<'g>(q: &Piece<'g>, d: usize, capacity: f64, full: f64, cut: &CutContext, img: &AreaImage) -> Option<(Piece<'g>, Piece<'g>)> {
-    if let Some(parts) = cut_in_window(q, d, capacity, full, cut, img, 0.1) {
-        return Some(parts);
-    }
+/// Prefer a gap near the line end, then search the full line. A cut to use
+/// spare paper is optional. A necessary cut tries the other axis before
+/// minimising the worst panel's ownership deficit and excess repeated fraction.
+/// Whole boxes, marked context and outward pixel snapping are never relaxed.
+fn cut_piece<'g>(q: &Piece<'g>, d: usize, capacity: f64, full: f64, other_full: f64, cut: &CutContext, img: &AreaImage) -> Option<(Piece<'g>, Piece<'g>, bool)> {
+    // Propose the usual gap cut before testing panel worth. A rejected spare-
+    // paper cut moves the whole piece, rather than carving a different slice.
     if capacity < full - 1e-7 {
-        return None;
+        let proposal = CutContext { min_group: cut.optional_min_group, max_repeated_fraction: f64::INFINITY, ..*cut };
+        let parts = cut_in_window(q, d, capacity, full, &proposal, img, CutSearch { window: 0.1, forced: false, other_limit: f64::INFINITY })?;
+        return (cut_penalty(&parts, cut) <= 1e-12).then_some((parts.0, parts.1, false));
     }
-    if let Some(parts) = cut_in_window(q, d, capacity, full, cut, img, 1.0) {
-        return Some(parts);
+    for window in [0.1, 1.0] {
+        if let Some((a, b)) = cut_in_window(q, d, capacity, full, cut, img, CutSearch { window, forced: false, other_limit: f64::INFINITY }) {
+            return Some((a, b, false));
+        }
     }
-    let relaxed = CutContext { min_group: 0, ..*cut };
-    cut_in_window(q, d, capacity, full, &relaxed, img, 1.0)
+    let other = CutContext { source: if d == 0 { "height_line" } else { "width" }, ..*cut };
+    for window in [0.1, 1.0] {
+        if let Some((a, b)) = cut_in_window(q, 1 - d, other_full, other_full, &other, img, CutSearch { window, forced: false, other_limit: full }) {
+            return Some((a, b, false));
+        }
+    }
+    let primary = cut_in_window(q, d, capacity, full, cut, img, CutSearch { window: 1.0, forced: true, other_limit: f64::INFINITY });
+    let alternate = cut_in_window(q, 1 - d, other_full, other_full, &other, img, CutSearch { window: 1.0, forced: true, other_limit: full });
+    [primary, alternate].into_iter().flatten()
+        .min_by(|a, b| cut_penalty(a, cut).total_cmp(&cut_penalty(b, cut)))
+        .map(|(a, b)| (a, b, true))
 }
 
-fn cut_in_window<'g>(q: &Piece<'g>, d: usize, capacity: f64, full: f64, cut: &CutContext, img: &AreaImage, window: f64) -> Option<(Piece<'g>, Piece<'g>)> {
+fn repeated_fraction(q: &Piece, cut: &CutContext) -> f64 {
+    rect_union_area(&q.repeated(cut.grains, cut.pad)) / rect_area(q.rect)
+}
+
+fn cut_penalty(parts: &(Piece, Piece), cut: &CutContext) -> f64 {
+    [&parts.0, &parts.1].into_iter().map(|q| {
+        let missing = cut.min_group.saturating_sub(q.grains.len()) as f64 / cut.min_group.max(1) as f64;
+        missing + (repeated_fraction(q, cut) - cut.max_repeated_fraction).max(0.0)
+    }).fold(0.0, f64::max)
+}
+
+fn rect_area(r: [f64; 4]) -> f64 {
+    (r[2] - r[0]) * (r[3] - r[1])
+}
+
+/// Exact rectangle union: intersections of inherited x/y strips count once.
+fn rect_union_area(rects: &[[f64; 4]]) -> f64 {
+    let mut xs: Vec<_> = rects.iter().flat_map(|r| [r[0], r[2]]).collect();
+    xs.sort_by(f64::total_cmp);
+    xs.dedup();
+    xs.windows(2).map(|x| {
+        let mut ys: Vec<_> = rects.iter().filter(|r| r[0] < x[1] && r[2] > x[0]).map(|r| (r[1], r[3])).collect();
+        ys.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut end = f64::NEG_INFINITY;
+        let mut height = 0.0;
+        for (a, b) in ys {
+            height += (b - a.max(end)).max(0.0);
+            end = end.max(b);
+        }
+        (x[1] - x[0]) * height
+    }).sum()
+}
+
+struct CutSearch {
+    window: f64,
+    forced: bool,
+    other_limit: f64,
+}
+
+fn cut_in_window<'g>(q: &Piece<'g>, d: usize, capacity: f64, full: f64, cut: &CutContext, img: &AreaImage, search: CutSearch) -> Option<(Piece<'g>, Piece<'g>)> {
+    let CutSearch { window, forced, other_limit } = search;
     let limit = q.rect[d] + capacity;
     let mut hi = limit.min(q.core[d + 2]);
     let mut window_end = limit;
     let mut feasible_hi = ((limit / img.um_per_px).floor() * img.um_per_px - cut.overlap).min(hi);
-    if cut.min_group > 0 {
+    if !forced && cut.min_group > 0 {
         if q.grains.len() < 2 * cut.min_group {
             return None;
         }
@@ -858,22 +932,23 @@ fn cut_in_window<'g>(q: &Piece<'g>, d: usize, capacity: f64, full: f64, cut: &Cu
     gaps.sort_by(|a, b| (b.0 + b.1).total_cmp(&(a.0 + a.1)));
     let fits = |at| {
         let (a, b) = split_at(q, d, at, cut, img)?;
-        (!a.grains.is_empty() && !b.grains.is_empty() && a.rect[d + 2] - a.rect[d] <= capacity + 1e-7).then_some((a, b))
+        (!a.grains.is_empty() && !b.grains.is_empty() && a.rect[d + 2] - a.rect[d] <= capacity + 1e-7 && a.rect[3 - d] - a.rect[1 - d] <= other_limit + 1e-7).then_some((a, b))
     };
-    let grouped = |(a, b): &(Piece, Piece)| a.grains.len() >= cut.min_group && b.grains.len() >= cut.min_group;
+    let mut best = None;
+    let grouped = |parts: &(Piece, Piece)| cut_penalty(parts, cut) <= 1e-12;
     for (a, b) in gaps {
         let at = (a + b) / 2.0;
         if at <= feasible_hi
             && let Some(parts) = fits(at)
         {
-            // A small head spends a new line rather than falling back to a
-            // different cut just to fill the remaining line width. At full
-            // width, continue searching for a cut that keeps both groups.
             if capacity < full && parts.0.grains.len() < cut.min_group {
                 return None;
             }
-            if grouped(&parts) {
+            if !forced && grouped(&parts) {
                 return Some(parts);
+            }
+            if forced && best.as_ref().is_none_or(|b| cut_penalty(&parts, cut) < cut_penalty(b, cut)) {
+                best = Some(parts);
             }
         }
     }
@@ -891,12 +966,15 @@ fn cut_in_window<'g>(q: &Piece<'g>, d: usize, capacity: f64, full: f64, cut: &Cu
             if capacity < full && parts.0.grains.len() < cut.min_group {
                 return None;
             }
-            if grouped(&parts) {
+            if !forced && grouped(&parts) {
                 return Some(parts);
+            }
+            if forced && best.as_ref().is_none_or(|b| cut_penalty(&parts, cut) < cut_penalty(b, cut)) {
+                best = Some(parts);
             }
         }
     }
-    None
+    best
 }
 
 fn area_short(rec: &AreaRecord) -> String {
@@ -1018,9 +1096,10 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
             for (ri, cluster) in clusters.into_iter().enumerate() {
                 // Prefer this ownership bound through both axes; the full-line
                 // fallback relaxes it only if no fitting grouped cut exists.
-                let min_group = if cluster.grains.len() >= 2 * p.min_group { p.min_group } else { 0 };
-                let cut = CutContext { r, c, overlap, pad: p.pad_um, min_group, grains: &printed[ai] };
-                let initial = Piece { grains: cluster.grains, x: 0.0, rect: cluster.rect, core: cluster.rect, cuts: Vec::new(), gap_after_um: None };
+                let optional_min_group = if cluster.grains.len() >= 2 * p.min_group { p.min_group } else { 0 };
+                let min_group = optional_min_group.max(if p.min_cut_grains == 0 { p.min_cluster_grains } else { p.min_cut_grains });
+                let cut = CutContext { r, c, overlap, pad: p.pad_um, min_group, optional_min_group, source: "width", max_repeated_fraction: p.max_repeated_fraction, grains: &printed[ai] };
+                let initial = Piece { grains: cluster.grains, x: 0.0, rect: cluster.rect, core: cluster.rect, cuts: Vec::new(), cut_sources: Vec::new(), gap_after_um: None };
                 // Cut wide clusters first: each width piece can then keep its
                 // own height, without making a full-width sparse bottom slice.
                 let mut cont = false;
@@ -1034,15 +1113,16 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                         finish_line(&mut cur, &mut pg, &mut ph, k);
                         start = 0.0;
                     }
-                    let parts = if rest.w(k) > body_w - start { cut_piece(&rest, 0, (body_w - start) * k, body_w * k, &cut, img) } else { None };
+                    let parts = if rest.w(k) > body_w - start { cut_piece(&rest, 0, (body_w - start) * k, body_w * k, (body_h(pages.len()) - LABEL_MM - NOTE_MM) * k, &cut, img) } else { None };
                     if parts.is_none() && start > 0.0 && rest.w(k) > body_w - start {
                         finish_line(&mut cur, &mut pg, &mut ph, k);
                         lx = 0.0;
                         continue;
                     }
                     let (mut q, next) = match parts {
-                        Some((left, right)) => {
+                        Some((left, right, forced)) => {
                             stats.cuts += 1;
+                            stats.forced_cuts += usize::from(forced);
                             (left, Some(right))
                         }
                         // An individual grain can exceed the fixed-scale
@@ -1062,9 +1142,10 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                             // Whole clusters which fit an empty body spend a
                             // sheet. Already cut clusters may use the remainder.
                             let parts = if q.h(k) > full || !q.cuts.is_empty() {
-                                cut_piece(&q, 1, available * k, full * k, &cut, img)
+                                cut_piece(&q, 1, available * k, full * k, body_w * k, &CutContext { source: if available < full { "height_sheet" } else { "height_line" }, ..cut }, img)
                             } else { None };
-                            if let Some((top, bottom)) = parts {
+                            if let Some((top, bottom, forced)) = parts {
+                                stats.forced_cuts += usize::from(forced);
                                 q = top;
                                 tail = Some(bottom);
                                 stats.cuts += 1;
@@ -1295,6 +1376,7 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                         sheet_rect_mm: [px, iy, px + pw, iy + ph],
                         mosaic_rect_um: q.rect,
                         repeated_um: repeated,
+                        cut_sources: q.cut_sources.clone(),
                         context,
                         background: bg.clone(),
                     });
@@ -1333,6 +1415,12 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     if image_area > 0.0 {
         stats.fill.empty_epoxy = stats.height_budget.iter().map(|b| b.empty_epoxy_mm2).sum::<f64>() / image_area;
     }
+    let total_band_area = reg.bands.iter().map(|b| rect_area(b.mosaic_rect_um)).sum::<f64>();
+    let repeated: Vec<_> = reg.bands.iter().map(|b| rect_union_area(&b.repeated_um)).collect();
+    if total_band_area > 0.0 {
+        stats.fill.repeated = repeated.iter().sum::<f64>() / total_band_area;
+    }
+    stats.worst_repeated_fraction = reg.bands.iter().zip(repeated).map(|(b, area)| area / rect_area(b.mosaic_rect_um)).fold(0.0, f64::max);
     let check = audit(&reg, &printed, areas);
     stats.grains_cut = check.cut;
     stats.grains_twice = check.twice;

@@ -50,6 +50,22 @@ The properties every layout must keep, each checked by a test in
    A cut keeps `min_group` owners on each side where possible; a short tail
    moves the search window earlier. On a full line, if the window cannot yield
    a fitting cut, search the full line before allowing fewer owners on a side.
+   Both children must be worth a panel: each owns at least `min_cut_grains`
+   grains (0 uses `min_cluster_grains`, default 5), and its repeated strips
+   cover at most `max_repeated_fraction` (default one third) of its image area.
+   Strip intersections count once, including inherited seams and clipped
+   context fragments. The existing `min_group` bound also applies where
+   possible. An optional cut to fill a partly used line or sheet is rejected
+   when either child fails; the piece moves whole to the next line or sheet,
+   without searching for a different spare-paper slice.
+   For a cut needed to fit an empty body, try other positions in the window,
+   then the whole line, then the other direction before forcing a cut. Among
+   fitting candidates, a forced cut minimises the worse child's sum of missing
+   owner fraction and excess repeated fraction; ties keep the gap/crossing
+   preference and primary direction. Stats count these as `forced_cuts`.
+   Whole owners and marked repeated strips are never relaxed. These defaults
+   reject Sandbox M's 6-owner, 41 % repeated tail and S's 3-owner remainder,
+   spending paper to keep their rows together.
    Empty target pieces are never emitted. A cut crosses a grain only when no
    empty column exists there; then the grain
    belongs to the side holding its centre and that band holds it whole. Each
@@ -410,7 +426,8 @@ spends a new line. Short remainders can share a line with the next cluster or
 cut piece, including the next area; a height cut does not force a new line when
 its final piece leaves enough width. Lines use the actual remaining height of
 the current sheet. A cut cluster may also take a height cut near that remaining
-line end, using the same gap, ownership and repeated-strip rules (5, 6). A
+line end, only when both panels pass the owner-count and repeated-area limits
+(5, 6). Otherwise it moves whole to the next sheet. A
 whole cluster which fits an empty body spends a new sheet instead of being cut
 to fill a partly used one. Areas and pieces retain their reading order. Empty stretches between clusters become
 breaks marked "//" with their length. Bands of the same area on one line share one sample/area
@@ -424,8 +441,12 @@ to hold the whole box. A cluster with at least `2 * min_group` grains keeps at
 least `min_group` owned grains in every piece whenever a fitting cut permits it.
 A small head spends a new line; a small tail moves the cut earlier, searching backwards from the position that
 leaves `min_group` grains, within 10 % of a full line. If a full line still
-cannot be cut, search the whole line, then allow a smaller group rather than
-sending the band beyond the paper. Smaller clusters retain their usual cuts.
+cannot be cut, search the whole line, then try the other direction before
+forcing the least costly fitting cut rather than sending the band beyond the
+paper. Small clusters also pass the
+panel-worth check; when a cut is unavoidable the forced-cut rule applies.
+Height cuts use the same empty-gap preference as width cuts, favouring gaps
+between grain rows before positions through a row.
 
 Each side repeats `overlap_um` beyond the cut (0 uses `max(r, c / 3)`), included
 in the space needed on paper. If that strip holds no part of a grain box, it
@@ -462,6 +483,14 @@ printed grain box in that band. It excludes strays and artifacts, and includes
 owned and repeated context targets. This row measure identifies tall empty
 strips; it does not claim to measure every background pixel between grains.
 `fill.empty_epoxy` divides that area by total band image area.
+`fill.repeated` divides the sum of each band's `repeated_um` rectangle union
+by the sum of band areas; `worst_repeated_fraction` is the largest individual
+band fraction. These use the registered strips (before the drawing mask
+clears owned grain boxes), with intersections counted once. `cut_sources` in
+each band lists its inherited cuts in order: `width`, `height_line` (an empty
+body), or `height_sheet` (the remaining body). A forced cut is included in
+`cuts` and also counted in `forced_cuts`. Older JSON defaults the new stats to 0
+and cut provenance to an empty list.
 
 Every band carries a 100 µm (or 50 µm) scale bar inside its owned part, left of
 any right-hand repeated strip, and corner ticks. The header has the instrument
