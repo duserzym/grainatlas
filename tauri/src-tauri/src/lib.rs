@@ -14,6 +14,21 @@ use serde::Serialize;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
+const QUIT_REQUESTED: &str = "grainatlas://quit-requested";
+
+#[derive(Default)]
+struct QuitGuardReady(AtomicBool);
+
+#[tauri::command]
+fn enable_quit_guard(ready: State<'_, QuitGuardReady>) {
+    ready.0.store(true, Ordering::Release);
+}
+
+#[tauri::command]
+fn finish_quit(app: AppHandle) {
+    app.exit(0);
+}
+
 mod geometry;
 mod memory;
 mod profile;
@@ -802,7 +817,11 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     #[cfg(target_os = "macos")]
     {
         let about = PredefinedMenuItem::about(app, None, Some(AboutMetadata::default()))?;
-        let appm = SubmenuBuilder::new(app, "grainatlas").item(&about).separator().services().separator().hide().hide_others().show_all().separator().quit().build()?;
+        // The platform's predefined Quit can skip the window's close request.
+        let quit = MenuItemBuilder::with_id("quit-app", "Quit GrainAtlas")
+            .accelerator("CmdOrCtrl+Q")
+            .build(app)?;
+        let appm = SubmenuBuilder::new(app, "grainatlas").item(&about).separator().services().separator().hide().hide_others().show_all().separator().item(&quit).build()?;
         m = m.item(&appm);
     }
     #[cfg(not(target_os = "macos"))]
@@ -820,7 +839,7 @@ pub fn run() {
             "new-tab" | "close-tab" => {
                 let _ = app.emit("grainatlas://menu", ev.id().as_ref());
             }
-            "close-window" => {
+            "close-window" | "quit-app" => {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.close();
                 }
@@ -845,10 +864,26 @@ pub fn run() {
             if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::CloseRequested { .. }) {
                 geometry::save(window);
             }
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main"
+                    && window.state::<QuitGuardReady>().0.load(Ordering::Acquire)
+                    && window.emit_to("main", QUIT_REQUESTED, ()).is_ok()
+                {
+                    api.prevent_close();
+                }
+            }
         })
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
+                webview.state::<QuitGuardReady>().0.store(false, Ordering::Release);
+            }
+        })
+        .manage(QuitGuardReady::default())
         .manage(AppState::default())
         .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            enable_quit_guard,
+            finish_quit,
             updater::update_check,
             updater::update_download,
             updater::update_install,

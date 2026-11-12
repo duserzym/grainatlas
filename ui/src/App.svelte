@@ -14,6 +14,7 @@
   import Settings from './screens/Settings.svelte';
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
+  import QuitDialog from './components/QuitDialog.svelte';
   import CheckDialog from './components/CheckDialog.svelte';
   import RenameDialog from './components/RenameDialog.svelte';
   import ReplaceDialog from './components/ReplaceDialog.svelte';
@@ -179,11 +180,78 @@
     }
   }
 
+  let quitState = $state<'idle' | 'prompt' | 'saving' | 'exiting'>('idle');
+  const unsavedTabs = $derived(tabs.list.filter((tab) => tab.dirty && !tab.readOnly));
+
+  async function finishQuit() {
+    quitState = 'exiting';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('finish_quit');
+    } catch (e) {
+      quitState = 'idle';
+      app.error = `Could not quit: ${e instanceof Error ? e.message : e}`;
+    }
+  }
+
+  function requestQuit() {
+    if (quitState !== 'idle') return;
+    if (unsavedTabs.length) quitState = 'prompt';
+    else void finishQuit();
+  }
+
+  async function answerQuit(answer: 'save' | 'discard' | 'cancel') {
+    if (quitState !== 'prompt') return;
+    if (answer === 'cancel') {
+      quitState = 'idle';
+      return;
+    }
+    if (answer === 'discard') {
+      await finishQuit();
+      return;
+    }
+
+    quitState = 'saving';
+    const previous = tabs.activeId;
+    try {
+      for (const tab of [...unsavedTabs]) {
+        if (!tab.dirty) continue;
+        // Save can show the project's checks dialog before writing.
+        tabs.select(tab.id);
+        await saveProject(tab);
+        if (tab.dirty) {
+          if (!tab.error) tab.notice = 'Project was not saved. GrainAtlas is still open.';
+          return;
+        }
+      }
+      if (unsavedTabs.length) {
+        quitState = 'prompt';
+        return;
+      }
+      await finishQuit();
+    } catch (e) {
+      app.error = `Could not save: ${e instanceof Error ? e.message : e}`;
+    } finally {
+      if (quitState === 'saving') quitState = 'idle';
+      else if (quitState === 'prompt') tabs.select(previous);
+    }
+  }
+
   onMount(() => {
     const unwatch = watchTheme();
     const undo: (() => void)[] = [];
     undo.push(startScheduler());
     if (desktop) {
+      if (!isHosted()) {
+        void (async () => {
+          const { listen } = await import('@tauri-apps/api/event');
+          const { invoke } = await import('@tauri-apps/api/core');
+          undo.push(await listen('grainatlas://quit-requested', requestQuit));
+          await invoke('enable_quit_guard');
+        })().catch((e) => {
+          app.error = `Could not enable unsaved changes warnings: ${e instanceof Error ? e.message : e}`;
+        });
+      }
       void startup();
       // Dropped folders and files arrive as paths: a new tab unless this one is empty.
       void import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
@@ -225,7 +293,7 @@
     // Ctrl/Cmd 1-4, Ctrl/Cmd , and Ctrl/Cmd R belong to UPb Lab's menu when
     // hosted (bridge README): grainatlas binds Alt 1-5 and Ctrl/Cmd S only.
     const key = (e: KeyboardEvent) => {
-      if (app.checkPrompt || app.renamePrompt) return;
+      if (quitState !== 'idle' || app.checkPrompt || app.renamePrompt) return;
       const mod = e.metaKey || e.ctrlKey;
       if (tabKeys && mod && !e.altKey) {
         const k = e.key.toLowerCase();
@@ -335,6 +403,9 @@
     {/if}
   </main>
 
+  {#if quitState === 'prompt'}
+    <QuitDialog titles={unsavedTabs.map((tab) => tab.title)} answer={answerQuit} />
+  {/if}
   {#if app.checkPrompt}<CheckDialog />{/if}
   {#if app.renamePrompt}<RenameDialog />{/if}
   {#if app.offer}<ReplaceDialog />{/if}
