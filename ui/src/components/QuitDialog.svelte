@@ -11,7 +11,27 @@
   onMount(() => {
     dialog.showModal();
     cancel.focus();
-    return () => dialog.close();
+    // Opened from the window's close button, the focus may not be in the page yet: keys then
+    // reach the window, not the dialog. While it is open, Escape cancels and no key reaches
+    // the screens behind it (the canvas cleared its selection on that Escape).
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        answer('cancel');
+      } else if (!dialog.contains(e.target as Node)) {
+        e.stopImmediatePropagation();
+        if (e.key === 'Tab' || e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          cancel.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', key, true);
+    return () => {
+      window.removeEventListener('keydown', key, true);
+      dialog.close();
+    };
   });
 </script>
 

@@ -1323,10 +1323,18 @@
     }
   }
 
+  /** A run of size steps on the same spots (arrow keys, −/+) is one undo step. */
+  let lastDiameter: { ids: string; d: number; at: number } | null = null;
   function setDiameter(d: number) {
     app.diameter = d;
     if (selSpots.length) {
-      app.checkpoint();
+      const ids = selSpots.map((s) => s.id).join(' ');
+      const now = performance.now();
+      // Only while nothing changed them since the last step (an undo in between starts a new step).
+      const run = lastDiameter && lastDiameter.ids === ids && now - lastDiameter.at < 2000 && selSpots.every((s) => s.diameter_um === lastDiameter!.d);
+      if (run) app.persist();
+      else app.checkpoint();
+      lastDiameter = { ids, d, at: now };
       app.spots = app.spots.map((s) => (s.area_id === areaId && app.selection.includes(s.id) ? { ...s, diameter_um: d } : s));
     }
   }
