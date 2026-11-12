@@ -6,7 +6,7 @@ Worker) and as a desktop app (Tauri 2, native and multithreaded) behind the
 same Svelte interface. Nothing leaves your computer: packages are read
 in place. Companion to [laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
 
-![grainatlas: CL zircon grains outlined on the canvas, with spots named sample-n](docs/images/07-dark.webp)
+![grainatlas: CL zircon grains outlined on the canvas, with spots named sample_n](docs/images/07-dark.webp)
 
 ## Workflow
 
@@ -63,7 +63,7 @@ You decide what a grain is.
 With the **Spot** tool (S), click a grain to place a laser spot. The size box
 (toolbar and the side panel's **Spot entry**) sets the diameter: arrows step
 1 µm (⇧ 5, ⌥ 0.5), typed values such as 40.5 are kept, keys 1–6 pick a preset.
-Spots are named from a pattern, `{sample}-{n}` by default. Within a working
+Spots are named from a pattern, `{sample}_{n}` by default. Within a working
 session `n` counts up across samples and areas, like an instrument run number;
 Spot entry shows the next name and warns when it is already used. Type **Next
 n** to start anywhere, or tick "restart at 1 for each sample". Drag a spot to
@@ -76,7 +76,7 @@ then takes a new diameter, **Renumber…** (from a start number, in table,
 placement or row order, with a preview and a check for names used twice),
 **Sample or pattern…** or Delete, each one undo step.
 
-![Spots named HJ-GC1-1 … HJ-GC1-6, with a spot card open](docs/images/05-spots.webp)
+![Spots named HJ-GC1_1 … HJ-GC1_6, with a spot card open](docs/images/05-spots.webp)
 
 ### 6. Print sheets for the laser session
 
@@ -137,7 +137,7 @@ waiting for its name and an example file).
    It requires an existing grain list and cannot be combined with `--missing`.
 4. Places laser spots, lines and rasters on an infinite canvas with the mouse
    or trackpad alone (click to place, drag to move, drag the ring to resize,
-   double-click to rename), named from a pattern, `{sample}-{n}` by default (n continues across
+   double-click to rename), named from a pattern, `{sample}_{n}` by default (n continues across
    samples within a session, or per sample when chosen), with UUIDv7 ids;
    batch edits of the selection; exports CSV and GeoJSON.
 5. Packs grains or areas onto Letter, Tabloid, A4 or A3 pages with labels,
