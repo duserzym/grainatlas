@@ -6,6 +6,26 @@ import type { AppState } from './store.svelte';
 export type ShellCommand = FocusSpotCommand | FocusGrainCommand;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const isId = (x: unknown): x is string => typeof x === 'string' && ID.test(x);
+const isRecord = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
+
+export type ReviewColours = Record<string, Record<string, string>>;
+
+/** The linked bridge predates colors; keep valid entries even beside malformed ones. */
+export function reviewColours(value: unknown): ReviewColours {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([project, spots]) => isId(project) && isRecord(spots)).slice(0, 64)
+    .map(([project, spots]) => [project, Object.fromEntries(Object.entries(spots as Record<string, unknown>)
+      .filter(([spot, colour]) => isId(spot) && typeof colour === 'string' && /^#[0-9a-fA-F]{6}$/.test(colour)).slice(0, 10000)
+      .map(([spot, colour]) => [spot, (colour as string).toLowerCase()]))]));
+}
+
+/** Exact project key like review visibility; spot ids follow shell focus's sameId rule. */
+export function reviewColourLookup(colors: ReviewColours, project: string | null | undefined): (spot: string) => string | null {
+  const entries = project && Object.hasOwn(colors, project) ? colors[project] : {};
+  const byId = new Map(Object.entries(entries).map(([spot, colour]) => [spot.toLowerCase(), colour]));
+  return (spot) => byId.get(spot.toLowerCase()) ?? null;
+}
 
 export function commandServer(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -80,6 +100,7 @@ export async function handleShellCommand(value: unknown) {
   const { current, tabs, reviewSpots } = await import('./store.svelte');
   if (isBridgeCommand(value) && value.type === 'review-spots') {
     reviewSpots.projects = value.projects;
+    reviewSpots.colors = reviewColours('colors' in value ? value.colors : undefined);
     if (value.focus) await handleShellCommand({ ...value.focus, type: 'focus-spot' });
     return;
   }

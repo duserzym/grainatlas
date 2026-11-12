@@ -147,7 +147,7 @@ interface Snapshot {
 }
 
 /** Display-only scope from the host. Editing and exports keep the original spots. */
-export const reviewSpots = $state<{ projects: Record<string, string[]> }>({ projects: {} });
+export const reviewSpots = $state<{ projects: Record<string, string[]>; colors: Record<string, Record<string, string>> }>({ projects: {}, colors: {} });
 
 class AppState {
   screen = $state<Screen>('open');
