@@ -28,6 +28,7 @@
   import type { Finding } from '../lib/core/types';
   import { CHECK_TITLES } from '../lib/check-presentation';
   import { reviewSpots } from '../lib/store.svelte';
+  import { reviewColourLookup } from '../lib/shellcmd';
   import { acquisitionPage } from '../lib/laicpmsdb';
   import { findAllGrains, stitch } from '../lib/actions';
   import { autoSignalLabel, grainStatus } from '../lib/grain-status';
@@ -191,6 +192,7 @@
     const ids = project && Object.hasOwn(reviewSpots.projects, project) ? reviewSpots.projects[project] : null;
     return ids ? new Set(ids) : null;
   });
+  const reviewColour = $derived(reviewColourLookup(reviewSpots.colors, app.project?.uuid));
   const areaSpots = $derived(app.spots.filter((s) => s.area_id === areaId));
   const spots = $derived(areaSpots.filter((s) => !reviewVisible || reviewVisible.has(s.id)));
   const tableSpots = $derived(spotSort === 'name' ? [...spots].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
@@ -1445,16 +1447,21 @@
               {#each spots as s (s.id)}
                 {@const sel = app.selection.includes(s.id)}
                 {@const active = activeIds.includes(s.id)}
+                {@const colour = reviewColour(s.id)}
+                {@const colourHalo = colour && (sel || active || hoverId === s.id)}
                 <g class="spot {s.kind}" class:sel class:active class:hov={hoverId === s.id} data-testid="spot"
+                  class:review-coloured={!!colour} data-review-colour={colour ?? undefined} style:--review-spot-colour={colour ?? undefined}
                   data-contrast={active ? (autoColour ? (contrasts[s.id] ?? 'light') : 'fixed') : undefined}
                   style:--active-spot-colour={active ? activeColour(s.id) : undefined} style:--active-spot-halo={active ? activeHalo(s.id) : undefined}>
                   {#if s.kind === 'line' && s.x2_um != null && s.y2_um != null}
                     <line class="swath" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} style:stroke-width="{s.diameter_um}px" />
+                    {#if colourHalo}<line class="contrast-halo" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} />{/if}
                     <line class="axis" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} />
                   {:else if s.kind === 'raster' && s.x2_um != null && s.y2_um != null}
+                    {#if colourHalo}<rect class="contrast-halo" x={s.x_um} y={s.y_um} width={s.x2_um - s.x_um} height={s.y2_um - s.y_um} />{/if}
                     <rect x={s.x_um} y={s.y_um} width={s.x2_um - s.x_um} height={s.y2_um - s.y_um} />
                   {:else}
-                    {#if active}<circle class="contrast-halo" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />{/if}
+                    {#if active || colourHalo}<circle class="contrast-halo" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />{/if}
                     <circle cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />
                     <circle class="dot" cx={s.x_um} cy={s.y_um} r={1.2 * k} />
                     {#if sel}
@@ -2410,6 +2417,37 @@
     stroke: var(--active-spot-halo);
     stroke-width: 4.8;
     pointer-events: none;
+  }
+  :global(.ga-root) .spot.review-coloured circle,
+  :global(.ga-root) .spot.review-coloured rect {
+    fill: color-mix(in srgb, var(--review-spot-colour) 14%, transparent);
+    stroke: var(--review-spot-colour);
+  }
+  :global(.ga-root) .spot.review-coloured .axis { stroke: var(--review-spot-colour); }
+  :global(.ga-root) .spot.review-coloured .swath { stroke: color-mix(in srgb, var(--review-spot-colour) 35%, transparent); }
+  :global(.ga-root) .spot.review-coloured .dot { fill: var(--review-spot-colour); stroke: none; }
+  :global(.ga-root) .spot.review-coloured.hov .axis { stroke-width: 2.4; }
+  :global(.ga-root) .spot.review-coloured.sel circle,
+  :global(.ga-root) .spot.review-coloured.sel rect,
+  :global(.ga-root) .spot.review-coloured.sel .axis,
+  :global(.ga-root) .spot.review-coloured.active circle,
+  :global(.ga-root) .spot.review-coloured.active rect,
+  :global(.ga-root) .spot.review-coloured.active .axis { stroke-width: 3.2; }
+  /* Image overlays share tokens in both themes; white with a dark edge also covers pale samples. */
+  :global(.ga-root) .spot.review-coloured circle.contrast-halo,
+  :global(.ga-root) .spot.review-coloured rect.contrast-halo,
+  :global(.ga-root) .spot.review-coloured line.contrast-halo {
+    fill: none;
+    stroke: var(--ov-spot-selected);
+    stroke-width: 6.4;
+    stroke-linecap: round;
+    filter: drop-shadow(0 0 1px #111);
+    pointer-events: none;
+  }
+  :global(.ga-root) .spot.review-coloured circle.handle {
+    fill: var(--ov-spot-selected);
+    stroke: #111;
+    stroke-width: 1.5;
   }
   :global(.ga-root) .flabel.sel {
     fill: var(--accent);
