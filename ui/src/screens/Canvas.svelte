@@ -1758,6 +1758,12 @@
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
       <fieldset class="plain tabbody" disabled={(ro && tab !== 'link' && tab !== 'checks') || (tab === 'grains' && !!app.busy)}>
       {#if tab === 'spots'}
+        {#if !ro && !noPixels && areaId && !grains.length}
+          <p class="faint small-text" role="status" data-testid="spots-grain-status">{detections.length ? 'No grains found; only flagged outlines. Open Grains to review them.' : segmentationStatus.message}</p>
+          <div class="row">
+            <button class="primary" onclick={findGrains} disabled={!!app.busy} data-testid="spots-find-grains">{app.grains[areaId] !== undefined ? 'Find again' : 'Find grains'}</button>
+          </div>
+        {/if}
         {#if selectedHere > 1}
           <div class="panel">
             <span data-testid="spot-sel-count">{selectedHere} selected</span>

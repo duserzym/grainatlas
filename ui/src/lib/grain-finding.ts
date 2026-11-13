@@ -1,6 +1,7 @@
 import type { AppState } from './store.svelte.ts';
 import type { AreaParams, Grain, SegmentParams } from './core/types.ts';
 import { relinkSpots, linkUnlinkedSpots } from './spots.ts';
+import { keepSpotGrains, restoreSpotGrains } from './keep-spot-grains.ts';
 
 /** Keep the operation busy until its grains, spot links and stored copy agree. */
 export async function findGrainsInArea(app: AppState, id: string, missing = false) {
@@ -9,9 +10,12 @@ export async function findGrainsInArea(app: AppState, id: string, missing = fals
   if (app.busy) return;
   const params = JSON.parse(JSON.stringify(app.params[id].segment)) as SegmentParams;
   const previous = JSON.parse(JSON.stringify(app.grains[id] ?? [])) as Grain[];
-  await app.run(missing ? 'Finding missed grains' : 'Finding grains', async () => {
+  return await app.run(missing ? 'Finding missed grains' : 'Finding grains', async () => {
     const outline = { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth };
-    const grains = (await (missing ? core.segmentMissing(id, params, previous, outline) : core.segment(id, params, previous, outline))).map(g => ({ ...previous.find(p => p.id === g.id), ...g }));
+    const protectedGrains = keepSpotGrains(previous, app.spots, id);
+    const detected = await (missing ? core.segmentMissing(id, params, previous, outline) : core.segment(id, params, protectedGrains.previous, outline));
+    const merged = detected.map(g => ({ ...previous.find(p => p.id === g.id), ...g }));
+    const grains = missing ? merged : restoreSpotGrains(merged, protectedGrains.kept);
     app.checkpoint();
     app.grains = { ...app.grains, [id]: grains };
     const added = grains.slice(previous.length);
@@ -21,7 +25,15 @@ export async function findGrainsInArea(app: AppState, id: string, missing = fals
       const flagged = added.filter(g => g.artifact).length;
       const real = added.length - flagged;
       app.notice = added.length ? `Added ${real} ${real === 1 ? 'grain' : 'grains'}${flagged ? ` and ${flagged} flagged` : ''}. Review the dashed outlines; ⌘Z undoes.` : 'No missed grains found.';
+    } else {
+      const flagged = grains.filter(g => g.artifact).length;
+      const real = grains.length - flagged;
+      const name = app.project?.areas.find(a => a.id === id)?.name || id;
+      app.notice = real
+        ? `Found ${real} ${real === 1 ? 'grain' : 'grains'} in ${name}${flagged ? ` and ${flagged} flagged` : ''}`
+        : `Found no grains in ${name}. Check the signal, polarity and threshold under Grains > Segmentation.`;
     }
+    return true;
   });
 }
 
@@ -60,7 +72,9 @@ export async function findGrainsInAreas(app: AppState) {
         app.pixelsVersion++;
       }
       const prev = JSON.parse(JSON.stringify(app.grains[id] ?? [])) as Grain[];
-      const grains = (await core.segment(id, params.segment, prev, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth })).map(g => ({ ...prev.find(p => p.id === g.id), ...g }));
+      const protectedGrains = keepSpotGrains(prev, app.spots, id);
+      const detected = await core.segment(id, params.segment, protectedGrains.previous, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth });
+      const grains = restoreSpotGrains(detected.map(g => ({ ...prev.find(p => p.id === g.id), ...g })), protectedGrains.kept);
       if (!checkpointed) { app.checkpoint(); checkpointed = true; }
       app.grains = { ...app.grains, [id]: grains };
       app.spots = relinkSpots(app.spots, id, grains);

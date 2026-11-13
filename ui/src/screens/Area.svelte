@@ -5,7 +5,8 @@
   // correction controls with a live histogram, per-tile overrides and the
   // residual map. Every correction and tone control re-renders the mosaic live
   // (App.svelte watches the parameters; lib/actions.ts liveChanged).
-  import { app } from '../lib/store.svelte';
+  import { app, current } from '../lib/store.svelte';
+  import { findGrainsInArea } from '../lib/grain-finding';
   import { autoTone, changeScale, exportPng, resetTone, scaleText, stitch, stitchAll, toggleBeforeAfter } from '../lib/actions';
   import { rawToCanvas } from '../lib/files';
   import Histogram from '../components/Histogram.svelte';
@@ -33,6 +34,11 @@
   const compare = $derived(app.areaId ? (app.compare[app.areaId] ?? null) : null);
   const areaGrains = $derived(app.areaId ? (app.grains[app.areaId] ?? []) : []);
   const umPerPx = $derived((meta?.pixel_size_nm ?? 1000) / 1000);
+
+  async function findGrains(id: string) {
+    const state = current();
+    if (await findGrainsInArea(state, id)) state.screen = 'canvas';
+  }
 
   // Tile frames in mosaic pixels: the solved placement if stitched, else the prior.
   const boxes = $derived.by(() => {
@@ -145,6 +151,9 @@
           <label class="check"><input type="checkbox" bind:checked={showResiduals} /> residuals</label>
           <button class="primary" onclick={() => stitch(meta.id)} disabled={!!app.busy} data-testid="stitch">{summary ? 'Re-stitch' : 'Stitch'}</button>
           <button onclick={() => (app.screen = 'canvas')} disabled={!summary} data-testid="to-canvas">Open canvas</button>
+          {#if summary && !areaGrains.length && !app.readOnly && !app.remote}
+            <button onclick={() => findGrains(meta.id)} disabled={!!app.busy} data-testid="area-find-grains">Find grains</button>
+          {/if}
         </div>
       </div>
       <div class="grid" data-testid="area-view" data-live={app.liveBusy[meta.id] ? 'busy' : 'idle'}>
@@ -310,7 +319,7 @@
 <style>
   .area {
     display: grid;
-    grid-template-columns: 15rem 1fr 20rem;
+    grid-template-columns: 15rem minmax(0, 1fr) 20rem;
     gap: var(--space-2);
     height: 100%;
     padding: 0 var(--space-2) var(--space-2);
@@ -347,12 +356,15 @@
   }
   .head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-3);
   }
   .actions {
     margin-left: auto;
     display: flex;
+    flex-shrink: 0;
+    white-space: nowrap;
     gap: var(--space-2);
     align-items: center;
   }
