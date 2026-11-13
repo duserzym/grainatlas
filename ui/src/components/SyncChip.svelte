@@ -26,7 +26,7 @@
           <button onclick={() => { offerOpen = false; session.dismissLink(); }}>Not this one</button>
         </div>
       {/if}
-    {:else}<span data-testid="sync-chip" title={session.text} aria-live="polite">{session.text}</span>{/if}
+    {:else}<span data-testid="sync-chip" title={session.text} aria-live="polite">{session.text}{app.draftHere === 'unknown' ? ' · Your draft here, base not checked' : app.draftHere !== null ? ` · Your draft here, based on r${app.draftHere}` : ''}</span>{/if}
     <button data-testid="sync-action" disabled={session.busy || app.loadingProject || (session.state === 'in-sync' && !session.pixelsChanged)} onclick={() => session.action()}>{action}</button>
   </div>
 {/if}

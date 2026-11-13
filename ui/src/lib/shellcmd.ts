@@ -1,6 +1,7 @@
 // Hosted bridge v3 commands. Pure validation/lookup stay usable by Node's unit runner.
 import { isBridgeCommand, type FocusGrainCommand, type FocusSpotCommand } from '@lab/bridge';
 import type { Grain, Spot } from './core/types';
+import { grainNumber } from './grain-lineage.ts';
 import type { AppState } from './store.svelte';
 
 export type ShellCommand = FocusSpotCommand | FocusGrainCommand;
@@ -36,15 +37,7 @@ export function commandServer(value: unknown): string | null {
 }
 
 export function isShellCommand(value: unknown): value is ShellCommand {
-  if (!value || typeof value !== 'object') return false;
-  const c = value as Record<string, unknown>;
-  if (!isId(c.project) || (c.flash !== undefined && typeof c.flash !== 'boolean') ||
-      (c.via !== undefined && typeof c.via !== 'string') ||
-      (c.server !== undefined && !commandServer(c.server))) return false;
-  if (c.type === 'focus-spot') return isId(c.spot);
-  return c.type === 'focus-grain' && typeof c.grain === 'string' &&
-    c.grain.split('/').length <= 2 && c.grain.split('/').every(isId) &&
-    (c.spot === undefined || isId(c.spot));
+  return isBridgeCommand(value) && (value.type === 'focus-spot' || value.type === 'focus-grain');
 }
 
 /** Id first, then area/number, then an unambiguous number (spot's area wins). */
@@ -55,8 +48,8 @@ export function findGrain(grains: Record<string, Grain[]>, grain: string, spot?:
   const parts = grain.split('/');
   if (parts.length > 2) return null;
   const number = parts.at(-1)!;
-  if (!/^\d+$/.test(number)) return null;
-  const matches = all.filter((g) => g.grain.number === Number(number) &&
+
+  const matches = all.filter((g) => grainNumber(g.grain) === number &&
     (parts.length === 2 ? g.area === parts[0] : !spot || g.area === spot.area_id));
   return matches.length === 1 ? matches[0] : null;
 }
@@ -102,6 +95,12 @@ export async function handleShellCommand(value: unknown) {
     reviewSpots.projects = value.projects;
     reviewSpots.colors = reviewColours('colors' in value ? value.colors : undefined);
     if (value.focus) await handleShellCommand({ ...value.focus, type: 'focus-spot' });
+    return;
+  }
+  if (isBridgeCommand(value) && value.type !== 'focus-spot' && value.type !== 'focus-grain' && value.type !== 'review-spots') {
+    const { hostedSync } = await import('./hosted-sync');
+    const { runHostedCommand } = await import('./hosted-actions');
+    await hostedSync.command(value, runHostedCommand);
     return;
   }
   if (!isShellCommand(value)) return;

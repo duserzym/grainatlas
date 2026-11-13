@@ -6,7 +6,7 @@ import { beforeCheckedAction } from './checks';
 import { token as shellToken } from '@lab/bridge';
 import type { BundleOptions, Project, Published } from './core/types';
 import { download } from './files';
-import { publishAtlas } from './laicpmsdb';
+import { normalizeServer, publishAtlas } from './laicpmsdb';
 import { current, type AppState } from './store.svelte';
 
 /** Options for the core from Settings: tile quality, the package's place on the lab storage. */
@@ -17,14 +17,14 @@ export function bundleOptions(p: Project, app: AppState = current()): BundleOpti
 }
 
 /** The bearer token: the shell's when hosted, else the one pasted in Settings. */
-export async function authToken(app: AppState = current()): Promise<string | null> {
+export async function authToken(app: AppState = current(), server: string | null = app.remote?.server ?? app.server): Promise<string | null> {
   try {
     const t = await shellToken();
     if (t) return t;
   } catch {
     /* not hosted */
   }
-  return app.link.token.trim() || null;
+  return app.sessionToken && normalizeServer(app.sessionServer) === normalizeServer(server) ? app.sessionToken : app.link.token.trim() || null;
 }
 
 /** Entries of a STORE-only zip (what the core writes). */

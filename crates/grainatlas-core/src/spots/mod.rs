@@ -70,6 +70,9 @@ pub struct Spot {
     pub sample: String,
     pub grain_id: Option<Uuid>,
     pub grain_number: Option<u32>,
+    /// Transient display text for exports, resolved by grain UUID in the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grain_label: Option<String>,
     /// The `{n}` this spot was named with (continuation counter).
     #[serde(default)]
     pub n: u32,
@@ -159,6 +162,7 @@ pub fn new_spot(area_id: &str, sample: &str, grains: &[Grain], existing: &[Spot]
         sample: sample.to_string(),
         grain_id: g.map(|g| g.id),
         grain_number: g.map(|g| g.number),
+        grain_label: None,
         n,
         x_um,
         y_um,
@@ -179,6 +183,7 @@ fn csv_field(s: &str) -> String {
 /// Spot list CSV (plan requirement 10): ids, names, grain, position in um, px and stage,
 /// diameter, kind, comment and provenance.
 pub fn spots_csv(project: &Project, spots: &[Spot]) -> String {
+    let grains = crate::atlas::UiParts::of(project).grains;
     let mut s = String::from(
         "id,name,sample,area,grain,grain_id,x_um,y_um,x_px,y_px,diameter_um,kind,x2_um,y2_um,stage_x_nm,stage_y_nm,comment,created,created_by,area_uuid,project_uuid,laicpmsdb_mount_id\n",
     );
@@ -193,7 +198,7 @@ pub fn spots_csv(project: &Project, spots: &[Spot]) -> String {
             csv_field(&sp.name),
             csv_field(&sp.sample),
             csv_field(&sp.area_id),
-            sp.grain_number.map_or(String::new(), |n| n.to_string()),
+            csv_field(&sp.grain_label.clone().or_else(|| sp.grain_id.and_then(|id| grains.get(&sp.area_id)?.iter().find(|g| g.id == id)).map(|g| g.display_number())).unwrap_or_else(|| sp.grain_number.map_or(String::new(), |n| n.to_string()))),
             sp.grain_id.map_or(String::new(), |g| g.to_string()),
             sp.x_um,
             sp.y_um,
@@ -237,7 +242,7 @@ pub fn geojson(project: &Project, grains: &BTreeMap<String, Vec<Grain>>, spots: 
                 "id": g.id,
                 "geometry": { "type": "Polygon", "coordinates": [ring] },
                 "properties": {
-                    "kind": "grain", "number": g.number, "area": area_id, "area_uuid": area_uuid,
+                    "kind": "grain", "number": g.number, "label": g.display_number(), "area": area_id, "area_uuid": area_uuid,
                     "area_um2": g.area_um2, "eq_diameter_um": g.eq_diameter_um, "major_um": g.major_um, "minor_um": g.minor_um,
                     "orientation_deg": g.orientation_deg, "scale_bar_um": g.scale_bar_um, "manual": g.manual,
                 }
@@ -256,7 +261,7 @@ pub fn geojson(project: &Project, grains: &BTreeMap<String, Vec<Grain>>, spots: 
             "geometry": geometry,
             "properties": {
                 "kind": match sp.kind { SpotKind::Spot => "spot", SpotKind::Line => "line", SpotKind::Raster => "raster" },
-                "name": sp.name, "sample": sp.sample, "area": sp.area_id, "grain": sp.grain_number, "grain_id": sp.grain_id,
+                "name": sp.name, "sample": sp.sample, "area": sp.area_id, "grain": sp.grain_number, "grain_id": sp.grain_id, "grain_label": sp.grain_label,
                 "diameter_um": sp.diameter_um, "comment": sp.comment, "created": sp.created, "created_by": sp.created_by,
             }
         }));

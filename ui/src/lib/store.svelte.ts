@@ -163,6 +163,12 @@ export const reviewSpots = $state<{ projects: Record<string, string[]>; colors: 
 
 class AppState {
   readonly sync: SyncSession;
+  viewMode = $state(false);
+  sessionToken: string | null = null;
+  sessionServer: string | null = null;
+  draftHere = $state<number | 'unknown' | null>(null);
+  discardUndo = $state.raw<import('./sync').Elements | null>(null);
+  leaveEditPrompt = $state<{ answer: (decision: 'sync' | 'keep-draft' | 'stay') => void } | null>(null);
   screen = $state<Screen>('open');
   pkg = $state<PackageInfo | null>(null);
   /** Loose images waiting for a scale (the scale dialog is open while set). */
@@ -267,7 +273,7 @@ class AppState {
   remoteTiles: import('./remote').RemoteTiles | null = null;
   /** True while a bundle from a server is shown read-only (before "Edit a copy"). */
   get readOnly(): boolean {
-    return !!this.remote?.readOnly;
+    return this.viewMode || !!this.remote?.readOnly;
   }
   /** The last publish of this session, with the server's full answer. */
   lastPublish = $state<(import('./core/types').Published & { response: Record<string, unknown> }) | null>(null);
@@ -469,6 +475,7 @@ class AppState {
     this.canRedo = false;
     this.persist();
   }
+  clearHistory() { this.undoStack = []; this.redoStack = []; this.canUndo = false; this.canRedo = false; this.discardUndo = null; }
   private restore(s: Snapshot) {
     this.spots = s.spots;
     this.labels = s.labels;

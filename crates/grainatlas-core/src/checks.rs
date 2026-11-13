@@ -245,7 +245,7 @@ pub fn check_project(
                         .flatten()
                         .copied()
                         .chain(stored.filter(|_| hits.iter().all(Option::is_none)))
-                        .map(|g| g.number.to_string())
+                        .map(|g| g.display_number())
                         .collect::<BTreeSet<_>>()
                         .into_iter()
                         .collect::<Vec<_>>()

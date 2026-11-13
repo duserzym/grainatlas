@@ -274,7 +274,7 @@ pub fn rows(reg: &AreaRegistration, spots: &[Spot], area_id: &str) -> Result<Vec
                     SpotKind::Line => "line",
                     SpotKind::Raster => "raster",
                 },
-                grain: s.grain_number.map_or(String::new(), |n| n.to_string()),
+                grain: s.grain_label.clone().unwrap_or_else(|| s.grain_number.map_or(String::new(), |n| n.to_string())),
                 sample: s.sample.clone(),
             }
         })

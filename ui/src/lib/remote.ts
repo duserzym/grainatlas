@@ -5,7 +5,9 @@
 // package). This is how laicpmsdb's mount page embeds grainatlas and how a spot link from
 // anywhere reaches the images (`?server=&project=&spot=`).
 
-import { listDrafts, storedDraftProject } from './drafts';
+import { isBridgeCommand } from '@lab/bridge';
+import { hostedSync, ATLAS_EVENTS } from './hosted-sync';
+import { draftElements, listDrafts, storedDraftProject } from './drafts';
 import { SyncApi } from './sync-api';
 import { groupedGrains, uiSpots } from './sync';
 import type { RawImage } from './core/core';
@@ -107,16 +109,21 @@ function mosaicOf(a: AtlasArea, tile: number): MosaicJson {
 
 /** Loads a published bundle and shows it on the Canvas, read-only; selects `spot` when given. */
 export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null, app: AppState = current()) {
+  await app.sync.settled();
   const server = normalizeServer(serverIn);
   if (!server) {
     app.error = `Not a server address: ${serverIn}`;
     return false;
   }
-  const token = await authToken(app);
+  if (!isBridgeCommand({ type: 'open-project', project: projectId, server })) { app.error = 'Enter a valid project id and server address.'; return false; }
+  hostedSync.status({ type: ATLAS_EVENTS.status, project: projectId, mount: null, name: projectId, mode: 'view', state: 'checking', revision: null, atlasVersion: null, changes: null, syncedAt: null }, true);
+  const token = await authToken(app, server);
   const at = { server, projectId, token, access };
   const r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
     const api = new SyncApi(server, token, access);
-    const status = await api.lookup(projectId);
+    // A failed sync lookup may coexist with cached/published files. Open those in View
+    // and let the session report Offline after its guarded lookup.
+    const status = await api.lookup(projectId).catch(() => null);
     const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json');
     if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
     if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
@@ -132,6 +139,7 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   });
   if (!r) return false;
   const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true, token, access, mount };
+  app.clearHistory(); app.viewMode = false; app.draftHere = null;
   app.remote = remote;
   app.remoteTiles = new RemoteTiles(remote);
   app.pkg = null;
@@ -168,15 +176,14 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
  * version), kept in this browser like any project, editable. Pixels stay the server's until the
  * raw package is opened, which picks this project up by its package name.
  */
-export async function editCopy() {
-  const app = current();
+export async function editCopy(app: AppState = current()) {
   const remote = app.remote;
   const p = app.project;
   if (!remote || !p) return;
   const draft = listDrafts(remote.server).find(d => d.uuid === p.uuid);
   const sameUuid = draft ? storedDraftProject(draft) : null;
   const packageCopy = savedProject(p.package.name);
-  const existing = sameUuid ?? packageCopy;
+  const existing = draft?.pending === null ? null : sameUuid ?? (draft ? packageCopy : null);
   if (packageCopy && !sameId(packageCopy.uuid, p.uuid) && !confirm(`This computer already has a project for ${p.package.name} (${packageCopy.uuid}). Replace it with this project from the server?`)) return;
   const core = await app.core;
   const ok = await app.run('Making a local copy', async () => {
@@ -189,7 +196,14 @@ export async function editCopy() {
   app.project = JSON.parse(await core.projectJson());
   app.remote = { ...remote, readOnly: false };
   if (existing && sameId(existing.uuid, p.uuid)) app.adopt(existing);
+  const pending = draft ? draftElements(draft) : null;
+  if (pending) {
+    app.spots = uiSpots(pending.spots, pending.grains, app.spots);
+    app.grains = groupedGrains(pending.grains, app.grains); app.labels = pending.labels;
+    app.draftHere = draft!.base_revision ?? 'unknown';
+  }
   await app.sync.editBase();
+  if (pending) app.draftHere = app.sync.draft?.base_revision ?? 'unknown';
   app.persist();
   app.notice = `Editing ${remote.atlas.name}. Spots, grains and labels can be changed; open the raw package (${p.package.name}) to re-stitch or publish new pixels.`;
 }

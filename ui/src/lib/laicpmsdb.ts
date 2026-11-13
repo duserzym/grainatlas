@@ -1,7 +1,7 @@
 // Links and hand-overs to laicpmsdb (the sessions database), through the UPb
 // Studio shell. Not hosted, the bridge's open() resolves false.
 
-import type { Spot } from './core/types';
+import type { Grain, Spot } from './core/types';
 
 /** The laicpmsdb link for a spot: its acquisition when known, else a search by label (= spot name). */
 export function spotLink(s: Pick<Spot, 'name' | 'acquisition_id'>): string {
@@ -22,7 +22,7 @@ export interface MountSpots {
  * mosaic's top-left). Lines and rasters are not part of the endpoint yet and
  * are left out; `skipped` counts them.
  */
-export function mountSpots(projectId: string, sample: string, spots: Spot[]): { body: MountSpots; skipped: number } {
+export function mountSpots(projectId: string, sample: string, spots: Spot[], grains: Record<string, Grain[]> = {}): { body: MountSpots; skipped: number } {
   const points = spots.filter((s) => s.kind === 'spot');
   const round = (v: number) => Math.round(v * 1000) / 1000;
   return {
@@ -32,7 +32,7 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[]): { 
       spots: points.map((s) => ({
         id: s.id,
         name: s.name,
-        grain: s.grain_number == null ? '' : `${s.area_id}/${s.grain_number}`,
+        grain: (() => { const g = grains[s.area_id]?.find(g => g.id === s.grain_id); return g?.label ?? (g ? `${s.area_id}/${g.number}` : s.grain_id ?? (s.grain_number == null ? '' : `${s.area_id}/${s.grain_number}`)); })(),
         area: s.area_id,
         x_um: round(s.x_um),
         y_um: round(s.y_um),
@@ -227,7 +227,7 @@ export function acquisitionPage(base: string, id: string): string {
 }
 
 /** All project areas, grouped by stored sample (falling back to the area's sample/name). */
-export function mountSpotDocuments(project: import('./core/types').Project, spots: Spot[]): { documents: MountSpots[]; skipped: number } {
+export function mountSpotDocuments(project: import('./core/types').Project, spots: Spot[], grains: Record<string, Grain[]> = (project.grainatlas_ui as { grains?: Record<string, Grain[]> })?.grains ?? {}): { documents: MountSpots[]; skipped: number } {
   const groups = new Map<string, Spot[]>();
   for (const s of spots) {
     const area = project.areas.find((a) => a.id === s.area_id);
@@ -238,7 +238,7 @@ export function mountSpotDocuments(project: import('./core/types').Project, spot
   }
   let skipped = 0;
   const documents = [...groups].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([sample, ss]) => {
-    const r = mountSpots(project.uuid, sample, ss);
+    const r = mountSpots(project.uuid, sample, ss, grains);
     skipped += r.skipped;
     return r.body;
   }).filter((d) => d.spots.length);

@@ -125,6 +125,7 @@ impl UiParts {
 /// spot also names its `area`). Several samples: `{ project_id, documents: [body per sample] }`,
 /// the form laicpmsdb also accepts in bundles (its docs/workflow_api.md).
 pub fn spots_document(project: &Project, spots: &[Spot], areas: &[&str]) -> serde_json::Value {
+    let grains = UiParts::of(project).grains;
     let spots: Vec<&Spot> = spots.iter().filter(|s| areas.contains(&s.area_id.as_str())).collect();
     let sample_of = |s: &Spot| -> String {
         if !s.sample.is_empty() {
@@ -137,7 +138,9 @@ pub fn spots_document(project: &Project, spots: &[Spot], areas: &[&str]) -> serd
         let mut v = json!({
             "id": s.id,
             "name": s.name,
-            "grain": s.grain_number.map_or(String::new(), |n| format!("{}/{n}", s.area_id)),
+            "grain": s.grain_id.and_then(|id| grains.get(&s.area_id)?.iter().find(|g| g.id == id))
+                .map(|g| g.label.clone().unwrap_or_else(|| format!("{}/{}", s.area_id, g.number)))
+                .unwrap_or_else(|| s.grain_number.map_or(String::new(), |n| format!("{}/{n}", s.area_id))),
             "x_um": r3(s.x_um),
             "y_um": r3(s.y_um),
             "diameter_um": r3(s.diameter_um),
@@ -177,7 +180,7 @@ pub fn grains_geojson(project: &Project, grains: &BTreeMap<String, Vec<Grain>>, 
                 "id": g.id,
                 "geometry": { "type": "Polygon", "coordinates": [ring] },
                 "properties": {
-                    "kind": "grain", "id": g.id, "label": g.number.to_string(), "number": g.number,
+                    "kind": "grain", "id": g.id, "label": g.display_number(), "number": g.number,
                     "area": area_id, "sample": sample,
                     "centroid_um": [r3(g.centroid_um[0]), r3(g.centroid_um[1])],
                     "area_um2": r3(g.area_um2), "eq_diameter_um": r3(g.eq_diameter_um),

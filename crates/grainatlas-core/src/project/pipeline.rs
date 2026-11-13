@@ -409,11 +409,12 @@ pub fn segment_area(rec: &mut AreaRecord, out: &AreaOutput, p: &crate::segment::
     crate::segment::segment_padded(&w, p, previous, outline)
 }
 
-/// `masks/<area>/grains.png` (u16 labels by grain number at work resolution) and `grains.json`.
+/// `masks/<area>/grains.png` (unique u16 labels at work resolution) and `grains.json` with UUID mapping.
 pub fn mask_files(rec: &AreaRecord, out: &AreaOutput, grains: &[crate::segment::Grain]) -> Vec<(String, Vec<u8>)> {
     let w = work_image(out, rec, rec.params.segment.work_scale);
     let lab = crate::segment::label_image(&w, grains);
-    let json = serde_json::json!({ "work_scale": rec.params.segment.work_scale, "um_per_px": w.um_per_px, "w": w.img.w, "h": w.img.h, "grains": grains });
+    let label_ids: Vec<_> = grains.iter().zip(crate::segment::mask_values(grains)).filter(|(_, value)| *value != 0).map(|(g, value)| serde_json::json!({ "value": value, "id": g.id, "label": g.label, "number": g.number })).collect();
+    let json = serde_json::json!({ "label_ids": label_ids, "work_scale": rec.params.segment.work_scale, "um_per_px": w.um_per_px, "w": w.img.w, "h": w.img.h, "grains": grains });
     vec![
         (format!("masks/{}/grains.png", rec.id), crate::image::encode_png_gray16(w.img.w, w.img.h, &lab)),
         (format!("masks/{}/grains.json", rec.id), serde_json::to_vec_pretty(&json).expect("json")),

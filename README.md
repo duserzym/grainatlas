@@ -413,3 +413,30 @@ License: MIT. Image algorithms reused from
 Apache-2.0) and the lossless WebP encoder of
 [image-rs/image-webp](https://github.com/image-rs/image-webp) (MIT OR
 Apache-2.0); see `ATTRIBUTION.md`.
+
+## Opened from UPb Lab
+
+UPb Lab launches the installed standalone app with a one-time sign-in code:
+
+```sh
+open -n -b org.grainatlas.desktop --args --project <uuid> --server <base-url> --code <one-time-code> [--revision <n>]
+```
+
+A normal second launch forwards its arguments to the running instance, focuses
+its window and exits. Launches with `--profile <dir>` (and development or named
+profiles) skip single-instance forwarding and keep their separate storage.
+`grainatlas://` links remain owned by UPb Lab.
+
+GrainAtlas compares normalized server addresses. A different server asks
+“Open project from <host>? This is not your configured server.” Nothing is
+fetched from that server before confirmation. It then immediately exchanges
+`{code}` at `POST /v1/auth/exchange`, reads `{token, account}`, and keeps the
+token in memory for this session. The code is never saved or logged; Rust
+Debug output redacts it. Do not pass a bearer token on the command line.
+
+The project opens in View with its current mount revision. `--revision` is
+the shell's observed revision; the app checks the database's current state
+rather than reconstructing historical images. A locally held draft with the
+same uuid opens in Edit and the chip says “Your draft here, based on r<n>”.
+Hosted and standalone storage are separate; drafts are not transferred by
+the launch arguments.

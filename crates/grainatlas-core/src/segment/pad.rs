@@ -149,6 +149,7 @@ pub fn pad_outlines(w: &WorkImage, grains: &[Grain], outline: OutlinePad, simpli
         }) else { return g.clone() };
         ng.id = g.id;
         ng.number = g.number;
+        ng.label = g.label.clone();
         ng.manual = g.manual;
         ng.artifact = g.artifact;
         ng.kept = g.kept;

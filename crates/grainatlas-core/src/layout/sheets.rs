@@ -393,6 +393,8 @@ pub struct StrayGrain {
     pub area: String,
     pub id: uuid::Uuid,
     pub number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub eq_diameter_um: f64,
     pub centroid_um: [f64; 2],
     pub bbox_um: [f64; 4],
@@ -402,6 +404,8 @@ pub struct StrayGrain {
 pub struct BandGrain {
     pub id: uuid::Uuid,
     pub number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -1048,7 +1052,7 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
             if q.grains.len() >= p.min_cluster_grains || q.grains.len() == largest {
                 return true;
             }
-            strays.extend(q.grains.iter().map(|g| StrayGrain { area: areas[ai].rec.id.clone(), id: g.id, number: g.number, eq_diameter_um: g.eq_diameter_um, centroid_um: g.centroid_um, bbox_um: g.bbox_um }));
+            strays.extend(q.grains.iter().map(|g| StrayGrain { area: areas[ai].rec.id.clone(), id: g.id, number: g.number, label: g.label.clone(), eq_diameter_um: g.eq_diameter_um, centroid_um: g.centroid_um, bbox_um: g.bbox_um }));
             false
         });
         merge_intersections(&mut clusters, p.pad_um, img);
@@ -1376,14 +1380,14 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
                     let context = printed[run.area]
                         .iter()
                         .filter(|g| !q.grains.iter().any(|own| own.id == g.id) && repeated.iter().any(|r| intersects(*r, g.bbox_um)))
-                        .map(|g| BandGrain { id: g.id, number: g.number })
+                        .map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() })
                         .collect();
                     reg.bands.push(BandRecord {
                         sheet: pi + 1,
                         sample: run.sample.clone(),
                         area: a.rec.id.clone(),
                         row: run.row,
-                        grains: q.grains.iter().map(|g| BandGrain { id: g.id, number: g.number }).collect(),
+                        grains: q.grains.iter().map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() }).collect(),
                         sheet_rect_mm: [px, iy, px + pw, iy + ph],
                         mosaic_rect_um: q.rect,
                         repeated_um: repeated,

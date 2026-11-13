@@ -11,7 +11,7 @@ export async function findGrainsInArea(app: AppState, id: string, missing = fals
   const previous = JSON.parse(JSON.stringify(app.grains[id] ?? [])) as Grain[];
   await app.run(missing ? 'Finding missed grains' : 'Finding grains', async () => {
     const outline = { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth };
-    const grains = await (missing ? core.segmentMissing(id, params, previous, outline) : core.segment(id, params, previous, outline));
+    const grains = (await (missing ? core.segmentMissing(id, params, previous, outline) : core.segment(id, params, previous, outline))).map(g => ({ ...previous.find(p => p.id === g.id), ...g }));
     app.checkpoint();
     app.grains = { ...app.grains, [id]: grains };
     const added = grains.slice(previous.length);
@@ -60,7 +60,7 @@ export async function findGrainsInAreas(app: AppState) {
         app.pixelsVersion++;
       }
       const prev = JSON.parse(JSON.stringify(app.grains[id] ?? [])) as Grain[];
-      const grains = await core.segment(id, params.segment, prev, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth });
+      const grains = (await core.segment(id, params.segment, prev, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth })).map(g => ({ ...prev.find(p => p.id === g.id), ...g }));
       if (!checkpointed) { app.checkpoint(); checkpointed = true; }
       app.grains = { ...app.grains, [id]: grains };
       app.spots = relinkSpots(app.spots, id, grains);

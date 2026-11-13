@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { exportSpotLabels } from '../lib/grain-lineage';
   // Laser registration of one area (roadmap phase 11): the operator drives the laser to three or
   // more spots spread over the area and types the stage position the laser software shows; the
   // core fits an affine map mosaic µm → stage (least squares) and writes the spot list in the
@@ -95,7 +96,7 @@
 
   async function exportList() {
     const a = adapters.find((x) => x.id === adapter) ?? adapters[0];
-    const text = await app.run('Writing the spot list', () => core.laserExport($state.snapshot(app.spots) as Spot[], areaId, adapter));
+    const text = await app.run('Writing the spot list', () => core.laserExport(exportSpotLabels($state.snapshot(app.spots) as Spot[], $state.snapshot(app.grains)), areaId, adapter));
     if (text) download(text, `${app.project?.package.name ?? 'grainatlas'}_${areaId}_laser_${a.id}.${a.extension}`, 'text/csv');
   }
 </script>

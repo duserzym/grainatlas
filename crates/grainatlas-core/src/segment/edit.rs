@@ -246,6 +246,7 @@ fn apply(w: &WorkImage, stroke: &Local, base: Option<&Grain>, op: Op, simplify_p
     if let Some(b) = base {
         g.id = b.id;
         g.number = b.number;
+        g.label = b.label.clone();
         g.kept = b.kept;
     } else {
         g.number = 0;

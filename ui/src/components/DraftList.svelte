@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, tabs } from '../lib/store.svelte';
-  import { draftElements, listDrafts, pendingElements, storedDraftProject, writeDraft, deleteDraft, deleteDraftCopies, type Draft } from '../lib/drafts';
+  import { DRAFTS_CHANGED, draftElements, listDrafts, pendingElements, storedDraftProject, writeDraft, deleteDraft, deleteDraftCopies, type Draft } from '../lib/drafts';
   import { changeCounts, describeChanges, diffElements, emptyElements, groupedGrains, hasChanges, uiSpots } from '../lib/sync';
   import type { Project } from '../lib/core/types';
   import { SyncApi } from '../lib/sync-api';
@@ -10,7 +10,11 @@
   let drafts = $state<Draft[]>([]);
   let busy = $state<string | null>(null);
   let note = $state('');
-  onMount(() => { drafts = listDrafts(app.server).filter(d => d.changes === null || hasChanges(d.changes) || d.pixels_changed); });
+  onMount(() => {
+    const refresh = () => { drafts = listDrafts(app.server).filter(d => d.changes === null || hasChanges(d.changes) || d.pixels_changed); };
+    refresh(); window.addEventListener(DRAFTS_CHANGED, refresh);
+    return () => window.removeEventListener(DRAFTS_CHANGED, refresh);
+  });
   async function check(draft: Draft) {
     busy = draft.uuid; note = '';
     try {

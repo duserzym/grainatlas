@@ -2,6 +2,9 @@ import type { Project } from './core/types.ts';
 import { diffElements, elementsOf, emptyElements, type Counts, type Elements } from './sync.ts';
 export const DRAFT_PREFIX = 'grainatlas.draft.';
 export const DRAFT_INDEX = 'grainatlas.drafts';
+const DISCARDED = 'grainatlas.discarded-drafts';
+export const DRAFTS_CHANGED = 'grainatlas:drafts-changed';
+function changed() { if (typeof window !== 'undefined') window.dispatchEvent(new Event(DRAFTS_CHANGED)); }
 export interface Draft {
   uuid: string; name: string; server: string | null; mount: string | null;
   base_revision: number | null; base: Elements | null; updated_at: string; changes: Counts | null;
@@ -21,20 +24,28 @@ function arrayAt<T>(storage: DraftStorage, key: string): T[] {
 export function readDraft(uuid: string, storage?: DraftStorage): Draft | null {
   try { return JSON.parse(target(storage).getItem(DRAFT_PREFIX + uuid) || 'null'); } catch { return null; }
 }
-export function writeDraft(draft: Draft, storage?: DraftStorage): void {
+export function writeDraft(draft: Draft, storage?: DraftStorage): boolean {
   try {
     const s = target(storage);
-    s.setItem(DRAFT_PREFIX + draft.uuid, JSON.stringify(draft));
+    const bytes = JSON.stringify(draft);
+    const different = s.getItem(DRAFT_PREFIX + draft.uuid) !== bytes;
+    s.setItem(DRAFT_PREFIX + draft.uuid, bytes);
+    s.setItem(DISCARDED, JSON.stringify(arrayAt<string>(s, DISCARDED).filter(id => id !== draft.uuid)));
     const index = arrayAt<string>(s, DRAFT_INDEX);
     if (!index.includes(draft.uuid)) s.setItem(DRAFT_INDEX, JSON.stringify([...index, draft.uuid]));
-  } catch { /* storage unavailable or quota exceeded; the open project's edits remain in memory */ }
+    if (different) changed();
+    return true;
+  } catch { return false; /* the open project's edits remain in memory */ }
 }
-export function deleteDraft(uuid: string, storage?: DraftStorage): void {
+export function deleteDraft(uuid: string, storage?: DraftStorage): boolean {
   try {
     const s = target(storage);
     s.removeItem(DRAFT_PREFIX + uuid);
     s.setItem(DRAFT_INDEX, JSON.stringify(arrayAt<string>(s, DRAFT_INDEX).filter(id => id !== uuid)));
-  } catch { /* storage unavailable */ }
+    s.setItem(DISCARDED, JSON.stringify([...new Set([...arrayAt<string>(s, DISCARDED), uuid])]));
+    changed();
+    return true;
+  } catch { return false; }
 }
 function newDraft(project: Project, server: string | null): Draft {
   return { uuid: project.uuid, name: project.name || project.package.name, server, mount: project.laicpmsdb?.mount_id ?? null, base_revision: null, base: null, updated_at: new Date().toISOString(), changes: null };
@@ -59,7 +70,7 @@ export function listDrafts(server: string | null = null, storage?: DraftStorage)
       try {
         const value = JSON.parse(s.getItem(key) || 'null');
         const project = (key.startsWith('grainatlas.copy.') ? value?.project : value) as Project | null;
-        if (!project?.uuid || !project.package?.name) continue;
+        if (!project?.uuid || !project.package?.name || arrayAt<string>(s, DISCARDED).includes(project.uuid)) continue;
         const draft = found.get(project.uuid) ?? newDraft(project, server);
         const recent = arrayAt<{ id?: string; name?: string; when?: string }>(s, 'grainatlas.recent');
         const when = value.saved_at ?? recent.find(r => r.id === project.uuid || r.name === project.package.name)?.when;

@@ -161,20 +161,122 @@ The age overlay uses a 1.5 px white inner ring and a 0.75 px dark outer ring,
 with constant screen widths and zoom-adjusted radii in both themes. Flags and
 selection are drawn above the result rings.
 
-The installed bridge does not expose the new bridge v4 atlas helpers. No
-sibling repository or installed dependency was changed. This update does not
-claim bridge v4 integration or live B1 compatibility testing. Browser and
-desktop checks remain with the supervisor; no Playwright run, port, install,
-Rust formatting or commit is part of this update.
+## Bridge v4 and editing (Part C)
 
-## Files changed in this follow-up
+`hosted-sync.ts` uses the bridge's exported command validator, event names,
+types and normalizers. `hosted-actions.ts` adapts commands to tab sessions.
+The module emits status snapshots (including checking), draft snapshots at
+startup and storage changes, and `lab.atlas.synced` after confirmed syncs or
+updates. Status revision is the mount revision and is null without a mount.
+Identified commands are serialized and produce one result after completion.
+An offline open/check is successful; failed syncs retain the draft. A conflict
+opens Review differences and stays in Edit. Other-module sync notices recheck
+all open tabs on the same mount.
 
+The canvas toolbar switches between View and Edit. Its own switch asks Sync
+and leave, Keep draft or Stay when changes are pending. Shell commands act
+without another prompt. Discard removes tracking, leaves stored project bytes
+alone and retains an in-memory Undo discard action until the next open. A
+small discarded-uuid index prevents those stored bytes from immediately
+reappearing as legacy drafts; explicit adoption starts tracking again.
+
+Without raw pixels, Split uses a finite line crossing the polygon twice;
+Merge uses polygon boundary intersections; Outline uses the drawn polygon
+without snapping. Boolean results with holes, separate pieces or point-only
+contacts are refused because the grain format stores one simple ring. Brush
+still needs raw pixels. New geometric shapes recompute area, centroid and
+bounds. Pixel splits keep the core geometry and bubble classification.
+
+Split gives both children new uuids, the parent number and label suffixes a/b
+(larger part first), with split_from. Merge creates a new uuid with merged_from,
+the lowest parent number and the default area/number label. Parents leave the
+active grain list and their wire deletes mean retirement. Spots retain names,
+ids and positions; reassignment to children and parent retirement share one
+sync request and one undo checkpoint. A boundary spot goes to the larger part;
+a spot outside both pixel-derived parts refuses the edit instead of silently
+unlinking it. Artifact children retain lineage and their parent's number.
+
+Numbers are not keys. Canvas review filtering and shell selection use grain
+ids. Shell lookup accepts ids and suffix labels; a bare repeated number is
+ambiguous. Canvas numbers, grain tables, area selectors, grain print labels,
+CSV and GeoJSON carry suffixes. Explicit Renumber assigns consecutive numbers
+in reading order and retains suffixes. Spot naming still uses the existing
+numeric {grain} and running {n} pattern; splitting never renames spots. The
+legacy spot handover resolves grain labels by id. Masks allocate distinct u16
+values to split siblings and put the value-to-uuid mapping in grains.json;
+normal unique numbers keep their previous mask values. Checks already compare
+grain ids and do not require unique grain numbers.
+
+Standalone handoffs are documented in README.md. Revision arguments are a
+hint for the current-state lookup, not a request for a historical bundle.
+No package installation, crate fetch, Rust build, Tauri formatting, port,
+Playwright run or commit is part of this update. The new browser spec uses
+an iframe host and the fake service; browser and desktop execution remain
+with the supervisor.
+
+## Part C verification
+
+`make unit`: 175 passed, no failures or skips. `svelte-check` with the normal
+ui/tsconfig.json and an empty temporary Svelte config outside the repository:
+0 errors and 0 warnings. The temporary config bypasses Vite's cache write
+through the shared node_modules symlink. The new Playwright spec also received
+a standalone TypeScript diagnostic check; Playwright itself was not invoked.
+Rust unit tests are written for launch parsing, label round-trips, explicit
+renumbering, CSV labels and distinct mask ids, but were not run. Cargo.lock is
+unchanged; the supervisor must resolve/build the new version 2 single-instance
+plugin and rebuild native/wasm artifacts. Geometry and browser layout still
+need the requested browser/app checks, and live B1 behavior is not verified.
+
+## Files changed for Part C
+
+- `README.md`
+- `crates/grainatlas-core/src/atlas/mod.rs`
+- `crates/grainatlas-core/src/checks.rs`
+- `crates/grainatlas-core/src/laser/mod.rs`
+- `crates/grainatlas-core/src/layout/mod.rs`
+- `crates/grainatlas-core/src/layout/sheets.rs`
+- `crates/grainatlas-core/src/project/pipeline.rs`
+- `crates/grainatlas-core/src/segment/edit.rs`
+- `crates/grainatlas-core/src/segment/mod.rs`
+- `crates/grainatlas-core/src/segment/pad.rs`
+- `crates/grainatlas-core/src/segment/shape.rs`
+- `crates/grainatlas-core/src/spots/mod.rs`
+- `crates/grainatlas-core/tests/auto_tone.rs`
+- `crates/grainatlas-core/tests/segment.rs`
+- `crates/grainatlas-core/tests/sheets.rs`
+- `crates/grainatlas-core/tests/spots.rs`
 - `docs/sync-client.md`
-- `ui/scripts/fake-laicpmsdb.mjs`
+- `tauri/src-tauri/Cargo.toml`
+- `tauri/src-tauri/src/launch.rs`
+- `tauri/src-tauri/src/lib.rs`
 - `ui/src/App.svelte`
-- `ui/src/components/DraftList.svelte`, `ui/src/components/SyncChip.svelte`
-- `ui/src/lib/core/types.ts`, `ui/src/lib/drafts.ts`, `ui/src/lib/remote.ts`
-- `ui/src/lib/sync.ts`, `ui/src/lib/sync-api.ts`, `ui/src/lib/sync-hash.ts`, `ui/src/lib/sync-session.svelte.ts`
+- `ui/src/components/DraftList.svelte`
+- `ui/src/components/LaserPanel.svelte`
+- `ui/src/components/LeaveEditDialog.svelte`
+- `ui/src/components/SyncChip.svelte`
+- `ui/src/lib/actions.ts`
+- `ui/src/lib/atlas.ts`
+- `ui/src/lib/core/types.ts`
+- `ui/src/lib/drafts.ts`
+- `ui/src/lib/grain-finding.ts`
+- `ui/src/lib/grain-lineage.ts`
+- `ui/src/lib/hosted-actions.ts`
+- `ui/src/lib/hosted-sync.ts`
+- `ui/src/lib/laicpmsdb.ts`
+- `ui/src/lib/polygon-edit.ts`
+- `ui/src/lib/remote.ts`
+- `ui/src/lib/shellcmd.ts`
+- `ui/src/lib/spots.ts`
+- `ui/src/lib/standalone-launch.ts`
+- `ui/src/lib/store.svelte.ts`
+- `ui/src/lib/sync-session.svelte.ts`
+- `ui/src/screens/Area.svelte`
 - `ui/src/screens/Canvas.svelte`
-- `ui/tests/sync.spec.ts`, `ui/tests/results.spec.ts`
-- `ui/unit/drafts.test.ts`, `ui/unit/sync.test.ts`, `ui/unit/sync-api.test.ts`, `ui/unit/sync-hash.test.ts`, `ui/unit/sync-session.test.ts`
+- `ui/tests/hosted-sync.spec.ts`
+- `ui/unit/drafts.test.ts`
+- `ui/unit/grain-lineage.test.ts`
+- `ui/unit/hosted-actions.test.ts`
+- `ui/unit/hosted-sync.test.ts`
+- `ui/unit/polygon-edit.test.ts`
+- `ui/unit/standalone-launch.test.ts`
+- `ui/unit/sync-session.test.ts`

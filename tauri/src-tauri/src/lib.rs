@@ -29,6 +29,26 @@ fn finish_quit(app: AppHandle) {
     app.exit(0);
 }
 
+// Codes remain only in memory until the ready webview takes them.
+#[derive(Default)]
+struct Launches { ready: AtomicBool, pending: Mutex<Vec<launch::Launch>> }
+fn deliver_launch(app: &AppHandle, args: &[String]) {
+    if let Ok(Some(request)) = launch::parse(args) {
+        let state = app.state::<Launches>();
+        let mut pending = state.pending.lock().unwrap_or_else(|p| p.into_inner());
+        if state.ready.load(Ordering::Acquire) {
+            let _ = app.emit_to("main", "grainatlas://launch", request);
+        } else { pending.push(request); }
+    }
+}
+#[tauri::command]
+fn atlas_launch_ready(app: AppHandle, state: State<'_, Launches>) {
+    let mut pending = state.pending.lock().unwrap_or_else(|p| p.into_inner());
+    state.ready.store(true, Ordering::Release);
+    for request in pending.drain(..) { let _ = app.emit_to("main", "grainatlas://launch", request); }
+}
+
+mod launch;
 mod geometry;
 mod memory;
 mod profile;
@@ -792,7 +812,7 @@ struct Startup {
 fn startup() -> Startup {
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
     let profile = launch_profile(&args);
-    let args = profile::without_profile(&args);
+    let args = launch::without_launch(&profile::without_profile(&args));
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0);
     let paths: Vec<String> = args.iter().filter(|a| !a.starts_with("--") && std::path::Path::new(a).exists()).cloned().collect();
     let segment = args.iter().any(|a| a == "--segment");
@@ -831,8 +851,33 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let launches = Launches::default();
+    if let Ok(Some(request)) = launch::parse(&args) {
+        launches.pending.lock().unwrap_or_else(|p| p.into_inner()).push(request);
+    }
+    let mut builder = tauri::Builder::default().manage(launches);
+    // Named/test/debug profiles never forward into the normal app.
+    if launch_profile(&args).is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let args: Vec<_> = argv.into_iter().skip(1).collect();
+            deliver_launch(app, &args);
+            // Preserve ordinary project/file launches as well; handoff values never
+            // enter the filesystem opener, even if a value happens to name a file.
+            if matches!(launch::parse(&args), Ok(None)) {
+                let paths: Vec<_> = profile::without_profile(&args).into_iter()
+                    .filter(|a| !a.starts_with("--") && std::path::Path::new(a).exists()).collect();
+                if !paths.is_empty() {
+                    app.state::<AppState>().opened.lock().unwrap_or_else(|p| p.into_inner()).extend(paths);
+                    let _ = app.emit_to("main", "grainatlas://opened", ());
+                }
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize(); let _ = window.show(); let _ = window.set_focus();
+            }
+        }));
+    }
+    builder.plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(menu)
         .on_menu_event(|app, ev| match ev.id().as_ref() {
@@ -876,12 +921,14 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
                 webview.state::<QuitGuardReady>().0.store(false, Ordering::Release);
+                webview.state::<Launches>().ready.store(false, Ordering::Release);
             }
         })
         .manage(QuitGuardReady::default())
         .manage(AppState::default())
         .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            atlas_launch_ready,
             enable_quit_guard,
             finish_quit,
             updater::update_check,

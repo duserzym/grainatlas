@@ -153,7 +153,7 @@ pub fn layout(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String, V
                 for g in grains.get(a.id).map(|v| v.as_slice()).unwrap_or(&[]).iter().filter(|g| g.is_grain()) {
                     let m = p.grain_margin_um;
                     let rect = [(g.bbox_um[0] - m).max(0.0), (g.bbox_um[1] - m).max(0.0), (g.bbox_um[2] + m).min(a.w as f64 * a.um_per_px), (g.bbox_um[3] + m).min(a.h as f64 * a.um_per_px)];
-                    items.push(Item { area: ai, rect, label: format!("{} #{}", a.sample, g.number), grain: Some(g.clone()), tile: None });
+                    items.push(Item { area: ai, rect, label: format!("{} #{}", a.sample, g.display_number()), grain: Some(g.clone()), tile: None });
                 }
             }
         }

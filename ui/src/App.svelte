@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { grainNumber } from './lib/grain-lineage';
   import { onMount } from 'svelte';
   import VersionChip from './components/VersionChip.svelte';
   import { startScheduler } from './lib/updater.svelte';
@@ -15,6 +16,7 @@
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
   import SyncChip from './components/SyncChip.svelte';
+  import LeaveEditDialog from './components/LeaveEditDialog.svelte';
   import QuitDialog from './components/QuitDialog.svelte';
   import CheckDialog from './components/CheckDialog.svelte';
   import RenameDialog from './components/RenameDialog.svelte';
@@ -23,7 +25,9 @@
   import ThemeSwitch from './components/ThemeSwitch.svelte';
   import CheckUpdatesButton from './components/CheckUpdatesButton.svelte';
   import { handleShellCommand } from './lib/shellcmd';
-  import { editCopy } from './lib/remote';
+  import { hostedSync } from './lib/hosted-sync';
+  import { reportHostedStatus } from './lib/hosted-actions';
+  import { DRAFTS_CHANGED, listDrafts } from './lib/drafts';
 
   const screens: { id: Screen; label: string; key: string; needs?: 'pkg' | 'mosaic' }[] = [
     { id: 'open', label: 'Open', key: '1' },
@@ -32,6 +36,8 @@
     { id: 'layout', label: 'Layout', key: '4', needs: 'mosaic' },
     { id: 'settings', label: 'Settings', key: '5' },
   ];
+
+  $effect(() => { if (isHosted()) reportHostedStatus(app); });
 
   const menuCollapsed = $derived(app.screen === 'canvas' && app.layout.menuCollapsed);
   function toggleMenu() {
@@ -94,7 +100,9 @@
       return;
     }
     const via = app.shellSelection?.project === project && app.shellSelection.spot === spot.id ? 'shell' : 'user';
-    const grain = spot.grain_number == null ? null : `${spot.area_id}/${spot.grain_number}`;
+    // The protocol's grain is "<area>/<number>" (with a split suffix, e.g. 12a), unique after splits.
+    const g = spot.grain_id ? app.grains[spot.area_id]?.find((q) => q.id === spot.grain_id) : null;
+    const grain = g ? `${spot.area_id}/${grainNumber(g)}` : spot.grain_number == null ? null : `${spot.area_id}/${spot.grain_number}`;
     const key = JSON.stringify([project, spot.id, spot.name, grain, spot.area_id, via]);
     if (key === lastSelected) return;
     lastSelected = key;
@@ -278,6 +286,14 @@
       };
       void import('@tauri-apps/api/event').then(({ listen }) => listen('grainatlas://opened', () => void takeOpened()).then((f) => undo.push(f)));
       void takeOpened();
+      void (async () => {
+        const { listen } = await import('@tauri-apps/api/event');
+        const { invoke } = await import('@tauri-apps/api/core');
+        const { openStandaloneLaunch } = await import('./lib/standalone-launch');
+        let queue = Promise.resolve();
+        undo.push(await listen<import('./lib/standalone-launch').StandaloneLaunch>('grainatlas://launch', e => { queue = queue.then(() => openStandaloneLaunch(e.payload)); }));
+        await invoke('atlas_launch_ready');
+      })();
       if (tabKeys)
         void import('@tauri-apps/api/event').then(({ listen }) =>
           listen<string>('grainatlas://menu', (e) => (e.payload === 'new-tab' || e.payload === 'close-tab') && tabCommand(e.payload)).then((f) => undo.push(f)),
@@ -287,6 +303,10 @@
     // bridge takes them at once (before the shell's 3 s fallback) and hands them
     // over as {path, file}; they open like a drop on the Open screen.
     const stopFiles = isHosted() ? onOpenFiles((set) => openOffered(set)) : () => {};
+    const reportDrafts = () => { if (isHosted()) hostedSync.drafts(listDrafts(app.server)); };
+    reportDrafts();
+    window.addEventListener(DRAFTS_CHANGED, reportDrafts);
+    undo.push(() => window.removeEventListener(DRAFTS_CHANGED, reportDrafts));
     const stopCommands = isHosted() ? onCommand(handleShellCommand) : () => {};
     fromHash();
     void startDeepLink();
@@ -357,6 +377,8 @@
   });
 </script>
 
+{#if app.leaveEditPrompt}<LeaveEditDialog onchoose={app.leaveEditPrompt.answer} />{/if}
+
 <div class="ga-root app" data-theme={app.theme}>
   <div class="project-tabs" hidden={menuCollapsed}><TabBar bind:this={tabBar} shortcuts={tabKeys} /></div>
   {#key tabs.activeId}
@@ -382,9 +404,7 @@
     <div class="right">
       <CheckUpdatesButton />
       <ThemeSwitch />
-      {#if app.readOnly}
-        <button class="primary" onclick={editCopy} title="Make this published project a local, editable one (same project id)" data-testid="edit-copy">Edit</button>
-      {:else if app.project}
+      {#if app.project && !app.readOnly}
         <button onclick={() => saveProject()} title="Save project (Cmd/Ctrl+S): {app.projectPath ? app.projectPath.path : desktop ? `${app.project.name}.gaproj next to the package` : 'download the project file'}" data-testid="save-project">Save project</button>
         <button onclick={() => saveProjectFile()} title="Save a project file (.gaproj): parameters, placements, grains and spots, no pixels; it reopens with the package's images (double-click it)">Save as…</button>
       {/if}

@@ -3,6 +3,9 @@
   // Pointer-first: navigate with trackpad or mouse, click to place, drag a spot
   // to move it, drag its ring handle to resize, double-click its name to rename;
   // the floating panel edits the hovered or selected object. Keys are extras.
+  import { exportSpotLabels, grainNumber, splitChildren, mergedChild, reassignLineage, renumberLabels } from '../lib/grain-lineage';
+  import { splitPolygon, mergePolygons, polygonBoolean, polygonGrain } from '../lib/polygon-edit';
+  import { setMode, undoDiscard } from '../lib/hosted-actions';
   import { app, current, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toMosaic, toScreen, type View } from '../lib/canvas/view';
@@ -203,7 +206,7 @@
   const visibleGrains = $derived(grains.filter((g) => app.showNeighbourGrains || !owners.get(g.id)?.duplicate_of));
   const tableGrains = $derived(visibleGrains.filter((g) => !showOnlyNew || g.added));
   const outlinedGrains = $derived(reviewVisible
-    ? visibleGrains.filter(g => spots.some(s => s.grain_number === g.number))
+    ? visibleGrains.filter(g => spots.some(s => s.grain_id === g.id))
     : visibleGrains);
   const labels = $derived(app.labels.filter((l) => l.area_id === areaId));
   const segParams = $derived(areaId ? app.params[areaId]?.segment : null);
@@ -275,7 +278,7 @@
     const o = owners.get(g.id);
     if (!o) return '';
     const og = app.grains[o.owner_area]?.find((q) => q.id === o.duplicate_of);
-    const note = o.duplicate_of ? `duplicate of ${areaLabel(o.owner_area)} #${og?.number ?? '?'}`
+    const note = o.duplicate_of ? `duplicate of ${areaLabel(o.owner_area)} #${og ? grainNumber(og) : '?'}`
       : `owned by this area${o.cut ? ', cut by the area edge' : ''}`;
     return `${note}${o.outside_drawn ? '; outside every drawn area' : ''}`;
   }
@@ -460,12 +463,18 @@
     app.checkpoint();
     app.grains = { ...app.grains, [areaId]: all ? gs : [...gs, ...artifacts.filter((a) => !gs.some((g) => g.id === a.id))] };
     app.spots = relinkSpots(app.spots, areaId, app.grains[areaId]);
+    app.persist();
   }
   /** Keeps a flagged detection as a grain (the next number); re-runs keep it too. */
   function keepAsGrains(ids: string[]) {
     if (!detections.some((g) => g.artifact && ids.includes(g.id))) return;
     let n = Math.max(0, ...grains.map((g) => g.number));
-    setGrains(detections.map((g) => (g.artifact && ids.includes(g.id) ? { ...g, artifact: undefined, kept: true, number: ++n } : g)), true);
+    setGrains(detections.map((g) => {
+      if (!g.artifact || !ids.includes(g.id)) return g;
+      const number = g.split_from && g.number > 0 ? g.number : ++n;
+      const suffix = grainNumber(g).match(/^\d+([a-z]+)$/)?.[1] ?? '';
+      return { ...g, artifact: undefined, kept: true, number, label: g.label ? `${areaId}/${number}${suffix}` : undefined };
+    }), true);
   }
   function keepAsGrain(id: string) { keepAsGrains(selGrains.includes(id) ? selGrains : [id]); }
   /** Marks the selected grains as artifacts (unnumbered, left off sheets); re-runs keep the mark. */
@@ -479,20 +488,29 @@
     const out: Grain[] = [];
     for (const g of grains.filter((g) => selGrains.includes(g.id))) {
       const r = await app.run('Refining grain', () => core!.refineGrain(id, $state.snapshot(g) as Grain));
-      if (r) out.push(r);
+      if (r) out.push({ ...g, ...r });
     }
     setGrains(grains.map((g) => out.find((o) => o.id === g.id) ?? g));
   }
   async function merge() {
     if (!core || !areaId || selGrains.length < 2) return;
     const id = areaId;
-    const targets = grains.filter((g) => selGrains.includes(g.id)).map((g) => $state.snapshot(g) as Grain);
+    const targets = grains.filter((g) => !g.artifact && selGrains.includes(g.id)).map((g) => $state.snapshot(g) as Grain);
     if (targets.length < 2) return;
-    const m = await app.run('Merging grains', () => core!.mergeGrains(id, targets));
-    if (!m) return;
-    setGrains([...grains.filter((g) => !selGrains.includes(g.id)), m].sort((a, b) => a.number - b.number));
-    selGrains = [m.id];
+    try {
+      // Check topology in either mode; pixel merge still supplies pixel measurements.
+      const polygon = mergePolygons(targets.map(g => g.polygon_um));
+      const geometry = noPixels ? polygonGrain(polygon) : await app.run('Merging grains', () => core!.mergeGrains(id, targets));
+      if (!geometry) return;
+      const child = mergedChild(targets, geometry, id);
+      const spots = reassignLineage(app.spots, targets, [child]);
+      app.checkpoint();
+      app.grains = { ...app.grains, [id]: [...detections.filter(g => !targets.some(t => t.id === g.id)), child] };
+      app.spots = spots; app.persist();
+      selGrains = [child.id];
+    } catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
   }
+
   function deleteGrains() {
     if (!selGrains.length) return;
     setGrains(detections.filter((g) => !selGrains.includes(g.id)), true);
@@ -504,11 +522,13 @@
     if (fromHere) {
       const g = grains.find((x) => x.id === selGrains[0]);
       if (!g) return;
-      const n = Number(prompt(`Renumber from grain ${g.number}: new number`, String(g.number)));
+      const n = Number(prompt(`Renumber from grain ${grainNumber(g)}: new number`, String(g.number)));
       if (!n) return;
       from = { grainId: g.id, number: n };
     }
-    setGrains(await core.renumber($state.snapshot(grains) as Grain[], segParams.row_tolerance, from));
+    const before = $state.snapshot(grains) as Grain[];
+    setGrains(renumberLabels(before, await core.renumber(before, segParams.row_tolerance, from), areaId));
+    app.persist();
   }
   async function exportGrains() {
     if (!core || !areaId) return;
@@ -571,7 +591,7 @@
   async function sendSpots() {
     const state = current();
     if (!state.project || !(await beforeCheckedAction(state))) return;
-    const { documents, skipped } = mountSpotDocuments(state.project, $state.snapshot(state.spots) as Spot[]);
+    const { documents, skipped } = mountSpotDocuments(state.project, $state.snapshot(state.spots) as Spot[], $state.snapshot(state.grains) as Record<string, Grain[]>);
     const count = documents.reduce((n, d) => n + d.spots.length, 0);
     const mount = state.project.laicpmsdb.mount_id;
     const server = state.server;
@@ -608,7 +628,7 @@
       const ownerId = own.owner_area, grainId = own.duplicate_of;
       const ownerGrain = state.grains[ownerId]?.find((q) => q.id === grainId);
       const ownerSample = areaLabel(ownerId);
-      state.notice = `Grain ${g.number} here is held by ${ownerSample} (its grain ${ownerGrain?.number ?? '?'}). This spot is named for ${sample}; if the grain belongs to ${ownerSample}, place the spot there.`;
+      state.notice = `Grain ${grainNumber(g)} here is held by ${ownerSample} (its grain ${ownerGrain ? grainNumber(ownerGrain) : '?'}). This spot is named for ${sample}; if the grain belongs to ${ownerSample}, place the spot there.`;
       state.noticeAction = { label: `Go to ${ownerSample}`, run: async () => {
         if (!state.stitched[ownerId] && !(await stitch(ownerId, state))) return;
         state.focusSpot = null;
@@ -699,7 +719,7 @@
   }
   async function exportSpots(format: 'csv' | 'geojson') {
     if (!core) return;
-    const text = await app.run(`Exporting ${format}`, () => core!.exportSpots($state.snapshot(app.spots) as Spot[], $state.snapshot(app.grains) as Record<string, Grain[]>, format));
+    const text = await app.run(`Exporting ${format}`, () => core!.exportSpots(exportSpotLabels($state.snapshot(app.spots) as Spot[], $state.snapshot(app.grains) as Record<string, Grain[]>), $state.snapshot(app.grains) as Record<string, Grain[]>, format));
     if (text) download(text, `${app.pkg?.name ?? 'grainatlas'}_spots.${format === 'csv' ? 'csv' : 'geojson'}`, format === 'csv' ? 'text/csv' : 'application/geo+json');
   }
   async function setSample(v: string) {
@@ -1034,17 +1054,19 @@
     const g = grainAt(grains, ...mid) ?? grains.find((q) => selGrains.includes(q.id));
     if (!g) return;
     const id = areaId;
-    const parts = await app.run('Splitting grain', () => core!.splitGrain(id, $state.snapshot(g) as Grain, line));
-    if (!parts || parts.length < 2) return;
-    // The largest grain part keeps the grain; a part the core recognised as a bubble becomes a
-    // bubble artifact (one cut detaches a bubble), the others get new numbers.
-    const real = parts.filter((q) => !q.artifact).sort((a, b) => b.area_um2 - a.area_um2);
-    const flagged = parts.filter((q) => q.artifact).map((q) => ({ ...q, number: 0 }));
-    if (!real.length) return;
-    let max = Math.max(0, ...grains.map((q) => q.number));
-    const kept = real.map((q, i) => (i === 0 ? { ...q, id: g.id, number: g.number } : { ...q, number: ++max }));
-    setGrains([...grains.filter((q) => q.id !== g.id), ...kept, ...flagged].sort((a, b) => a.number - b.number));
-    if (flagged.length) app.notice = `Split off ${flagged.length === 1 ? 'a bubble' : `${flagged.length} bubbles`}: flagged as not a grain (Keep as grain restores it).`;
+    try {
+      const parts = noPixels
+        ? splitPolygon(g.polygon_um, line).map(p => polygonGrain(p, $state.snapshot(g) as Grain))
+        : await app.run('Splitting grain', () => core!.splitGrain(id, $state.snapshot(g) as Grain, line));
+      if (!parts || parts.length < 2) { app.notice = 'Draw the cut all the way across the grain.'; return; }
+      const children = splitChildren(g, parts, id);
+      const spots = reassignLineage(app.spots, [g], children);
+      app.checkpoint();
+      app.grains = { ...app.grains, [id]: [...detections.filter(q => q.id !== g.id), ...children] };
+      app.spots = spots; app.persist();
+      selGrains = children.map(g => g.id);
+      if (children.some(g => g.artifact)) app.notice = 'Split off a bubble: flagged as not a grain. Undo restores the parent and its spots.';
+    } catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
   }
 
   async function click(p: CanvasPoint) {
@@ -1112,12 +1134,12 @@
     if (!l || !core || !areaId || l.pts.length < 3) return;
     const id = areaId;
     let poly = $state.snapshot(l.pts) as [number, number][];
-    if (snapEdges && !l.free) {
+    if (!noPixels && snapEdges && !l.free) {
       // Edges within ~10 screen pixels of the drawn path pull the outline onto them.
       const snapped = await app.run('Snapping to edges', () => core!.snapOutline(id, poly, Math.max(3, 10 * k), 0.08));
       if (snapped && snapped.length >= 3) poly = snapped;
     }
-    await applyEdit(l.op, poly[0], (base, op) => core!.outlineGrain(id, poly, base, op, snapEdges && !l.free && op !== 'cut' ? { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth } : { margin_um: 0, smooth: false }), 'Outlining grain');
+    await applyEdit(l.op, poly[0], (base, op) => noPixels ? Promise.resolve(polygonGrain(base && op !== 'new' ? polygonBoolean([base.polygon_um, poly], op === 'cut' ? 'difference' : 'union') : poly, base)) : core!.outlineGrain(id, poly, base, op, snapEdges && !l.free && op !== 'cut' ? { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth } : { margin_um: 0, smooth: false }), 'Outlining grain');
   }
   async function finishStroke(st: { pts: [number, number][]; op: EditOp }) {
     if (!core || !areaId) return;
@@ -1146,13 +1168,13 @@
       app.notice = eff === 'cut' ? 'That cut would remove the whole grain: use Delete for that.' : 'Nothing to outline there.';
       return;
     }
-    const g: Grain = { ...r };
+    const g: Grain = { ...base, ...r };
     const covered = eff === 'cut' ? [] : detections.filter((q) => q.id !== g.id && q.id !== base?.id && inside(g.polygon_um, q.centroid_um[0], q.centroid_um[1]));
     if (eff === 'new') {
       const keep = covered.filter((q) => !q.artifact).sort((a, b) => a.number - b.number)[0];
       if (keep) {
         g.id = keep.id;
-        g.number = keep.number;
+        g.number = keep.number; g.label = keep.label;
       } else g.number = Math.max(0, ...grains.map((q) => q.number)) + 1;
     }
     const gone = new Set(covered.map((q) => q.id));
@@ -1285,7 +1307,7 @@
     if (mod || e.altKey) return;
     const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split', o: 'grain-outline', b: 'grain-brush' };
     const kk = e.key.toLowerCase();
-    if (tools[kk] && !(noPixels && (kk === 'g' || kk === 'k' || kk === 'o' || kk === 'b'))) app.tool = tools[kk];
+    if (tools[kk] && !(noPixels && (kk === 'g' || kk === 'b'))) app.tool = tools[kk];
     else if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
     else if (e.key === ']') viewer?.rotateBy(Math.PI / 12);
@@ -1356,7 +1378,7 @@
   <div class="row">
     <button onclick={markArtifact} disabled={ro || !!app.busy || !selectedGrains.some((g) => !g.artifact)}>Not a grain</button>
     <button onclick={() => keepAsGrains(selGrains)} disabled={ro || !!app.busy || !selectedGrains.some((g) => g.artifact)}>Keep as grain</button>
-    <button onclick={merge} disabled={ro || !!app.busy || noPixels || selectedGrains.filter((g) => !g.artifact).length < 2}>Merge</button>
+    <button onclick={merge} disabled={ro || !!app.busy || selectedGrains.filter((g) => !g.artifact).length < 2}>Merge</button>
     <button onclick={() => acceptAdded(selGrains)} disabled={ro || !!app.busy || !selectedGrains.some((g) => g.added)}>Accept</button>
     <button class="danger" onclick={deleteGrains} disabled={ro || !!app.busy}>Delete</button>
   </div>
@@ -1417,7 +1439,7 @@
             {/if}
             {#if app.layers.numbers}
               {#each visibleGrains as g (g.id)}
-                <text class="gnum" class:sel={selGrains.includes(g.id)} transform="translate({g.bbox_um[0]} {g.bbox_um[1]}) rotate({-rotDeg}) scale({k})" dy="-3">{g.number}</text>
+                <text class="gnum" class:sel={selGrains.includes(g.id)} transform="translate({g.bbox_um[0]} {g.bbox_um[1]}) rotate({-rotDeg}) scale({k})" dy="-3">{grainNumber(g)}</text>
               {/each}
             {/if}
             {#if app.layers.results && range}
@@ -1520,6 +1542,8 @@
     {/if}
 
     <div class="glass toolbar" data-ui>
+      <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
+      {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
       <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
         {#each Object.keys(app.stitched) as id (id)}<option value={id} title={app.grains[id] === undefined ? 'no grains yet' : undefined}>{app.grains[id] === undefined ? '○ ' : ''}{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
       </select>
@@ -1532,13 +1556,13 @@
         ⌀
         <SizeBox value={app.diameter} onchange={setDiameter} label="Spot diameter (µm) for the next spot and the selected spots; keys 1–6 pick a preset" testid="size-toolbar" />
       </div>
-      {#if !noPixels}
+      {#if !ro}
         <span class="sep"></span>
-        <button class="icon" title="Add grain: click inside it (G)" aria-pressed={app.tool === 'grain-add'} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
-        <button class="icon" title="Split grain: draw a line across it (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
-        <button class="icon" title="Outline a grain (O): drag around it, or click its corners and double-click (or Enter) to close. ⇧ adds to the grain, ⌥ cuts from it, ⌘ draws without snapping" aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
-        <button class="icon" title="Grain brush (B): paint over a grain to add it (grows to its edges), ⌥ to erase" aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
-        {#if app.tool === 'grain-outline'}
+        <button class="icon" title="Add grain: click inside it (G)" aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
+        <button class="icon" data-testid="tool-split" title="Split grain: draw a line across it (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
+        <button class="icon" title={noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : "Outline a grain (O): drag or click corners; Shift extends, Alt cuts, Cmd draws without snapping"} aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
+        <button class="icon" disabled={noPixels} title={noPixels ? "Brush needs raw image pixels. Open the raw package to paint grain edges." : "Grain brush (B): paint to add, Alt to erase"} aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
+        {#if app.tool === 'grain-outline' && !noPixels}
           <label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
         {:else if app.tool === 'grain-brush'}
           <label class="diam" title="Brush diameter (µm)">⌀ <input type="number" min="2" step="2" bind:value={brushUm} aria-label="Brush µm" />µm</label>
@@ -1883,7 +1907,7 @@
         <div class="row">
           {#if selGrains.length}<span data-testid="grain-sel-count">{selGrains.length} selected</span>{/if}
           <button onclick={refine} disabled={!selGrains.length || noPixels} title="GrabCut on the selected grains">Refine</button>
-          <button onclick={merge} disabled={selectedGrains.filter((g) => !g.artifact).length < 2 || noPixels} title="Shift-click grains to select several">Merge</button>
+          <button onclick={merge} disabled={selectedGrains.filter((g) => !g.artifact).length < 2} title="Shift-click grains to select several">Merge</button>
           <button onclick={markArtifact} disabled={!selGrains.some((id) => grains.some((g) => g.id === id))} title="Not a grain: unnumbered, left off print sheets and spots" data-testid="mark-artifact">Not a grain</button>
           <button onclick={() => keepAsGrains(selGrains)} disabled={!selectedGrains.some((g) => g.artifact)}>Keep as grain</button>
           <button onclick={() => acceptAdded(selGrains)} disabled={!selectedGrains.some((g) => g.added)}>Accept</button>
@@ -1901,11 +1925,11 @@
         {/if}
         <div class="list">
           <table class="data">
-            <thead><tr><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
+            <thead><tr><th>Grain</th><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
             <tbody>
               {#each tableGrains as g (g.id)}
                 <tr data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
-                  <td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
+                  <td>{grainNumber(g)}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
                   <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
               {/each}

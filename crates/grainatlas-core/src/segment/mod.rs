@@ -239,6 +239,9 @@ impl Artifact {
 pub struct Grain {
     pub id: Uuid,
     pub number: u32,
+    /// Stable display label, including split suffixes; old projects use the number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub polygon_um: Vec<[f64; 2]>,
     pub bbox_um: [f64; 4],
     pub centroid_um: [f64; 2],
@@ -269,6 +272,10 @@ pub struct Grain {
 }
 
 impl Grain {
+    pub fn display_number(&self) -> String {
+        self.label.as_deref().and_then(|s| s.rsplit('/').next()).filter(|s| !s.is_empty())
+            .map(str::to_owned).unwrap_or_else(|| self.number.to_string())
+    }
     /// A grain, not an artifact.
     pub fn is_grain(&self) -> bool {
         self.artifact.is_none()
@@ -486,6 +493,7 @@ pub fn number(grains: &mut [Grain], previous: &[Grain], tolerance: f64) {
             matched[gi] = true;
             g.id = q.id;
             g.number = q.number;
+            g.label = q.label.clone();
             g.manual = q.manual;
             g.added = q.added;
             // The user's decisions carry over: kept as a grain, or marked as an artifact.
@@ -572,6 +580,15 @@ pub fn renumber(grains: &mut [Grain], tolerance: f64, from: Option<(Uuid, u32)>)
             let Some(pos) = order.iter().position(|&i| grains[i].id == id) else { return };
             for (k, &i) in order[pos..].iter().enumerate() {
                 grains[i].number = n + k as u32;
+            }
+        }
+    }
+    for g in grains.iter_mut() {
+        if let Some(label) = &g.label {
+            let (area, text) = label.rsplit_once('/').unwrap_or(("", label));
+            let suffix = text.trim_start_matches(|c: char| c.is_ascii_digit());
+            if suffix.chars().all(|c| c.is_ascii_lowercase()) {
+                g.label = Some(if area.is_empty() { format!("{}{suffix}", g.number) } else { format!("{area}/{}{suffix}", g.number) });
             }
         }
     }
@@ -716,20 +733,39 @@ pub fn refine_grain(w: &WorkImage, g: &Grain, simplify_px: f64) -> Option<Grain>
     let mut ng = shape::grain_from_mask(&m2, w2, h2, o2, w, simplify_px, true)?;
     ng.id = g.id;
     ng.number = g.number;
+    ng.label = g.label.clone();
     Some(ng)
 }
 
-/// Label image (u16, 0 = background) of the grains at work resolution, by number.
+/// Mask values are independent of display numbers when those are duplicated after a split.
+/// Keep existing unique numeric values; assign duplicates an unused value. The sidecar maps
+/// each mask value to the stable grain UUID.
+pub fn mask_values(grains: &[Grain]) -> Vec<u16> {
+    let reserved: std::collections::BTreeSet<u16> = grains.iter().filter(|g| g.is_grain() && g.number > 0 && g.number <= u16::MAX as u32).map(|g| g.number as u16).collect();
+    let mut used = std::collections::BTreeSet::new();
+    let mut next = 1u16;
+    grains.iter().map(|g| {
+        if !g.is_grain() { return 0; }
+        let wanted = u16::try_from(g.number).ok().filter(|v| *v > 0 && !used.contains(v));
+        let value = wanted.unwrap_or_else(|| {
+            while reserved.contains(&next) || used.contains(&next) { next = next.checked_add(1).expect("too many grains for a u16 label image"); }
+            next
+        });
+        used.insert(value); value
+    }).collect()
+}
+
+/// Label image (u16, 0 = background); see mask_values for the sidecar mapping.
 pub fn label_image(w: &WorkImage, grains: &[Grain]) -> Vec<u16> {
     let (iw, ih) = (w.img.w, w.img.h);
     let mut out = vec![0u16; iw * ih];
-    for g in grains.iter().filter(|g| g.is_grain()) {
+    for (g, value) in grains.iter().zip(mask_values(grains)).filter(|(g, _)| g.is_grain()) {
         let (mask, bw, bh, origin) = shape::rasterize(g, w.um_per_px, 0);
         for y in 0..bh {
             for x in 0..bw {
                 let (gx, gy) = (origin.0 + x, origin.1 + y);
                 if mask[y * bw + x] && gx < iw && gy < ih {
-                    out[gy * iw + gx] = g.number.min(u16::MAX as u32) as u16;
+                    out[gy * iw + gx] = value;
                 }
             }
         }
@@ -739,11 +775,11 @@ pub fn label_image(w: &WorkImage, grains: &[Grain]) -> Vec<u16> {
 
 /// Grain table CSV (with stage positions when the area has them).
 pub fn grains_csv(grains: &[Grain], stage: impl Fn(f64, f64) -> Option<[f64; 2]>, spot_counts: impl Fn(&Uuid) -> usize) -> String {
-    let mut s = String::from("number,id,x_um,y_um,area_um2,eq_diameter_um,major_um,minor_um,orientation_deg,mean_intensity,bbox_x0_um,bbox_y0_um,bbox_x1_um,bbox_y1_um,scale_bar_um,stage_x_nm,stage_y_nm,spots,manual,artifact\n");
+    let mut s = String::from("number,id,x_um,y_um,area_um2,eq_diameter_um,major_um,minor_um,orientation_deg,mean_intensity,bbox_x0_um,bbox_y0_um,bbox_x1_um,bbox_y1_um,scale_bar_um,stage_x_nm,stage_y_nm,spots,manual,artifact,label\n");
     for g in grains {
         let st = stage(g.centroid_um[0], g.centroid_um[1]);
         s.push_str(&format!(
-            "{},{},{:.2},{:.2},{:.1},{:.2},{:.2},{:.2},{:.1},{:.4},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{}\n",
+            "{},{},{:.2},{:.2},{:.1},{:.2},{:.2},{:.2},{:.1},{:.4},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{},\"{}\"\n",
             g.number,
             g.id,
             g.centroid_um[0],
@@ -763,7 +799,8 @@ pub fn grains_csv(grains: &[Grain], stage: impl Fn(f64, f64) -> Option<[f64; 2]>
             st.map_or(String::new(), |s| format!("{:.0}", s[1])),
             spot_counts(&g.id),
             g.manual,
-            g.artifact.map_or("", |a| a.label())
+            g.artifact.map_or("", |a| a.label()),
+            g.label.as_deref().unwrap_or(&g.display_number()).replace('"', "\"\"")
         ));
     }
     s

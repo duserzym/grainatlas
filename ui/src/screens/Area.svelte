@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { grainNumber } from '../lib/grain-lineage';
   // Area screen: the area in the shared image view (tile thumbnails at their
   // stage positions before stitching, the mosaic after), metadata, stitch and
   // correction controls with a live histogram, per-tile overrides and the
@@ -235,7 +236,7 @@
             <label class="field">Match to
               <select bind:value={tone.grain_norm.reference}>
                 <option value={null}>the area</option>
-                {#each areaGrains as g (g.id)}<option value={g.id}>grain {g.number}</option>{/each}
+                {#each areaGrains as g (g.id)}<option value={g.id}>grain {grainNumber(g)}</option>{/each}
               </select>
             </label>
             <label class="field">Soft edge µm <input type="number" min="0" step="0.5" bind:value={tone.grain_norm.feather_um} /></label>

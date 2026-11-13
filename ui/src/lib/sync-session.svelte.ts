@@ -1,3 +1,4 @@
+import { hostedSync } from './hosted-sync';
 import type { AppState } from './store.svelte';
 import { authToken, publish } from './atlas';
 import { SyncApi, changesFromEvents, type Candidate, type ProjectStatus } from './sync-api';
@@ -13,6 +14,8 @@ export class SyncSession {
   registered = $state<boolean | undefined>(undefined);
   reachable = $state<boolean | null>(null);
   busy = $state(false);
+  checking = $state(false);
+  private suppressDraft = false;
   dialog = $state<'register' | 'review' | 'pixels' | null>(null);
   candidates = $state.raw<Candidate[]>([]);
   review = $state.raw<{ merge: Merge; theirs: Elements; revision: number; hashes?: ProjectStatus['hashes'] } | null>(null);
@@ -21,6 +24,9 @@ export class SyncSession {
   private uuid: string | null = null;
   private viewRevision = $state<number | null>(null);
   private pendingSync = false;
+  private idleWaiters: (() => void)[] = [];
+  async settled() { while (this.busy) await new Promise<void>(resolve => this.idleWaiters.push(resolve)); }
+  private finished() { this.busy = false; for (const resolve of this.idleWaiters.splice(0)) resolve(); }
   private viewHashes = $state.raw<ProjectStatus['hashes'] | null>(null);
   private get ready() { return !!this.app.project && !this.app.loadingProject && !this.app.storedCopy; }
   private isCurrent(identity: string) { return this.ready && this.identity === identity; }
@@ -41,7 +47,7 @@ export class SyncSession {
     const serverChanged = hashes && this.status ? (['spots', 'grains', 'labels'] as const).some(k => hashes[k] !== this.status!.hashes[k]) : undefined;
     return syncState({ serverChanged, registered: this.registered, reachable: this.reachable, baseRevision: this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null, serverRevision: this.status?.revision ?? null, localChanges: this.counts, pixelsChanged: this.pixelsChanged }); }
   get text(): string {
-    return chipText(this.state, this.counts, this.status?.atlas_version ?? null, this.status?.revision ?? null, this.pixelsChanged) + (this.syncedAt && this.state === 'in-sync' ? ` · Synced ${this.syncedAt}` : '');
+    return chipText(this.state, this.counts, this.status?.atlas_version ?? null, this.status?.revision ?? null, this.pixelsChanged) + (this.syncedAt && this.state === 'in-sync' ? ` · Synced ${new Date(this.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}` : '');
   }
   get unsynced(): boolean {
     return !!this.app.project && !this.app.readOnly && (!this.draft?.base || hasChanges(this.counts) || this.pixelsChanged);
@@ -55,7 +61,7 @@ export class SyncSession {
   private save(patch: Partial<Draft>) {
     if (!this.draft || this.app.loadingProject || this.app.storedCopy) return;
     this.draft = { ...this.draft, ...clone(patch) };
-    writeDraft(this.draft);
+    if (!this.suppressDraft) writeDraft(this.draft);
   }
   track(edited = true) {
     const p = this.app.project;
@@ -68,18 +74,19 @@ export class SyncSession {
     this.save({ changes, pending, pending_at: pending ? now : null, pixels_changed: this.pixelsChanged, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
   }
   /** Every opening path calls this before returning. Later polling never replaces the base. */
-  async check() {
+  async check(): Promise<void> {
+    if (this.busy) { await this.settled(); return this.check(); }
     const p = this.app.project;
     const identity = this.identity;
     if (!p || this.busy || this.app.loadingProject || this.app.storedCopy) return;
     if (p.uuid !== this.uuid) {
-      this.uuid = p.uuid;
+      this.uuid = p.uuid; this.suppressDraft = false;
       this.draft = listDrafts(this.app.remote?.server ?? this.app.server).find(d => d.uuid === p.uuid) ?? readDraft(p.uuid) ?? ensureDraft(p, this.app.remote?.server ?? this.app.server);
       writeDraft(this.draft); // ready open adopts even when the subsequent lookup is offline
       this.registered = undefined; this.status = null; this.reachable = null; this.review = null; this.dialog = null; this.syncedAt = null; this.viewRevision = null; this.viewHashes = null; this.candidates = this.draft.link_candidates ?? [];
     }
     this.track(false);
-    this.busy = true;
+    this.busy = true; this.checking = true;
     try {
       const api = await this.api();
       const status = await api.lookup(this.draft?.linked_uuid ?? p.uuid);
@@ -115,7 +122,7 @@ export class SyncSession {
     } catch (e) {
       this.reachable = false;
       this.error = e instanceof Error ? e.message : String(e);
-    } finally { this.busy = false; if (this.identity !== identity) void this.check(); }
+    } finally { this.finished(); this.checking = false; if (this.identity !== identity) void this.check(); }
     if (this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.sync(); }
   }
   dismissLink() { this.candidates = []; this.save({ link_offered: true, link_candidates: [] }); }
@@ -129,7 +136,24 @@ export class SyncSession {
     await this.check();
   }
   viewed(revision: number | null) { this.viewRevision = revision; this.viewHashes = this.status?.revision === revision ? this.status.hashes : null; }
-  async editBase() { await this.check(); this.track(); }
+  forgetDraft() {
+    this.suppressDraft = true;
+    if (this.draft) this.draft = { ...this.draft, pending: null, pending_at: null, changes: { spots: 0, grains: 0, labels: 0 }, pixels_changed: false };
+  }
+  async editBase() {
+    this.suppressDraft = false;
+    const revision = this.viewRevision, hashes = this.viewHashes, viewed = clone(this.elements);
+    const hadDraft = !!this.draft && (this.draft.pending != null || this.draft.changes === null || hasChanges(this.draft.changes) || this.draft.pixels_changed);
+    await this.check();
+    // A clean View opened at a newer revision becomes the next edit base. Keep a real
+    // pending/legacy draft's older base; edits made during lookup remain above viewed.
+    if (!hadDraft && revision !== null) this.save({ base: viewed, base_revision: revision, base_hashes: hashes });
+    this.track();
+  }
+  private syncedNotice(revision: number, counts = this.counts) {
+    const project = this.app.project?.uuid, mount = this.status?.mount_id ?? this.draft?.mount;
+    if (project && mount) hostedSync.synced({ project, mount, revision, atlasVersion: this.status?.atlas_version ?? null, changed: { ...counts, pixels: false }, at: new Date().toISOString() });
+  }
   async action() {
     if (this.busy) return;
     if (this.state === 'offline' || this.state === 'checking') { await this.check(); return; }
@@ -162,12 +186,13 @@ export class SyncSession {
       const theirs = await (await this.api()).elements(this.status.project_uuid);
       if (!this.isCurrent(identity)) return;
       if (hasChanges(this.counts)) { this.openReview(theirs, theirs.revision, theirs.hashes); return; }
+      const changed = changeCounts(diffElements(this.elements, theirs));
       this.setElements(theirs);
       if (!this.app.readOnly || !this.draft?.source_keys?.length) this.save({ base: { spots: theirs.spots, grains: theirs.grains, labels: theirs.labels }, base_revision: theirs.revision, base_hashes: theirs.hashes });
       this.status = { ...this.status, revision: theirs.revision, hashes: theirs.hashes };
       this.viewRevision = theirs.revision; this.viewHashes = theirs.hashes;
-      this.track(false); this.reachable = true;
-    } catch (e) { this.failed(e); } finally { this.busy = false; if (this.identity !== identity) void this.check(); }
+      this.track(false); this.reachable = true; this.syncedNotice(theirs.revision, changed);
+    } catch (e) { this.failed(e); } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   private openReview(theirs: Elements, revision: number, hashes?: ProjectStatus['hashes']) {
     this.review = { merge: mergeElements(this.draft?.base ?? emptyElements(), clone(this.elements), theirs), theirs: clone(theirs), revision, hashes };
@@ -187,7 +212,7 @@ export class SyncSession {
         if (this.isCurrent(identity)) this.openReview(theirs, theirs.revision, theirs.hashes);
       }
     }
-    catch (e) { this.failed(e); } finally { this.busy = false; if (this.identity !== identity) void this.check(); }
+    catch (e) { this.failed(e); } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   async apply(choices: Record<string, Resolution>, publishPixels = false) {
     const review = this.review;
@@ -201,6 +226,7 @@ export class SyncSession {
   private failed(e: unknown) { this.error = e instanceof Error ? e.message : String(e); this.app.error = this.error; this.reachable = false; }
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
   async sync(publishPixels = false) {
+    if (this.busy) await this.settled();
     if (this.busy || !this.ready || !this.app.project || !this.draft?.mount || this.app.readOnly) return;
     this.track(false);
     this.busy = true;
@@ -228,7 +254,9 @@ export class SyncSession {
       }
       // ids maps client UUIDs to server ids; it never renames local elements/references.
       this.save({ base: mine, base_revision: reply.revision, base_hashes: null, synced: true });
+      this.syncedNotice(reply.revision, changeCounts(diff));
       this.track(false);
+      if (this.app.draftHere != null) this.app.draftHere = this.unsynced ? reply.revision : null;
       // Snapshot omissions remain on the server. Incorporate them without overwriting edits
       // made since submission; never acknowledge a later revision we did not submit.
       if (mode === 'snapshot') {
@@ -247,7 +275,7 @@ export class SyncSession {
       if (!this.isCurrent(identity)) return;
       this.status = status;
       if (status?.revision === reply.revision) this.save({ base_hashes: status.hashes });
-      this.syncedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      this.syncedAt = new Date().toISOString();
       if (this.app.error === this.error) this.app.error = null;
       this.error = '';
       this.track();
@@ -263,7 +291,7 @@ export class SyncSession {
           this.track();
         }
       }
-    } catch (e) { if (this.identity === identity) { this.pendingSync = true; this.failed(e); } } finally { this.busy = false; if (this.identity !== identity) void this.check(); }
+    } catch (e) { if (this.identity === identity) { this.pendingSync = true; this.failed(e); } } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   async afterSave() {
     if (!this.ready) return;

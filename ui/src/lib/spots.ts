@@ -1,6 +1,8 @@
 // Spot helpers for the canvas: naming (same rules as grainatlas-core
 // spots::format_name), snapping, hit tests and the stage mapping.
 
+import { contains } from './polygon-edit.ts';
+import { grainNumber } from './grain-lineage.ts';
 import type { AreaRecord, Grain, Spot } from './core/types';
 
 export function formatName(pattern: string, sample: string, grain: number | null, n: number): string {
@@ -57,7 +59,7 @@ export function grainAt(gs: Grain[], x: number, y: number, artifacts = false): G
     if (g.artifact && !artifacts) continue;
     const [x0, y0, x1, y1] = g.bbox_um;
     if (x < x0 || y < y0 || x > x1 || y > y1) continue;
-    if (inside(g.polygon_um, x, y)) return g;
+    if (contains(g.polygon_um, [x, y])) return g;
   }
   return null;
 }
@@ -66,7 +68,8 @@ export function grainAt(gs: Grain[], x: number, y: number, artifacts = false): G
 export function relinkSpots(spots: Spot[], areaId: string, grains: Grain[]): Spot[] {
   return spots.map((s) => {
     if (s.area_id !== areaId) return s;
-    const g = grainAt(grains, s.x_um, s.y_um);
+    const linked = grains.find(g => g.id === s.grain_id && (!g.artifact || g.split_from || g.merged_from) && contains(g.polygon_um, [s.x_um, s.y_um]));
+    const g = linked ?? grainAt(grains, s.x_um, s.y_um);
     return { ...s, grain_id: g?.id ?? null, grain_number: g?.number ?? null };
   });
 }
@@ -86,12 +89,12 @@ export interface SnapTarget { x: number; y: number; what: string }
 export function snapTargets(grains: Grain[], previous: Spot | null, diameter: number): SnapTarget[] {
   const out: SnapTarget[] = [];
   for (const g of grains) {
-    out.push({ x: g.centroid_um[0], y: g.centroid_um[1], what: `grain ${g.number} centre` });
+    out.push({ x: g.centroid_um[0], y: g.centroid_um[1], what: `grain ${grainNumber(g)} centre` });
     const a = (g.orientation_deg * Math.PI) / 180;
     const r = Math.max(0, g.major_um / 2 - diameter / 2 - 2);
     if (r > diameter / 2) {
-      out.push({ x: g.centroid_um[0] + r * Math.cos(a), y: g.centroid_um[1] + r * Math.sin(a), what: `grain ${g.number} tip` });
-      out.push({ x: g.centroid_um[0] - r * Math.cos(a), y: g.centroid_um[1] - r * Math.sin(a), what: `grain ${g.number} tip` });
+      out.push({ x: g.centroid_um[0] + r * Math.cos(a), y: g.centroid_um[1] + r * Math.sin(a), what: `grain ${grainNumber(g)} tip` });
+      out.push({ x: g.centroid_um[0] - r * Math.cos(a), y: g.centroid_um[1] - r * Math.sin(a), what: `grain ${grainNumber(g)} tip` });
     }
   }
   if (previous) out.push({ x: previous.x_um, y: previous.y_um, what: `previous spot ${previous.name}` });

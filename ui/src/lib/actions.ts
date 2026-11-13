@@ -144,6 +144,7 @@ export async function openPaths(paths: string[], app: AppState = current()) {
     if (!r) return;
     const path = { kind: /\.gaproj$/i.test(paths[0]) ? 'file' as const : 'folder' as const, path: paths[0].replace(/\/$/, '') };
     app.loadingProject = true;
+    app.clearHistory(); app.viewMode = false; app.draftHere = null;
     try {
       await adoptPackage(app, r.info, r.project, path, r.modified_ms);
       await restoreAreas(app);
@@ -366,6 +367,7 @@ export async function loadProjectFile(file: File, app: AppState = current()) {
   const path = file.webkitRelativePath || file.name;
   const previous = app.storedCopy;
   app.loadingProject = true;
+    app.clearHistory(); app.viewMode = false; app.draftHere = null;
   app.storedCopy = newerStoredCopy(p, path, file.lastModified);
   try {
     try {

@@ -162,6 +162,8 @@ export interface Grain {
   id: string;
   /** Database label; absent local labels default to <area_id>/<number>. */
   label?: string;
+  split_from?: string;
+  merged_from?: string[];
   sample?: string | null;
   number: number;
   /** Polygon in mosaic micrometres (closed implicitly). */
@@ -208,6 +210,8 @@ export interface Spot {
   sample: string;
   grain_id: string | null;
   grain_number: number | null;
+  /** Transient export display text, resolved by grain_id. Never a sync field. */
+  grain_label?: string;
   n: number;
   x_um: number;
   y_um: number;
@@ -342,8 +346,8 @@ export interface BandRecord {
   sample: string;
   area: string;
   row: number;
-  grains: { id: string; number: number }[];
-  context: { id: string; number: number }[];
+  grains: { id: string; number: number; label?: string }[];
+  context: { id: string; number: number; label?: string }[];
   repeated_um: [number, number, number, number][];
   cut_sources: string[];
   sheet_rect_mm: [number, number, number, number];
@@ -374,7 +378,7 @@ export interface PrintRegistration {
   /** Envelope of the bodies; sheet_bodies is authoritative for each sheet. */
   body_rect_mm: [number, number, number, number];
   sheet_bodies: { sheet: number; header_mm: number; body_rect_mm: [number, number, number, number] }[];
-  strays: { area: string; id: string; number: number; eq_diameter_um: number; centroid_um: [number, number]; bbox_um: [number, number, number, number] }[];
+  strays: { area: string; id: string; number: number; label?: string; eq_diameter_um: number; centroid_um: [number, number]; bbox_um: [number, number, number, number] }[];
   bands: BandRecord[];
 }
 
