@@ -49,6 +49,8 @@
   const desktop = isDesktop();
   let syncDetailsOpen = $state(false);
   let overflowOpen = $state(false);
+  /** A storage warning the user hid: it then waits behind the header's Storage full button. */
+  let hiddenStorageWarning = $state<string | null>(null);
   let narrowHeader = $state(false);
   let overflowButton = $state<HTMLButtonElement>();
   let overflowPanel = $state<HTMLDivElement>();
@@ -444,6 +446,9 @@
     <div class="right">
       <CheckUpdatesButton />
       {#if !narrowHeader}<ThemeSwitch />{/if}
+      {#if app.storageWarning && hiddenStorageWarning === app.storageWarning}
+        <button class="danger" onclick={() => (hiddenStorageWarning = null)} title={app.storageWarning} data-testid="storage-full">Storage full</button>
+      {/if}
       {#if app.project && !app.readOnly}
         <button onclick={() => saveProject()} title={saveTitle} data-testid="save-project">{app.sync.canSyncOnSave ? 'Save and sync' : 'Save project'}</button>
       {/if}
@@ -473,8 +478,13 @@
   </div>
 
   <main>
-    {#if app.notice || app.error}
+    {#if app.notice || app.error || (app.storageWarning && hiddenStorageWarning !== app.storageWarning)}
       <div class="notices">
+        {#if app.storageWarning}
+          {#if hiddenStorageWarning !== app.storageWarning}
+            <div class="glass toast" role="alert" data-testid="storage-warning"><span>{app.storageWarning}</span><button onclick={() => saveProject(app)}>Save project</button><button onclick={() => (hiddenStorageWarning = app.storageWarning)} data-testid="storage-warning-hide">Hide</button></div>
+          {/if}
+        {/if}
         {#if app.notice}
           <div class="glass toast ok" role="status">
             <span>{app.notice}</span>

@@ -56,7 +56,7 @@ export function newerStoredCopy(file: Project, path: string, modifiedMs: number,
 }
 
 /** Saved projects use their uuid and location; packages alone retain their legacy storage. */
-export function persistProject(project: Project, path: string | null, when = new Date().toISOString(), storage?: CopyStorage) {
+export function persistProject(project: Project, path: string | null, when = new Date().toISOString(), storage?: CopyStorage): boolean {
   try {
     const target = storage ?? localStorage;
     if (path) target.setItem(storedCopyKey(project.uuid, path), JSON.stringify({ saved_at: when, path, project }));
@@ -65,8 +65,9 @@ export function persistProject(project: Project, path: string | null, when = new
     const entries = recent.filter((r) => r.name !== project.package.name);
     entries.unshift({ id: project.uuid, name: project.package.name, when, areas: project.areas.length, spots: projectChanges(project).spots.length, ...(path ? { path } : project.package.path ? { package_path: project.package.path } : {}) });
     target.setItem(RECENT_KEY, JSON.stringify(entries.slice(0, 12)));
+    return true;
   } catch {
-    /* quota or private mode */
+    return false;
   }
 }
 

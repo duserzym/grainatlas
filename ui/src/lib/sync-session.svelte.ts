@@ -5,6 +5,7 @@ import { authToken, publish } from './atlas';
 import { SyncApi, SyncApiError, lineageFailureMessage, changesFromEvents, type Candidate, type ProjectStatus, type SyncBody } from './sync-api';
 import { draftElements, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
+import { reportStorageWrite } from './storage-failure';
 import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, withKnownLineage, KINDS, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -149,7 +150,7 @@ export class SyncSession {
   private save(patch: Partial<Draft>) {
     if (!this.draft || this.app.loadingProject || this.app.storedCopy) return;
     this.draft = { ...this.draft, ...clone(patch) };
-    if (!this.suppressDraft) writeDraft(this.draft);
+    if (!this.suppressDraft) reportStorageWrite(this.app, 'draft', writeDraft(this.draft));
   }
   track(edited = true) {
     const p = this.app.project;
@@ -173,7 +174,7 @@ export class SyncSession {
       const fresh = !previous;
       this.draft = previous ?? ensureDraft(p, this.app.remote?.server ?? this.app.server);
       if (fresh && !this.app.readOnly) this.save({ base_seen: clone(this.elements) });
-      writeDraft(this.draft); // ready open adopts even when the subsequent lookup is offline
+      reportStorageWrite(this.app, 'draft', writeDraft(this.draft)); // ready open adopts even when the subsequent lookup is offline
       this.registered = undefined; this.status = null; this.reachable = null; this.review = null; this.dialog = null; this.syncedAt = this.draft.synced_at ?? null; this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverHashes = null; this.elementsRevision = null; this.serverSpots = []; this.serverElements = null; this.snapshotNeeded = false; this.notice = ''; this.intentFailure = this.draft.incomplete?.reason ?? ''; this.omissions = this.draft.incomplete?.omissions ?? { spots: [], grains: [], labels: [] }; this.candidates = this.draft.link_candidates ?? [];
     }
     this.checkedElements = null;

@@ -13,6 +13,7 @@ import { newCore, type Core, type PackageFile, type RawImage } from './core/core
 import type { DeepLink } from './deeplink';
 import { DATE_CHOICES, type DateKind } from './results';
 import { persistProject, type StoredCopy } from './stored-copy';
+import { reportStorageWrite } from './storage-failure';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
@@ -232,6 +233,8 @@ class AppState {
   error = $state<string | null>(null);
   private noticeText = $state<string | null>(null);
   noticeAction = $state<{ label: string; run: () => void } | null>(null);
+  /** Set while this tab's project or draft cannot be written to the app's storage (storage-failure.ts). */
+  storageWarning = $state<string | null>(null);
   get notice(): string | null { return this.noticeText; }
   set notice(value: string | null) {
     this.noticeAction = null;
@@ -546,7 +549,10 @@ class AppState {
       // An open or save may have happened since this write was queued.
       if (this.readOnly || this.loadingProject || this.storedCopy || !this.dirty || this.project?.uuid !== uuid || (this.projectPath?.path ?? null) !== path) return;
       const p = this.fullProject();
-      if (p) { persistProject(p, path); this.sync.track(); }
+      if (p) {
+        reportStorageWrite(this, 'project', persistProject(p, path));
+        this.sync.track();
+      }
     });
   }
 

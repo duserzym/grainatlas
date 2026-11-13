@@ -171,7 +171,10 @@
 <section class="open">
   <DraftList />
   {#each shared.pendingProjects as pending (pending.project.package.name)}
-    <div class="glass panel linked" role="status" data-testid="pending-project"><p>{pendingProjectNotice(pending.project)}</p></div>
+    <div class="glass panel linked" role="status">
+      <p data-testid="pending-project">{pendingProjectNotice(pending.project)}</p>
+      <div class="row"><button class="primary" onclick={pick} data-testid="pending-open-package">Open package…</button></div>
+    </div>
   {/each}
   {#if app.deepLink}
     <div class="glass panel linked" role="status" data-testid="deeplink">

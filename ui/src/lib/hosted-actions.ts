@@ -5,6 +5,7 @@ import { deleteDraft, draftElements, hasPendingChanges, listDrafts, readDraft, s
 import { emptyElements, groupedGrains, uiSpots } from './sync';
 import { editCopy, openFromServer } from './remote';
 import type { Project } from './core/types';
+import { reportStorageWrite } from './storage-failure';
 
 export function reportHostedStatus(app: AppState, force = false) {
   if (!app.project) return;
@@ -117,7 +118,7 @@ async function draftTab(uuid: string): Promise<AppState | null> {
   tab.adopt(project);
   tab.spots = uiSpots(elements.spots, elements.grains, tab.spots);
   tab.grains = groupedGrains(elements.grains, tab.grains); tab.labels = elements.labels;
-  writeDraft(draft); tab.sync.draft = draft;
+  reportStorageWrite(tab, 'draft', writeDraft(draft)); tab.sync.draft = draft;
   await tab.sync.check();
   return tab;
 }

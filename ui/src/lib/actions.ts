@@ -66,7 +66,6 @@ export async function openOffered(set: OpenedFiles) {
         await applyPendingProject(tab);
       } else {
         app.screen = 'open';
-        app.notice = pendingProjectNotice(project);
         told(`waiting: package ${project.package.name}`);
       }
     } catch (e) {
