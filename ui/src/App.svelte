@@ -468,7 +468,7 @@
   {#if syncDetailsOpen && app.project}<SyncDetails />{/if}
   </div>
 
-  <main class:has-notices={!!(app.notice || app.error)}>
+  <main>
     {#if app.notice || app.error}
       <div class="notices">
         {#if app.notice}
@@ -615,15 +615,29 @@
     .pkgname, .compact-name { max-width:22ch; }
   }
   main {
+    position:relative;
     grid-row:3;
     display:grid;
     grid-template-rows:minmax(0,1fr);
     min-height:0;
     overflow:hidden;
   }
-  main.has-notices { grid-template-rows:auto minmax(0,1fr); }
   .screen { position:relative; min-height:0; min-width:0; overflow:hidden; }
-  .notices { display:grid; gap:var(--space-1); padding:0 var(--space-2) var(--space-2); max-height:25vh; overflow:auto; }
+  .notices {
+    position:absolute;
+    z-index:30;
+    top:calc(var(--canvas-toolbar-bottom, 0px) + var(--space-2));
+    left:calc(var(--canvas-notice-left, 0px) + var(--space-2));
+    right:calc(var(--canvas-notice-right, 0px) + var(--space-2));
+    width:calc(100% - var(--canvas-notice-left, 0px) - var(--canvas-notice-right, 0px) - 2 * var(--space-2));
+    max-width:640px;
+    margin-inline:auto;
+    display:grid;
+    gap:var(--space-1);
+    max-height:min(25vh, calc(100% - var(--canvas-toolbar-bottom, 0px) - var(--canvas-notice-bottom, 0px) - 2 * var(--space-2)));
+    overflow:auto;
+    pointer-events:none;
+  }
   .dropzone {
     position: fixed;
     inset: 0;
@@ -639,6 +653,7 @@
     font-weight: 600;
   }
   .toast {
+    pointer-events:auto;
     display:flex;
     gap:var(--space-4);
     align-items:center;

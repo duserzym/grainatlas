@@ -63,6 +63,52 @@
   let spotAnchor: string | null = null;
   let grainAnchor: string | null = null;
   let side = $state<HTMLElement>();
+  // Notices float in main, outside the canvas's layout. Measure the wrapped toolbar
+  // and the actual panels rather than duplicating their sizes in App's CSS.
+  function publishNoticeBounds(canvas: HTMLDivElement) {
+    const main = canvas.closest('main')!;
+    const properties = ['--canvas-toolbar-bottom', '--canvas-notice-left', '--canvas-notice-right', '--canvas-notice-bottom'];
+    function bounds(selector: string) { return canvas.querySelector<HTMLElement>(selector)?.getBoundingClientRect(); }
+    function update() {
+      const area = main.getBoundingClientRect();
+      const toolbar = bounds('.toolbar');
+      let left = area.left;
+      let right = bounds('.side, .side-mini')?.left ?? area.right;
+      const floating = bounds('.floating');
+      if (floating && floating.right > left && floating.left < right) {
+        // Keep the wider horizontal interval when the info panel is open or dragged.
+        if (right - floating.right >= floating.left - left) left = floating.right;
+        else right = floating.left;
+      }
+      const bottom = Math.min(area.bottom, ...['.legend', '.owner-legend', '.status'].map(selector => bounds(selector)?.top ?? area.bottom));
+      const values = [toolbar ? toolbar.bottom - area.top : 0, left - area.left, area.right - right, area.bottom - bottom];
+      properties.forEach((property, i) => main.style.setProperty(property, `${Math.max(0, values[i])}px`));
+    }
+    const resize = new ResizeObserver(update);
+    const changes = new MutationObserver(records => {
+      if (records.some(record => record.type === 'childList')) observe();
+      else update();
+    });
+    function observe() {
+      resize.disconnect();
+      changes.disconnect();
+      resize.observe(canvas);
+      // Only watch direct canvas children and the chrome's attributes, never the
+      // viewer's changing SVG. Floating-panel movement changes style, not size.
+      changes.observe(canvas, { childList: true });
+      for (const element of canvas.querySelectorAll<HTMLElement>('.toolbar, .side, .side-mini, .floating, .legend, .owner-legend, .status')) {
+        resize.observe(element);
+        changes.observe(element, { attributes: true, attributeFilter: ['style', 'class'] });
+      }
+      update();
+    }
+    observe();
+    return { destroy() {
+      resize.disconnect();
+      changes.disconnect();
+      properties.forEach(property => main.style.removeProperty(property));
+    } };
+  }
   let spotSort = $state<'name' | 'diameter' | null>(null);
   let batch = $state<{ numbering: boolean; ids: string[] } | null>(null);
   let rectangle = $state<{ x: number; y: number; x2: number; y2: number; moved: boolean } | null>(null);
@@ -1388,7 +1434,7 @@
 {/if}
 
 {#if core && tiles && areaId && mosaic}
-  <div class="canvas" class:folded={app.layout.sideCollapsed}>
+  <div class="canvas" class:folded={app.layout.sideCollapsed} use:publishNoticeBounds>
     {#if rectangle?.moved}
       <div class="selection-rectangle" style:left="{Math.min(rectangle.x, rectangle.x2)}px" style:top="{Math.min(rectangle.y, rectangle.y2)}px" style:width="{Math.abs(rectangle.x2 - rectangle.x)}px" style:height="{Math.abs(rectangle.y2 - rectangle.y)}px"></div>
     {/if}
