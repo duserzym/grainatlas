@@ -48,6 +48,18 @@ export function storedElements(elements: ReadElements): Elements {
 }
 /** Wire and base snapshots use flat grain lists, each with area_id. */
 export interface Elements { spots: SyncSpot[]; grains: SyncGrain[]; labels: Label[] }
+/** Local-only parents have no database lineage. Keep the project's history intact. */
+export function withKnownLineage(elements: Elements, known: Set<string>): Elements {
+  return { ...elements, grains: elements.grains.map(grain => {
+    const out = { ...grain };
+    if (!out.split_from || !known.has(out.split_from)) delete out.split_from;
+    if (out.merged_from) {
+      out.merged_from = out.merged_from.filter(id => known.has(id));
+      if (!out.merged_from.length) delete out.merged_from;
+    }
+    return out;
+  }) };
+}
 export type Kind = keyof Elements;
 export interface Counts { spots: number; grains: number; labels: number }
 export interface Changes {

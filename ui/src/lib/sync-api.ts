@@ -38,6 +38,18 @@ export class SyncApiError extends Error {
     super(nonempty.join(' · ')); this.status = status; this.messages = nonempty;
   }
 }
+/** Keep the server's exact messages in the error and details drawer. */
+export function lineageFailureMessage(messages: string[]): string | null {
+  const labels = [...new Set(messages.flatMap(message => {
+    const match = /^grain (.+): parent (\S+) must (?:be a non-retired grain of this mount|already exist on this mount)$/.exec(message);
+    return match ? [match[1]] : [];
+  }))];
+  if (!labels.length) return null;
+  const shown = labels.slice(0, 5);
+  if (labels.length > shown.length) shown.push(`${labels.length - shown.length} more`);
+  const names = shown.length === 1 ? shown[0] : `${shown.slice(0, -1).join(', ')} and ${shown.at(-1)}`;
+  return `The database could not use the original grains that ${names} came from. Your grains and spots are kept here. Sync again; if this repeats, send the details to whoever runs the database.`;
+}
 /** History is mount-wide. Only this uuid and project-less elements enter its three-way merge. */
 export function changesFromEvents(events: ChangeEvent[], uuid: string): Changes {
   const changes: Changes = { spots: { upsert: [], delete: [] }, grains: { upsert: [], retire: [], delete: [] }, labels: { upsert: [], delete: [] } };
@@ -63,6 +75,10 @@ export function syncWireBody(body: SyncBody) {
     // Sample names are hints resolved by the database, sent only in snapshots.
     if (body.mode !== 'snapshot') delete row.sample;
     else if ('sample' in e) row.sample = e.sample;
+    if (kind === 'grains') {
+      if (!row.split_from) delete row.split_from;
+      if (!(row.merged_from as string[]).length) delete row.merged_from;
+    }
     if (kind === 'spots') {
       if ('comment' in row) row.comment ??= '';
       if ('kind' in row) row.kind ||= 'spot';
