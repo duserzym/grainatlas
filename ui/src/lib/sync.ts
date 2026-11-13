@@ -151,6 +151,40 @@ export function diffElements(base: ReadElements, mine: ReadElements): Changes {
 export function projectElements(server: ReadElements, uuid: string): ReadElements {
   return Object.fromEntries(KINDS.map(k => [k, server[k].filter(e => e.project_uuid === uuid)])) as unknown as ReadElements;
 }
+/** Before the first acknowledgement, preserve independent edits to stored fields.
+ * Missing server values are context gaps, and database-only rows stay with the
+ * existing additions path. Legacy grains still wait for adoption by label. */
+export function firstSyncMerge(base: ReadElements | null | undefined, mine: Elements, theirs: ReadElements, uuid: string): {
+  elements: Elements; conflicts: { kind: Kind; id: string; field: string }[];
+} {
+  const same = (a: unknown, b: unknown): boolean => {
+    if (typeof a === 'number' && typeof b === 'number') return a === b || Math.abs(a - b) <= 0.001 + Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b));
+    if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => same(v, b[i]));
+    return canonicalJson(a) === canonicalJson(b);
+  };
+  const elements = emptyElements();
+  const conflicts: { kind: Kind; id: string; field: string }[] = [];
+  const owned = projectElements(theirs, uuid);
+  for (const kind of KINDS) {
+    const before = new Map((base ?? mine)[kind].map(e => [e.id, e]));
+    const server = new Map(owned[kind].filter(e => e.id !== null).map(e => [e.id, e]));
+    (elements[kind] as Element[]) = mine[kind].map(local => {
+      const remote = server.get(local.id);
+      if (!remote) return local;
+      const stored = (e: Element) => storedElement(kind, e) as unknown as Record<string, unknown>;
+      const b = before.get(local.id), m = stored(local), t = stored(remote as Element);
+      const original = b ? stored(b as Element) : {};
+      const out = { ...local } as unknown as Record<string, unknown>;
+      for (const field of FIELDS[kind]) {
+        if ((remote as unknown as Record<string, unknown>)[field] == null || same(m[field], t[field])) continue;
+        if (same(m[field], original[field])) out[field] = t[field];
+        else if (!same(t[field], original[field])) conflicts.push({ kind, id: local.id, field });
+      }
+      return out as unknown as Element;
+    });
+  }
+  return { elements, conflicts };
+}
 export function syncChanges(mode: 'snapshot' | 'delta', base: ReadElements, mine: Elements, server: ReadElements, uuid: string, seen: ReadElements = base): Changes {
   const changes = diffElements(mode === 'snapshot' ? emptyElements() : base, mine);
   const owned = projectElements(server, uuid);

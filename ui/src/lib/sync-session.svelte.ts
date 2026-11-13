@@ -6,7 +6,7 @@ import { SyncApi, SyncApiError, lineageFailureMessage, changesFromEvents, type C
 import { draftElements, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
 import { reportStorageWrite } from './storage-failure';
-import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, withKnownLineage, KINDS, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
+import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, KINDS, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 interface HeldSync { identity: string; mine: Elements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
@@ -336,9 +336,19 @@ export class SyncSession {
       this.track(false); this.reachable = true; this.syncedNotice(theirs.revision, changed);
     } catch (e) { this.failed(e); } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
-  private openReview(theirs: ReadElements, revision: number, hashes?: ProjectStatus['hashes']) {
+  private openReview(theirs: ReadElements, revision: number, hashes?: ProjectStatus['hashes'], base = this.draft?.base ?? emptyElements(), conflicts: { kind: Kind; id: string }[] = []) {
     this.confirmation = null; this.heldSync = null;
-    this.review = { merge: this.mergeLocal(this.draft?.base ?? emptyElements(), clone(this.elements), theirs), theirs: clone(theirs), revision, hashes };
+    const local = clone(this.elements);
+    const merge = this.mergeLocal(base, local, theirs);
+    // Ordinary review equality has different rounding/default rules. Every field
+    // conflict found before a first snapshot must still require a choice here.
+    for (const { kind, id } of conflicts) {
+      const difference = merge.differences.find(d => d.kind === kind && d.id === id);
+      if (difference) difference.collision = true;
+      else merge.differences.push({ kind, id, base: storedElements(base)[kind].find(e => e.id === id), mine: local[kind].find(e => e.id === id),
+        theirs: storedElements(theirs)[kind].find(e => e.id === id), collision: true, bothAllowed: kind === 'labels' });
+    }
+    this.review = { merge, theirs: clone(theirs), revision, hashes };
     this.dialog = 'review';
   }
   async prepareReview() {
@@ -364,7 +374,7 @@ export class SyncSession {
     this.setElements(result);
     this.save({ base: review.theirs, base_revision: review.revision, base_hashes: review.hashes ?? null });
     this.dialog = null; this.review = null;
-    await this.sync(publishPixels);
+    await this.sync(publishPixels, false, undefined, review.theirs);
   }
   get errorHeadline(): string { return lineageFailureMessage(this.error.split(' · ')) ?? this.error; }
   private knownGrains(server: ReadElements | null = this.serverElements, base: ReadElements | null = this.draft?.base ?? null): Set<string> {
@@ -399,7 +409,7 @@ export class SyncSession {
     this.reachable = e instanceof SyncApiError ? e.status < 500 : false;
   }
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
-  async sync(publishPixels = false, shellCommand = false, approved?: HeldSync) {
+  async sync(publishPixels = false, shellCommand = false, approved?: HeldSync, reviewedBase?: ReadElements) {
     if (this.busy) await this.settled();
     if (this.busy || !this.ready || !this.app.project || this.app.readOnly || this.syncDisabledReason) return;
     if (!this.draft?.mount) { this.showLink(); return; }
@@ -434,8 +444,25 @@ export class SyncSession {
             this.keepDatabase(additions); mine = keepAdditions(mine, additions);
             if (approved) { this.confirmation = null; this.heldSync = null; approved = undefined; }
           }
-          const syncMine = this.syncElements(mine, current);
           const mode = approved?.body.mode ?? (this.firstSync || !draft.synced ? 'snapshot' : 'delta');
+          // check() can seed base before any sync is acknowledged. That database
+          // context is not the local baseline: use what was shown at first open.
+          if (!approved && mode === 'snapshot' && (!draft.synced || !draft.base || !KINDS.some(k => draft.base![k].length))
+            && KINDS.some(k => projectElements(current, projectUuid)[k].length)) {
+            const base = reviewedBase ?? draft.base_seen ?? mine;
+            const merged = firstSyncMerge(base, mine, current, projectUuid);
+            if (merged.conflicts.length) {
+              this.openReview(current, 'revision' in current ? Number(current.revision) : draft.base_revision ?? 0, 'hashes' in current ? current.hashes as ProjectStatus['hashes'] : undefined, base, merged.conflicts);
+              return;
+            }
+            if (KINDS.some(k => JSON.stringify(merged.elements[k]) !== JSON.stringify(mine[k]))) {
+              // Preserve edits made during the fetch, just as after a sync reply.
+              this.setElements(this.mergeLocal(mine, clone(this.elements), merged.elements).combined);
+              mine = merged.elements;
+              this.track(false);
+            }
+          }
+          const syncMine = this.syncElements(mine, current);
           const diff = approved?.body ?? syncChanges(mode, draft.base ?? emptyElements(), syncMine, current, projectUuid, this.lastSeen);
           if (retryMissing) for (const k of KINDS) {
             const removed = retryMissing[k].filter(id => this.lastSeen[k].some(e => e.id === id) && !mine[k].some(e => e.id === id) && (k !== 'spots' || !current.spots.some(s => s.id === id && s.acquisition_ids?.length)));
