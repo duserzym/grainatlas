@@ -1,6 +1,7 @@
 // Bridge v4 adapter: pure snapshots and command completion, injectable for unit tests.
 import { ATLAS_EVENTS, atlasStatus, atlasDrafts, atlasSynced, commandResult, isBridgeCommand, isHosted, notify,
   type AtlasStatusEvent, type AtlasSyncedEvent, type BridgeCommand, type BridgeEvent, type CommandResult } from '@lab/bridge';
+import { SyncApiError } from './sync-api.ts';
 import type { Draft } from './drafts.ts';
 import { hasChanges } from './sync.ts';
 export type AtlasCommand = Exclude<BridgeCommand, { type: 'focus-spot' | 'focus-grain' | 'review-spots' }>;
@@ -34,7 +35,7 @@ export class HostedSync {
     const execute = async () => {
       let result: Partial<CommandResult> = {};
       try { result = await run(cmd) ?? {}; }
-      catch (e) { result = { ok: false, code: 'failed', error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }; }
+      catch (e) { result = { ok: false, code: 'failed', error: (e instanceof SyncApiError ? e.messages[0] : e instanceof Error ? e.message : String(e)).slice(0, 300) }; }
       if (cmd.type !== 'report-status' && cmd.type !== 'atlas-synced' && cmd.id) {
         const event = commandResult({ type: ATLAS_EVENTS.commandResult, id: cmd.id, command: cmd.type, project: 'project' in cmd ? cmd.project : undefined, ok: true, ...result });
         if (!event) throw new Error('Invalid atlas command result');

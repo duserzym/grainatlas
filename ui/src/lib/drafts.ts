@@ -1,5 +1,5 @@
 import type { Project } from './core/types.ts';
-import { diffElements, elementsOf, emptyElements, type Counts, type Elements } from './sync.ts';
+import { diffElements, elementsOf, emptyElements, type Counts, type Elements, type ReadElements } from './sync.ts';
 export const DRAFT_PREFIX = 'grainatlas.draft.';
 export const DRAFT_INDEX = 'grainatlas.drafts';
 const DISCARDED = 'grainatlas.discarded-drafts';
@@ -7,11 +7,11 @@ export const DRAFTS_CHANGED = 'grainatlas:drafts-changed';
 function changed() { if (typeof window !== 'undefined') window.dispatchEvent(new Event(DRAFTS_CHANGED)); }
 export interface Draft {
   uuid: string; name: string; server: string | null; mount: string | null;
-  base_revision: number | null; base: Elements | null; updated_at: string; changes: Counts | null;
+  base_revision: number | null; base: ReadElements | null; updated_at: string; changes: Counts | null;
   /** Narrowed unsynced elements. Missing fields identify legacy records. */
   pending?: Elements | null; pending_at?: string | null;
-  /** Explicit package-name link. The local project's original uuid stays unchanged. */
-  linked_uuid?: string; link_offered?: boolean; link_candidates?: import('./sync-api').Candidate[];
+  /** Legacy pre-B1 alias. New links always register the local UUID. */
+  linked_uuid?: string; link_offered?: boolean; link_conflict?: boolean; link_candidates?: import('./sync-api').Candidate[];
   /** Opaque hashes returned by the server, never computed by the browser. */
   base_hashes?: Record<keyof Counts, string> | null; synced?: boolean;
   source_keys?: string[]; pixels_base?: string | null; pixels_changed?: boolean;
@@ -95,7 +95,7 @@ export function storedDraftProject(draft: Draft, storage?: DraftStorage): Projec
   } catch { return null; }
 }
 /** Keep exactly the upsert fields, including new-grain lineage, without UI metadata. */
-export function pendingElements(elements: Elements): Elements {
+export function pendingElements(elements: ReadElements): Elements {
   const changes = diffElements(emptyElements(), elements);
   return { spots: changes.spots.upsert, grains: changes.grains.upsert, labels: changes.labels.upsert };
 }

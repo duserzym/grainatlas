@@ -17,8 +17,10 @@ export function reportHostedStatus(app: AppState, force = false) {
 function result(app: AppState): Partial<CommandResult> {
   return { mount: app.sync.status?.mount_id ?? app.sync.draft?.mount ?? null, revision: app.sync.status?.revision ?? app.sync.draft?.base_revision ?? null };
 }
-const fail = (code: AtlasResultCode, error: string): Partial<CommandResult> => ({ ok: false, code, error: error.slice(0, 300) });
+const fail = (code: Exclude<AtlasResultCode, 'needs-confirmation'>, error: string): Partial<CommandResult> => ({ ok: false, code, error: error.slice(0, 300) });
 function failure(app: AppState): Partial<CommandResult> {
+  if (app.sync.confirmation) return { ok: false, code: 'needs-confirmation', confirm: app.sync.confirmation };
+  if (app.sync.validationFailed) return fail('failed', app.sync.failureMessage || app.sync.error);
   if (app.sync.dialog === 'review' || app.sync.state === 'both-changed') return fail('conflict', 'Review differences before leaving Edit.');
   const error = app.sync.error || app.error || 'The action did not finish. Changes kept here.';
   return fail(/401|403/.test(error) ? 'unauthorized' : app.sync.reachable === false ? 'offline' : 'failed', error);
@@ -30,12 +32,13 @@ export async function setMode(app: AppState, mode: AtlasMode, own = false) {
     else app.viewMode = false;
     if (app.readOnly) throw new Error('Could not enter Edit.');
     await app.sync.check();
+    if (own) app.sync.showConfirmation();
   } else if (!app.readOnly) {
     if (own && app.sync.unsynced) {
       const decision = await new Promise<'sync' | 'keep-draft' | 'stay'>(answer => { app.leaveEditPrompt = { answer }; });
       app.leaveEditPrompt = null;
       if (decision === 'stay') return;
-      const outcome = await leaveEdit(app, decision);
+      const outcome = await leaveEdit(app, decision, false);
       if (outcome.ok === false) { if (outcome.error) app.error = outcome.error; return; }
     } else {
       app.sync.track(false);
@@ -52,12 +55,12 @@ function view(app: AppState) {
   else app.viewMode = true;
   app.tool = 'select';
 }
-export async function leaveEdit(app: AppState, decision: 'sync' | 'keep-draft' | 'discard'): Promise<Partial<CommandResult>> {
+export async function leaveEdit(app: AppState, decision: 'sync' | 'keep-draft' | 'discard', shellCommand = true): Promise<Partial<CommandResult>> {
   await app.sync.settled();
   if (app.readOnly) return result(app);
   if (decision === 'sync') {
-    await app.sync.sync();
-    if (app.sync.dialog === 'review' || app.sync.unsynced || app.sync.reachable !== true) return failure(app);
+    await app.sync.sync(false, shellCommand);
+    if (app.sync.confirmation || app.sync.validationFailed || app.sync.dialog === 'review' || app.sync.unsynced || app.sync.reachable !== true) return failure(app);
   } else if (decision === 'keep-draft') {
     app.sync.track(false);
     if (!app.sync.draft || !writeDraft(app.sync.draft)) return fail('failed', 'Could not keep the draft on this computer.');
@@ -144,19 +147,19 @@ export async function runHostedCommand(cmd: AtlasCommand): Promise<Partial<Comma
     if (app.project?.uuid === cmd.project && (!app.remote || app.remote.server === server)) {
       await setMode(app, 'view'); await app.sync.check();
     } else if (!(await openFromServer(server, cmd.project, null, null, null, app))) return fail(/401|403/.test(app.error ?? '') ? 'unauthorized' : /404/.test(app.error ?? '') ? 'not-found' : 'offline', app.error ?? 'Could not open the project.');
-    if (cmd.mode === 'edit') await setMode(app, 'edit');
+    if (cmd.mode === 'edit') { await setMode(app, 'edit'); app.sync.showConfirmation(); }
     reportHostedStatus(app, true);
     return result(app);
   }
   if (cmd.type === 'sync-draft') {
     app = await draftTab(cmd.project) ?? undefined;
     if (!app) return fail('not-found', 'No draft for that project is kept here.');
-    await app.sync.sync();
+    await app.sync.sync(false, true);
     reportHostedStatus(app, true);
-    return app.sync.unsynced || app.sync.dialog === 'review' || app.sync.reachable !== true ? failure(app) : result(app);
+    return app.sync.confirmation || app.sync.validationFailed || app.sync.unsynced || app.sync.dialog === 'review' || app.sync.reachable !== true ? failure(app) : result(app);
   }
   if (!app) return fail('not-found', 'That project is not open.');
   tabs.select(app.id);
-  if (cmd.type === 'set-mode') { await setMode(app, cmd.mode); return result(app); }
+  if (cmd.type === 'set-mode') { await setMode(app, cmd.mode); if (cmd.mode === 'edit') app.sync.showConfirmation(); return result(app); }
   if (cmd.type === 'leave-edit') return leaveEdit(app, cmd.decision);
 }

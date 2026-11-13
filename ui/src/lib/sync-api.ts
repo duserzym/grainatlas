@@ -1,33 +1,54 @@
-/** Provisional B1 transport: keep mock URLs, wire types and mappings isolated here. */
+/** laicpmsdb B1 wire contract (docs/atlas-sync.md). */
 import type { Project } from './core/types';
-import { storedElement, type Changes, type Counts, type Element, type Elements, type Kind } from './sync.ts';
+import { storedElement, type Changes, type Counts, type Element, type ReadElements, type ReadGrain, type Kind } from './sync.ts';
 export interface ProjectStatus {
-  project_uuid: string; mount_id: string; mount_label: string; atlas_version: number | null; revision: number;
-  counts: Counts; hashes: Record<keyof Counts, string>; changed_at: string; changed_by: string;
+  project_uuid: string; mount_id: string; mount_label: string; name: string; package_name: string;
+  atlas_version: number | null; atlas_bundle_id: string | null; revision: number;
+  counts: Counts & { grains_retired: number; grains_without_atlas_id: number };
+  hashes: Record<Kind, string>; changed_at: string | null; changed_by: string | null; can_edit: boolean;
+  current_project_uuid: string | null;
+  project_uuids: { project_uuid: string; name: string; package_name: string; is_current: boolean }[];
 }
-export interface Candidate { project_uuid: string; mount_id: string; mount_label: string; package_name: string; revision: number }
-export interface SyncBody extends Changes { project_uuid: string; base_revision: number | null; mode: 'snapshot' | 'delta' }
-export interface ChangeEvent { revision: number; kind: 'spot' | 'grain' | 'label'; id: string; op: 'upsert' | 'delete' | 'retire'; data: Element | null; project_uuid: string | null; at: string; by: string }
-export interface ElementsReply extends Elements { mount_id: string; revision: number; hashes: Record<Kind, string> }
-export interface HistoryReply { mount_id: string; base_revision: number; current_revision: number; changes: ChangeEvent[] }
+export interface Candidate {
+  project_uuid: string | null; mount_id: string; mount_label: string; matched_by: 'package' | 'project_name' | 'mount_label';
+  atlas_version: number | null; revision: number; spot_count: number; grain_count: number; can_edit: boolean;
+}
+export interface SyncBody extends Changes { project_uuid: string; base_revision: number; mode: 'snapshot' | 'delta'; dry_run?: boolean; confirm_bulk?: boolean }
+export interface ChangeEvent { revision: number; kind: 'spot' | 'grain' | 'label'; id: string; op: 'upsert' | 'delete' | 'retire'; data: Element | ReadGrain | null; project_uuid: string | null; at: string; by: string | null }
+export interface ElementsReply extends ReadElements { mount_id: string; revision: number; hashes: Record<Kind, string>; project_uuids: string[]; current_project_uuid: string | null }
+export interface HistoryReply { mount_id: string; since: number; revision: number; changes: ChangeEvent[] }
 export interface SyncSuccess {
   ok: true; mount_id: string; project_uuid: string; mode: SyncBody['mode']; previous_revision: number; revision: number;
-  applied: Record<Kind, unknown>; ids: Record<Kind, Record<string, string>>; acquisitions_linked: unknown[];
-  warnings: string[]; rebased_over: unknown[]; not_in_snapshot: Record<Kind, string[]>;
+  applied: { spots: { created: number; updated: number; deleted: number; unchanged: number }; grains: { created: number; adopted: number; updated: number; retired: number; unchanged: number }; labels: { created: number; updated: number; retired: number; unchanged: number } };
+  ids: Record<Kind, Record<string, string>>; acquisitions_linked: number;
+  warnings: string[]; rebased_over: number; not_in_snapshot: Record<Kind, string[]>; dry_run: boolean;
 }
 export interface SyncConflict { ok: false; detail: string; base_revision: number; current_revision: number; changes: ChangeEvent[] }
 export type SyncReply = SyncSuccess | SyncConflict;
+export class SyncApiError extends Error {
+  status: number;
+  messages: string[];
+  bulkConfirmation = false;
+  confirmation?: import('@lab/bridge').AtlasSyncConfirmation;
+  constructor(status: number, messages: string[]) {
+    const nonempty = messages.filter(Boolean);
+    if (!nonempty.length) nonempty.push('Invalid sync request');
+    super(nonempty.join(' · ')); this.status = status; this.messages = nonempty;
+  }
+}
 /** History is mount-wide. Only this uuid and project-less elements enter its three-way merge. */
 export function changesFromEvents(events: ChangeEvent[], uuid: string): Changes {
   const changes: Changes = { spots: { upsert: [], delete: [] }, grains: { upsert: [], retire: [], delete: [] }, labels: { upsert: [], delete: [] } };
   for (const event of [...events].sort((a, b) => a.revision - b.revision)) {
     if (event.project_uuid !== null && event.project_uuid !== uuid) continue;
+    // A change-row id can be a server id; it never becomes a client identity.
+    if (event.data && event.data.id === null) continue;
     const kind = `${event.kind}s` as Kind;
     const change = changes[kind];
     change.upsert = change.upsert.filter(e => e.id !== event.id) as typeof change.upsert;
     change.delete = change.delete.filter(id => id !== event.id);
     if (kind === 'grains') changes.grains.retire = changes.grains.retire.filter(id => id !== event.id);
-    if (event.op === 'upsert' && event.data && !(kind === 'grains' && 'retired' in event.data && event.data.retired)) (change.upsert as Element[]).push({ ...event.data, id: event.id });
+    if (event.op === 'upsert' && event.data && !(kind === 'grains' && 'retired' in event.data && event.data.retired)) (change.upsert as Element[]).push({ ...event.data, id: event.id } as Element);
     else if (kind === 'grains') changes.grains.retire.push(event.id);
     else change.delete.push(event.id);
   }
@@ -35,13 +56,23 @@ export function changesFromEvents(events: ChangeEvent[], uuid: string): Changes 
 }
 /** UUIDs stay stable: ids in the 200 reply map them to database server_id values. */
 export function syncWireBody(body: SyncBody) {
-  const narrow = <K extends Kind>(kind: K) => body[kind].upsert.map(e => ({
-    ...storedElement(kind, e),
-    ...(kind === 'grains' && 'split_from' in e && e.split_from ? { split_from: e.split_from } : {}),
-    ...(kind === 'grains' && 'merged_from' in e && e.merged_from ? { merged_from: e.merged_from } : {}),
-  }));
+  const narrow = <K extends Kind>(kind: K) => body[kind].upsert.map(e => {
+    const row = { ...storedElement(kind, e) } as unknown as Record<string, unknown>;
+    // Sample names are hints resolved by the database, sent only in snapshots.
+    if (body.mode !== 'snapshot') delete row.sample;
+    else if ('sample' in e) row.sample = e.sample;
+    if (kind === 'spots') {
+      if ('comment' in row) row.comment ??= '';
+      if ('kind' in row) row.kind ||= 'spot';
+    }
+    if (kind === 'spots' && (('detach_grain' in e && e.detach_grain === true) || ('grain_id' in e && e.grain_id === null))) { row.detach_grain = true; delete row.grain_id; }
+    const keep = kind === 'spots' ? ['x_um', 'y_um', 'x2_um', 'y2_um', 'diameter_um'] : kind === 'grains' ? ['polygon_um', 'centroid_um', 'area_um2', 'number'] : [];
+    for (const key of keep) if (row[key] == null) delete row[key];
+    return row;
+  });
   return {
     project_uuid: body.project_uuid, base_revision: body.base_revision, mode: body.mode,
+    ...(body.dry_run ? { dry_run: true } : {}), ...(body.confirm_bulk ? { confirm_bulk: true } : {}),
     spots: { upsert: narrow('spots'), delete: body.mode === 'snapshot' ? [] : body.spots.delete },
     grains: { upsert: narrow('grains'), delete: body.mode === 'snapshot' ? [] : [...new Set([...body.grains.delete, ...body.grains.retire])] },
     labels: { upsert: narrow('labels'), delete: body.mode === 'snapshot' ? [] : body.labels.delete },
@@ -56,7 +87,19 @@ export class SyncApi {
     const url = new URL(this.server + path);
     if (this.access && !init.method) url.searchParams.set('access', this.access);
     const r = await fetch(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(init.headers ?? {}) } });
-    if (!r.ok && r.status !== 404 && r.status !== 409) throw new Error(`Database: ${r.status} ${await r.text()}`);
+    if (!r.ok && r.status !== 404 && r.status !== 409) {
+      if (r.status === 422) {
+        const payload = await r.json();
+        const detail = payload.detail;
+        const messages = Array.isArray(detail) ? detail.map((v: unknown) => typeof v === 'string' ? v : v && typeof v === 'object' && 'msg' in v ? String(v.msg) : JSON.stringify(v)) : [String(detail ?? 'Invalid sync request')];
+        const error = new SyncApiError(422, messages);
+        error.bulkConfirmation = /confirm_bulk|bulk|needs.confirmation/i.test(JSON.stringify(payload));
+        const counts = payload.confirm ?? detail?.confirm;
+        if (counts && ['retireGrains', 'grainsTotal', 'deleteSpots', 'spotsTotal'].every(k => Number.isInteger(counts[k]) && counts[k] >= 0) && counts.retireGrains <= counts.grainsTotal && counts.deleteSpots <= counts.spotsTotal) error.confirmation = counts;
+        throw error;
+      }
+      throw new SyncApiError(r.status, [`Database: ${r.status} ${await r.text()}`]);
+    }
     return r;
   }
   async lookup(uuid: string): Promise<ProjectStatus | null> {
@@ -65,9 +108,19 @@ export class SyncApi {
     if (!r.ok) throw new Error(`Lookup: ${r.status}`);
     return r.json();
   }
-  async candidates(name: string): Promise<Candidate[]> {
-    const r = await this.call(`/v1/atlas/projects?package=${encodeURIComponent(name)}`);
+  async candidates(packageName: string, name = ''): Promise<Candidate[]> {
+    if (!packageName && !name) return [];
+    const query = new URLSearchParams();
+    if (packageName) query.set('package', packageName);
+    if (name) query.set('name', name);
+    const r = await this.call(`/v1/atlas/projects?${query}`);
     if (!r.ok) throw new Error(`Project candidates: ${r.status}`);
+    return r.json();
+  }
+  async link(uuid: string, mount: string): Promise<ProjectStatus> {
+    const r = await this.call(`/v1/atlas/projects/${encodeURIComponent(uuid)}/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mount_id: mount, make_current: false }) });
+    if (r.status === 409) throw new SyncApiError(409, ['This project is linked to another mount']);
+    if (!r.ok) throw new Error(`Link: ${r.status}`);
     return r.json();
   }
   async elements(uuid: string): Promise<ElementsReply> {

@@ -60,6 +60,16 @@ export function splitPolygon(polygon: Polygon, line: [number, number, number, nu
   }
   return [half(1), half(-1)].sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a))) as [Polygon, Polygon];
 }
+/** The midpoint of a valid cut can lie outside a concave grain. Find the
+ * crossed polygon itself; selection still supplies a useful error for a bad cut. */
+export function grainForCut(grains: Grain[], line: [number, number, number, number], selected: string[] = []): Grain | undefined {
+  const mid: Point = [(line[0] + line[2]) / 2, (line[1] + line[3]) / 2];
+  const candidates = [...grains.filter(g => selected.includes(g.id)), ...grains.filter(g => contains(g.polygon_um, mid)), ...grains];
+  for (const grain of [...new Set(candidates)]) {
+    try { splitPolygon(grain.polygon_um, line); return grain; } catch { /* try the next crossed outline */ }
+  }
+  return grains.find(g => selected.includes(g.id) || contains(g.polygon_um, mid));
+}
 /** Split all edges at intersections, keep boundary segments with material on their left,
  * then trace. Offset probes also resolve coincident edges and containment. */
 export function polygonBoolean(polygons: Polygon[], operation: 'union' | 'difference' = 'union'): Polygon {

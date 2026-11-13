@@ -4,7 +4,7 @@
   // to move it, drag its ring handle to resize, double-click its name to rename;
   // the floating panel edits the hovered or selected object. Keys are extras.
   import { exportSpotLabels, grainNumber, splitChildren, mergedChild, reassignLineage, renumberLabels } from '../lib/grain-lineage';
-  import { splitPolygon, mergePolygons, polygonBoolean, polygonGrain } from '../lib/polygon-edit';
+  import { grainForCut, splitPolygon, mergePolygons, polygonBoolean, polygonGrain } from '../lib/polygon-edit';
   import { setMode, undoDiscard } from '../lib/hosted-actions';
   import { app, current, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
@@ -681,6 +681,7 @@
   }
   function deleteSelection() {
     if (!app.selection.length) return false;
+    if (app.sync.refuseSpotDeletion(app.selection)) return true;
     app.checkpoint();
     app.spots = app.spots.filter((s) => !app.selection.includes(s.id));
     app.labels = app.labels.filter((l) => !app.selection.includes(l.id));
@@ -1050,9 +1051,8 @@
 
   async function doSplit(line: [number, number, number, number]) {
     if (!core || !areaId) return;
-    const mid: [number, number] = [(line[0] + line[2]) / 2, (line[1] + line[3]) / 2];
-    const g = grainAt(grains, ...mid) ?? grains.find((q) => selGrains.includes(q.id));
-    if (!g) return;
+    const g = grainForCut(grains, line, selGrains);
+    if (!g) { app.notice = 'Draw the cut all the way across a grain.'; return; }
     const id = areaId;
     try {
       const parts = noPixels

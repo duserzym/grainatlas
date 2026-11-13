@@ -15,24 +15,28 @@
 </script>
 
 {#if app.project}
-  <div class="sync" title={session.error || session.text}>
+  <div class="sync" title={session.syncDisabledReason || session.error || session.text}>
     {#if session.candidates.length && session.state === 'unregistered'}
       <button data-testid="sync-chip" aria-expanded={offerOpen} onclick={() => offerOpen = !offerOpen}>{session.text}</button>
       {#if offerOpen}
         <div class="glass panel link-offer" data-testid="sync-link-offer">
-          {#each session.candidates as candidate (candidate.project_uuid)}
-            <div><span>Link to mount {candidate.mount_label}?</span> <button disabled={session.busy} onclick={() => { offerOpen = false; void session.link(candidate); }}>Link</button></div>
+          {#each session.candidates as candidate (`${candidate.mount_id}:${candidate.project_uuid}`)}
+            <div><span>Link to mount {candidate.mount_label}?</span> <button disabled={session.busy || !candidate.can_edit} onclick={() => { offerOpen = false; void session.link(candidate); }}>Link</button></div>
           {/each}
           <button onclick={() => { offerOpen = false; session.dismissLink(); }}>Not this one</button>
         </div>
       {/if}
     {:else}<span data-testid="sync-chip" title={session.text} aria-live="polite">{session.text}{app.draftHere === 'unknown' ? ' · Your draft here, base not checked' : app.draftHere !== null ? ` · Your draft here, based on r${app.draftHere}` : ''}</span>{/if}
-    <button data-testid="sync-action" disabled={session.busy || app.loadingProject || (session.state === 'in-sync' && !session.pixelsChanged)} onclick={() => session.action()}>{action}</button>
+    <button data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || app.loadingProject || (app.readOnly && session.state === 'local-changes') || ((app.readOnly || session.draft?.synced) && session.state === 'in-sync' && !session.pixelsChanged)} onclick={() => session.action()}>{action}</button>
   </div>
 {/if}
 {#if session.dialog}
-    <dialog bind:this={dialogElement} class="glass panel review" oncancel={() => session.dialog = null} onkeydown={e => e.stopPropagation()} aria-modal="true" aria-label={session.dialog === 'review' ? 'Review differences' : session.dialog === 'register' ? 'Register project' : 'Sync to database'} tabindex="-1">
-      {#if session.dialog === 'register'}
+    <dialog bind:this={dialogElement} class="glass panel review" oncancel={() => session.cancelConfirmation()} onkeydown={e => e.stopPropagation()} aria-modal="true" aria-label={session.dialog === 'bulk' ? 'Confirm sync' : session.dialog === 'review' ? 'Review differences' : session.dialog === 'register' ? 'Register project' : 'Sync to database'} tabindex="-1">
+      {#if session.dialog === 'bulk' && session.confirmation}
+        <h2>Confirm sync</h2>
+        <p>This retires {session.confirmation.retireGrains} of {session.confirmation.grainsTotal} grains and deletes {session.confirmation.deleteSpots} spots. Continue?</p>
+        <div class="actions"><button onclick={() => session.cancelConfirmation()}>Cancel</button><button class="primary" disabled={session.busy} onclick={() => session.confirmBulk()}>Continue</button></div>
+      {:else if session.dialog === 'register'}
         <h2>Register project</h2>
         <p>Pick an existing mount. Creating mounts is available in the database.</p>
         <MountPicker value={mount} onchange={id => mount = id} existingOnly />

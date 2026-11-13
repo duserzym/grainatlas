@@ -76,8 +76,8 @@ function readDate(raw: unknown, method?: DateKind): Value | null {
 /** One entry of `GET /v1/mounts/{id}/results` in the form the panel and the layer use. */
 export function normalize(e: Record<string, unknown>): SpotResult {
   const dates: SpotResult['dates'] = {};
-  if (e.dates && typeof e.dates === 'object') for (const kind of DATE_KINDS) {
-    const v = readDate((e.dates as Record<string, unknown>)[kind], kind);
+  if (e.dates && typeof e.dates === 'object') for (const kind of DATE_CHOICES) {
+    const v = readDate((e.dates as Record<string, unknown>)[kind], kind === 'preferred' ? undefined : kind);
     if (v) dates[kind] = v;
   }
   const ratios = values(e.ratios);

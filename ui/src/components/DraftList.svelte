@@ -29,7 +29,7 @@
       const base = draft.base ?? (theirs ? { spots: theirs.spots, grains: theirs.grains, labels: theirs.labels } : emptyElements());
       const changes = changeCounts(diffElements(base, elements));
       const pending = !status || hasChanges(changes) ? pendingElements(elements) : null;
-      const updated = { ...draft, server, mount: status?.mount_id ?? draft.mount, base: status ? base : null, base_revision: draft.base_revision ?? theirs?.revision ?? null, base_hashes: draft.base_hashes ?? (!draft.base ? theirs?.hashes : null), synced: draft.synced ?? !!status, changes, pending, pending_at: pending ? draft.pending_at ?? draft.updated_at : null };
+      const updated = { ...draft, server, mount: status?.mount_id ?? draft.mount, base: status ? base : null, base_revision: draft.base_revision ?? theirs?.revision ?? null, base_hashes: draft.base_hashes ?? (!draft.base ? theirs?.hashes : null), synced: draft.synced ?? false, changes, pending, pending_at: pending ? draft.pending_at ?? draft.updated_at : null };
       writeDraft(updated);
       drafts = drafts.map(d => d.uuid === draft.uuid ? updated : d).filter(d => d.changes === null || hasChanges(d.changes) || d.pixels_changed);
       if (!hasChanges(updated.changes)) note = `${draft.name}: no element changes waiting to sync.`;

@@ -8,7 +8,6 @@
 import { isBridgeCommand } from '@lab/bridge';
 import { hostedSync, ATLAS_EVENTS } from './hosted-sync';
 import { draftElements, listDrafts, storedDraftProject } from './drafts';
-import { SyncApi } from './sync-api';
 import { groupedGrains, uiSpots } from './sync';
 import type { RawImage } from './core/core';
 import type { LevelInfo, MosaicJson, Project, StitchSummary } from './core/types';
@@ -120,22 +119,13 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   const token = await authToken(app, server);
   const at = { server, projectId, token, access };
   const r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
-    const api = new SyncApi(server, token, access);
-    // A failed sync lookup may coexist with cached/published files. Open those in View
-    // and let the session report Offline after its guarded lookup.
-    const status = await api.lookup(projectId).catch(() => null);
     const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json');
     if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
     if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
     const project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json');
-    let revision: number | null = null;
-    if (status) {
-      const elements = await api.elements(projectId);
-      revision = elements.revision;
-      const ui = project.grainatlas_ui as { spots?: import('./core/types').Spot[]; grains?: Record<string, import('./core/types').Grain[]> } | undefined;
-      project.grainatlas_ui = { ...(project.grainatlas_ui as object), spots: uiSpots(elements.spots, elements.grains, ui?.spots, Object.fromEntries(project.areas.map(a => [a.id, a.sample]))), grains: groupedGrains(elements.grains, ui?.grains), labels: elements.labels };
-    }
-    return { atlas, project, revision };
+    // check() overlays current identified database elements (or a pending draft)
+    // on this bundle; the bundle still supplies pixels and display metadata.
+    return { atlas, project };
   });
   if (!r) return false;
   const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true, token, access, mount };
@@ -157,8 +147,8 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   app.preview = {};
   app.pixelsVersion++;
   app.areaId = r.atlas.areas[0]?.id ?? null;
+  app.sync.openedView();
   await app.sync.check();
-  app.sync.viewed(r.revision);
   app.screen = 'canvas';
   if (spot) {
     const s = app.spots.find((x) => sameId(x.id, spot));

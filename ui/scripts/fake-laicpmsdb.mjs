@@ -1,9 +1,13 @@
 // A stand-in for the laicpmsdb endpoints grainatlas calls, for `pnpm dev`, `pnpm preview` and
 // the Playwright tests, mounted by vite.config.ts under /fake-laicpmsdb (never in a build).
-// It follows upblab/docs/WORKFLOW.md v1 and laicpmsdb's schemas/openapi.json; where
-// laicpmsdb has no endpoint yet (atlas upload and serving, mount results) it implements
-// what grainatlas codes against, so it is a fake, not a reference:
+// It follows laicpmsdb B1 (3f63ee9), docs/atlas-sync.md and schemas/openapi.json.
+// It is a fixture-backed fake with limited validation, not a reference server:
 //
+//   GET  /v1/atlas/projects[/{uuid}]   candidates / AtlasProjectOut
+//   POST /v1/atlas/projects/{uuid}/link register the local UUID on a mount
+//   GET  /v1/atlas/projects/{uuid}/elements  MountElementsOut
+//   GET  /v1/mounts/{id}/changes        ChangesOut
+//   POST /v1/mounts/{id}/sync           SyncIn -> SyncOut / ConflictOut / 422
 //   GET  /v1/mounts?session=<id>          MountOut list, optionally filtered by session (Bearer)
 //   GET  /v1/sessions                    visible sessions (Bearer)
 //   GET  /v1/sessions/{id}/acquisitions   instrument labels, including standards (Bearer)
@@ -22,7 +26,6 @@
 // The token is `test-token`. CORS is open so a page on another origin can use it.
 
 import { createHash } from 'node:crypto';
-import { elementHash } from '../src/lib/sync-hash.ts';
 import { elementsOf, emptyElements, storedElement, storedElements } from '../src/lib/sync.ts';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -83,59 +86,105 @@ function loadPreloaded() {
   return out;
 }
 
+// B1 atlas publish imports legacy spot documents, not the project snapshot.
+// Only spot-bearing grains exist, and spots are not linked to atlas grain UUIDs.
+function publishedElements(project) {
+  const local = storedElements(elementsOf(project)), uuid = project.uuid;
+  const referenced = new Set(local.spots.map(s => s.grain_id));
+  return {
+    grains: local.grains.filter(g => referenced.has(g.id)).map(g => ({
+      id: null, server_id: `db-grains-${g.id}`, project_uuid: uuid, area_id: g.area_id,
+      label: g.label, number: null, polygon_um: null, centroid_um: null, area_um2: null,
+      sample: null, artifact: '', retired: false, split_from: [], merged_from: [], children: [],
+    })),
+    spots: local.spots.map(s => ({ ...s, grain_id: null, server_id: `db-spots-${s.id}`, project_uuid: uuid, acquisition_ids: [] })),
+    labels: [],
+  };
+}
+
 export function createFake() {
   const states = new Map();
   const kinds = ['spots', 'grains', 'labels'];
-  const fresh = () => {
+  const fresh = (snapshot = false) => {
     const atlases = loadPreloaded();
     const projects = new Map();
-    const mounts = new Map(MOUNTS.map(m => [m.id, { revision: 0, changes: [], shared: emptyElements() }]));
+    const mounts = new Map(MOUNTS.map(m => [m.id, { revision: 0, changes: [], shared: emptyElements(), current: null }]));
     for (const [uuid, atlas] of atlases) {
       const project = JSON.parse(atlas.files.get('project.json').toString('utf8'));
       const mount = project.laicpmsdb.mount_id ?? MOUNTS[0].id;
-      const elements = storedElements(elementsOf(project));
-      for (const kind of kinds) elements[kind] = elements[kind].map(e => ({ ...e, server_id: `db-${kind}-${e.id}`, project_uuid: uuid, ...(kind === 'spots' ? { acquisition_ids: [] } : {}), ...(kind === 'grains' ? { retired: false, children: [] } : {}) }));
+      const elements = snapshot ? storedElements(elementsOf(project)) : publishedElements(project);
+      if (snapshot) for (const kind of kinds) elements[kind] = elements[kind].map(e => ({ ...e, server_id: `db-${kind}-${e.id}`, project_uuid: uuid, ...(kind === 'spots' ? { acquisition_ids: [] } : {}), ...(kind === 'grains' ? { retired: false, split_from: [], merged_from: [], children: [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) }));
       projects.set(uuid, { uuid, mount, name: project.package.name, version: atlas.version || 1, elements, changed_at: new Date().toISOString() });
-      mounts.get(mount).revision = 1;
+      mounts.get(mount).revision = 1; mounts.get(mount).current ??= uuid;
     }
-    return { atlases, projects, mounts, published: [], spots: [], syncs: [], requests: [], offline: false };
+    return { atlases, projects, mounts, published: [], spots: [], syncs: [], dryRuns: [], requests: [], offline: false, options: {} };
   };
+  const allElements = (state, mount) => Object.fromEntries(kinds.map(k => [k, [...state.projects.values()].filter(q => q.mount === mount).flatMap(q => q.elements[k]).concat(state.mounts.get(mount).shared[k])]));
   const elementsFor = (state, project) => Object.fromEntries(kinds.map(k => [k, [...project.elements[k], ...state.mounts.get(project.mount).shared[k]]]));
-  const hashesFor = async elements => Object.fromEntries(await Promise.all(kinds.map(async k => [k, await elementHash(storedElements(elements)[k])])));
+  // Python's canonical JSON uses ASCII escapes and integral geometry floats.
+  // These hashes stay opaque to the client; never use its narrowed-field hash here.
+  const pythonJson = (value, float = false) => {
+    if (Array.isArray(value)) return `[${value.map(v => pythonJson(v, float)).join(',')}]`;
+    if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(k => `${pythonJson(k)}:${pythonJson(value[k], /_um$|_um2$/.test(k))}`).join(',')}}`;
+    if (typeof value === 'number') return float && Number.isInteger(value) ? `${value}.0` : JSON.stringify(value);
+    return JSON.stringify(value).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  };
+  const hashesFor = async elements => Object.fromEntries(kinds.map(k => [k, sha(elements[k].filter(e => e.id != null && !e.retired).map(e => {
+    const { server_id, acquisition_ids, ...content } = e;
+    return `${e.id} ${sha(pythonJson(content))}\n`;
+  }).sort().join(''))]));
+  const lookup = async (state, p, canEdit = true) => {
+    const elements = allElements(state, p.mount), mount = state.mounts.get(p.mount);
+    return { project_uuid: p.uuid, mount_id: p.mount, mount_label: MOUNTS.find(m => m.id === p.mount)?.label ?? p.mount,
+      name: p.name, package_name: p.name, atlas_version: state.projects.get(mount.current)?.version ?? null, atlas_bundle_id: null, revision: mount.revision,
+      counts: { ...Object.fromEntries(kinds.map(k => [k, elements[k].filter(e => !e.retired).length])), grains_retired: elements.grains.filter(g => g.retired).length, grains_without_atlas_id: elements.grains.filter(g => g.id === null).length },
+      hashes: await hashesFor(elements), changed_at: p.changed_at ?? null, changed_by: 'fake-user', can_edit: canEdit && state.options.can_edit !== false,
+      current_project_uuid: mount.current, project_uuids: [...state.projects.values()].filter(q => q.mount === p.mount).map(q => ({ project_uuid: q.uuid, name: q.name, package_name: q.name, is_current: mount.current === q.uuid })) };
+  };
   const advance = (state, project, changes) => {
     const mount = state.mounts.get(project.mount);
     const revision = ++mount.revision;
     const at = new Date().toISOString();
     project.changed_at = at;
     for (const kind of kinds) {
-      const entries = new Map(project.elements[kind].map(e => [e.id, e]));
-      const shared = new Map(mount.shared[kind].map(e => [e.id, e]));
+      const entries = new Map(project.elements[kind].map(e => [e.id ?? e.server_id, e]));
+      const shared = new Map(mount.shared[kind].map(e => [e.id ?? e.server_id, e]));
       const target = id => project.uuid !== null && shared.has(id) ? shared : entries;
       const owner = id => target(id) === shared ? null : project.uuid;
       const record = (id, op, data, project_uuid = owner(id)) => mount.changes.push({ revision, kind: kind.slice(0, -1), id, op, data: data ? structuredClone(data) : null, project_uuid, at, by: 'fake-user' });
       for (const id of [...(changes[kind]?.delete ?? []), ...(changes[kind]?.retire ?? [])]) {
         const values = target(id);
         const project_uuid = owner(id);
-        if (kind === 'grains') {
+        if (kind !== 'spots') {
           const old = values.get(id);
           if (old) { const retired = { ...old, retired: true }; values.set(id, retired); record(id, 'retire', retired, project_uuid); }
         } else { values.delete(id); record(id, 'delete', null, project_uuid); }
       }
       for (const el of changes[kind]?.upsert ?? []) {
-        const values = target(el.id);
-        const old = values.get(el.id);
-        const data = { ...old, ...storedElement(kind, el), server_id: old?.server_id ?? `db-${kind}-${el.id}`, project_uuid: owner(el.id),
-          ...(kind === 'spots' ? { acquisition_ids: old?.acquisition_ids ?? [] } : {}),
-          ...(kind === 'grains' ? { retired: false, children: old?.children ?? [], ...(el.split_from ? { split_from: el.split_from } : {}), ...(el.merged_from ? { merged_from: el.merged_from } : {}) } : {}) };
-        values.set(el.id, data); record(el.id, 'upsert', data);
+        let values = target(el.id);
+        let old = values.get(el.id);
+        let adopted = false;
+        if (kind === 'grains' && el.id !== null && !old) {
+          const label = el.label ?? `${el.area_id}/${el.number}`;
+          for (const candidates of [entries, shared]) {
+            const legacy = [...candidates.values()].find(g => g.id === null && !g.retired && g.label === label);
+            if (legacy) { adopted = true; old = legacy; values = candidates; candidates.delete(legacy.server_id); break; }
+          }
+        }
+        const data = { ...old, ...storedElement(kind, el), server_id: old?.server_id ?? `db-${kind}-${el.id}`, project_uuid: old?.project_uuid ?? project.uuid,
+          ...(kind === 'spots' ? { acquisition_ids: el.acquisition_ids ?? old?.acquisition_ids ?? [] } : {}),
+          ...(kind === 'grains' ? { sample: adopted ? old?.sample ?? null : el.sample !== undefined ? el.sample : old?.sample ?? null, retired: false, children: old?.children ?? [], split_from: el.split_from ? (Array.isArray(el.split_from) ? el.split_from : [el.split_from]) : old?.split_from ?? [], merged_from: el.merged_from ?? old?.merged_from ?? [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) };
+        if (kind === 'spots') delete data.sample;
+        if (kind === 'labels') delete data.server_id;
+        values.set(el.id ?? data.server_id, data); record(el.id ?? data.server_id, 'upsert', data);
       }
       project.elements[kind] = [...entries.values()];
       if (project.uuid !== null) mount.shared[kind] = [...shared.values()];
     }
     for (const child of changes.grains?.upsert ?? []) {
-      for (const id of [...(child.split_from ? [child.split_from] : []), ...(child.merged_from ?? [])]) {
+      for (const id of [...(child.split_from ? (Array.isArray(child.split_from) ? child.split_from : [child.split_from]) : []), ...(child.merged_from ?? [])]) {
         const parent = [...project.elements.grains, ...mount.shared.grains].find(g => g.id === id);
-        if (parent) parent.children = [...new Set([...(parent.children ?? []), child.id])];
+        if (parent) { parent.retired = true; parent.children = [...new Set([...(parent.children ?? []), child.id])]; mount.changes.push({ revision: mount.revision, kind: 'grain', id, op: 'retire', data: structuredClone(parent), project_uuid: parent.project_uuid, at: new Date().toISOString(), by: 'fake-user' }); }
       }
     }
   };
@@ -170,9 +219,12 @@ export function createFake() {
     state.requests.push({ method: req.method, path, auth: req.headers.authorization ?? null, access: url.searchParams.has('access') });
     let m;
     try {
-      if (path === '/_fake/state') return send(res, 200, { published: state.published, spots: state.spots, syncs: state.syncs, offline: state.offline, requests: state.requests, atlases: [...state.atlases.keys()] });
+      if (path === '/_fake/state') return send(res, 200, { published: state.published, spots: state.spots, syncs: state.syncs, dryRuns: state.dryRuns, offline: state.offline, requests: state.requests, atlases: [...state.atlases.keys()] });
       if (path === '/_fake/reset' && req.method === 'POST') {
-        state = fresh();
+        // Explicit already-snapshotted fixture for delta tests. Default reset and
+        // normal startup always reproduce the real legacy publish state.
+        const options = JSON.parse((await body(req)).toString('utf8') || '{}');
+        state = fresh(options.snapshot === true);
         states.set(ns, state);
         return send(res, 200, { ok: true });
       }
@@ -191,10 +243,36 @@ export function createFake() {
         if (project.uuid === null) state.mounts.get(project.mount).shared = project.elements;
         return send(res, 200, { revision: state.mounts.get(project.mount).revision });
       }
+      if (path === '/_fake/legacy-grain' && req.method === 'POST') {
+        const doc = JSON.parse((await body(req)).toString('utf8'));
+        const p = state.projects.get(doc.project_uuid);
+        const grain = p?.elements.grains.find(g => g.id === doc.id);
+        if (!grain) return send(res, 404, { detail: 'unknown grain' });
+        grain.id = null;
+        return send(res, 200, grain);
+      }
+      if (path === '/_fake/options' && req.method === 'POST') {
+        Object.assign(state.options, JSON.parse((await body(req)).toString('utf8')));
+        return send(res, 200, state.options);
+      }
       if (state.offline) return send(res, 503, { detail: 'fake is offline' });
       if (path === '/v1/atlas/projects' && req.method === 'GET') {
         if (!authed(req) && url.searchParams.get('access') !== ACCESS) return send(res, 401, { detail: 'Unauthorized' });
-        return send(res, 200, [...state.projects.values()].filter(p => p.name === url.searchParams.get('package')).map(p => ({ project_uuid: p.uuid, mount_id: p.mount, mount_label: MOUNTS.find(m => m.id === p.mount)?.label ?? p.mount, package_name: p.name, revision: state.mounts.get(p.mount).revision })));
+        const packageName = url.searchParams.get('package'), name = url.searchParams.get('name');
+        if (!packageName && !name) return send(res, 422, { detail: ['package or name is required'] });
+        const matches = (a, b) => !!b && a.toLowerCase() === b.toLowerCase();
+        return send(res, 200, [...state.projects.values()].filter(p => matches(p.name, packageName) || matches(p.name, name) || matches(MOUNTS.find(m => m.id === p.mount)?.label ?? '', name)).map(p => ({ project_uuid: p.uuid, mount_id: p.mount, mount_label: MOUNTS.find(m => m.id === p.mount)?.label ?? p.mount, matched_by: matches(p.name, packageName) ? 'package' : matches(p.name, name) ? 'project_name' : 'mount_label', atlas_version: p.version, revision: state.mounts.get(p.mount).revision, spot_count: p.elements.spots.length, grain_count: p.elements.grains.filter(g => !g.retired).length, can_edit: authed(req) && state.options.can_edit !== false })));
+      }
+      if ((m = path.match(/^\/v1\/atlas\/projects\/([^/]+)\/link$/)) && req.method === 'POST') {
+        if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
+        const doc = JSON.parse((await body(req)).toString('utf8'));
+        let p = state.projects.get(m[1]);
+        if (state.options.link_conflict || (p && p.mount !== doc.mount_id)) return send(res, 409, { detail: 'Project is already linked to another mount.' });
+        if (state.options.can_edit === false || !MOUNTS.some(q => q.id === doc.mount_id && q.can_edit)) return send(res, 403, { detail: 'Read-only mount' });
+        if (!p) { p = { uuid: m[1], mount: doc.mount_id, name: m[1], version: null, elements: emptyElements(), changed_at: null }; state.projects.set(p.uuid, p); }
+        const mount = state.mounts.get(p.mount);
+        if (doc.make_current) mount.current = p.uuid;
+        return send(res, 200, await lookup(state, p));
       }
       if ((m = path.match(/^\/v1\/atlas\/projects\/([^/]+)(\/elements)?$/)) && req.method === 'GET') {
         if (!authed(req) && url.searchParams.get('access') !== ACCESS) return send(res, 401, { detail: 'Unauthorized' });
@@ -204,47 +282,113 @@ export function createFake() {
         const elements = elementsFor(state, p);
         const hashes = await hashesFor(elements);
         if (m[2]) {
-          if (url.searchParams.has('revision') && Number(url.searchParams.get('revision')) !== mount.revision) return send(res, 404, { detail: 'older revisions use mount changes' });
-          return send(res, 200, { mount_id: p.mount, revision: mount.revision, ...elements, hashes });
+          if (url.searchParams.has('revision') && Number(url.searchParams.get('revision')) !== mount.revision) return send(res, 422, { detail: 'only the current revision is kept as a snapshot; use /changes?since=N' });
+          return send(res, 200, { mount_id: p.mount, revision: mount.revision, project_uuids: [...state.projects.values()].filter(q => q.mount === p.mount).map(q => q.uuid), current_project_uuid: mount.current, ...elements, hashes });
         }
-        return send(res, 200, { project_uuid: p.uuid, mount_id: p.mount, mount_label: MOUNTS.find(m => m.id === p.mount)?.label ?? p.mount, atlas_version: p.version, revision: mount.revision, counts: Object.fromEntries(kinds.map(k => [k, storedElements(elements)[k].length])), hashes, changed_at: p.changed_at, changed_by: 'fake-user' });
+        return send(res, 200, await lookup(state, p, authed(req)));
       }
       if ((m = path.match(/^\/v1\/mounts\/([^/]+)\/changes$/)) && req.method === 'GET') {
         if (!authed(req) && url.searchParams.get('access') !== ACCESS) return send(res, 401, { detail: 'Unauthorized' });
         const mount = state.mounts.get(m[1]);
         if (!mount) return send(res, 404, { detail: 'unknown mount' });
         const since = Number(url.searchParams.get('since'));
-        return send(res, 200, { mount_id: m[1], base_revision: since, current_revision: mount.revision, changes: mount.changes.filter(c => c.revision > since) });
+        return send(res, 200, { mount_id: m[1], since, revision: mount.revision, changes: mount.changes.filter(c => c.revision > since) });
       }
       if ((m = path.match(/^\/v1\/mounts\/([^/]+)\/sync$/)) && req.method === 'POST') {
         if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
         const doc = JSON.parse((await body(req)).toString('utf8'));
-        state.syncs.push({ mount_id: m[1], doc });
+        (doc.dry_run ? state.dryRuns : state.syncs).push({ mount_id: m[1], doc: structuredClone(doc) });
+        // Execute the same validation and prospective write on isolated state.
+        // Neither revisions, adoption, audit rows nor registrations escape a preview.
+        if (doc.dry_run) state = structuredClone(state);
         let p = state.projects.get(doc.project_uuid);
+        if (state.options.validation_errors) return send(res, 422, { detail: state.options.validation_errors });
+        if (state.options.can_edit === false) return send(res, 403, { detail: 'Read-only mount' });
+        if (!Number.isInteger(doc.base_revision) || doc.base_revision < 0) return send(res, 422, { detail: ['base_revision must be a nonnegative integer'] });
         if (!MOUNTS.some(mount => mount.id === m[1] && mount.can_edit)) return send(res, 403, { detail: 'choose an editable mount' });
-        if (p && p.mount !== m[1]) return send(res, 422, { detail: 'mount mismatch' });
-        if (!['snapshot', 'delta'].includes(doc.mode) || (!p && doc.mode !== 'snapshot')) return send(res, 422, { detail: 'first sync requires snapshot mode' });
+        if (p && p.mount !== m[1]) return send(res, 409, { detail: 'Project is linked to another mount', base_revision: doc.base_revision, current_revision: state.mounts.get(m[1]).revision, changes: [] });
+        if (!['snapshot', 'delta'].includes(doc.mode) || (!p && doc.mode !== 'snapshot')) return send(res, 422, { detail: ['first sync requires snapshot mode'] });
         const mount = state.mounts.get(m[1]);
         const since = mount.changes.filter(c => c.revision > (doc.base_revision ?? 0));
-        if (p && doc.base_revision !== mount.revision && since.some(c => c.project_uuid === p.uuid || c.project_uuid === null)) return send(res, 409, { detail: 'mount changed', base_revision: doc.base_revision, current_revision: mount.revision, changes: since });
+        if (doc.base_revision > mount.revision || (doc.base_revision !== mount.revision && since.some(c => c.project_uuid === doc.project_uuid || c.project_uuid === null))) return send(res, 409, { detail: 'mount changed', base_revision: doc.base_revision, current_revision: mount.revision, changes: since });
         if (!p) {
           p = { uuid: doc.project_uuid, mount: m[1], name: doc.project_uuid, version: null, elements: emptyElements(), changed_at: new Date().toISOString() };
-          state.projects.set(p.uuid, p);
+          state.projects.set(p.uuid, p); mount.current ??= p.uuid;
+        }
+        const labels = new Map();
+        for (const grain of doc.grains.upsert) {
+          const label = grain.label ?? elementsFor(state, p).grains.find(g => g.id === grain.id)?.label ?? `${grain.area_id}/${grain.number}`;
+          if (!label || label.length > 50 || (labels.has(label) && labels.get(label) !== grain.id)) return send(res, 422, { detail: ['grain labels must be non-empty, unique and at most 50 characters'] });
+          grain.label = label;
+          labels.set(label, grain.id);
         }
         const parents = new Set(doc.grains.upsert.flatMap(g => [...(g.split_from ? [g.split_from] : []), ...(g.merged_from ?? [])]));
+        const mountElements = allElements(state, p.mount);
+        const retiring = new Set([...doc.grains.delete, ...parents]);
+        const confirm = {
+          retireGrains: mountElements.grains.filter(g => !g.retired && retiring.has(g.id)).length,
+          grainsTotal: mountElements.grains.filter(g => !g.retired).length,
+          deleteSpots: mountElements.spots.filter(s => doc.spots.delete.includes(s.id)).length,
+          spotsTotal: mountElements.spots.length,
+        };
+        if (!doc.confirm_bulk && (confirm.retireGrains > Math.max(3, confirm.grainsTotal * .1) || confirm.deleteSpots > Math.max(3, confirm.spotsTotal * .1))) return send(res, 422, { detail: ['Bulk sync requires confirm_bulk'], confirm });
+        const warnings = [...(state.options.warnings ?? [])];
+        const keptNulls = [];
+        // Existing null/absent geometry keeps the stored value; explicit detach
+        // is the only way to clear a spot's grain link.
+        for (const kind of kinds) doc[kind].upsert = doc[kind].upsert.map(input => {
+          const old = elementsFor(state, p)[kind].find(e => e.id === input.id) ?? (kind === 'grains' ? elementsFor(state, p).grains.find(g => g.id === null && g.label === input.label) : undefined);
+          const row = { ...old, ...input };
+          const keep = kind === 'spots' ? ['grain_id', 'x_um', 'y_um', 'x2_um', 'y2_um', 'diameter_um'] : kind === 'grains' ? ['polygon_um', 'centroid_um', 'area_um2', 'number'] : [];
+          for (const key of keep) if (input[key] == null) {
+            if (old && input[key] === null) keptNulls.push(`${kind}.${input.id}.${key}`);
+            row[key] = old?.[key] ?? null;
+          }
+          if (kind === 'spots') {
+            if (input.detach_grain === true) row.grain_id = null;
+            delete row.detach_grain;
+          }
+          if (input.sample && state.options.sample_unknown !== false) {
+            warnings.push(`sample '${input.sample}' is unknown or ambiguous; no sample was assigned`);
+            row.sample = null;
+          }
+          return row;
+        });
+        if (doc.spots.upsert.some(s => !s.name?.trim() || !Number.isFinite(s.x_um) || !Number.isFinite(s.y_um))) return send(res, 422, { detail: ['new spots require finite x,y and a non-empty name'] });
+        if (keptNulls.length) warnings.push(`Kept null fields (${keptNulls.length}): ${keptNulls.join(', ')}`);
         for (const spot of elementsFor(state, p).spots.filter(s => parents.has(s.grain_id))) {
           const reassigned = doc.spots.upsert.find(s => s.id === spot.id);
-          if (!reassigned?.grain_id || parents.has(reassigned.grain_id)) return send(res, 422, { detail: 'reassign every parent spot in the same request' });
+          if (!reassigned?.grain_id || parents.has(reassigned.grain_id)) return send(res, 422, { detail: ['reassign every parent spot in the same request'] });
         }
-        const not_in_snapshot = Object.fromEntries(kinds.map(k => [k, doc.mode === 'snapshot' ? storedElements(elementsFor(state, p))[k].filter(e => !doc[k].upsert.some(s => s.id === e.id)).map(e => e.id) : []]));
+        for (const id of doc.spots.delete) {
+          const spot = elementsFor(state, p).spots.find(s => s.id === id);
+          if (spot?.acquisition_ids?.length) return send(res, 422, { detail: [`spot ${spot.name} has measurements and cannot be deleted`] });
+        }
         const previous_revision = mount.revision;
-        const applied = Object.fromEntries(kinds.map(k => [k, { upsert: doc[k].upsert.length, [k === 'grains' ? 'retire' : 'delete']: doc.mode === 'snapshot' ? 0 : doc[k].delete.length }]));
-        const changes = Object.fromEntries(kinds.map(k => [k, { upsert: doc[k].upsert, delete: doc.mode === 'snapshot' ? [] : doc[k].delete }]));
-        advance(state, p, changes);
+        const canonicalEqual = (kind, a, b) => pythonJson(storedElement(kind, a)) === pythonJson(storedElement(kind, b));
+        const applied = Object.fromEntries(kinds.map(k => [k, { created: 0, updated: 0, unchanged: 0, ...(k === 'grains' ? { adopted: 0 } : {}), [k === 'spots' ? 'deleted' : 'retired']: doc[k].delete.length }]));
+        for (const k of kinds) {
+          const deleted = k === 'grains' ? [...new Set([...doc.grains.delete, ...parents])] : doc[k].delete;
+          applied[k][k === 'spots' ? 'deleted' : 'retired'] = deleted.filter(id => elementsFor(state, p)[k].some(e => e.id === id && !e.retired)).length;
+        }
+        for (const k of kinds) for (const e of doc[k].upsert) {
+          const old = elementsFor(state, p)[k].find(s => s.id === e.id);
+          const adopted = k === 'grains' && !old && elementsFor(state, p).grains.some(g => g.id === null && g.label === (e.label ?? `${e.area_id}/${e.number}`));
+          applied[k][adopted ? 'adopted' : old ? canonicalEqual(k, old, e) ? 'unchanged' : 'updated' : 'created']++;
+        }
+        const changes = Object.fromEntries(kinds.map(k => [k, {
+          upsert: doc[k].upsert.filter(e => { const old = elementsFor(state, p)[k].find(s => s.id === e.id); return !old || !canonicalEqual(k, old, e); }),
+          delete: doc[k].delete.filter(id => elementsFor(state, p)[k].some(e => e.id === id && !e.retired)),
+        }]));
+        if (kinds.some(k => changes[k].upsert.length || changes[k].delete.length)) advance(state, p, changes);
+        const all = allElements(state, p.mount);
+        const not_in_snapshot = Object.fromEntries(kinds.map(k => [k, doc.mode === 'snapshot' ? all[k].filter(e => !e.retired && !doc[k].upsert.some(s => s.id === e.id)).map(e => e.id ?? e.server_id) : []]));
+        if (kinds.some(k => not_in_snapshot[k].length)) warnings.push('Some database elements were absent from the snapshot; they were kept.');
         return send(res, 200, { mount_id: p.mount, project_uuid: p.uuid, mode: doc.mode, previous_revision, revision: mount.revision, applied,
-          ids: Object.fromEntries(kinds.map(k => [k, Object.fromEntries(doc[k].upsert.map(e => [e.id, elementsFor(state, p)[k].find(s => s.id === e.id).server_id]))])),
-          acquisitions_linked: [], warnings: [], rebased_over: [...new Set(since.map(c => c.revision))], not_in_snapshot });
+          ids: Object.fromEntries(kinds.map(k => [k, Object.fromEntries(doc[k].upsert.map(e => [e.id, k === 'labels' ? e.id : elementsFor(state, p)[k].find(s => s.id === e.id).server_id]))])),
+          acquisitions_linked: 0, warnings: [...new Set(warnings)], rebased_over: previous_revision - doc.base_revision, not_in_snapshot, dry_run: !!doc.dry_run });
       }
+
       if ((m = path.match(/^\/atlas\/projects\/([^/]+)\/(.+)$/)) && req.method === 'GET') {
         if (!authed(req) && url.searchParams.get('access') !== ACCESS) return send(res, 401, { detail: 'Unauthorized' });
         const a = state.atlases.get(m[1]);
@@ -296,7 +440,14 @@ export function createFake() {
         const version = (prev?.version ?? 0) + 1;
         state.atlases.set(atlas.project_id, { files, version });
         const linkedProject = state.projects.get(atlas.project_id);
-        if (linkedProject) linkedProject.version = version;
+        if (linkedProject && kinds.some(k => linkedProject.elements[k].length)) linkedProject.version = version;
+        else {
+          const project = JSON.parse(files.get('project.json').toString('utf8'));
+          const elements = publishedElements(project);
+          state.projects.set(atlas.project_id, { uuid: atlas.project_id, mount: m[1], name: project.package.name, version, elements, changed_at: new Date().toISOString() });
+          const mount = state.mounts.get(m[1]);
+          mount.revision++; mount.current = atlas.project_id;
+        }
         const doc = JSON.parse(files.get('spots.json')?.toString('utf8') ?? '{}');
         const docs = Array.isArray(doc.documents) ? doc.documents : [doc];
         const n = docs.reduce((k, d) => k + (Array.isArray(d.spots) ? d.spots.length : 0), 0);
