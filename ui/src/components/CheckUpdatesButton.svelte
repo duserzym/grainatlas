@@ -23,17 +23,25 @@
     left = x - at.left;
     top = y - at.top;
   }
+  async function afterResize() {
+    // The header moves its theme switch into overflow at the narrow breakpoint.
+    // Measure after that DOM update, since the anchor can move without resizing.
+    await tick();
+    position();
+  }
   $effect(() => {
     if (!popover || !anchor) return;
     position();
     const observer = new ResizeObserver(position);
     observer.observe(popover);
     observer.observe(anchor);
-    window.addEventListener('resize', position);
+    // Moving controls into overflow changes the row's width, not the icon's.
+    if (anchor.parentElement) observer.observe(anchor.parentElement);
+    window.addEventListener('resize', afterResize);
     window.addEventListener('scroll', position, true);
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', position);
+      window.removeEventListener('resize', afterResize);
       window.removeEventListener('scroll', position, true);
     };
   });

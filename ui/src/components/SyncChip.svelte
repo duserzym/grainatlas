@@ -3,31 +3,38 @@
   import MountPicker from './MountPicker.svelte';
   import type { Resolution } from '../lib/sync';
   let dialogElement = $state<HTMLDialogElement>();
-  let offerOpen = $state(false);
+  let { detailsOpen = $bindable(false) }: { detailsOpen?: boolean } = $props();
   let mount = $state('');
   let choices = $state<Record<string, Resolution>>({});
   let publishImages = $state(true);
   const session = $derived(app.sync);
-  const action = $derived(session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Update from database' : session.state === 'both-changed' ? 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync to database');
+  const action = $derived(session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Update from database' : session.state === 'both-changed' ? 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync to database');
+  const pillState = $derived(session.confirmation ? 'needs-confirmation' : session.checking ? 'checking' : session.state === 'in-sync' && session.pixelsChanged ? 'local-changes' : session.state);
+  const text = $derived(session.text + (app.draftHere === 'unknown' ? ' · Your draft here, base not checked' : app.draftHere !== null ? ` · Your draft here, based on r${app.draftHere}` : ''));
+  const title = $derived([text, session.syncedAt ? `Last synced ${new Date(session.syncedAt).toLocaleString()}` : '', session.syncDisabledReason || session.error].filter(Boolean).join(' · '));
   const complete = $derived(session.review?.merge.differences.filter(d => d.collision).every(d => choices[`${d.kind}:${d.id}`]));
   $effect(() => { if (session.dialog === 'review') choices = {}; });
   $effect(() => { if (session.dialog && dialogElement && !dialogElement.open) dialogElement.showModal(); });
 </script>
 
 {#if app.project}
-  <div class="sync" title={session.syncDisabledReason || session.error || session.text}>
-    {#if session.candidates.length && session.state === 'unregistered'}
-      <button data-testid="sync-chip" aria-expanded={offerOpen} onclick={() => offerOpen = !offerOpen}>{session.text}</button>
-      {#if offerOpen}
-        <div class="glass panel link-offer" data-testid="sync-link-offer">
-          {#each session.candidates as candidate (`${candidate.mount_id}:${candidate.project_uuid}`)}
-            <div><span>Link to mount {candidate.mount_label}?</span> <button disabled={session.busy || !candidate.can_edit} onclick={() => { offerOpen = false; void session.link(candidate); }}>Link</button></div>
-          {/each}
-          <button onclick={() => { offerOpen = false; session.dismissLink(); }}>Not this one</button>
-        </div>
-      {/if}
-    {:else}<span data-testid="sync-chip" title={session.text} aria-live="polite">{session.text}{app.draftHere === 'unknown' ? ' · Your draft here, base not checked' : app.draftHere !== null ? ` · Your draft here, based on r${app.draftHere}` : ''}</span>{/if}
-    <button data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || app.loadingProject || (app.readOnly && session.state === 'local-changes') || ((app.readOnly || session.draft?.synced) && session.state === 'in-sync' && !session.pixelsChanged)} onclick={() => session.action()}>{action}</button>
+  <div class="sync">
+    <button class="sync-pill state-{pillState}" data-testid="sync-chip" {title} aria-busy={session.checking} aria-expanded={detailsOpen} aria-controls={detailsOpen ? 'sync-details' : undefined} onclick={() => detailsOpen = !detailsOpen}>
+      <svg class:spinning={pillState === 'checking'} viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        {#if pillState === 'in-sync'}<path d="m3 8 3 3 7-7" />
+        {:else if pillState === 'checking'}<path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" />
+        {:else if pillState === 'server-newer'}<path d="M8 2v11m-4-4 4 4 4-4" />
+        {:else if pillState === 'both-changed'}<path d="m3 5 3-3 3 3M6 2v9m1 0 3 3 3-3m-3 3V5" />
+        {:else if pillState === 'needs-confirmation'}<path d="M8 2 1.5 14h13L8 2Zm0 4v4m0 2v.1" />
+        {:else if pillState === 'offline'}<path d="m2 2 12 12M5 5a5 5 0 0 0-2 3m5-5a5 5 0 0 1 5 5M5 11a4 4 0 0 1 4-1m-1 3v.1" />
+        {:else if pillState === 'unregistered'}<circle cx="8" cy="8" r="5" />
+        {:else}<circle cx="8" cy="8" r="2" fill="currentColor" />{/if}
+      </svg>
+      <span aria-live="polite">{text}</span>
+    </button>
+    {#if session.state !== 'in-sync' || session.confirmation || session.pixelsChanged}
+      <button class:primary={pillState !== 'checking' && pillState !== 'offline'} data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || app.loadingProject || (app.readOnly && session.state === 'local-changes')} onclick={() => { detailsOpen = false; void session.action(); }}>{action}</button>
+    {/if}
   </div>
 {/if}
 {#if session.dialog}
@@ -73,11 +80,21 @@
 {/if}
 
 <style>
-  .sync { position:relative; display:flex; align-items:center; gap:var(--space-2); flex:1 1 0; min-width:0; max-width:34rem; font-size:0.8rem; }
-  .sync > [data-testid="sync-chip"] { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
-  .sync button { flex:none; padding:var(--space-1) var(--space-2); font-size:inherit; }
-  .sync > button[data-testid="sync-chip"] { flex:0 1 auto; }
-  .link-offer { position:absolute; top:calc(100% + var(--space-2)); right:0; width:max-content; max-width:24rem; background:var(--glass-strong); z-index:30; }
+  .sync { display:flex; align-items:center; gap:var(--space-2); flex:1 1 22rem; min-width:0; font-size:0.8rem; }
+  .sync button { height:2rem; font-size:inherit; white-space:nowrap; }
+  .sync > [data-testid="sync-action"] { flex:none; padding-inline:var(--space-2); }
+  .sync .sync-pill { display:flex; align-items:center; gap:var(--space-2); border-radius:999px; min-width:3rem; max-width:max-content; padding-inline:var(--space-3); color:var(--text-muted); border-color:var(--hairline); }
+  .sync-pill span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .sync-pill svg { flex:none; }
+  .sync .state-in-sync { color:var(--ok); background:color-mix(in srgb, var(--ok) 7%, transparent); }
+  .sync .state-local-changes, .sync .state-needs-confirmation { color:var(--warning); border-color:color-mix(in srgb, var(--warning) 35%, transparent); background:color-mix(in srgb, var(--warning) 12%, transparent); }
+  .sync .state-server-newer { color:var(--accent); background:var(--accent-soft); border-color:color-mix(in srgb, var(--accent) 35%, transparent); }
+  .sync .state-both-changed { color:var(--danger); background:color-mix(in srgb, var(--danger) 12%, transparent); border-color:color-mix(in srgb, var(--danger) 35%, transparent); }
+  .sync .state-unregistered { background:transparent; }
+  .sync .state-offline { background:color-mix(in srgb, var(--text-muted) 8%, transparent); }
+  .spinning { animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinning { animation:none; } }
   dialog::backdrop { background:color-mix(in srgb, var(--bg) 60%, transparent); }
   .review { width:min(52rem, calc(100vw - 2rem)); max-height:calc(100vh - 2rem); overflow:auto; background:var(--glass-strong); }
   h2 { margin-top:0; }

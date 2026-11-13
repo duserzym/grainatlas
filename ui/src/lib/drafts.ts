@@ -13,7 +13,7 @@ export interface Draft {
   /** Legacy pre-B1 alias. New links always register the local UUID. */
   linked_uuid?: string; link_offered?: boolean; link_conflict?: boolean; link_candidates?: import('./sync-api').Candidate[];
   /** Opaque hashes returned by the server, never computed by the browser. */
-  base_hashes?: Record<keyof Counts, string> | null; synced?: boolean;
+  base_hashes?: Record<keyof Counts, string> | null; synced?: boolean; synced_at?: string;
   source_keys?: string[]; pixels_base?: string | null; pixels_changed?: boolean;
 }
 export type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'length' | 'key'>>;

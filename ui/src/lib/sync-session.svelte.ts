@@ -65,9 +65,18 @@ export class SyncSession {
     // a split's new children are ordinary local changes, not a reason for a first snapshot.
     return !!server && (this.snapshotNeeded || !!this.status?.counts.grains_without_atlas_id || server.grains.some(g => g.id === null));
   }
-  get counts() {
-    if (this.firstSync) return { spots: this.elements.spots.length, grains: this.elements.grains.length, labels: this.elements.labels.length };
-    return changeCounts(diffElements((this.app.readOnly || this.app.draftHere != null ? this.serverElements : this.draft?.base) ?? this.viewBase ?? emptyElements(), this.elements));
+  get baseRevision() { return this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null; }
+  get localChanges() {
+    const base = this.firstSync ? emptyElements() : (this.app.readOnly || this.app.draftHere != null ? this.serverElements : this.draft?.base) ?? this.viewBase ?? emptyElements();
+    return diffElements(base, this.elements);
+  }
+  get databaseChanges() {
+    const base = this.draft?.base ?? this.viewBase;
+    return base && this.serverElements ? diffElements(base, this.serverElements) : null;
+  }
+  get counts() { return changeCounts(this.localChanges); }
+  get canSyncOnSave(): boolean {
+    return this.ready && !this.app.readOnly && this.app.link.syncOnSave && this.registered === true && this.reachable === true && this.status?.can_edit === true;
   }
   get pixelsChanged(): boolean {
     if (!this.app.pkg || !Object.keys(this.app.stitched).length || !this.app.project) return false;
@@ -87,7 +96,7 @@ export class SyncSession {
     if (this.draft?.link_conflict) return 'This project is linked to another mount';
     if (this.error && this.reachable) return `Sync failed · ${this.error}`;
     if (this.status?.can_edit === false) return 'Read-only access';
-    return chipText(this.state, this.counts, this.status?.atlas_version ?? null, this.status?.revision ?? null, this.pixelsChanged, this.firstSync) + (this.syncedAt && this.state === 'in-sync' ? ` · Synced ${new Date(this.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}` : '') + (this.notice ? ` · ${this.notice}` : '');
+    return chipText(this.state, this.counts, this.status?.atlas_version ?? null, this.status?.revision ?? null, this.pixelsChanged, this.firstSync); // sync warnings show in the notice bar and the details drawer, not the pill
   }
   get unsynced(): boolean {
     return !!this.app.project && !this.app.readOnly && (!this.draft?.synced || !this.draft?.base || hasChanges(this.counts) || this.pixelsChanged);
@@ -123,7 +132,7 @@ export class SyncSession {
       this.uuid = p.uuid; this.suppressDraft = false; this.confirmation = null; this.heldSync = null;
       this.draft = listDrafts(this.app.remote?.server ?? this.app.server).find(d => d.uuid === p.uuid) ?? readDraft(p.uuid) ?? ensureDraft(p, this.app.remote?.server ?? this.app.server);
       writeDraft(this.draft); // ready open adopts even when the subsequent lookup is offline
-      this.registered = undefined; this.status = null; this.reachable = null; this.review = null; this.dialog = null; this.syncedAt = null; this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverHashes = null; this.elementsRevision = null; this.serverSpots = []; this.serverElements = null; this.snapshotNeeded = false; this.notice = ''; this.candidates = this.draft.link_candidates ?? [];
+      this.registered = undefined; this.status = null; this.reachable = null; this.review = null; this.dialog = null; this.syncedAt = this.draft.synced_at ?? null; this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverHashes = null; this.elementsRevision = null; this.serverSpots = []; this.serverElements = null; this.snapshotNeeded = false; this.notice = ''; this.candidates = this.draft.link_candidates ?? [];
     }
     this.track(false);
     this.busy = true; this.checking = true;
@@ -370,7 +379,7 @@ export class SyncSession {
         return;
       }
       // ids maps client UUIDs to server ids; it never renames local elements/references.
-      this.save({ base: mine, base_revision: reply.revision, base_hashes: null, synced: true });
+      this.save({ base: mine, base_revision: reply.revision, base_hashes: null, synced: true, synced_at: new Date().toISOString() });
       this.syncedNotice(reply.revision, changeCounts(diff));
       this.track(false);
       if (this.app.draftHere != null) this.app.draftHere = this.unsynced ? reply.revision : null;
@@ -410,7 +419,7 @@ export class SyncSession {
       const status = await api.lookup(projectUuid);
       if (!this.isCurrent(identity)) return;
       this.status = status;
-      this.syncedAt = new Date().toISOString();
+      this.syncedAt = this.draft?.synced_at ?? null;
       if (this.app.error === this.error) this.app.error = null;
       this.error = ''; this.failureMessage = ''; this.validationFailed = false;
       this.track();
@@ -432,7 +441,7 @@ export class SyncSession {
   async afterSave() {
     if (!this.ready) return;
     this.track();
-    if (this.app.link.syncOnSave && this.registered && this.reachable) {
+    if (this.canSyncOnSave) {
       if (this.pixelsChanged) this.dialog = 'pixels';
       else await this.sync();
     }

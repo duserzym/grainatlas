@@ -7,12 +7,12 @@
   let { title, children, x = $bindable(24), y = $bindable(120), onclose, onmoved, minimized = false, onminimize, passive = false }: { title: string; children: Snippet; x?: number; y?: number; onclose?: () => void; onmoved?: () => void; minimized?: boolean; onminimize?: () => void; passive?: boolean } = $props();
   let el: HTMLDivElement;
 
-  /** Whole panel inside the parent when it fits, at least its header otherwise. */
+  /** Keep the whole panel inside the parent; its body scrolls when constrained. */
   function clamp() {
     const p = el?.offsetParent as HTMLElement | null;
     if (!p) return;
     const maxX = Math.max(0, p.clientWidth - el.offsetWidth);
-    const maxY = Math.max(0, p.clientHeight - 48);
+    const maxY = Math.max(0, p.clientHeight - el.offsetHeight - 8);
     const nx = Math.min(Math.max(0, x), maxX);
     const ny = Math.min(Math.max(0, y), maxY);
     if (nx !== x) x = nx;
@@ -67,10 +67,11 @@
     background: var(--glass-strong);
     display: flex;
     flex-direction: column;
-    min-height: 8rem;
+    min-height: min(8rem, calc(100% - 8px));
   }
   header {
     display: flex;
+    flex: none;
     align-items: center;
     gap: var(--space-2);
     padding: var(--space-2) var(--space-3);
@@ -99,6 +100,9 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-2);
+    grid-auto-rows: max-content;
+    align-content: start;
+    flex: 1 1 auto;
     font-size: 0.88rem;
     overflow: auto;
     min-height: 0;

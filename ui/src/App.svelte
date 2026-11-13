@@ -16,6 +16,7 @@
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
   import SyncChip from './components/SyncChip.svelte';
+  import SyncDetails from './components/SyncDetails.svelte';
   import LeaveEditDialog from './components/LeaveEditDialog.svelte';
   import QuitDialog from './components/QuitDialog.svelte';
   import CheckDialog from './components/CheckDialog.svelte';
@@ -43,6 +44,42 @@
   function toggleMenu() {
     app.layout.menuCollapsed = !app.layout.menuCollapsed;
     app.saveLayout();
+  }
+
+  const desktop = isDesktop();
+  let syncDetailsOpen = $state(false);
+  let overflowOpen = $state(false);
+  let narrowHeader = $state(false);
+  let overflowButton = $state<HTMLButtonElement>();
+  let overflowPanel = $state<HTMLDivElement>();
+  const projectName = $derived(app.project?.name ?? app.remote?.atlas.name ?? app.pkg?.name ?? 'GrainAtlas');
+  const saveTitle = $derived(app.sync.canSyncOnSave
+    ? 'Save project and sync to the database (Cmd/Ctrl+S). Turn off “Sync to the database when saving” in Settings.'
+    : `Save project (Cmd/Ctrl+S): ${app.projectPath?.path ?? (desktop ? `${projectName}.gaproj next to the package` : 'download the project file')}`);
+  onMount(() => {
+    const query = matchMedia('(max-width: 1280px)');
+    const update = () => narrowHeader = query.matches;
+    update(); query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  });
+  $effect(() => { tabs.activeId; app.screen; menuCollapsed; syncDetailsOpen = false; overflowOpen = false; });
+  $effect(() => {
+    const tab = current(), notice = tab.notice;
+    if (!notice || tab.noticeAction) return;
+    const timer = setTimeout(() => { if (tab.notice === notice && !tab.noticeAction) tab.notice = null; }, 6000);
+    return () => clearTimeout(timer);
+  });
+  function closeHeaderOutside(event: PointerEvent) {
+    if (!(event.target instanceof Element)) return;
+    if (!event.target.closest('[data-testid="sync-chip"], [data-testid="sync-details"]')) syncDetailsOpen = false;
+    if (!overflowButton?.contains(event.target) && !overflowPanel?.contains(event.target)) overflowOpen = false;
+  }
+  function headerKey(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || (!syncDetailsOpen && !overflowOpen)) return;
+    event.preventDefault(); event.stopPropagation();
+    if (overflowOpen) overflowButton?.focus();
+    else document.querySelector<HTMLButtonElement>('[data-testid="sync-chip"]')?.focus();
+    syncDetailsOpen = false; overflowOpen = false;
   }
 
   const hasMosaic = $derived(Object.keys(app.stitched).length > 0);
@@ -131,7 +168,6 @@
     };
   }
 
-  const desktop = isDesktop();
   /** Tab keys and the menu are the desktop app's: a browser and UPb Lab keep Cmd+T/W/1-9. */
   const tabKeys = desktop && !isHosted();
   let tabBar = $state<ReturnType<typeof TabBar>>();
@@ -377,40 +413,40 @@
   });
 </script>
 
+<svelte:window onpointerdown={closeHeaderOutside} onkeydowncapture={headerKey} />
+
 {#if app.leaveEditPrompt}<LeaveEditDialog onchoose={app.leaveEditPrompt.answer} />{/if}
 
 <div class="ga-root app" data-theme={app.theme}>
   <div class="project-tabs" hidden={menuCollapsed}><TabBar bind:this={tabBar} shortcuts={tabKeys} /></div>
   {#key tabs.activeId}
-  <header class="glass topbar" class:compact={menuCollapsed} class:has-menu-toggle={app.screen === 'canvas'}>
+  <div class="glass header-region">
+  <header class="topbar" class:compact={menuCollapsed} class:has-menu-toggle={app.screen === 'canvas'}>
     {#if menuCollapsed}
-      <span class="compact-name" title={app.remote?.atlas.name ?? app.pkg?.name}>{app.remote?.atlas.name ?? app.pkg?.name ?? 'GrainAtlas'}</span>
+      <span class="compact-name" data-testid="project-name" title={projectName}>{projectName}</span>
     {:else}
     <div class="brand">
       <!-- The app icon (a light tile by design, the same in both themes). -->
       <img class="mark" src="{import.meta.env.BASE_URL}favicon.svg" width="22" height="22" alt="" />
-      <span>grainatlas</span>
-      {#if app.pkg}<span class="muted pkgname">{app.pkg.name}</span>{/if}
-      {#if app.remote}
-        <span class="muted pkgname" data-testid="remote-name" title="{app.remote.server}/atlas/projects/{app.remote.projectId}/">{app.remote.atlas.name} · {new URL(app.remote.server).host}{app.remote.readOnly ? ' · read-only' : ' · local copy'}</span>
-      {/if}
+      <span class="brand-label">grainatlas</span>
+      {#if app.project}<span class="muted pkgname" data-testid="project-name" title={projectName}>{projectName}</span>{/if}
     </div>
     <nav aria-label="Screens">
       {#each screens as s (s.id)}
         <button class="tab" aria-pressed={app.screen === s.id} disabled={!enabled(s)} onclick={() => (app.screen = s.id)} title="{s.label} (Alt+{s.key})">{s.label}</button>
       {/each}
     </nav>
-    <SyncChip />
+    <SyncChip bind:detailsOpen={syncDetailsOpen} />
     <div class="right">
       <CheckUpdatesButton />
-      <ThemeSwitch />
+      {#if !narrowHeader}<ThemeSwitch />{/if}
       {#if app.project && !app.readOnly}
-        <button onclick={() => saveProject()} title="Save project (Cmd/Ctrl+S): {app.projectPath ? app.projectPath.path : desktop ? `${app.project.name}.gaproj next to the package` : 'download the project file'}" data-testid="save-project">Save project</button>
-        <button onclick={() => saveProjectFile()} title="Save a project file (.gaproj): parameters, placements, grains and spots, no pixels; it reopens with the package's images (double-click it)">Save as…</button>
+        <button onclick={() => saveProject()} title={saveTitle} data-testid="save-project">{app.sync.canSyncOnSave ? 'Save and sync' : 'Save project'}</button>
       {/if}
+      <button class="icon overflow-toggle" bind:this={overflowButton} data-testid="header-overflow" aria-label="More project actions" aria-expanded={overflowOpen} aria-controls={overflowOpen ? 'header-overflow-panel' : undefined} onclick={() => overflowOpen = !overflowOpen}>…</button>
     </div>
     {/if}
-    {#if menuCollapsed}<SyncChip />{/if}
+    {#if menuCollapsed}<SyncChip bind:detailsOpen={syncDetailsOpen} />{/if}
     {#if app.screen === 'canvas'}
       <button class="menu-toggle" aria-expanded={!menuCollapsed} onclick={toggleMenu}
         aria-label={menuCollapsed ? 'Expand GrainAtlas menu' : 'Collapse GrainAtlas menu'}
@@ -422,8 +458,32 @@
       </button>
     {/if}
   </header>
+  {#if overflowOpen && !menuCollapsed}
+    <div class="panel header-overflow" id="header-overflow-panel" bind:this={overflowPanel} data-testid="header-overflow-panel">
+      {#if app.project && !app.readOnly}<button onclick={() => { overflowOpen = false; void saveProjectFile(); }} title="Save a project file (.gaproj): parameters, placements, grains and spots, no pixels">Save as…</button>{/if}
+      {#if narrowHeader}<ThemeSwitch />{/if}
+      {#if app.remote}<span class="faint small" data-testid="remote-name" title="{app.remote.server}/atlas/projects/{app.remote.projectId}/">{new URL(app.remote.server).host} · {app.remote.readOnly ? 'read-only' : 'local copy'}</span>{/if}
+    </div>
+  {/if}
+  {#if syncDetailsOpen && app.project}<SyncDetails />{/if}
+  </div>
 
-  <main>
+  <main class:has-notices={!!(app.notice || app.error)}>
+    {#if app.notice || app.error}
+      <div class="notices">
+        {#if app.notice}
+          <div class="glass toast ok" role="status">
+            <span>{app.notice}</span>
+            {#if app.noticeAction}<button onclick={() => { const action = app.noticeAction; app.notice = null; action?.run(); }}>{app.noticeAction.label}</button>{/if}
+            <button class="icon" onclick={() => app.notice = null} aria-label="Dismiss">✕</button>
+          </div>
+        {/if}
+        {#if app.error}
+          <div class="glass toast" role="alert"><span>{app.error}</span><button class="icon" onclick={() => app.error = null} aria-label="Dismiss">✕</button></div>
+        {/if}
+      </div>
+    {/if}
+    <div class="screen">
     {#if app.screen === 'open'}
       <Open />
     {:else if app.screen === 'area'}
@@ -435,6 +495,7 @@
     {:else}
       <Settings />
     {/if}
+    </div>
   </main>
 
   {#if quitState === 'prompt'}
@@ -446,21 +507,6 @@
   {#if app.storedCopy?.ready}<StoredCopyDialog />{/if}
   {#if app.pendingLoose}<ScaleDialog />{/if}
   {#if app.busy}<Busy />{/if}
-  {#if app.notice}
-    <div class="glass toast ok" role="status">
-      <span>{app.notice}</span>
-      {#if app.noticeAction}
-        <button onclick={() => { const action = app.noticeAction; app.notice = null; action?.run(); }}>{app.noticeAction.label}</button>
-      {/if}
-      <button class="icon" onclick={() => (app.notice = null)} aria-label="Dismiss">✕</button>
-    </div>
-  {/if}
-  {#if app.error}
-    <div class="glass toast" role="alert">
-      <span>{app.error}</span>
-      <button class="icon" onclick={() => (app.error = null)} aria-label="Dismiss">✕</button>
-    </div>
-  {/if}
   {/key}
   <VersionChip />
   {#if dropping}
@@ -477,15 +523,16 @@
     overflow: hidden;
     container-type:inline-size;
   }
+  .header-region { grid-row:2; min-width:0; margin:0 var(--space-2) var(--space-2); z-index:5; }
+  .header-overflow { display:flex; align-items:center; justify-content:flex-end; gap:var(--space-3); border-top:1px solid var(--hairline); }
+  .header-overflow > span { min-width:0; overflow-wrap:anywhere; font-size:0.8rem; }
   .topbar {
-    grid-row:2;
     position: relative;
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     min-width: 0;
     gap: var(--space-2);
-    margin: 0 var(--space-2) var(--space-2);
     padding: var(--space-2) var(--space-4);
     border-radius: var(--radius);
     z-index: 5;
@@ -518,15 +565,14 @@
     width: 24px;
     height: 20px;
   }
-  .compact-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .compact-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:28ch;flex:none;}
   .brand {
     display: flex;
     align-items: center;
     gap: var(--space-2);
     font-weight: 650;
     min-width:0;
-    max-width:14%;
-    flex:0 1 auto;
+    flex:0 0 auto;
   }
   .mark {
     display: block;
@@ -534,11 +580,12 @@
   }
   .pkgname {
     font-weight: 400;
-    margin-left: var(--space-2);
+    max-width:28ch;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   }
   nav {
     display: flex;
+    flex:none;
     gap: var(--space-1);
     margin-left: 0;
   }
@@ -554,18 +601,29 @@
     flex:none;
     min-width:0;
   }
-  @container (max-width: 900px) {
-    .topbar {gap:var(--space-2);padding-inline:var(--space-2);flex-wrap:wrap;}
-    nav {margin-left:0;}
-    .right {margin-left:0;}
-    .tab {padding-inline:var(--space-1);}
+  .topbar :global(button:not(.menu-toggle)) { height:2rem; white-space:nowrap; }
+  .topbar :global(.seg) { height:2rem; padding:0; align-items:center; }
+  .topbar :global(.seg button) { height:calc(2rem - 2px); }
+  @container (max-width: 1100px) {
+    .brand-label, .mark { display:none; }
+    .topbar { gap:var(--space-1); padding-inline:var(--space-2); }
+    .tab { padding-inline:var(--space-1); font-size:0.8rem; }
+    .right > button { padding-inline:var(--space-2); font-size:0.8rem; }
+    nav { gap:0; }
+  }
+  @container (max-width: 1000px) {
+    .pkgname, .compact-name { max-width:22ch; }
   }
   main {
     grid-row:3;
-    position: relative;
-    min-height: 0;
-    overflow: hidden;
+    display:grid;
+    grid-template-rows:minmax(0,1fr);
+    min-height:0;
+    overflow:hidden;
   }
+  main.has-notices { grid-template-rows:auto minmax(0,1fr); }
+  .screen { position:relative; min-height:0; min-width:0; overflow:hidden; }
+  .notices { display:grid; gap:var(--space-1); padding:0 var(--space-2) var(--space-2); max-height:25vh; overflow:auto; }
   .dropzone {
     position: fixed;
     inset: 0;
@@ -581,17 +639,12 @@
     font-weight: 600;
   }
   .toast {
-    position: fixed;
-    bottom: var(--space-4);
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    gap: var(--space-4);
-    align-items: center;
-    padding: var(--space-2) var(--space-4);
-    color: var(--danger);
-    z-index: 50;
-    max-width: 80vw;
+    display:flex;
+    gap:var(--space-4);
+    align-items:center;
+    padding:var(--space-2) var(--space-4);
+    color:var(--danger);
+    min-width:0;
   }
   .toast button { flex-shrink: 0; }
   .toast span { min-width: 0; overflow-wrap: anywhere; }
