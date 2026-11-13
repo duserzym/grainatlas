@@ -10,6 +10,7 @@
 import type { ShellCommand } from './shellcmd';
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
 import type { DeepLink } from './deeplink';
+import { DATE_CHOICES, type DateKind } from './results';
 import { persistProject, type StoredCopy } from './stored-copy';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
@@ -114,12 +115,22 @@ function loadLayout(): LayoutPrefs {
   }
 }
 
+const DATE_CHOICE_KEY = 'grainatlas.dateChoice';
+function loadDateChoice(): DateKind {
+  try {
+    const v = localStorage.getItem(DATE_CHOICE_KEY);
+    if (DATE_CHOICES.includes(v as DateKind)) return v as DateKind;
+  } catch { /* storage may be unavailable */ }
+  return '206Pb/238U';
+}
+
 /** What belongs to the viewer, not to a project: the same in every tab. */
 class Shared {
   /** Hosted project folders waiting for their SEM packages (memory only). */
   pendingProjects = $state.raw<{ file: File; project: Project; name: string; files: number }[]>([]);
   /** Remembered panel geometry (Settings → Reset layout puts it back). */
   layout = $state<LayoutPrefs>(loadLayout());
+  dateChoice = $state<DateKind>(loadDateChoice());
   /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
   link = $state<LinkSettings>(loadLink());
   /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
@@ -241,7 +252,13 @@ class AppState {
   }
   /** Results of the linked mount (GET /v1/mounts/{id}/results), in memory only, never saved. */
   results = $state<{ key: string; data: import('./results').MountResults | null; at: string | null; error: string | null; loading: boolean } | null>(null);
-  /** The results layer colours spots by this: 'date' (preferred) or a metric code. */
+  /** The viewer's date choice, shared across tabs, never serialized in the project. */
+  get dateChoice(): DateKind { return shared.dateChoice; }
+  set dateChoice(v: DateKind) {
+    shared.dateChoice = v;
+    try { localStorage.setItem(DATE_CHOICE_KEY, v); } catch { /* storage may be unavailable */ }
+  }
+  /** The results layer colours spots by this: 'date' or a metric code. */
   colourBy = $state('date');
   /** A published bundle opened from a server (pixels from its tiles); null for local projects. */
   remote = $state<import('./remote').Remote | null>(null);

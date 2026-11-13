@@ -4,6 +4,12 @@
 // fetching is in results-load.ts.
 
 import type { Spot } from './core/types';
+export { rampColor, RAMP_CSS } from './colormap.ts';
+
+export const DATE_KINDS = ['206Pb/238U', '207Pb/206Pb', '207Pb/235U'] as const;
+export type DateKind = typeof DATE_KINDS[number] | 'preferred';
+export const DATE_CHOICES: readonly DateKind[] = [...DATE_KINDS, 'preferred'];
+export const dateLabel = (kind: DateKind) => kind === 'preferred' ? 'Preferred' : kind;
 
 export interface Value {
   metric: string;
@@ -30,6 +36,7 @@ export interface SpotResult {
   is_preferred?: boolean | null;
   /** The preferred date with its absolute 2σ. */
   date: Value | null;
+  dates: Partial<Record<DateKind, Value>>;
   ratios: Value[];
   concentrations: Value[];
   flags: string[];
@@ -59,13 +66,20 @@ function values(raw: unknown): Value[] {
     .map(([metric, v]) => ({ metric, value: num(v.value)!, sigma2: num(v.uncertainty) ?? num(v.sigma2) ?? num(v.two_sigma), unit: str(v.unit) || null, utype: str(v.uncertainty_type) }));
 }
 
+function readDate(raw: unknown, method?: DateKind): Value | null {
+  const d = raw as RawValue | null | undefined;
+  return d && num(d.value) != null
+    ? { metric: str(d.metric) ?? method ?? 'date', value: num(d.value)!, sigma2: num(d.two_sigma) ?? num(d.sigma2) ?? num(d.uncertainty), unit: str(d.unit), utype: str(d.uncertainty_type), method: method ?? str(d.method), passes: typeof d.passes === 'boolean' ? d.passes : null }
+    : null;
+}
+
 /** One entry of `GET /v1/mounts/{id}/results` in the form the panel and the layer use. */
 export function normalize(e: Record<string, unknown>): SpotResult {
-  const d = e.date as RawValue | null | undefined;
-  const date: Value | null =
-    d && num(d.value) != null
-      ? { metric: str(d.metric) ?? 'date', value: num(d.value)!, sigma2: num(d.two_sigma) ?? num(d.sigma2) ?? num(d.uncertainty), unit: str(d.unit), utype: str(d.uncertainty_type), method: str(d.method), passes: typeof d.passes === 'boolean' ? d.passes : null }
-      : null;
+  const dates: SpotResult['dates'] = {};
+  if (e.dates && typeof e.dates === 'object') for (const kind of DATE_KINDS) {
+    const v = readDate((e.dates as Record<string, unknown>)[kind], kind);
+    if (v) dates[kind] = v;
+  }
   const ratios = values(e.ratios);
   if (num(e.th_u) != null) ratios.push({ metric: 'Th/U', value: num(e.th_u)!, unit: null });
   if (num(e.discordance_percent) != null) ratios.push({ metric: 'discordance', value: num(e.discordance_percent)!, unit: '%' });
@@ -78,14 +92,15 @@ export function normalize(e: Record<string, unknown>): SpotResult {
     session_key: str(e.session_key),
     run_id: str(e.run_id),
     is_preferred: typeof e.is_preferred === 'boolean' ? e.is_preferred : null,
-    date,
+    date: readDate(e.date),
+    dates,
     ratios,
     concentrations: values(e.concentrations),
     flags: Array.isArray(e.flags) ? e.flags.map(String) : [],
   };
 }
 
-const hasValues = (r: SpotResult) => !!r.date || r.ratios.length > 0 || r.concentrations.length > 0;
+const hasValues = (r: SpotResult) => !!r.date || Object.keys(r.dates ?? {}).length > 0 || r.ratios.length > 0 || r.concentrations.length > 0;
 /** Several acquisitions at one spot: the one with a date from a preferred run, else with a date, else any. */
 const rank = (r: SpotResult) => (r.date ? 2 : 0) + (r.is_preferred === false ? 0 : 1);
 
@@ -118,31 +133,27 @@ export function metricsOf(results: SpotResult[]): string[] {
   return ['date', ...[...set].sort()];
 }
 
-/** The number a spot is coloured by: its preferred date, or a ratio or concentration. */
-export function valueOf(r: SpotResult, metric: string): Value | null {
-  if (metric === 'date') return r.date;
+export function dateOf(r: SpotResult, kind: DateKind): Value | null {
+  return kind === 'preferred' ? r.date : r.dates?.[kind] ?? (r.date?.method === kind ? r.date : null);
+}
+
+/** Other dates for the spot panel, omitting a preferred date already shown under its method. */
+export function otherDates(r: SpotResult, choice: DateKind): { kind: DateKind; value: Value }[] {
+  const headline = dateOf(r, choice);
+  const seen = headline ? [headline] : [];
+  return DATE_CHOICES.flatMap((kind) => {
+    const value = dateOf(r, kind);
+    if (kind === choice || !value || seen.some((v) => v.method === value.method && v.value === value.value && v.sigma2 === value.sigma2 && v.unit === value.unit && v.utype === value.utype)) return [];
+    seen.push(value);
+    return [{ kind, value }];
+  });
+}
+
+/** The number a spot is coloured by; exports still use r.date (preferred). */
+export function valueOf(r: SpotResult, metric: string, choice: DateKind = '206Pb/238U'): Value | null {
+  if (metric === 'date') return dateOf(r, choice);
   return [...r.ratios, ...r.concentrations].find((v) => v.metric === metric) ?? null;
 }
-
-// Viridis at five stops: perceptually even and readable by colour-blind viewers, bright enough
-// on the dark image surface.
-const RAMP: [number, number, number][] = [
-  [68, 1, 84],
-  [59, 82, 139],
-  [33, 145, 140],
-  [94, 201, 98],
-  [253, 231, 37],
-];
-
-export function rampColor(t: number): string {
-  const x = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0)) * (RAMP.length - 1);
-  const i = Math.min(RAMP.length - 2, Math.floor(x));
-  const f = x - i;
-  const c = RAMP[i].map((a, k) => Math.round(a + (RAMP[i + 1][k] - a) * f));
-  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
-}
-
-export const RAMP_CSS = `linear-gradient(90deg, ${RAMP.map((c) => `rgb(${c.join(',')})`).join(', ')})`;
 
 export function fmtValue(v: Value | null, digits?: number): string {
   if (!v || !Number.isFinite(v.value)) return '–';

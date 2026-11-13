@@ -22,7 +22,8 @@
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
-  import { fmtValue, matchResults, metricsOf, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
+  import { DATE_CHOICES, dateLabel, dateOf, fmtValue, matchResults, metricsOf, otherDates, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
+  import { ageColor, AGE_RAMP_CSS } from '../lib/colormap';
   import { refreshResults } from '../lib/results-load';
   import { beforeCheckedAction, parseLabels, runChecks } from '../lib/checks';
   import type { Finding } from '../lib/core/types';
@@ -390,7 +391,7 @@
   const mountId = $derived(app.mountId);
   const resultsBy = $derived<Record<string, SpotResult>>(app.results?.data ? matchResults(app.spots, app.results.data) : {});
   const metrics = $derived(app.results?.data ? metricsOf(app.results.data.spots) : ['date']);
-  const shown = $derived(spots.filter((s) => resultsBy[s.id]).map((s) => ({ s, r: resultsBy[s.id], v: valueOf(resultsBy[s.id], app.colourBy) })));
+  const shown = $derived(spots.filter((s) => resultsBy[s.id]).map((s) => ({ s, r: resultsBy[s.id], v: valueOf(resultsBy[s.id], app.colourBy, app.dateChoice) })));
   const range = $derived.by(() => {
     const vs = shown.map((x) => x.v?.value).filter((v): v is number => v != null && Number.isFinite(v));
     if (!vs.length) return null;
@@ -1354,6 +1355,10 @@
   ];
 </script>
 
+{#snippet dateOptions()}
+  {#each DATE_CHOICES as kind (kind)}<option value={kind} title={kind === 'preferred' ? 'Preferred (207Pb/206Pb above 1000 Ma)' : kind}>{dateLabel(kind)}</option>{/each}
+{/snippet}
+
 <svelte:window onkeydown={key} />
 
 {#snippet spotBatchButtons(testids = false)}
@@ -1435,7 +1440,7 @@
               <g class="results" data-testid="results-layer">
                 {#each shown as { s, r, v } (s.id)}
                   {#if v}
-                    <circle class="rfill" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} fill={rampColor(tOf(v.value))} data-testid="result-dot" />
+                    <circle class="rfill" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} fill={(app.colourBy === 'date' ? ageColor : rampColor)(tOf(v.value))} data-testid="result-dot" data-spot-id={s.id} />
                   {/if}
                   {#if r.flags.length}
                     <circle class="rflag" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2 + 4 * k} data-testid="result-flag"><title>{r.flags.join(', ')}</title></circle>
@@ -1571,11 +1576,13 @@
         minimized={app.layout.infoCollapsed} onminimize={() => { app.layout.infoCollapsed = !app.layout.infoCollapsed; app.saveLayout(); }}>
           {#if selSpots.length < 2 && focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
+          {@const d = dateOf(r, app.dateChoice)}
           <div class="resbox" data-testid="spot-results">
-            <div class="resdate"><span class="num">{fmtValue(r.date)}</span> <span class="faint">{r.date ? `${r.date.method ?? r.date.metric} · ${r.date.utype ?? '2σ'}${r.date.passes === false ? ' · fails filters' : ''}` : 'no date yet'}</span></div>
+            <div class="resdate" data-testid="result-date"><span class="num">{d ? fmtValue(d) : `no ${dateLabel(app.dateChoice)} date`}</span> {#if d}<span class="faint">{`${d.method ?? d.metric} · ${d.utype ?? '2σ'}${d.passes === false ? ' · fails filters' : ''}`}</span>{/if}</div>
             {#if r.flags.length}<div class="flags">{#each r.flags as f (f)}<span class="flag">{f}</span>{/each}</div>{/if}
             <table class="data kv">
               <tbody>
+                {#each otherDates(r, app.dateChoice) as { kind, value } (kind)}<tr><td>{dateLabel(kind)} date</td><td class="num">{fmtValue(value)} <span class="faint">{kind === 'preferred' ? `${value.method ?? value.metric} · ` : ''}{value.utype ?? '2σ'}{value.passes === false ? ' · fails filters' : ''}</span></td></tr>{/each}
                 {#each r.ratios as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v)}{v.utype ? ` (${v.utype})` : ''}</td></tr>{/each}
                 {#each r.concentrations as v (v.metric)}<tr><td>{v.metric}</td><td class="num">{fmtValue(v, Math.abs(v.value) >= 100 ? 0 : 1)}</td></tr>{/each}
                 {#if r.session_key}<tr><td>session</td><td>{r.session_key}</td></tr>{/if}
@@ -1794,11 +1801,18 @@
             <button onclick={() => refreshResults()} disabled={app.results?.loading} data-testid="refresh-results">Refresh results</button>
             <label class="check"><input type="checkbox" bind:checked={app.layers.results} /> show on the canvas</label>
           </div>
-          <label class="field">Colour by
-            <select bind:value={app.colourBy} data-testid="colour-by">
-              {#each metrics as m (m)}<option value={m}>{m === 'date' ? 'preferred date' : m}</option>{/each}
-            </select>
-          </label>
+          <div class="two">
+            <label class="field">Colour by
+              <select bind:value={app.colourBy} data-testid="colour-by">
+                {#each metrics as m (m)}<option value={m}>{m}</option>{/each}
+              </select>
+            </label>
+            {#if app.colourBy === 'date'}
+              <label class="field">Date
+                <select bind:value={app.dateChoice} data-testid="date-choice">{@render dateOptions()}</select>
+              </label>
+            {/if}
+          </div>
           <p class="faint small-text">Read from laicpmsdb each time; nothing is stored in the project.</p>
         {/if}
       {:else if tab === 'refOverlay'}
@@ -1976,8 +1990,11 @@
     {/if}
     {#if app.layers.results && range}
       <div class="glass legend" data-ui data-testid="results-legend">
-        <div class="lt">{app.colourBy === 'date' ? 'Preferred date' : app.colourBy}{range.unit ? ` (${range.unit})` : ''}</div>
-        <div class="ramp" style:background={RAMP_CSS}></div>
+        <div class="lt">
+          <span>{app.colourBy === 'date' ? `${dateLabel(app.dateChoice)} date` : app.colourBy}{range.unit ? ` (${range.unit})` : ''}</span>
+          {#if app.colourBy === 'date'}<label class="field">Date <select bind:value={app.dateChoice} data-testid="legend-date-choice">{@render dateOptions()}</select></label>{/if}
+        </div>
+        <div class="ramp" style:background={app.colourBy === 'date' ? AGE_RAMP_CSS : RAMP_CSS}></div>
         <div class="ends num"><span>{range.lo.toPrecision(4)}</span><span>{range.hi.toPrecision(4)}</span></div>
         <div class="faint">{shown.length} of {spots.length} spots · <span class="flagkey"></span> flagged</div>
       </div>
@@ -2187,6 +2204,9 @@
     height: 10px;
     border-radius: 3px;
   }
+  .legend .lt { display: grid; gap: var(--space-1); }
+  .legend .field { display: flex; align-items: center; gap: var(--space-2); }
+  .legend select { font-size: inherit; padding: 2px var(--space-1); }
   .legend .ends {
     display: flex;
     justify-content: space-between;
