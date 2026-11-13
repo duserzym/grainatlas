@@ -5,7 +5,7 @@ import { authToken, publish } from './atlas';
 import { SyncApi, SyncApiError, changesFromEvents, type Candidate, type ProjectStatus, type SyncBody } from './sync-api';
 import { draftElements, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
-import { applyChanges, changeCounts, chipText, diffElements, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
+import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 interface HeldSync { identity: string; mine: Elements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
@@ -227,9 +227,10 @@ export class SyncSession {
     if (!hadDraft && !this.firstSync && revision !== null && viewed) this.save({ base: viewed, base_revision: revision, base_hashes: hashes });
     this.track();
   }
-  private syncedNotice(revision: number, counts = this.counts) {
+  /** `changed` = elements this action wrote (bridge v4); pixels = a new bundle was published in it. */
+  private syncedNotice(revision: number, counts = this.counts, pixels = false) {
     const project = this.app.project?.uuid, mount = this.status?.mount_id ?? this.draft?.mount;
-    if (project && mount) hostedSync.synced({ project, mount, revision, atlasVersion: this.status?.atlas_version ?? null, changed: { ...counts, pixels: false }, at: new Date().toISOString() });
+    if (project && mount) hostedSync.synced({ project, mount, revision, atlasVersion: this.status?.atlas_version ?? null, changed: { ...counts, pixels }, at: new Date().toISOString() });
   }
   async action() {
     if (this.busy || this.syncDisabledReason) return;
@@ -380,7 +381,9 @@ export class SyncSession {
       }
       // ids maps client UUIDs to server ids; it never renames local elements/references.
       this.save({ base: mine, base_revision: reply.revision, base_hashes: null, synced: true, synced_at: new Date().toISOString() });
-      this.syncedNotice(reply.revision, changeCounts(diff));
+      // The pill reads status.revision: move it with the sync so In sync never shows the old revision.
+      if (this.status) this.status = { ...this.status, revision: reply.revision };
+      this.syncedNotice(reply.revision, appliedCounts(reply.applied));
       this.track(false);
       if (this.app.draftHere != null) this.app.draftHere = this.unsynced ? reply.revision : null;
       // Refetch canonical content, including rows kept by snapshot semantics.
@@ -434,6 +437,8 @@ export class SyncSession {
           if (published) this.save({ pixels_base: pixelSignature(published) });
           this.status = await api.lookup(this.draft.linked_uuid ?? this.app.project.uuid);
           this.track();
+          // Events are snapshots (newest wins): announce the new atlas version, no element writes.
+          if (this.status) this.syncedNotice(this.status.revision, { spots: 0, grains: 0, labels: 0 }, true);
         }
       }
     } catch (e) { if (this.identity === identity) { this.pendingSync = !(e instanceof SyncApiError) || e.status >= 500; this.failed(e); } } finally { this.finished(); if (this.identity !== identity) void this.check(); }

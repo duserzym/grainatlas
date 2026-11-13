@@ -239,3 +239,8 @@ export function applyChanges(base: ReadElements, changes: Changes): ReadElements
   }
   return out;
 }
+
+/** What one sync wrote, from SyncOut.applied (not totals: a snapshot reports only real writes). */
+export function appliedCounts(a: { spots: { created: number; updated: number; deleted: number }; grains: { created: number; adopted: number; updated: number; retired: number }; labels: { created: number; updated: number; retired: number } }) {
+  return { spots: a.spots.created + a.spots.updated + a.spots.deleted, grains: a.grains.created + a.grains.adopted + a.grains.updated + a.grains.retired, labels: a.labels.created + a.labels.updated + a.labels.retired };
+}
