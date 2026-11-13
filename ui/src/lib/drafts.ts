@@ -1,3 +1,4 @@
+import { appStorage } from './app-storage.ts';
 import type { Project } from './core/types.ts';
 import { diffElements, elementsOf, emptyElements, hasChanges, type Counts, type Elements, type ReadElements } from './sync.ts';
 export const DRAFT_PREFIX = 'grainatlas.draft.';
@@ -22,7 +23,7 @@ export interface Draft {
   source_keys?: string[]; pixels_base?: string | null; pixels_changed?: boolean;
 }
 export type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'length' | 'key'>>;
-const target = (storage?: DraftStorage) => storage ?? localStorage;
+const target = (storage?: DraftStorage) => storage ?? appStorage;
 function arrayAt<T>(storage: DraftStorage, key: string): T[] {
   try { const value: unknown = JSON.parse(storage.getItem(key) || '[]'); return Array.isArray(value) ? value as T[] : []; } catch { return []; }
 }

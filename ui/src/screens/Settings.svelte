@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { appStorage } from '../lib/app-storage';
   import { app } from '../lib/store.svelte';
   import ThemeSwitch from '../components/ThemeSwitch.svelte';
   import UpdatesPanel from '../components/UpdatesPanel.svelte';
@@ -6,6 +8,8 @@
   import { openFromServer } from '../lib/remote';
 
   let openId = $state('');
+  let storageText = $state('');
+  onMount(() => { void appStorage.usageText().then(text => { storageText = text; }); });
 
   const hosted = app.hosted;
   let serverText = $state(app.link.server);
@@ -98,6 +102,7 @@
   </div>
   <div class="glass panel">
     <h2>Appearance and layout</h2>
+    <p class="faint small" data-testid="app-storage-size">{storageText}</p>
     <div class="field">Theme <ThemeSwitch labels /></div>
     <div class="openrow">
       <p class="faint small grow">Panel positions and folded panels are remembered on this computer{app.hosted ? '' : ', and the desktop app remembers its window'}. Reset puts everything back where it starts.</p>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { appStorage } from '../lib/app-storage';
   import { onMount } from 'svelte';
   import { app, tabs } from '../lib/store.svelte';
   import { DRAFTS_CHANGED, draftElements, hasPendingChanges, listDrafts, pendingElements, storedDraftProject, writeDraft, deleteDraft, deleteDraftCopies, type Draft } from '../lib/drafts';
@@ -30,7 +31,8 @@
       const changes = changeCounts(diffElements(base, elements));
       const pending = !draft.base || !status || hasChanges(changes) ? pendingElements(elements) : null;
       const updated = { ...draft, server, mount: status?.mount_id ?? draft.mount, base: draft.base, base_revision: draft.base_revision ?? theirs?.revision ?? null, base_hashes: draft.base_hashes ?? null, synced: draft.synced ?? false, changes, pending, pending_at: pending ? draft.pending_at ?? draft.updated_at : null };
-      const kept = writeDraft(updated);
+      const owner = tabs.list.find(tab => tab.project?.uuid === draft.uuid);
+      const kept = owner ? appStorage.track(owner, 'draft', () => writeDraft(updated)) : writeDraft(updated);
       drafts = drafts.map(d => d.uuid === draft.uuid ? updated : d).filter(d => hasPendingChanges(d));
       if (!kept) note = `${draft.name} could not be kept in this app: its storage is full. Its changes are still in the project; use Save project.`;
       else if (!hasChanges(updated.changes)) note = `${draft.name}: no element changes waiting to sync.`;

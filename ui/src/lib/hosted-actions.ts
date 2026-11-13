@@ -5,7 +5,7 @@ import { deleteDraft, draftElements, hasPendingChanges, listDrafts, readDraft, s
 import { emptyElements, groupedGrains, uiSpots } from './sync';
 import { editCopy, openFromServer } from './remote';
 import type { Project } from './core/types';
-import { reportStorageWrite } from './storage-failure';
+import { appStorage } from './app-storage';
 
 export function reportHostedStatus(app: AppState, force = false) {
   if (!app.project) return;
@@ -44,7 +44,7 @@ export async function setMode(app: AppState, mode: AtlasMode, own = false) {
     } else {
       app.sync.track(false);
       // The shell already asked; preserve its draft before switching to View.
-      if (app.sync.unsynced && (!app.sync.draft || !writeDraft(app.sync.draft))) throw new Error('Could not keep the draft on this computer.');
+      if (app.sync.unsynced && (!app.sync.draft || !appStorage.track(app, 'draft', () => writeDraft(app.sync.draft!)))) throw new Error('Could not keep the draft on this computer.');
       view(app);
     }
   }
@@ -64,14 +64,14 @@ export async function leaveEdit(app: AppState, decision: 'sync' | 'keep-draft' |
     if (app.sync.confirmation || app.sync.validationFailed || app.sync.dialog === 'review' || app.sync.unsynced || app.sync.reachable !== true) return failure(app);
   } else if (decision === 'keep-draft') {
     app.sync.track(false);
-    if (!app.sync.draft || !writeDraft(app.sync.draft)) return fail('failed', 'Could not keep the draft on this computer.');
+    if (!app.sync.draft || !appStorage.track(app, 'draft', () => writeDraft(app.sync.draft!))) return fail('failed', 'Could not keep the draft on this computer.');
   } else {
     const base = app.sync.draft?.base ?? emptyElements();
     app.discardUndo = structuredClone(JSON.parse(JSON.stringify(app.sync.elements)));
     app.spots = uiSpots(base.spots, base.grains, app.spots);
     app.grains = groupedGrains(base.grains, app.grains); app.labels = structuredClone(base.labels);
     view(app); // suppress queued persistence before deleting tracking
-    if (!deleteDraft(app.project!.uuid)) {
+    if (!appStorage.track(app, 'draft', () => deleteDraft(app.project!.uuid))) {
       const snapshot = app.discardUndo!;
       if (app.remote) app.remote = { ...app.remote, readOnly: false }; else app.viewMode = false;
       app.spots = uiSpots(snapshot.spots, snapshot.grains, app.spots);
@@ -118,7 +118,7 @@ async function draftTab(uuid: string): Promise<AppState | null> {
   tab.adopt(project);
   tab.spots = uiSpots(elements.spots, elements.grains, tab.spots);
   tab.grains = groupedGrains(elements.grains, tab.grains); tab.labels = elements.labels;
-  reportStorageWrite(tab, 'draft', writeDraft(draft)); tab.sync.draft = draft;
+  appStorage.track(tab, 'draft', () => writeDraft(draft)); tab.sync.draft = draft;
   await tab.sync.check();
   return tab;
 }

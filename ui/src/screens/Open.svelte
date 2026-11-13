@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { appStorage } from '../lib/app-storage';
   import DraftList from '../components/DraftList.svelte';
   import { onMount } from 'svelte';
   import { app, shared, tabs } from '../lib/store.svelte';
@@ -25,7 +26,7 @@
   // The kept copies are megabytes of JSON: parse each once, not on every render.
   const keptCopies = new Map<string, Project | null>();
   function kept(name: string): Project | null {
-    if (!keptCopies.has(name)) keptCopies.set(name, storedProject(name, localStorage));
+    if (!keptCopies.has(name)) keptCopies.set(name, storedProject(name, appStorage));
     return keptCopies.get(name) ?? null;
   }
 
@@ -44,7 +45,7 @@
   async function refreshCounts() {
     for (const r of recent) {
       const c = recentCounts(r, kept(r.name));
-      if (!c.cached && (c.areas !== r.areas || c.spots !== r.spots)) recent = updateRecentCounts(r.name, c, localStorage);
+      if (!c.cached && (c.areas !== r.areas || c.spots !== r.spots)) recent = updateRecentCounts(r.name, c, appStorage);
     }
     if (!desktop) return;
     const saved = recent.filter((r) => r.path);
@@ -53,7 +54,7 @@
         try {
           const c = await invoke<{ areas: number; spots: number }>('project_counts', { path: r.path });
           fresh = { ...fresh, [r.name]: true };
-          if (c.areas !== r.areas || c.spots !== r.spots) recent = updateRecentCounts(r.name, c, localStorage);
+          if (c.areas !== r.areas || c.spots !== r.spots) recent = updateRecentCounts(r.name, c, appStorage);
         } catch { /* unreadable or offline: the cached numbers stay, marked so */ }
       }));
     }
@@ -116,7 +117,7 @@
       note = { name: r.name, kind: 'wrong', path: p };
       return;
     }
-    recent = relocateRecent(r.name, { kind: project ? 'project' : 'package', path: p }, localStorage);
+    recent = relocateRecent(r.name, { kind: project ? 'project' : 'package', path: p }, appStorage);
     keptCopies.delete(r.name);
     note = null;
     const moved = recent.find((x) => x.name === r.name);
@@ -124,7 +125,7 @@
   }
 
   function forget(r: RecentEntry) {
-    recent = removeRecent(r.name, localStorage);
+    recent = removeRecent(r.name, appStorage);
     note = null;
   }
 

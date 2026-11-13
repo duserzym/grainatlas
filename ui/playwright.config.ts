@@ -7,5 +7,8 @@ export default defineConfig({
   expect: { timeout: 60_000 },
   use: { baseURL: 'http://localhost:4173/', viewport: { width: 1440, height: 900 }, acceptDownloads: true },
   webServer: { command: 'pnpm preview', url: 'http://localhost:4173/', reuseExistingServer: true, timeout: 60_000 },
-  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
+  projects: [
+    { name: 'chromium', use: { browserName: 'chromium' } },
+    { name: 'webkit', testMatch: /app-storage/, use: { browserName: 'webkit' } },
+  ],
 });

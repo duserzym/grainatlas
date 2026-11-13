@@ -13,7 +13,7 @@ import { newCore, type Core, type PackageFile, type RawImage } from './core/core
 import type { DeepLink } from './deeplink';
 import { DATE_CHOICES, type DateKind } from './results';
 import { persistProject, type StoredCopy } from './stored-copy';
-import { reportStorageWrite } from './storage-failure';
+import { appStorage } from './app-storage';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
@@ -550,7 +550,7 @@ class AppState {
       if (this.readOnly || this.loadingProject || this.storedCopy || !this.dirty || this.project?.uuid !== uuid || (this.projectPath?.path ?? null) !== path) return;
       const p = this.fullProject();
       if (p) {
-        reportStorageWrite(this, 'project', persistProject(p, path));
+        appStorage.track(this, 'project', () => persistProject(p, path));
         this.sync.track();
       }
     });

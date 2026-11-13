@@ -1,8 +1,9 @@
+import { appStorage } from './app-storage.ts';
 // Deep links: `?project=<id>&spot=<id>` in the page URL, and `?server=<base>&project=<id>&spot=<id>`
 // for a bundle published to laicpmsdb (opened read-only from `<base>/atlas/projects/<id>/`). UPb Lab maps
 // `grainatlas://project/<id>/spot/<id>` to `index.html?project=<id>&spot=<id>`
 // (its docs/deep-links.md). The browser keeps projects without pixels in
-// localStorage under `grainatlas.project.<package name>`; this file finds the
+// appStorage under `grainatlas.project.<package name>`; this file finds the
 // package name for a project id. Opening and selecting is in actions.ts.
 
 import type { Project } from './core/types';
@@ -53,7 +54,7 @@ export const PROJECT_PREFIX = 'grainatlas.project.';
 
 export function readRecent(): RecentEntry[] {
   try {
-    const r = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    const r = JSON.parse(appStorage.getItem(RECENT_KEY) || '[]');
     return Array.isArray(r) ? r : [];
   } catch {
     return [];
@@ -62,7 +63,7 @@ export function readRecent(): RecentEntry[] {
 
 export function savedProject(name: string): Project | null {
   try {
-    const s = localStorage.getItem(PROJECT_PREFIX + name);
+    const s = appStorage.getItem(PROJECT_PREFIX + name);
     return s ? (JSON.parse(s) as Project) : null;
   } catch {
     return null;
@@ -74,8 +75,8 @@ export function packageNameFor(id: string): string | null {
   const hit = readRecent().find((r) => sameId(r.id, id));
   if (hit) return hit.name;
   try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
+    for (let i = 0; i < appStorage.length; i++) {
+      const key = appStorage.key(i);
       if (!key?.startsWith(PROJECT_PREFIX)) continue;
       const name = key.slice(PROJECT_PREFIX.length);
       if (sameId(savedProject(name)?.uuid, id)) return name;

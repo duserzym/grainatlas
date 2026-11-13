@@ -1,3 +1,4 @@
+import { appStorage } from './app-storage.ts';
 // The Open screen's Recent projects list: where each entry lives on disk, the
 // counts it shows, and what a click does. Pure functions over localStorage-like
 // storage and injected disk checks, so they run under node --test.
@@ -16,7 +17,7 @@ export interface RecentLocation {
 
 export type PathStatus = 'present' | 'missing' | 'unreachable';
 
-function read(storage: Store): RecentEntry[] {
+function read(storage: Store = appStorage): RecentEntry[] {
   try {
     const r = JSON.parse(storage.getItem(RECENT_KEY) || '[]');
     return Array.isArray(r) ? r : [];
@@ -29,7 +30,7 @@ function write(storage: Store, entries: RecentEntry[]) {
   try { storage.setItem(RECENT_KEY, JSON.stringify(entries)); } catch { /* quota or private mode */ }
 }
 
-export function storedProject(name: string, storage: Store): Project | null {
+export function storedProject(name: string, storage: Store = appStorage): Project | null {
   try {
     const s = storage.getItem(PROJECT_PREFIX + name);
     return s ? (JSON.parse(s) as Project) : null;
@@ -60,20 +61,20 @@ export function recentCounts(entry: RecentEntry, saved: Project | null): { areas
 }
 
 /** Takes the entry off the list; the project copies kept by this app stay. */
-export function removeRecent(name: string, storage: Store): RecentEntry[] {
+export function removeRecent(name: string, storage: Store = appStorage): RecentEntry[] {
   const entries = read(storage).filter((r) => r.name !== name);
   write(storage, entries);
   return entries;
 }
 
-export function updateRecentCounts(name: string, counts: { areas: number; spots: number }, storage: Store): RecentEntry[] {
+export function updateRecentCounts(name: string, counts: { areas: number; spots: number }, storage: Store = appStorage): RecentEntry[] {
   const entries = read(storage).map((r) => (r.name === name ? { ...r, ...counts } : r));
   write(storage, entries);
   return entries;
 }
 
 /** After Locate…: the entry, and for a package its kept copy, point at the new place. */
-export function relocateRecent(name: string, to: RecentLocation, storage: Store): RecentEntry[] {
+export function relocateRecent(name: string, to: RecentLocation, storage: Store = appStorage): RecentEntry[] {
   const entries = read(storage).map((r) => {
     if (r.name !== name) return r;
     if (to.kind === 'project') return { ...r, path: to.path };

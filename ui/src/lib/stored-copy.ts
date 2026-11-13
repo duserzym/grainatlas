@@ -1,3 +1,4 @@
+import { appStorage } from './app-storage.ts';
 import type { Grain, Label, Project, Spot, ToneParams } from './core/types';
 import type { AppState } from './store.svelte';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY } from './deeplink.ts';
@@ -28,21 +29,13 @@ function canonical(value: unknown): string {
     ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
 }
 
-/** Prefer this path's copy; only an absent copy falls back to the old package-name key. */
+/** Only a copy of this UUID at this path can be offered over a project file. */
 export function newerStoredCopy(file: Project, path: string, modifiedMs: number, storage?: CopyStorage): StoredCopy | null {
   try {
-    const target = storage ?? localStorage;
-    const scoped = target.getItem(storedCopyKey(file.uuid, path));
-    let copy: StoredCopy;
-    if (scoped) {
-      copy = JSON.parse(scoped) as StoredCopy;
-      if (copy.path !== path) return null;
-    } else {
-      const legacy = target.getItem(PROJECT_PREFIX + file.package.name);
-      if (!legacy) return null;
-      const recent = JSON.parse(target.getItem(RECENT_KEY) || '[]') as ReturnType<typeof readRecent>;
-      copy = { project: JSON.parse(legacy) as Project, path, saved_at: recent.find((r) => r.name === file.package.name && !r.path)?.when ?? '', ready: false };
-    }
+    const scoped = (storage ?? appStorage).getItem(storedCopyKey(file.uuid, path));
+    if (!scoped) return null;
+    const copy = JSON.parse(scoped) as StoredCopy;
+    if (copy.path !== path) return null;
     if (copy.project.uuid !== file.uuid || !copy.saved_at || !Number.isFinite(modifiedMs)) return null;
     const savedMs = Date.parse(copy.saved_at);
     if (!Number.isFinite(savedMs) || savedMs <= modifiedMs) return null;
@@ -58,7 +51,7 @@ export function newerStoredCopy(file: Project, path: string, modifiedMs: number,
 /** Saved projects use their uuid and location; packages alone retain their legacy storage. */
 export function persistProject(project: Project, path: string | null, when = new Date().toISOString(), storage?: CopyStorage): boolean {
   try {
-    const target = storage ?? localStorage;
+    const target = storage ?? appStorage;
     if (path) target.setItem(storedCopyKey(project.uuid, path), JSON.stringify({ saved_at: when, path, project }));
     else target.setItem(PROJECT_PREFIX + project.package.name, JSON.stringify(project));
     const recent = JSON.parse(target.getItem(RECENT_KEY) || '[]') as ReturnType<typeof readRecent>;
@@ -72,7 +65,7 @@ export function persistProject(project: Project, path: string | null, when = new
 }
 
 export function clearStoredCopy(uuid: string, path: string, storage?: CopyStorage) {
-  try { (storage ?? localStorage).removeItem(storedCopyKey(uuid, path)); } catch { /* storage unavailable */ }
+  try { (storage ?? appStorage).removeItem(storedCopyKey(uuid, path)); } catch { /* storage unavailable */ }
 }
 
 /** Short English date in the viewer's local time. */
