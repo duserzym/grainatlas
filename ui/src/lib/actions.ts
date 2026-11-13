@@ -149,6 +149,7 @@ export async function openPaths(paths: string[], app: AppState = current()) {
       await restoreAreas(app);
       if (app.storedCopy) app.storedCopy = { ...app.storedCopy, ready: true };
     } finally { app.loadingProject = false; }
+    await app.sync.check();
     return;
   }
   const label = paths.length === 1 ? paths[0] : `${paths.length} files`;
@@ -272,6 +273,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.screen = 'area';
   app.dirty = false;
   if (!isHosted() || !(await applyPendingProject(app))) await resolveDeepLink(app);
+  await app.sync.check();
 }
 
 /** The example package bundled with the web build (the test fixture), or null when absent. */
@@ -388,6 +390,7 @@ export async function loadProjectFile(file: File, app: AppState = current()) {
     if (app.storedCopy) app.storedCopy = { ...app.storedCopy, ready: true };
     await resolveDeepLink(app);
   } finally { app.loadingProject = false; }
+  await app.sync.check();
 }
 
 /** `base` with the values of `over` (objects merged at every depth, in `base`'s key order). */
@@ -654,6 +657,7 @@ export async function saveProject(app: AppState = current()) {
       app.dirty = false;
       clearStoredCopy(p.uuid, dir);
       app.notice = `Saved ${where}`;
+      await app.sync.afterSave();
     }
     return where;
   }
@@ -672,6 +676,7 @@ export async function saveProjectFile(app: AppState = current(), ask = true) {
     if (app.error) return null;
     app.dirty = false;
     if (app.projectPath) clearStoredCopy(p.uuid, app.projectPath.path);
+    await app.sync.afterSave();
     return null;
   }
   if (where) {
@@ -679,6 +684,7 @@ export async function saveProjectFile(app: AppState = current(), ask = true) {
     clearStoredCopy(p.uuid, where);
     app.notice = `Saved ${where}`;
     app.dirty = false;
+    await app.sync.afterSave();
   }
   return where;
 }

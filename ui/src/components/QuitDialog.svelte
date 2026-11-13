@@ -45,8 +45,9 @@
 >
   <h2 id="quit-title">Quit GrainAtlas?</h2>
   <p id="quit-description">
-    {titles.length === 1 ? 'This project has unsaved changes:' : 'These projects have unsaved changes:'}
+    {titles.length === 1 ? 'This project has unsaved changes or changes not yet in the database:' : 'These projects have unsaved changes or changes not yet in the database:'}
   </p>
+  <p class="faint small">Local drafts stay here if you quit without syncing.</p>
   <ul>
     {#each titles as title}
       <li>{title}</li>

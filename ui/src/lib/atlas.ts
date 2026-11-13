@@ -10,8 +10,7 @@ import { publishAtlas } from './laicpmsdb';
 import { current, type AppState } from './store.svelte';
 
 /** Options for the core from Settings: tile quality, the package's place on the lab storage. */
-export function bundleOptions(p: Project): BundleOptions {
-  const app = current();
+export function bundleOptions(p: Project, app: AppState = current()): BundleOptions {
   const root = app.link.nasRoot.trim().replace(/[\\/]+$/, '');
   const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
   return { quality: app.link.quality, exported: new Date().toISOString(), nas_path: root ? `${root}${sep}${p.package.name}` : null };
@@ -62,11 +61,12 @@ export function canSaveFolder(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
 }
 
-async function bundleZip(app: AppState): Promise<{ project: Project; zip: Uint8Array } | null> {
+async function bundleZip(app: AppState, projectUuid?: string): Promise<{ project: Project; zip: Uint8Array } | null> {
   const p = app.fullProject();
   if (!p) return null;
+  if (projectUuid) p.uuid = projectUuid;
   const core = await app.core;
-  const zip = await app.run('Building the atlas bundle', () => core.atlasZip(p, bundleOptions(p)));
+  const zip = await app.run('Building the atlas bundle', () => core.atlasZip(p, bundleOptions(p, app)));
   return zip ? { project: p, zip } : null;
 }
 
@@ -108,8 +108,7 @@ export async function saveAtlas(asZip: boolean) {
 }
 
 /** Posts the bundle to `POST /v1/mounts/{mount_id}/atlas` and records the version in the project. */
-export async function publish() {
-  const app = current();
+export async function publish(app: AppState = current(), projectUuid = app.sync.draft?.linked_uuid) {
   if (!(await beforeCheckedAction(app, 'publish'))) return;
   const server = app.server;
   const mount = app.project?.laicpmsdb.mount_id;
@@ -121,7 +120,7 @@ export async function publish() {
     app.error = 'Link the project to a mount first.';
     return;
   }
-  const b = await bundleZip(app);
+  const b = await bundleZip(app, projectUuid);
   if (!b) return;
   const tok = await authToken(app);
   const res = await app.run(`Publishing to ${new URL(server).host}`, () => publishAtlas(server, tok, mount, b.project.uuid, b.zip));

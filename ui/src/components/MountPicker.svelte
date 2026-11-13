@@ -5,7 +5,7 @@
   import { authToken } from '../lib/atlas';
   import { listMounts, type MountOut } from '../lib/laicpmsdb';
 
-  let { value, onchange, disabled = false }: { value: string | null; onchange: (id: string) => void; disabled?: boolean } = $props();
+  let { value, onchange, disabled = false, existingOnly = false }: { value: string | null; onchange: (id: string) => void; disabled?: boolean; existingOnly?: boolean } = $props();
   let mounts = $state<MountOut[] | null>(null);
   let note = $state('');
   let typed = $state(false);
@@ -13,15 +13,15 @@
   async function load(server: string | null) {
     mounts = null;
     if (!server) {
-      note = 'No laicpmsdb server set (Settings): type the mount id.';
+      note = existingOnly ? 'Set the database server in Settings to pick a mount.' : 'No laicpmsdb server set (Settings): type the mount id.';
       return;
     }
     note = 'Loading mounts…';
     try {
       mounts = await listMounts(server, await authToken());
-      note = mounts.length ? '' : 'The server lists no mounts for you: type the id.';
+      note = mounts.length ? '' : existingOnly ? 'The server lists no mounts for you.' : 'The server lists no mounts for you: type the id.';
     } catch (e) {
-      note = `${e instanceof Error ? e.message : e}. Type the mount id instead.`;
+      note = `${e instanceof Error ? e.message : e}${existingOnly ? '' : '. Type the mount id instead.'}`;
     }
   }
   $effect(() => {
@@ -37,16 +37,17 @@
         {#each mounts as m (m.id)}
           <option value={m.id} disabled={!m.can_edit}>{m.label} · {m.mount_type} · {m.grain_count} grains, {m.spot_count} spots{m.can_edit ? '' : ' (read-only)'}</option>
         {/each}
-        {#if value && !mounts.some((m) => m.id === value)}<option value={value}>{value}</option>{/if}
+        {#if !existingOnly && value && !mounts.some((m) => m.id === value)}<option value={value}>{value}</option>{/if}
       </select>
     </label>
-    <button class="linkish" onclick={() => (typed = true)}>Type an id instead</button>
-  {:else}
+    {#if !existingOnly}<button class="linkish" onclick={() => (typed = true)}>Type an id instead</button>{/if}
+  {:else if !existingOnly}
     <label class="field">Mount id
       <input type="text" placeholder="laicpmsdb mount UUID" value={value ?? ''} {disabled} onchange={(e) => onchange(e.currentTarget.value)} data-testid="mount-id" />
     </label>
     {#if mounts?.length}<button class="linkish" onclick={() => (typed = false)}>Pick from the list</button>{/if}
   {/if}
+  {#if existingOnly && !mounts?.length}<p class="faint small">Choose an existing mount when the server is reachable.</p>{/if}
   {#if note}<p class="faint small" data-testid="mount-note">{note}</p>{/if}
 </div>
 

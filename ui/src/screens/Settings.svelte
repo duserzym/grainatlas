@@ -62,6 +62,7 @@
   </div>
   <div class="glass panel">
     <h2>laicpmsdb</h2>
+    <label class="check"><input type="checkbox" bind:checked={app.link.syncOnSave} onchange={() => app.saveLink()} data-testid="sync-on-save" /> Sync to the database when saving</label>
     <label class="field">Server
       <input type="url" placeholder="http://localhost:8000" bind:value={serverText} onchange={saveServer} aria-invalid={serverBad} data-testid="server" />
     </label>

@@ -160,6 +160,9 @@ export interface StitchSummary {
 
 export interface Grain {
   id: string;
+  /** Database label; absent local labels default to <area_id>/<number>. */
+  label?: string;
+  sample?: string | null;
   number: number;
   /** Polygon in mosaic micrometres (closed implicitly). */
   polygon_um: [number, number][];

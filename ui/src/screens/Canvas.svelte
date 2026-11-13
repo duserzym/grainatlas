@@ -14,7 +14,8 @@
   import type { Core } from '../lib/core/core';
   import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
-  import { formatName, grainAt, relinkSpots, linkUnlinkedSpots, newId, nextNumber, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
+  import { formatName, grainAt, relinkSpots, newId, nextNumber, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
+  import { findGrainsInArea } from '../lib/grain-finding';
   import FloatingPanel from '../components/FloatingPanel.svelte';
   import SizeBox from '../components/SizeBox.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
@@ -439,32 +440,13 @@
 
   // ---- grains -----------------------------------------------------------------
   async function findGrains() {
-    if (!core || !areaId || !segParams) return;
-    const id = areaId;
-    const params = $state.snapshot(segParams) as SegmentParams;
-    const prev = $state.snapshot(app.grains[id] ?? []) as Grain[];
-    const r = await app.run('Finding grains', () => core!.segment(id, params, prev, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth }));
-    if (!r) return;
-    app.checkpoint();
-    app.grains = { ...app.grains, [id]: r };
-    app.spots = relinkSpots(app.spots, id, r);
+    if (areaId) await findGrainsInArea(current(), areaId);
   }
   async function findMissedGrains() {
-    if (!core || !areaId || !segParams || app.grains[areaId] === undefined) return;
-    const id = areaId;
-    const existing = $state.snapshot(app.grains[id]) as Grain[];
-    const params = $state.snapshot(segParams) as SegmentParams;
-    const r = await app.run('Finding missed grains', () => core!.segmentMissing(id, params, existing, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth }));
-    if (!r) return;
-    const added = r.slice(existing.length);
-    app.checkpoint();
-    app.grains = { ...app.grains, [id]: r };
-    app.spots = linkUnlinkedSpots(app.spots, id, added);
-    const flagged = added.filter((g) => g.artifact).length;
-    app.notice = added.length ? `Added ${plural(added.length - flagged, 'grain', 'grains')}${flagged ? ` and ${flagged} flagged` : ''}. Review the dashed outlines; ⌘Z undoes.` : 'No missed grains found.';
+    if (areaId) await findGrainsInArea(current(), areaId, true);
   }
   function acceptAdded(ids?: string[]) {
-    if (!areaId) return;
+    if (!areaId || app.busy) return;
     app.checkpoint();
     app.grains = { ...app.grains, [areaId]: detections.map((g) => {
       if (!g.added || (ids && !ids.includes(g.id))) return g;
@@ -474,7 +456,7 @@
   }
   /** Replaces the area's grains; flagged artifacts stay unless `all` is the whole list. */
   function setGrains(gs: Grain[], all = false) {
-    if (!areaId) return;
+    if (!areaId || app.busy) return;
     app.checkpoint();
     app.grains = { ...app.grains, [areaId]: all ? gs : [...gs, ...artifacts.filter((a) => !gs.some((g) => g.id === a.id))] };
     app.spots = relinkSpots(app.spots, areaId, app.grains[areaId]);
@@ -840,6 +822,7 @@
 
   // ---- pointer --------------------------------------------------------------------
   function press(p: CanvasPoint): boolean {
+    if (app.busy) return false;
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const ev = p.ev as PointerEvent;
     collapseSpot = null;
@@ -1065,6 +1048,7 @@
   }
 
   async function click(p: CanvasPoint) {
+    if (app.busy) return;
     const ev = p.ev as MouseEvent;
     const x = p.x * umPerPx, y = p.y * umPerPx;
     if (ro && app.tool !== 'select' && app.tool !== 'measure') return;
@@ -1258,7 +1242,7 @@
 
   // ---- keyboard --------------------------------------------------------------------------
   function key(e: KeyboardEvent) {
-    if (app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
+    if (app.busy || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
     const mod = e.metaKey || e.ctrlKey;
@@ -1370,11 +1354,11 @@
 {/snippet}
 {#snippet grainBatchButtons()}
   <div class="row">
-    <button onclick={markArtifact} disabled={ro || !selectedGrains.some((g) => !g.artifact)}>Not a grain</button>
-    <button onclick={() => keepAsGrains(selGrains)} disabled={ro || !selectedGrains.some((g) => g.artifact)}>Keep as grain</button>
-    <button onclick={merge} disabled={ro || noPixels || selectedGrains.filter((g) => !g.artifact).length < 2}>Merge</button>
-    <button onclick={() => acceptAdded(selGrains)} disabled={ro || !selectedGrains.some((g) => g.added)}>Accept</button>
-    <button class="danger" onclick={deleteGrains} disabled={ro}>Delete</button>
+    <button onclick={markArtifact} disabled={ro || !!app.busy || !selectedGrains.some((g) => !g.artifact)}>Not a grain</button>
+    <button onclick={() => keepAsGrains(selGrains)} disabled={ro || !!app.busy || !selectedGrains.some((g) => g.artifact)}>Keep as grain</button>
+    <button onclick={merge} disabled={ro || !!app.busy || noPixels || selectedGrains.filter((g) => !g.artifact).length < 2}>Merge</button>
+    <button onclick={() => acceptAdded(selGrains)} disabled={ro || !!app.busy || !selectedGrains.some((g) => g.added)}>Accept</button>
+    <button class="danger" onclick={deleteGrains} disabled={ro || !!app.busy}>Delete</button>
   </div>
 {/snippet}
 {#if batch}
@@ -1440,6 +1424,10 @@
               <g class="results" data-testid="results-layer">
                 {#each shown as { s, r, v } (s.id)}
                   {#if v}
+                    {#if app.colourBy === 'date'}
+                      <circle class="result-ring outer" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2 + 1.875 * k} />
+                      <circle class="result-ring inner" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2 + 0.75 * k} />
+                    {/if}
                     <circle class="rfill" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} fill={(app.colourBy === 'date' ? ageColor : rampColor)(tOf(v.value))} data-testid="result-dot" data-spot-id={s.id} />
                   {/if}
                   {#if r.flags.length}
@@ -1558,8 +1546,8 @@
       {/if}
       {#if !ro}
         <span class="sep"></span>
-        <button class="icon" title="Undo (⌘Z)" disabled={!app.canUndo} onclick={() => app.undo()}>↶</button>
-        <button class="icon" title="Redo (⇧⌘Z)" disabled={!app.canRedo} onclick={() => app.redo()}>↷</button>
+        <button class="icon" title="Undo (⌘Z)" disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()}>↶</button>
+        <button class="icon" title="Redo (⇧⌘Z)" disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()}>↷</button>
       {/if}
       <span class="sep"></span>
       <button class="icon" title="Zoom in (+)" onclick={() => viewer?.zoomBy(1.5)}>+</button>
@@ -1593,7 +1581,7 @@
             {/if}
           </div>
         {/if}
-        <fieldset class="plain" disabled={ro}>
+        <fieldset class="plain" disabled={ro || !!app.busy}>
         {#if selSpots.length > 1}
           <p>{selSpots[0].name} → {selSpots[selSpots.length - 1].name}</p>
           <p class="faint small">Samples: {[...new Set(selSpots.map((s) => s.sample))].join(', ') || '–'}</p>
@@ -1698,7 +1686,7 @@
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
-      <fieldset class="plain tabbody" disabled={ro && tab !== 'link' && tab !== 'checks'}>
+      <fieldset class="plain tabbody" disabled={(ro && tab !== 'link' && tab !== 'checks') || (tab === 'grains' && !!app.busy)}>
       {#if tab === 'spots'}
         {#if selectedHere > 1}
           <div class="panel">
@@ -1719,8 +1707,7 @@
           <button onclick={() => exportSpots('csv')} disabled={!app.spots.length} data-testid="export-csv">Spots CSV</button>
           <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
           <button onclick={() => renameFromPattern(app.selection.length ? app.selection : spots.map((s) => s.id))} disabled={!spots.length} title="Rename the selected spots (or all in this area) from the pattern">Rename</button>
-          <button onclick={sendSpots} disabled={!app.spots.length} data-testid="send-laicpmsdb"
-            title={app.server && app.project?.laicpmsdb.mount_id ? "POST all areas’ spots, grouped by sample to the linked mount (with the sign-in token; downloads the JSON body when there is none)" : "Download all areas’ spots, grouped by sample as the JSON body of laicpmsdb's POST /v1/mounts/{mount_id}/spots (mosaic µm)"}>Send spots to laicpmsdb</button>
+
         </div>
         {/if}
         <div class="list">
@@ -1777,9 +1764,14 @@
         <div class="row">
           <button onclick={() => saveAtlas(false)} disabled={noPixels || (core?.kind !== 'tauri' && !canSaveFolder())} title={core?.kind === 'tauri' || canSaveFolder() ? 'Write a <project id>.atlas folder' : 'This browser cannot write folders: save the zip'} data-testid="save-atlas-folder">Save folder</button>
           <button onclick={() => saveAtlas(true)} disabled={noPixels} title={noPixels ? 'Needs the stitched mosaic: open the raw package' : ''} data-testid="save-atlas-zip">Save zip</button>
-          <button class="primary" onclick={publish} disabled={noPixels || !app.server || !app.project?.laicpmsdb.mount_id} data-testid="publish"
-            title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the laicpmsdb server in Settings' : !app.project?.laicpmsdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to laicpmsdb</button>
+
         </div>
+        <details><summary>Advanced</summary><div class="row">
+          <button onclick={sendSpots} disabled={ro || !app.spots.length} data-testid="send-laicpmsdb"
+            title={app.server && app.project?.laicpmsdb.mount_id ? "POST all areas’ spots, grouped by sample to the linked mount (with the sign-in token; downloads the JSON body when there is none)" : "Download all areas’ spots, grouped by sample as the JSON body of laicpmsdb's POST /v1/mounts/{mount_id}/spots (mosaic µm)"}>Send spots to laicpmsdb</button>
+          <button onclick={() => publish()} disabled={noPixels || !app.server || !app.project?.laicpmsdb.mount_id} data-testid="publish"
+            title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the laicpmsdb server in Settings' : !app.project?.laicpmsdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to laicpmsdb</button>
+        </div></details>
         {#if app.project?.laicpmsdb.published?.length}
           <table class="data" data-testid="published">
             <thead><tr><th>Published</th><th>Version</th><th>atlas.json</th></tr></thead>
@@ -2204,7 +2196,7 @@
     height: 10px;
     border-radius: 3px;
   }
-  .legend .lt { display: grid; gap: var(--space-1); }
+  .legend .lt { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); white-space: nowrap; }
   .legend .field { display: flex; align-items: center; gap: var(--space-2); }
   .legend select { font-size: inherit; padding: 2px var(--space-1); }
   .legend .ends {
@@ -2251,6 +2243,9 @@
     stroke: none;
     opacity: 0.85;
   }
+  .result-ring { fill: none; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .result-ring.inner { stroke: #fff; stroke-width: 1.5px; }
+  .result-ring.outer { stroke: #171923; stroke-width: 0.75px; }
   :global(.ga-root) .results .rflag {
     fill: none;
     stroke: #ff6b6b;

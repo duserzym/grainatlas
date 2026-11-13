@@ -14,6 +14,7 @@
   import Settings from './screens/Settings.svelte';
   import Busy from './components/Busy.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
+  import SyncChip from './components/SyncChip.svelte';
   import QuitDialog from './components/QuitDialog.svelte';
   import CheckDialog from './components/CheckDialog.svelte';
   import RenameDialog from './components/RenameDialog.svelte';
@@ -181,7 +182,7 @@
   }
 
   let quitState = $state<'idle' | 'prompt' | 'saving' | 'exiting'>('idle');
-  const unsavedTabs = $derived(tabs.list.filter((tab) => tab.dirty && !tab.readOnly));
+  const unsavedTabs = $derived(tabs.list.filter((tab) => (tab.dirty || tab.sync.unsynced) && !tab.readOnly));
 
   async function finishQuit() {
     quitState = 'exiting';
@@ -215,12 +216,12 @@
     const previous = tabs.activeId;
     try {
       for (const tab of [...unsavedTabs]) {
-        if (!tab.dirty) continue;
+        if (!tab.dirty && !tab.sync.unsynced) continue;
         // Save can show the project's checks dialog before writing.
         tabs.select(tab.id);
         await saveProject(tab);
-        if (tab.dirty) {
-          if (!tab.error) tab.notice = 'Project was not saved. GrainAtlas is still open.';
+        if (tab.dirty || tab.sync.unsynced) {
+          if (!tab.error) tab.notice = tab.dirty ? 'Project was not saved. GrainAtlas is still open.' : 'Changes are still not in the database. GrainAtlas is still open.';
           return;
         }
       }
@@ -343,6 +344,17 @@
       window.removeEventListener('keydown', key);
     };
   });
+
+  onMount(() => {
+    const retry = () => { for (const tab of tabs.list) if (tab.project) void tab.sync.check(); };
+    const timer = window.setInterval(retry, 30_000);
+    window.addEventListener('online', retry);
+    const closing = (event: BeforeUnloadEvent) => {
+      if (tabs.list.some(tab => !tab.readOnly && (tab.dirty || tab.sync.unsynced))) { event.preventDefault(); event.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', closing);
+    return () => { clearInterval(timer); window.removeEventListener('online', retry); window.removeEventListener('beforeunload', closing); };
+  });
 </script>
 
 <div class="ga-root app" data-theme={app.theme}>
@@ -366,17 +378,19 @@
         <button class="tab" aria-pressed={app.screen === s.id} disabled={!enabled(s)} onclick={() => (app.screen = s.id)} title="{s.label} (Alt+{s.key})">{s.label}</button>
       {/each}
     </nav>
+    <SyncChip />
     <div class="right">
       <CheckUpdatesButton />
       <ThemeSwitch />
       {#if app.readOnly}
-        <button class="primary" onclick={editCopy} title="Make this published project a local, editable one (same project id)" data-testid="edit-copy">Edit a copy</button>
+        <button class="primary" onclick={editCopy} title="Make this published project a local, editable one (same project id)" data-testid="edit-copy">Edit</button>
       {:else if app.project}
         <button onclick={() => saveProject()} title="Save project (Cmd/Ctrl+S): {app.projectPath ? app.projectPath.path : desktop ? `${app.project.name}.gaproj next to the package` : 'download the project file'}" data-testid="save-project">Save project</button>
         <button onclick={() => saveProjectFile()} title="Save a project file (.gaproj): parameters, placements, grains and spots, no pixels; it reopens with the package's images (double-click it)">Save as…</button>
       {/if}
     </div>
     {/if}
+    {#if menuCollapsed}<SyncChip />{/if}
     {#if app.screen === 'canvas'}
       <button class="menu-toggle" aria-expanded={!menuCollapsed} onclick={toggleMenu}
         aria-label={menuCollapsed ? 'Expand GrainAtlas menu' : 'Collapse GrainAtlas menu'}
@@ -450,7 +464,7 @@
     align-items: center;
     flex-wrap: wrap;
     min-width: 0;
-    gap: var(--space-4);
+    gap: var(--space-2);
     margin: 0 var(--space-2) var(--space-2);
     padding: var(--space-2) var(--space-4);
     border-radius: var(--radius);
@@ -491,6 +505,8 @@
     gap: var(--space-2);
     font-weight: 650;
     min-width:0;
+    max-width:14%;
+    flex:0 1 auto;
   }
   .mark {
     display: block;
@@ -504,7 +520,7 @@
   nav {
     display: flex;
     gap: var(--space-1);
-    margin-left: var(--space-4);
+    margin-left: 0;
   }
   .tab {
     border-color: transparent;
@@ -514,6 +530,9 @@
     margin-left: auto;
     display: flex;
     gap: var(--space-2);
+    flex-wrap:nowrap;
+    flex:none;
+    min-width:0;
   }
   @container (max-width: 900px) {
     .topbar {gap:var(--space-2);padding-inline:var(--space-2);flex-wrap:wrap;}

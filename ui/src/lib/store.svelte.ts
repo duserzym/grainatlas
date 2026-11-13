@@ -7,6 +7,7 @@
 // the active tab: components read it as before and follow a tab switch. Code that awaits takes
 // its tab once (`current()`) so a result lands in the tab that started the work.
 
+import { SyncSession } from './sync-session.svelte';
 import type { ShellCommand } from './shellcmd';
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
 import type { DeepLink } from './deeplink';
@@ -161,6 +162,7 @@ interface Snapshot {
 export const reviewSpots = $state<{ projects: Record<string, string[]>; colors: Record<string, Record<string, string>> }>({ projects: {}, colors: {} });
 
 class AppState {
+  readonly sync: SyncSession;
   screen = $state<Screen>('open');
   pkg = $state<PackageInfo | null>(null);
   /** Loose images waiting for a scale (the scale dialog is open while set). */
@@ -343,6 +345,7 @@ class AppState {
 
   constructor(id: number) {
     this.id = id;
+    this.sync = new SyncSession(this);
     this.core = newCore(id);
     this.stopNumbering = $effect.root(() => {
       let context: { area: string | null; sample: string } | null = null;
@@ -536,7 +539,7 @@ class AppState {
       // An open or save may have happened since this write was queued.
       if (this.readOnly || this.loadingProject || this.storedCopy || !this.dirty || this.project?.uuid !== uuid || (this.projectPath?.path ?? null) !== path) return;
       const p = this.fullProject();
-      if (p) persistProject(p, path);
+      if (p) { persistProject(p, path); this.sync.track(); }
     });
   }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DraftList from '../components/DraftList.svelte';
   import { onMount } from 'svelte';
   import { app, shared, tabs } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
@@ -168,6 +169,7 @@
 </script>
 
 <section class="open">
+  <DraftList />
   {#each shared.pendingProjects as pending (pending.project.package.name)}
     <div class="glass panel linked" role="status" data-testid="pending-project"><p>{pendingProjectNotice(pending.project)}</p></div>
   {/each}

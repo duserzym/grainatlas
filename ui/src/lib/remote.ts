@@ -5,6 +5,9 @@
 // package). This is how laicpmsdb's mount page embeds grainatlas and how a spot link from
 // anywhere reaches the images (`?server=&project=&spot=`).
 
+import { listDrafts, storedDraftProject } from './drafts';
+import { SyncApi } from './sync-api';
+import { groupedGrains, uiSpots } from './sync';
 import type { RawImage } from './core/core';
 import type { LevelInfo, MosaicJson, Project, StitchSummary } from './core/types';
 import { atlasUrl, normalizeServer } from './laicpmsdb';
@@ -112,11 +115,20 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   const token = await authToken(app);
   const at = { server, projectId, token, access };
   const r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
+    const api = new SyncApi(server, token, access);
+    const status = await api.lookup(projectId);
     const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json');
     if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
     if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
     const project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json');
-    return { atlas, project };
+    let revision: number | null = null;
+    if (status) {
+      const elements = await api.elements(projectId);
+      revision = elements.revision;
+      const ui = project.grainatlas_ui as { spots?: import('./core/types').Spot[]; grains?: Record<string, import('./core/types').Grain[]> } | undefined;
+      project.grainatlas_ui = { ...(project.grainatlas_ui as object), spots: uiSpots(elements.spots, elements.grains, ui?.spots, Object.fromEntries(project.areas.map(a => [a.id, a.sample]))), grains: groupedGrains(elements.grains, ui?.grains), labels: elements.labels };
+    }
+    return { atlas, project, revision };
   });
   if (!r) return false;
   const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true, token, access, mount };
@@ -137,6 +149,8 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   app.preview = {};
   app.pixelsVersion++;
   app.areaId = r.atlas.areas[0]?.id ?? null;
+  await app.sync.check();
+  app.sync.viewed(r.revision);
   app.screen = 'canvas';
   if (spot) {
     const s = app.spots.find((x) => sameId(x.id, spot));
@@ -159,8 +173,11 @@ export async function editCopy() {
   const remote = app.remote;
   const p = app.project;
   if (!remote || !p) return;
-  const existing = savedProject(p.package.name);
-  if (existing && !confirm(`This computer already has a project for ${p.package.name}${sameId(existing.uuid, p.uuid) ? '' : ` (${existing.uuid})`}. Replace it with this copy from the server?`)) return;
+  const draft = listDrafts(remote.server).find(d => d.uuid === p.uuid);
+  const sameUuid = draft ? storedDraftProject(draft) : null;
+  const packageCopy = savedProject(p.package.name);
+  const existing = sameUuid ?? packageCopy;
+  if (packageCopy && !sameId(packageCopy.uuid, p.uuid) && !confirm(`This computer already has a project for ${p.package.name} (${packageCopy.uuid}). Replace it with this project from the server?`)) return;
   const core = await app.core;
   const ok = await app.run('Making a local copy', async () => {
     await core.blank(p.package.name);
@@ -171,6 +188,8 @@ export async function editCopy() {
   if (!ok) return;
   app.project = JSON.parse(await core.projectJson());
   app.remote = { ...remote, readOnly: false };
+  if (existing && sameId(existing.uuid, p.uuid)) app.adopt(existing);
+  await app.sync.editBase();
   app.persist();
-  app.notice = `Editable copy of ${remote.atlas.name}. Spots, grains and labels can be changed; open the raw package (${p.package.name}) to re-stitch or publish new pixels.`;
+  app.notice = `Editing ${remote.atlas.name}. Spots, grains and labels can be changed; open the raw package (${p.package.name}) to re-stitch or publish new pixels.`;
 }

@@ -108,4 +108,5 @@ export function answerStoredCopy(app: AppState, restore: boolean, storage?: Copy
   }
   app.storedCopy = null;
   if (restore) app.persist();
+  void app.sync?.check();
 }

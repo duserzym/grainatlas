@@ -74,6 +74,7 @@
   });
 
   async function generateSheets() {
+    if (app.busy) return;
     const core = await app.core;
     const p = $state.snapshot(sheet) as SheetParams;
     const name = app.pkg?.name ?? app.project?.package.name ?? 'grainatlas';
@@ -111,6 +112,7 @@
   }
 
   async function generate() {
+    if (app.busy) return;
     const core = await app.core;
     const p = $state.snapshot(params) as LayoutParams;
     if (!p.area_ids.length) p.area_ids = stitchedIds;
@@ -221,7 +223,7 @@
         </label>
       {/if}
       {/if}
-      <button class="primary" onclick={generateSheets} disabled={sheetMode === 'whole' ? !wholeArea : !hasGrains} title={sheetMode === 'grains' && !hasGrains ? 'Find grains first' : ''} data-testid="sheets">{sheetMode === 'whole' ? 'Make whole-area sheet' : 'Make print sheets'}</button>
+      <button class="primary" onclick={generateSheets} disabled={!!app.busy || (sheetMode === 'whole' ? !wholeArea : !hasGrains)} title={sheetMode === 'grains' && !hasGrains ? 'Find grains first' : ''} data-testid="sheets">{sheetMode === 'whole' ? 'Make whole-area sheet' : 'Make print sheets'}</button>
       {#if whole}
         <p class="faint small" data-testid="whole-stats">1 sheet, {whole.stats.orientation}, <b>1 mm = {whole.registration.um_per_mm} µm</b>. Source pixel {whole.stats.source_pixel_um.toFixed(2)} µm; smallest detail about {Math.round(whole.stats.smallest_detail_300_um)} µm at 300 dpi, {Math.round(whole.stats.smallest_detail_600_um)} µm at 600 dpi.</p>
       {/if}
@@ -284,7 +286,7 @@
       <label class="check"><input type="checkbox" bind:checked={params.show_outlines} /> outlines</label>
       <label class="check"><input type="checkbox" bind:checked={params.cut_marks} /> cut marks</label>
     </div>
-    <button class="primary" onclick={generate} data-testid="layout">Lay out pages</button>
+    <button class="primary" onclick={generate} disabled={!!app.busy} data-testid="layout">Lay out pages</button>
     {#if result}
       <p class="muted">{result.pages.length} page{result.pages.length === 1 ? '' : 's'}, {result.items} items at <b>1 mm = {result.um_per_mm} µm</b></p>
       <div class="two">

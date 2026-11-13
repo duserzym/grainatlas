@@ -13,7 +13,7 @@
 
   /** Closes a tab; with unsaved changes the dialog asks first. */
   export function requestClose(t: AppState) {
-    if (t.dirty && !t.readOnly) {
+    if ((t.dirty || t.sync.unsynced) && !t.readOnly) {
       tabs.select(t.id);
       asking = t;
       return;
@@ -27,7 +27,10 @@
     if (!t || a === 'cancel') return;
     if (a === 'save') {
       await saveProject(t);
-      if (t.dirty) return; // not saved (cancelled or failed): keep the tab
+      if (t.dirty || t.sync.unsynced) {
+        if (!t.dirty) t.notice = 'Saved here. Changes are still not in the database; sync or close with the local draft kept.';
+        return;
+      }
     }
     tabs.remove(t.id);
   }
@@ -118,7 +121,7 @@
   <div class="scrim" role="presentation"></div>
   <div class="glass dialog" role="alertdialog" aria-modal="true" aria-labelledby="close-tab-title" data-testid="close-tab-dialog">
     <h2 id="close-tab-title">Close {asking.title}?</h2>
-    <p>This tab has changes that are not saved in a project.</p>
+    <p>This tab has unsaved changes or changes not yet in the database. Closing keeps its local draft.</p>
     <div class="row">
       <button class="primary" onclick={() => answer('save')}>Save project</button>
       <button onclick={() => answer('discard')} data-testid="close-tab-discard">Close without saving</button>

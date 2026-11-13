@@ -55,6 +55,7 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[]): { 
 
 /** The user's laicpmsdb settings on this computer (never in the project). */
 export interface LinkSettings {
+  syncOnSave: boolean;
   /** Base URL of the laicpmsdb service, e.g. `http://localhost:8000`; empty = none. */
   server: string;
   /** Bearer token pasted when grainatlas runs on its own (hosted, the shell's token is used). */
@@ -70,7 +71,7 @@ export interface LinkSettings {
 const LINK_KEY = 'grainatlas.laicpmsdb';
 const TOKEN_KEY = 'grainatlas.laicpmsdb.token';
 
-export const DEFAULT_LINK: LinkSettings = { server: '', token: '', rememberToken: false, quality: 100, nasRoot: '' };
+export const DEFAULT_LINK: LinkSettings = { server: '', token: '', rememberToken: false, quality: 100, nasRoot: '', syncOnSave: true };
 
 export function loadLink(): LinkSettings {
   const out = { ...DEFAULT_LINK };
