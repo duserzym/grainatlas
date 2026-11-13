@@ -1,7 +1,7 @@
 // Actions shared by the screens: open, stitch, tone, project save/load.
 
 import { beforeCheckedAction } from './checks';
-import { findGrainsInAreas } from './grain-finding';
+import { findGrainsInArea, findGrainsInAreas } from './grain-finding';
 
 import type { PackageFile } from './core/core';
 import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
@@ -440,6 +440,8 @@ export async function stitch(areaId: string, app: AppState = current()) {
   app.preview = { ...app.preview, [areaId]: null };
   app.pixelsVersion++;
   app.persist();
+  // The first stitch of an area that never had grains finds them (Re-stitch never re-finds).
+  if (app.grains[areaId] === undefined) await findGrainsInArea(app, areaId);
   return true;
 }
 
