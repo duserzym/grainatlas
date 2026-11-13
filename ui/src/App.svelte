@@ -71,8 +71,12 @@
   });
   function closeHeaderOutside(event: PointerEvent) {
     if (!(event.target instanceof Element)) return;
-    if (!event.target.closest('[data-testid="sync-chip"], [data-testid="sync-details"]')) syncDetailsOpen = false;
     if (!overflowButton?.contains(event.target) && !overflowPanel?.contains(event.target)) overflowOpen = false;
+  }
+  // The details drawer is in flow: closing it moves everything below it up. Close after the
+  // click has reached its target (not on pointerdown), so the click lands where it was aimed.
+  function closeDetailsOutside(event: MouseEvent) {
+    if (event.target instanceof Element && !event.target.closest('[data-testid="sync-chip"], [data-testid="sync-details"]')) syncDetailsOpen = false;
   }
   function headerKey(event: KeyboardEvent) {
     if (event.key !== 'Escape' || (!syncDetailsOpen && !overflowOpen)) return;
@@ -413,7 +417,7 @@
   });
 </script>
 
-<svelte:window onpointerdown={closeHeaderOutside} onkeydowncapture={headerKey} />
+<svelte:window onpointerdown={closeHeaderOutside} onclick={closeDetailsOutside} onkeydowncapture={headerKey} />
 
 {#if app.leaveEditPrompt}<LeaveEditDialog onchoose={app.leaveEditPrompt.answer} />{/if}
 

@@ -105,7 +105,7 @@ function publishedElements(project) {
 export function createFake() {
   const states = new Map();
   const kinds = ['spots', 'grains', 'labels'];
-  const fresh = (snapshot = false) => {
+  const fresh = (snapshot = false, adopted = false) => {
     const atlases = loadPreloaded();
     const projects = new Map();
     const mounts = new Map(MOUNTS.map(m => [m.id, { revision: 0, changes: [], shared: emptyElements(), current: null }]));
@@ -114,8 +114,17 @@ export function createFake() {
       const mount = project.laicpmsdb.mount_id ?? MOUNTS[0].id;
       const elements = snapshot ? storedElements(elementsOf(project)) : publishedElements(project);
       if (snapshot) for (const kind of kinds) elements[kind] = elements[kind].map(e => ({ ...e, server_id: `db-${kind}-${e.id}`, project_uuid: uuid, ...(kind === 'spots' ? { acquisition_ids: [] } : {}), ...(kind === 'grains' ? { retired: false, split_from: [], merged_from: [], children: [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) }));
+      if (adopted) {
+        const unlinked = elements.grains.filter(g => !elements.spots.some(s => s.grain_id === g.id));
+        for (const grain of unlinked.slice(-3)) grain.retired = true;
+        // A fresh UPb Lab client sees 28 active grains at the adopted revision.
+        for (let i = 0; i < 6; i++) {
+          const original = unlinked[i];
+          elements.grains.push({ ...structuredClone(original), id: `adopted-extra-${i}`, server_id: `db-adopted-extra-${i}`, number: 26 + i, label: `${original.area_id}/${26 + i}` });
+        }
+      }
       projects.set(uuid, { uuid, mount, name: project.package.name, version: atlas.version || 1, elements, changed_at: new Date().toISOString() });
-      mounts.get(mount).revision = 1; mounts.get(mount).current ??= uuid;
+      mounts.get(mount).revision = adopted ? 2 : 1; mounts.get(mount).current ??= uuid;
     }
     return { atlases, projects, mounts, published: [], spots: [], syncs: [], dryRuns: [], requests: [], offline: false, options: {} };
   };
@@ -171,7 +180,7 @@ export function createFake() {
             if (legacy) { adopted = true; old = legacy; values = candidates; candidates.delete(legacy.server_id); break; }
           }
         }
-        const data = { ...old, ...storedElement(kind, el), server_id: old?.server_id ?? `db-${kind}-${el.id}`, project_uuid: old?.project_uuid ?? project.uuid,
+        const data = { ...old, ...storedElement(kind, el), server_id: old?.server_id ?? el.server_id ?? `db-${kind}-${el.id}`, project_uuid: old?.project_uuid ?? project.uuid,
           ...(kind === 'spots' ? { acquisition_ids: el.acquisition_ids ?? old?.acquisition_ids ?? [] } : {}),
           ...(kind === 'grains' ? { sample: adopted ? old?.sample ?? null : el.sample !== undefined ? el.sample : old?.sample ?? null, retired: false, children: old?.children ?? [], split_from: el.split_from ? (Array.isArray(el.split_from) ? el.split_from : [el.split_from]) : old?.split_from ?? [], merged_from: el.merged_from ?? old?.merged_from ?? [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) };
         if (kind === 'spots') delete data.sample;
@@ -190,6 +199,7 @@ export function createFake() {
   };
 
   const send = (res, status, body, type = 'application/json') => {
+    if (status === 422) body = { code: null, missing: null, ...body };
     res.statusCode = status;
     res.setHeader('Content-Type', type);
     res.end(Buffer.isBuffer(body) || typeof body === 'string' ? body : JSON.stringify(body));
@@ -221,10 +231,10 @@ export function createFake() {
     try {
       if (path === '/_fake/state') return send(res, 200, { published: state.published, spots: state.spots, syncs: state.syncs, dryRuns: state.dryRuns, offline: state.offline, requests: state.requests, atlases: [...state.atlases.keys()] });
       if (path === '/_fake/reset' && req.method === 'POST') {
-        // Explicit already-snapshotted fixture for delta tests. Default reset and
-        // normal startup always reproduce the real legacy publish state.
+        // Snapshot/delta fixture or a mount adopted by another client at r2 with
+        // three retired grains. Default reset reproduces legacy publishing.
         const options = JSON.parse((await body(req)).toString('utf8') || '{}');
-        state = fresh(options.snapshot === true);
+        state = fresh(options.snapshot === true || options.adopted === true, options.adopted === true);
         states.set(ns, state);
         return send(res, 200, { ok: true });
       }
@@ -233,6 +243,14 @@ export function createFake() {
         return send(res, 200, { offline: state.offline });
       }
       // Test-only delta injection. Same change shape as /sync, no authentication required.
+      if (path === '/_fake/add-after-copy' && req.method === 'POST') {
+        const doc = JSON.parse((await body(req)).toString('utf8') || '{}');
+        const project = state.projects.get(doc.project_uuid ?? '01972c4e-0000-7000-8000-00000000a7a5');
+        if (!project) return send(res, 404, { detail: 'unknown project' });
+        const spot = { ...structuredClone(project.elements.spots[0]), id: doc.id ?? 'server-added-spot', name: 'Added in database', acquisition_ids: [] };
+        advance(state, project, { spots: { upsert: [spot], delete: [] }, grains: { upsert: [], delete: [] }, labels: { upsert: [], delete: [] } });
+        return send(res, 200, spot);
+      }
       if (path === '/_fake/atlas-edit' && req.method === 'POST') {
         const doc = JSON.parse((await body(req)).toString('utf8'));
         const sharedMount = doc.mount_id ?? MOUNTS[0].id;
@@ -309,6 +327,9 @@ export function createFake() {
         if (p && p.mount !== m[1]) return send(res, 409, { detail: 'Project is linked to another mount', base_revision: doc.base_revision, current_revision: state.mounts.get(m[1]).revision, changes: [] });
         if (!['snapshot', 'delta'].includes(doc.mode) || (!p && doc.mode !== 'snapshot')) return send(res, 422, { detail: ['first sync requires snapshot mode'] });
         const mount = state.mounts.get(m[1]);
+        const lineageParents = new Set(doc.grains.upsert.flatMap(g => [...(g.split_from ? [g.split_from] : []), ...(g.merged_from ?? [])]));
+        const missing = Object.fromEntries(kinds.map(k => [k, doc.mode === 'snapshot' ? (p?.elements[k] ?? []).filter(e => e.id != null && !e.retired && !doc[k].upsert.some(s => s.id === e.id) && !doc[k].delete.includes(e.id) && !(k === 'grains' && lineageParents.has(e.id))).map(e => e.id) : []]));
+        if (kinds.some(k => missing[k].length)) return send(res, 422, { detail: ['snapshot_incomplete: include or explicitly remove every project element'], code: 'snapshot_incomplete', missing });
         const since = mount.changes.filter(c => c.revision > (doc.base_revision ?? 0));
         if (doc.base_revision > mount.revision || (doc.base_revision !== mount.revision && since.some(c => c.project_uuid === doc.project_uuid || c.project_uuid === null))) return send(res, 409, { detail: 'mount changed', base_revision: doc.base_revision, current_revision: mount.revision, changes: since });
         if (!p) {
@@ -369,7 +390,7 @@ export function createFake() {
         const applied = Object.fromEntries(kinds.map(k => [k, { created: 0, updated: 0, unchanged: 0, ...(k === 'grains' ? { adopted: 0 } : {}), [k === 'spots' ? 'deleted' : 'retired']: doc[k].delete.length }]));
         for (const k of kinds) {
           const deleted = k === 'grains' ? [...new Set([...doc.grains.delete, ...parents])] : doc[k].delete;
-          applied[k][k === 'spots' ? 'deleted' : 'retired'] = deleted.filter(id => elementsFor(state, p)[k].some(e => e.id === id && !e.retired)).length;
+          applied[k][k === 'spots' ? 'deleted' : 'retired'] = state.options.ignore_deletes ? 0 : deleted.filter(id => elementsFor(state, p)[k].some(e => e.id === id && !e.retired)).length;
         }
         for (const k of kinds) for (const e of doc[k].upsert) {
           const old = elementsFor(state, p)[k].find(s => s.id === e.id);
@@ -378,7 +399,7 @@ export function createFake() {
         }
         const changes = Object.fromEntries(kinds.map(k => [k, {
           upsert: doc[k].upsert.filter(e => { const old = elementsFor(state, p)[k].find(s => s.id === e.id); return !old || !canonicalEqual(k, old, e); }),
-          delete: doc[k].delete.filter(id => elementsFor(state, p)[k].some(e => e.id === id && !e.retired)),
+          delete: state.options.ignore_deletes ? [] : doc[k].delete.filter(id => elementsFor(state, p)[k].some(e => e.id === id && !e.retired)),
         }]));
         if (kinds.some(k => changes[k].upsert.length || changes[k].delete.length)) advance(state, p, changes);
         const all = allElements(state, p.mount);
@@ -386,7 +407,7 @@ export function createFake() {
         if (kinds.some(k => not_in_snapshot[k].length)) warnings.push('Some database elements were absent from the snapshot; they were kept.');
         return send(res, 200, { mount_id: p.mount, project_uuid: p.uuid, mode: doc.mode, previous_revision, revision: mount.revision, applied,
           ids: Object.fromEntries(kinds.map(k => [k, Object.fromEntries(doc[k].upsert.map(e => [e.id, k === 'labels' ? e.id : elementsFor(state, p)[k].find(s => s.id === e.id).server_id]))])),
-          acquisitions_linked: 0, warnings: [...new Set(warnings)], rebased_over: previous_revision - doc.base_revision, not_in_snapshot, dry_run: !!doc.dry_run });
+          acquisitions_linked: 0, complete: !kinds.some(k => not_in_snapshot[k].length), warnings: [...new Set(warnings)], rebased_over: previous_revision - doc.base_revision, not_in_snapshot, dry_run: !!doc.dry_run });
       }
 
       if ((m = path.match(/^\/atlas\/projects\/([^/]+)\/(.+)$/)) && req.method === 'GET') {

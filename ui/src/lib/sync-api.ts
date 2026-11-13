@@ -21,13 +21,15 @@ export interface SyncSuccess {
   ok: true; mount_id: string; project_uuid: string; mode: SyncBody['mode']; previous_revision: number; revision: number;
   applied: { spots: { created: number; updated: number; deleted: number; unchanged: number }; grains: { created: number; adopted: number; updated: number; retired: number; unchanged: number }; labels: { created: number; updated: number; retired: number; unchanged: number } };
   ids: Record<Kind, Record<string, string>>; acquisitions_linked: number;
-  warnings: string[]; rebased_over: number; not_in_snapshot: Record<Kind, string[]>; dry_run: boolean;
+  complete: boolean; warnings: string[]; rebased_over: number; not_in_snapshot: Record<Kind, string[]>; dry_run: boolean;
 }
 export interface SyncConflict { ok: false; detail: string; base_revision: number; current_revision: number; changes: ChangeEvent[] }
 export type SyncReply = SyncSuccess | SyncConflict;
 export class SyncApiError extends Error {
   status: number;
   messages: string[];
+  code: string | null = null;
+  missing: Record<Kind, string[]> | null = null;
   bulkConfirmation = false;
   confirmation?: import('@lab/bridge').AtlasSyncConfirmation;
   constructor(status: number, messages: string[]) {
@@ -73,9 +75,9 @@ export function syncWireBody(body: SyncBody) {
   return {
     project_uuid: body.project_uuid, base_revision: body.base_revision, mode: body.mode,
     ...(body.dry_run ? { dry_run: true } : {}), ...(body.confirm_bulk ? { confirm_bulk: true } : {}),
-    spots: { upsert: narrow('spots'), delete: body.mode === 'snapshot' ? [] : body.spots.delete },
-    grains: { upsert: narrow('grains'), delete: body.mode === 'snapshot' ? [] : [...new Set([...body.grains.delete, ...body.grains.retire])] },
-    labels: { upsert: narrow('labels'), delete: body.mode === 'snapshot' ? [] : body.labels.delete },
+    spots: { upsert: narrow('spots'), delete: body.spots.delete },
+    grains: { upsert: narrow('grains'), delete: [...new Set([...body.grains.delete, ...body.grains.retire])] },
+    labels: { upsert: narrow('labels'), delete: body.labels.delete },
   };
 }
 export class SyncApi {
@@ -91,9 +93,12 @@ export class SyncApi {
       if (r.status === 422) {
         const payload = await r.json();
         const detail = payload.detail;
-        const messages = Array.isArray(detail) ? detail.map((v: unknown) => typeof v === 'string' ? v : v && typeof v === 'object' && 'msg' in v ? String(v.msg) : JSON.stringify(v)) : [String(detail ?? 'Invalid sync request')];
+        const message = (v: unknown) => typeof v === 'string' ? v : v && typeof v === 'object' && 'msg' in v ? String(v.msg) : JSON.stringify(v ?? 'Invalid sync request');
+        const messages = Array.isArray(detail) ? detail.map(message) : [message(detail)];
         const error = new SyncApiError(422, messages);
-        error.bulkConfirmation = /confirm_bulk|bulk|needs.confirmation/i.test(JSON.stringify(payload));
+        error.code = payload.code ?? null;
+        error.missing = payload.missing ?? null;
+        error.bulkConfirmation = error.code !== 'snapshot_incomplete' && !/not_in_snapshot|incomplete.snapshot/i.test(JSON.stringify(payload)) && /confirm_bulk|bulk|needs.confirmation/i.test(JSON.stringify(payload));
         const counts = payload.confirm ?? detail?.confirm;
         if (counts && ['retireGrains', 'grainsTotal', 'deleteSpots', 'spotsTotal'].every(k => Number.isInteger(counts[k]) && counts[k] >= 0) && counts.retireGrains <= counts.grainsTotal && counts.deleteSpots <= counts.spotsTotal) error.confirmation = counts;
         throw error;

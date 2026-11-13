@@ -43,6 +43,23 @@
       {#if session.notice}<dt>Last sync notes</dt><dd data-testid="sync-notes">{session.notice}</dd>{/if}
     </dl>
   </div>
+  {#each KINDS as kind}
+    {@const more = session.databaseUnresolved[kind]}
+    {@const added = session.databaseAdded[kind].filter(e => !more.some(m => m.id === e.id))}
+    {#if more.length || added.length}
+      {#if more.length}<p>The database has {more.length} {kind} this copy does not.</p>{/if}
+      {#if added.length}<p>{added.length} {kind} added from the database.</p>{/if}
+      <p class="faint small">{[...more, ...added].map(e => name(e, e.id)).join(', ')}</p>
+      {#if !app.readOnly}
+        <!-- No bulk delete of elements the user has not looked at: they are kept and named here;
+             one that should go is deleted like any other element, after it has been seen. -->
+        {#if more.length}<button disabled={session.busy} onclick={() => session.keepDatabaseKind(kind)}>Keep them</button>{/if}
+      {/if}
+    {/if}
+    {#if session.databaseContext[kind].length}
+      <p>{kind} kept by the database (not part of this project's copy): {session.databaseContext[kind].join(', ')}.</p>
+    {/if}
+  {/each}
   {#if session.pixelsChanged}<p>Images changed; a new atlas version has not been published.</p>{/if}
   {#if session.syncDisabledReason || session.error}<p>{session.syncDisabledReason || session.error}</p>{/if}
   {#if session.candidates.length && session.state === 'unregistered'}

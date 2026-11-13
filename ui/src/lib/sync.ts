@@ -6,7 +6,8 @@ export type SyncGrain = Pick<Grain, 'id' | 'number' | 'polygon_um' | 'centroid_u
 /** Canonical reads can contain legacy rows without a client identity. Keep them in
  * the base for context; labels can match existing local identities for diffing. */
 export type ReadGrain = Omit<SyncGrain, 'id' | 'split_from'> & { id: string | null; server_id?: string; split_from?: string | string[] | null };
-export interface ReadElements { spots: SyncSpot[]; grains: ReadGrain[]; labels: (Label & { retired?: boolean })[] }
+export interface Ownership { project_uuid?: string | null }
+export interface ReadElements { spots: (SyncSpot & Ownership)[]; grains: (ReadGrain & Ownership)[]; labels: (Label & Ownership & { retired?: boolean })[] }
 export const splitParent = (value: ReadGrain['split_from']): string | undefined => Array.isArray(value) ? value[0] : value || undefined;
 export function identifiedGrains(grains: ReadGrain[]): SyncGrain[] {
   return grains.filter(g => g.id !== null && !g.retired).map(g => ({ ...g, id: g.id!, split_from: splitParent(g.split_from) }));
@@ -20,7 +21,7 @@ export function mapLegacyGrains(elements: ReadElements, local: ReadElements): Re
   }) };
 }
 export function needsFirstSnapshot(server: ReadElements, local: ReadElements): boolean {
-  if (server.grains.some(g => g.id === null)) return true;
+  if (server.grains.some(g => g.id === null && local.grains.some(l => l.id !== null && storedElement('grains', l as SyncGrain).label === g.label))) return true;
   return KINDS.some(k => local[k].some(e => e.id !== null && !server[k].some(s => s.id === e.id)));
 }
 const FIELDS = {
@@ -43,7 +44,7 @@ export function storedElement<K extends Kind>(kind: K, element: Elements[K][numb
   return out as unknown as Elements[K][number];
 }
 export function storedElements(elements: ReadElements): Elements {
-  return { spots: elements.spots.filter(s => s.id != null).map(s => storedElement('spots', s)), grains: identifiedGrains(elements.grains).map(g => storedElement('grains', g)), labels: elements.labels.filter(l => !l.retired).map(l => storedElement('labels', l)) };
+  return { spots: elements.spots.filter(s => s.id != null).map(s => storedElement('spots', s)), grains: identifiedGrains(elements.grains).map(g => storedElement('grains', g)), labels: elements.labels.filter(l => l.id != null && !l.retired).map(l => storedElement('labels', l)) };
 }
 /** Wire and base snapshots use flat grain lists, each with area_id. */
 export interface Elements { spots: SyncSpot[]; grains: SyncGrain[]; labels: Label[] }
@@ -132,6 +133,52 @@ export function diffElements(base: ReadElements, mine: ReadElements): Changes {
   spots.delete = spots.delete.filter(id => !base.spots.some(s => s.id === id && s.acquisition_ids?.length));
   // Every grain removal retires the server grain, even without split/merge lineage.
   return { spots, grains: { upsert: grains.upsert, retire: grains.delete, delete: [] }, labels: diff('labels') };
+}
+/** The elements endpoint can include unowned context. Only this project's
+ * identified rows can be removed; legacy id-null rows wait for adoption. */
+export function projectElements(server: ReadElements, uuid: string): ReadElements {
+  return Object.fromEntries(KINDS.map(k => [k, server[k].filter(e => e.project_uuid === uuid)])) as unknown as ReadElements;
+}
+export function syncChanges(mode: 'snapshot' | 'delta', base: ReadElements, mine: Elements, server: ReadElements, uuid: string, seen: ReadElements = base): Changes {
+  const changes = diffElements(mode === 'snapshot' ? emptyElements() : base, mine);
+  const owned = projectElements(server, uuid);
+  const lastSeen = Object.fromEntries(KINDS.map(k => [k, seen[k].filter(e => owned[k].some(s => s.id === e.id))])) as unknown as ReadElements;
+  const removals = diffElements(lastSeen, mine);
+  changes.spots.delete = removals.spots.delete.filter(id => !server.spots.some(s => s.id === id && s.acquisition_ids?.length));
+  changes.grains.retire = removals.grains.retire;
+  changes.grains.delete = [];
+  changes.labels.delete = removals.labels.delete;
+  return changes;
+}
+/** Missing own rows that were never shown are database additions, not removals. */
+export function databaseAdditions(server: ReadElements, seen: ReadElements, mine: Elements, uuid: string): Elements {
+  const active = storedElements(projectElements(server, uuid));
+  return Object.fromEntries(KINDS.map(k => [k, active[k].filter(e => !seen[k].some(s => s.id === e.id) && !mine[k].some(m => m.id === e.id))])) as unknown as Elements;
+}
+export function keepAdditions(mine: Elements, additions: Elements): Elements {
+  return Object.fromEntries(KINDS.map(k => [k, [...mine[k], ...additions[k].filter(e => !mine[k].some(m => m.id === e.id))]])) as unknown as Elements;
+}
+/** A 200 is provisional until both the response and canonical state agree with
+ * the submitted intent. Unrelated mount omissions are only notices. */
+export function syncIntentFailure(changes: Changes, mine: Elements, server: ReadElements, uuid: string,
+  reply: { revision: number; previous_revision: number; not_in_snapshot: Record<Kind, string[]> }, accepted?: ReadElements): string | null {
+  const current = projectElements(server, uuid);
+  const intended = diffElements(current, mine);
+  const sent = (k: Kind) => new Set([...changes[k].upsert.map(e => e.id), ...changes[k].delete, ...(k === 'grains' ? changes.grains.retire : [])]);
+  const intendedIds = (k: Kind) => [...intended[k].upsert.map(e => e.id), ...intended[k].delete, ...(k === 'grains' ? intended.grains.retire : [])];
+  for (const k of KINDS) {
+    const own = new Set(current[k].map(e => e.id));
+    const changed = new Set(intendedIds(k));
+    const kept = reply.not_in_snapshot[k].filter(id => own.has(id) && sent(k).has(id) && changed.has(id));
+    if (kept.length) return `The database kept ${kept.length} ${kept.length === 1 ? k.slice(0, -1) : k} this sync ${kept.every(id => !mine[k].some(e => e.id === id)) ? 'removed' : 'changed'}`;
+  }
+  const changed = KINDS.some(k => intendedIds(k).some(id => sent(k).has(id)));
+  if (changed && reply.revision <= reply.previous_revision) return 'The database revision did not advance; changes kept here';
+  if (accepted) {
+    const remaining = changeCounts(diffElements(projectElements(accepted, uuid), mine));
+    for (const k of KINDS) if (sent(k).size && remaining[k]) return `The database did not save all ${k}; changes kept here`;
+  }
+  return null;
 }
 /** Current database identities supersede bundle rows, including retirement.
  * Legacy rows have no identity or geometry: keep the bundle until adoption. */

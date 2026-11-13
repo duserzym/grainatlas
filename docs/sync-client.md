@@ -1,6 +1,6 @@
 # Database sync client (B2–B4)
 
-The client follows laicpmsdb B1 at `origin/main` `3f63ee9` and `docs/atlas-
+The client follows laicpmsdb B1, including completeness updates `90555db` and `5f38c3b`, based on `3f63ee9` and `docs/atlas-
 sync.md`: `ui/src/lib/sync-api.ts` owns its URLs, authentication, wire types and
 mappings. The client regression tests use the small fixture and an in-process fake. A live
 scratch database exposed the legacy publish state covered below.
@@ -32,8 +32,8 @@ permission reason. Local edits can still be kept.
 labels, hashes}` for that uuid and project-less elements on its mount. It
 supplies current elements only. A saved older base plus `GET
 /v1/mounts/{id}/changes?since=N` supplies three-way review. Legacy drafts
-without a base use current `/elements` as their initial base and keep their
-local edits. History entries belonging to other project uuids never enter the
+without a base compare against current `/elements`, but lookup never establishes
+a deletion baseline for content the client did not display. History entries belonging to other project uuids never enter the
 project's merge.
 
 These are the narrowed stored fields. Sample is a snapshot hint and does not enter equality:
@@ -74,17 +74,16 @@ Update from database or a chosen merge applies later server changes. Server IDs 
 by adoption remain metadata; they never replace client UUIDs. Acquisition links
 still prevent the unsafe Both choice for a conflicting spot.
 
-Legacy id-null grains, a nonzero grains_without_atlas_id count, or missing
-server coverage on opening require a first snapshot even if an old draft says it
-synced. View and Edit show “Not yet synced · 25 grains, 3 spots” for the fixture.
+Legacy id-null grains matching local labels, or missing server coverage on
+opening, require a first snapshot even if an old draft says it synced. Mount-wide
+legacy counts and unrelated id-null rows do not force repeated snapshots. View and Edit show “Not yet synced · 25 grains, 3 spots” for the fixture.
 All 25 detections are kept and sent: 20 grains and five flagged artifacts (which
 retain number 0 and get stable unique artifact/UUID labels within B1’s
 50-character limit). The first sync sends `mode: "snapshot"` and every local grain,
 spot (including grain_id) and label. Subsequent syncs send `mode: "delta"` with
-only changed elements. Snapshot omissions are preserved by the server and
-reported in `not_in_snapshot`. The client reports omitted IDs, says they were
-kept, and incorporates this project’s kept rows when acknowledging the exact
-written revision. Later server revisions still require an update or merge. Every grain delete
+only changed elements. Removals use the last-seen rule below. A snapshot must
+cover every active identified row of this project, through an upsert or explicit
+delete; omitted foreign and id-less context remains in `not_in_snapshot`. Later server revisions still require an update or merge. Every grain delete
 retires the grain, preserving server identity. Split/merge additions carry
 `split_from` / `merged_from`; every spot on a parent must be reassigned in the
 same request. After an accepted write the client refetches canonical elements,
@@ -93,11 +92,11 @@ revision.
 
 The 200 reply contains `mount_id`, `project_uuid`, `mode`, `previous_revision`,
 `revision`, `applied`, per-kind `ids`, `acquisitions_linked`, `warnings`,
-`rebased_over`, and `not_in_snapshot`. `ids` maps stable client uuids to
+`rebased_over`, `complete`, and `not_in_snapshot`. `ids` maps stable client uuids to
 database server ids; it does not rename the local elements or their references.
 A stale base caused solely by other projects can succeed with numeric
-`rebased_over`. Warnings, omission IDs and rebasing produce a non-blocking
-notice. `acquisitions_linked` is also numeric; `applied` contains per-kind
+`rebased_over`. Warnings and rebasing produce a notice. Own identified omissions
+block acknowledgement; foreign and id-less omissions are context only, as below. `acquisitions_linked` is also numeric; `applied` contains per-kind
 counts.
 
 A 409 reply contains `detail`, `base_revision`, `current_revision` and `changes:
@@ -108,7 +107,7 @@ collisions. Both can duplicate annotations and differently named spots without
 acquisition links. Geometry and deletion/edit conflicts require Mine or Theirs.
 Another concurrent write produces another review. A 422 with detail messages
 keeps the draft and its old base, displays every message in the chip error, and
-stays reachable. It does not auto-retry. Hosted command results use code
+stays reachable. Only `snapshot_incomplete` receives one automatic retry, as below. Hosted command results use code
 `failed` and the first message. Schema detail objects use their msg field.
 
 Deleting a spot with known server acquisition_ids is refused at once with “This
@@ -117,6 +116,51 @@ refresh measurement links even when content hashes are unchanged. Protected
 spots are excluded from delete diffs; an older draft or undo that already
 removed one restores it locally before sync. The server still enforces
 measurement protection when links change between check and write.
+
+## Last-seen removals and completeness
+
+A removal means last-seen minus local, never current server inventory minus local.
+Last-seen is the acknowledged `draft.base`, or the displayed server overlay
+`viewBase` recorded as `draft.base_seen` when Edit begins. A fresh editable file
+also records its displayed elements on open; only matching owned server identities
+can be removed. A clean View entering Edit can establish a base before the first
+client sync. Pending legacy drafts retain their older base and last-seen set.
+A legacy draft with neither base nor base_seen sends no inferred removals.
+Grain removals retire, rather than erase, the server grains. Measurement guards
+and the dry-run bulk confirmation apply to every delete source.
+
+An own active identified server row absent both locally and from last-seen is a
+database addition. The chip says “Database has more” (both-changed), and the drawer
+says “The database has N grains/spots/labels this copy does not”. Keep them pulls
+the batch locally. Delete them… first asks for confirmation naming its count,
+then sends explicit deletes through the normal bulk guard. Selecting one batch
+never establishes deletion intent for another kind.
+
+Before any sync, unresolved database additions are automatically kept: they are
+merged into the local copy and sent unchanged in snapshot upserts. This is the
+chosen conservative policy: keeping existing database content loses no data and
+avoids an incomplete snapshot. The drawer records them as “added from the
+database” in `database_added`, with Keep them and the explicit Delete them…
+actions still available. These displayed additions join last-seen, so a later
+user removal is an ordinary explicit deletion. A base-null legacy copy follows
+the same policy. Only additions may be rebased automatically; changes to existing
+seen elements still require review. Edits made during requests remain pending.
+
+`complete: false` with `not_in_snapshot` containing own identified elements is
+not synced: retain the draft/base, list the left-out elements and their Keep them /
+Delete them… actions, and return hosted `ok: false, code: 'failed'` with the reason.
+Other projects' elements and atlas-id-less legacy rows are listed as “kept by the
+database (not part of this project's copy)” without delete actions. Those context
+rows do not block In sync even when the server returns complete false. A successful
+write is still checked against the submitted intent and a canonical refetch.
+
+A 422 with `code: 'snapshot_incomplete'` has `missing: {spots, grains, labels}`.
+Refetch and rebuild once: missing last-seen identities absent locally go into
+delete lists; unseen identities are kept/pulled into the snapshot. The retry
+previews again and retains the bulk guard. This applies whether the refusal came
+from preview or the write. A second refusal displays the message and stops with
+the draft intact; hosted returns `ok: false, code: 'failed'`. Other 422s carry
+`code: null, missing: null` and do not retry.
 
 ## Hashes
 
@@ -146,7 +190,7 @@ JavaScript number formatter is not a Python float serialization reference.
 ## Storage and readiness
 
 `grainatlas.draft.<uuid>` contains uuid, name, server, mount, base_revision,
-base elements, base_hashes, synced, updated_at, changes, pending, pending_at, source_keys,
+base elements, base_seen, database_added, incomplete, base_hashes, synced, updated_at, changes, pending, pending_at, source_keys,
 linked_uuid, link_offered, link_conflict, link_candidates, pixels_base and pixels_changed.
 `grainatlas.drafts` indexes persisted uuids. Existing records with missing
 optional fields remain readable.
@@ -215,7 +259,9 @@ controls remain available while offline. `/_fake/options` controls can_edit,
 link_conflict, validation_errors and warnings for tests. `/_fake/legacy-grain`
 turns one fixture grain into an id-null database row so adoption is exercised.
 Injected spots may carry acquisition_ids; sync refuses measured deletions.
-The fake implements keep-null fields, explicit spot detachment, unknown sample
+The fake implements `complete`, atomic `snapshot_incomplete` refusals, and
+`/_fake/add-after-copy` to add a spot after a client opened its copy. The adopted
+r2 reset displays 28 active grains for fresh-profile deletion tests. It implements keep-null fields, explicit spot detachment, unknown sample
 warnings, isolated dry runs and the bulk guard. It records previews separately
 at `/_fake/state.dryRuns`; neither preview revisions nor audit rows persist.
 It does not implement full geometry/schema validation, all cross-project

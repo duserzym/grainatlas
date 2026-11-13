@@ -8,7 +8,7 @@
   let choices = $state<Record<string, Resolution>>({});
   let publishImages = $state(true);
   const session = $derived(app.sync);
-  const action = $derived(session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Update from database' : session.state === 'both-changed' ? 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync to database');
+  const action = $derived(session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Update from database' : session.state === 'both-changed' ? session.text === 'Database has more' ? 'Sync to database' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync to database');
   const pillState = $derived(session.confirmation ? 'needs-confirmation' : session.checking ? 'checking' : session.state === 'in-sync' && session.pixelsChanged ? 'local-changes' : session.state);
   const text = $derived(session.text + (app.draftHere === 'unknown' ? ' · Your draft here, base not checked' : app.draftHere !== null ? ` · Your draft here, based on r${app.draftHere}` : ''));
   const title = $derived([text, session.syncedAt ? `Last synced ${new Date(session.syncedAt).toLocaleString()}` : '', session.syncDisabledReason || session.error].filter(Boolean).join(' · '));

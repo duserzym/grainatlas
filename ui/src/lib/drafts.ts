@@ -8,6 +8,11 @@ function changed() { if (typeof window !== 'undefined') window.dispatchEvent(new
 export interface Draft {
   uuid: string; name: string; server: string | null; mount: string | null;
   base_revision: number | null; base: ReadElements | null; updated_at: string; changes: Counts | null;
+  /** Content displayed when Edit began, before a first acknowledged sync. */
+  base_seen?: ReadElements | null;
+  /** Database additions pulled conservatively, retained for the details drawer. */
+  database_added?: Elements;
+  incomplete?: { reason: string; omissions: Record<keyof Elements, string[]> } | null;
   /** Narrowed unsynced elements. Missing fields identify legacy records. */
   pending?: Elements | null; pending_at?: string | null;
   /** Legacy pre-B1 alias. New links always register the local UUID. */
