@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
   import MountPicker from './MountPicker.svelte';
+  import SyncLinkOffer from './SyncLinkOffer.svelte';
   import type { Resolution } from '../lib/sync';
   let dialogElement = $state<HTMLDialogElement>();
   let { detailsOpen = $bindable(false) }: { detailsOpen?: boolean } = $props();
@@ -45,6 +46,7 @@
         <div class="actions"><button onclick={() => session.cancelConfirmation()}>Cancel</button><button class="primary" disabled={session.busy} onclick={() => session.confirmBulk()}>Continue</button></div>
       {:else if session.dialog === 'register'}
         <h2>Register project</h2>
+        <SyncLinkOffer />
         <p>Pick an existing mount. Creating mounts is available in the database.</p>
         <MountPicker value={mount} onchange={id => mount = id} existingOnly />
         {#if session.pixelsChanged}<label class="check"><input type="checkbox" bind:checked={publishImages} /> Publish a new atlas version with these images</label>{/if}

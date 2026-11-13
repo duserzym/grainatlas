@@ -220,6 +220,12 @@ export class SyncSession {
     if (this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.sync(); }
   }
   dismissLink() { this.candidates = []; this.save({ link_offered: true, link_candidates: [] }); }
+  showLink(): string {
+    const mount = this.candidates.length === 1 ? ` to mount ${this.candidates[0].mount_label}` : '';
+    this.error = `${this.app.project?.name || this.draft?.name || 'This project'} is not linked to a database mount yet. Link it${mount} in Images to sync.`;
+    if (!this.syncDisabledReason) this.dialog = 'register';
+    return this.error;
+  }
   async link(candidate: Candidate) {
     if (this.busy || !this.app.project || this.app.readOnly || !candidate.can_edit) return;
     const identity = this.identity;
@@ -360,7 +366,8 @@ export class SyncSession {
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
   async sync(publishPixels = false, shellCommand = false, approved?: HeldSync) {
     if (this.busy) await this.settled();
-    if (this.busy || !this.ready || !this.app.project || !this.draft?.mount || this.app.readOnly || this.syncDisabledReason) return;
+    if (this.busy || !this.ready || !this.app.project || this.app.readOnly || this.syncDisabledReason) return;
+    if (!this.draft?.mount) { this.showLink(); return; }
     // Old drafts or undo can bypass the canvas guard. Restore protected spots
     // locally too, rather than acknowledging a silent hide as a deletion.
     const missing = [...this.serverSpots, ...(this.draft.base?.spots ?? [])].filter(s => s.acquisition_ids?.length && !this.app.spots.some(local => local.id === s.id));
