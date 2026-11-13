@@ -1,7 +1,7 @@
 import type { AtlasMode, AtlasResultCode, CommandResult } from '@lab/bridge';
 import { hostedSync, ATLAS_EVENTS, type AtlasCommand } from './hosted-sync';
 import { current, tabs, type AppState } from './store.svelte';
-import { deleteDraft, draftElements, listDrafts, readDraft, storedDraftProject, writeDraft } from './drafts';
+import { deleteDraft, draftElements, hasPendingChanges, listDrafts, readDraft, storedDraftProject, writeDraft } from './drafts';
 import { emptyElements, groupedGrains, uiSpots } from './sync';
 import { editCopy, openFromServer } from './remote';
 import type { Project } from './core/types';
@@ -97,9 +97,9 @@ export async function undoDiscard(app: AppState) {
 async function draftTab(uuid: string): Promise<AppState | null> {
   const open = tabs.list.find(t => t.project?.uuid === uuid);
   if (open) { tabs.select(open.id); await setMode(open, 'edit'); return open; }
-  const draft = readDraft(uuid) ?? listDrafts(current().server).find(d => d.uuid === uuid);
+  const draft = listDrafts(current().server).find(d => d.uuid === uuid) ?? readDraft(uuid);
   if (!draft) return null;
-  const elements = draftElements(draft) ?? draft.base;
+  const elements = draftElements(draft) ?? draft.base ?? (!draft.mount ? emptyElements() : null);
   if (!elements) throw new Error('Open the project file to recover this draft.');
   const tab = tabs.add(), server = draft.server ?? tab.server;
   if (!server) throw new Error('Set the database server in Settings.');
@@ -152,8 +152,20 @@ export async function runHostedCommand(cmd: AtlasCommand): Promise<Partial<Comma
     return result(app);
   }
   if (cmd.type === 'sync-draft') {
+    if (!app) {
+      const draft = listDrafts(current().server).find(d => d.uuid === cmd.project);
+      if (draft && !hasPendingChanges(draft)) {
+        current().notice = 'No changes to sync';
+        return { ok: true, mount: draft.mount, revision: draft.base_revision };
+      }
+    }
     app = await draftTab(cmd.project) ?? undefined;
     if (!app) return fail('not-found', 'No draft for that project is kept here.');
+    if (!app.sync.draft?.mount) {
+      const error = app.sync.showLink();
+      reportHostedStatus(app, true);
+      return fail('failed', error);
+    }
     await app.sync.sync(false, true);
     reportHostedStatus(app, true);
     return app.sync.confirmation || app.sync.validationFailed || app.sync.unsynced || app.sync.dialog === 'review' || app.sync.reachable !== true ? failure(app) : result(app);

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, tabs } from '../lib/store.svelte';
-  import { DRAFTS_CHANGED, draftElements, listDrafts, pendingElements, storedDraftProject, writeDraft, deleteDraft, deleteDraftCopies, type Draft } from '../lib/drafts';
+  import { DRAFTS_CHANGED, draftElements, hasPendingChanges, listDrafts, pendingElements, storedDraftProject, writeDraft, deleteDraft, deleteDraftCopies, type Draft } from '../lib/drafts';
   import { changeCounts, describeChanges, diffElements, emptyElements, groupedGrains, hasChanges, uiSpots } from '../lib/sync';
   import type { Project } from '../lib/core/types';
   import { SyncApi } from '../lib/sync-api';
@@ -11,7 +11,7 @@
   let busy = $state<string | null>(null);
   let note = $state('');
   onMount(() => {
-    const refresh = () => { drafts = listDrafts(app.server).filter(d => d.changes === null || hasChanges(d.changes) || d.pixels_changed); };
+    const refresh = () => { drafts = listDrafts(app.server).filter(d => hasPendingChanges(d)); };
     refresh(); window.addEventListener(DRAFTS_CHANGED, refresh);
     return () => window.removeEventListener(DRAFTS_CHANGED, refresh);
   });
@@ -31,7 +31,7 @@
       const pending = !draft.base || !status || hasChanges(changes) ? pendingElements(elements) : null;
       const updated = { ...draft, server, mount: status?.mount_id ?? draft.mount, base: draft.base, base_revision: draft.base_revision ?? theirs?.revision ?? null, base_hashes: draft.base_hashes ?? null, synced: draft.synced ?? false, changes, pending, pending_at: pending ? draft.pending_at ?? draft.updated_at : null };
       writeDraft(updated);
-      drafts = drafts.map(d => d.uuid === draft.uuid ? updated : d).filter(d => d.changes === null || hasChanges(d.changes) || d.pixels_changed);
+      drafts = drafts.map(d => d.uuid === draft.uuid ? updated : d).filter(d => hasPendingChanges(d));
       if (!hasChanges(updated.changes)) note = `${draft.name}: no element changes waiting to sync.`;
     } catch (e) { note = `${draft.name}: ${e instanceof Error ? e.message : e}. Changes kept here.`; }
     finally { busy = null; }

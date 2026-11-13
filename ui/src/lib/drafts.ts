@@ -1,5 +1,5 @@
 import type { Project } from './core/types.ts';
-import { diffElements, elementsOf, emptyElements, type Counts, type Elements, type ReadElements } from './sync.ts';
+import { diffElements, elementsOf, emptyElements, hasChanges, type Counts, type Elements, type ReadElements } from './sync.ts';
 export const DRAFT_PREFIX = 'grainatlas.draft.';
 export const DRAFT_INDEX = 'grainatlas.drafts';
 const DISCARDED = 'grainatlas.discarded-drafts';
@@ -109,6 +109,13 @@ export function draftElements(draft: Draft, storage?: DraftStorage): Elements | 
   if (draft.pending !== undefined) return draft.pending;
   const project = storedDraftProject(draft, storage);
   return project ? elementsOf(project) : null;
+}
+/** Pending-list eligibility is read-only; unlinked copies remain available for linking. */
+export function hasPendingChanges(draft: Draft, storage?: DraftStorage): boolean {
+  if (draft.pixels_changed || hasChanges(draft.changes)) return true;
+  const elements = draftElements(draft, storage);
+  if (elements && (elements.spots.length || elements.grains.length || elements.labels.length)) return true;
+  return !draft.mount && (!!draft.link_candidates?.length || !!storedDraftProject(draft, storage));
 }
 /** Only call after the separate, explicit stored-copy deletion confirmation. */
 export function deleteDraftCopies(draft: Draft, storage?: DraftStorage): void {
