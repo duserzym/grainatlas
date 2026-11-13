@@ -38,15 +38,19 @@ export class SyncSession {
   notice = $state('');
   private intentFailure = $state('');
   omissions = $state.raw<Record<Kind, string[]>>({ spots: [], grains: [], labels: [] });
-  private get lastSeen(): ReadElements { return Object.fromEntries(KINDS.map(k => [k, [...(this.draft?.base ?? this.draft?.base_seen ?? emptyElements())[k], ...(this.draft?.database_added ?? emptyElements())[k]]])) as unknown as ReadElements; }
-  get databaseMore(): Elements { return databaseAdditions(this.serverElements ?? emptyElements(), this.lastSeen, this.elements, this.status?.project_uuid ?? this.app.project?.uuid ?? ''); }
-  get databaseUnresolved(): Elements {
+  private cachedLastSeen = $derived.by<ReadElements>(() => Object.fromEntries(KINDS.map(k => [k, [...(this.draft?.base ?? this.draft?.base_seen ?? emptyElements())[k], ...(this.draft?.database_added ?? emptyElements())[k]]])) as unknown as ReadElements);
+  private get lastSeen(): ReadElements { return this.cachedLastSeen; }
+  private cachedDatabaseMore = $derived.by(() => databaseAdditions(this.serverElements ?? emptyElements(), this.lastSeen, this.elements, this.status?.project_uuid ?? this.app.project?.uuid ?? ''));
+  get databaseMore(): Elements { return this.cachedDatabaseMore; }
+  private cachedDatabaseUnresolved = $derived.by(() => {
     const own = storedElements(projectElements(this.serverElements ?? emptyElements(), this.status?.project_uuid ?? this.app.project?.uuid ?? ''));
     return keepAdditions(this.databaseMore, Object.fromEntries(KINDS.map(k => [k, own[k].filter(e => this.omissions[k].includes(e.id))])) as unknown as Elements);
-  }
-  get databaseContext(): Record<Kind, string[]> {
+  });
+  get databaseUnresolved(): Elements { return this.cachedDatabaseUnresolved; }
+  private cachedDatabaseContext = $derived.by(() => {
     return Object.fromEntries(KINDS.map(k => [k, this.omissions[k].filter(id => !this.databaseUnresolved[k].some(e => e.id === id))])) as Record<Kind, string[]>;
-  }
+  });
+  get databaseContext(): Record<Kind, string[]> { return this.cachedDatabaseContext; }
   get databaseAdded(): Elements { return this.draft?.database_added ?? emptyElements(); }
   private keepDatabase(additions: Elements) {
     if (!KINDS.some(k => additions[k].length)) return;
@@ -63,6 +67,7 @@ export class SyncSession {
     this.status = status;
   }
   private snapshotNeeded = $state(false);
+  private checkedElements: { identity: string; projectUuid: string; fetchedAt: number; elements: ReadElements } | null = null;
   private serverElements = $state.raw<ReadElements | null>(null);
   private serverSpots = $state.raw<Elements['spots']>([]);
   get syncDisabledReason(): string { return this.draft?.link_conflict ? 'This project is linked to another mount' : this.status?.can_edit === false ? 'Read-only access: you do not have permission to sync this mount.' : ''; }
@@ -84,7 +89,8 @@ export class SyncSession {
   private get ready() { return !!this.app.project && !this.app.loadingProject && !this.app.storedCopy; }
   private isCurrent(identity: string) { return this.ready && this.identity === identity; }
   constructor(app: AppState) { this.app = app; }
-  get elements(): Elements { return { spots: this.app.spots, labels: this.app.labels, grains: Object.entries(this.app.grains).flatMap(([area_id, grains]) => grains.map(g => ({ ...g, area_id, sample: g.sample !== undefined ? g.sample : this.app.project?.areas.find(a => a.id === area_id)?.sample ?? null }))) }; }
+  private cachedElements = $derived.by<Elements>(() => ({ spots: this.app.spots, labels: this.app.labels, grains: Object.entries(this.app.grains).flatMap(([area_id, grains]) => grains.map(g => ({ ...g, area_id, sample: g.sample !== undefined ? g.sample : this.app.project?.areas.find(a => a.id === area_id)?.sample ?? null }))) }));
+  get elements(): Elements { return this.cachedElements; }
   get firstSync(): boolean {
     const server = this.serverElements ?? this.draft?.base;
     // Decided from the server's state (at open/check and after a sync), never from later local edits:
@@ -92,15 +98,18 @@ export class SyncSession {
     return !!server && this.snapshotNeeded;
   }
   get baseRevision() { return this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null; }
-  get localChanges() {
+  private cachedLocalChanges = $derived.by(() => {
     const base = this.firstSync ? emptyElements() : (this.app.readOnly || this.app.draftHere != null ? this.serverElements : this.draft?.base ?? this.draft?.base_seen ?? this.serverElements) ?? this.viewBase ?? emptyElements();
     return diffElements(base, this.elements);
-  }
-  get databaseChanges() {
+  });
+  get localChanges() { return this.cachedLocalChanges; }
+  private cachedDatabaseChanges = $derived.by(() => {
     const base = this.draft?.base ?? this.viewBase;
     return base && this.serverElements ? diffElements(base, this.serverElements) : null;
-  }
-  get counts() { return changeCounts(this.localChanges); }
+  });
+  get databaseChanges() { return this.cachedDatabaseChanges; }
+  private cachedCounts = $derived.by(() => changeCounts(this.localChanges));
+  get counts() { return this.cachedCounts; }
   get canSyncOnSave(): boolean {
     return this.ready && !this.app.readOnly && this.app.link.syncOnSave && this.registered === true && this.reachable === true && this.status?.can_edit === true;
   }
@@ -167,6 +176,7 @@ export class SyncSession {
       writeDraft(this.draft); // ready open adopts even when the subsequent lookup is offline
       this.registered = undefined; this.status = null; this.reachable = null; this.review = null; this.dialog = null; this.syncedAt = this.draft.synced_at ?? null; this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverHashes = null; this.elementsRevision = null; this.serverSpots = []; this.serverElements = null; this.snapshotNeeded = false; this.notice = ''; this.intentFailure = this.draft.incomplete?.reason ?? ''; this.omissions = this.draft.incomplete?.omissions ?? { spots: [], grains: [], labels: [] }; this.candidates = this.draft.link_candidates ?? [];
     }
+    this.checkedElements = null;
     this.track(false);
     this.busy = true; this.checking = true;
     try {
@@ -191,6 +201,7 @@ export class SyncSession {
       this.save({ server: this.app.remote?.server ?? this.app.server ?? this.draft?.server, mount: status.mount_id, link_conflict: false, synced: this.draft?.synced ?? false });
       const theirs = await api.elements(status.project_uuid);
       if (!this.isCurrent(identity)) return;
+      this.checkedElements = { identity, projectUuid: status.project_uuid, fetchedAt: Date.now(), elements: theirs };
       if (!this.serverElements) this.snapshotNeeded = needsFirstSnapshot(theirs, this.elements);
       this.serverElements = theirs; this.serverSpots = theirs.spots; this.serverHashes = theirs.hashes; this.elementsRevision = theirs.revision;
       if (this.app.readOnly && this.viewRevision === null) {
@@ -255,7 +266,7 @@ export class SyncSession {
     if (this.elementsRevision === revision && this.serverElements) this.viewBase = this.serverElements;
     else if (this.draft?.base_revision === revision && this.draft.base) this.viewBase = this.draft.base;
   }
-  openedView() { this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverElements = null; }
+  openedView() { this.checkedElements = null; this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverElements = null; }
   forgetDraft() {
     this.confirmation = null; this.heldSync = null; this.dialog = null;
     this.suppressDraft = true;
@@ -381,6 +392,8 @@ export class SyncSession {
     const identity = this.identity;
     const draft = this.draft;
     const projectUuid = draft.linked_uuid ?? this.app.project.uuid;
+    const checked = this.checkedElements;
+    this.checkedElements = null; // A check result can only seed the next sync, never a retry or approval.
     let mine = approved?.mine ?? clone(this.elements);
     let retryMissing: Record<Kind, string[]> | null = null;
     try {
@@ -388,7 +401,8 @@ export class SyncSession {
       if (!this.isCurrent(identity)) return;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const current = this.registered ? await api.elements(projectUuid) : this.serverElements ?? draft.base ?? emptyElements();
+          const reuseChecked = !approved && attempt === 0 && checked?.identity === identity && checked.projectUuid === projectUuid && Date.now() - checked.fetchedAt < 2000;
+          const current = this.registered ? (reuseChecked ? checked.elements : await api.elements(projectUuid)) : this.serverElements ?? draft.base ?? emptyElements();
           if (!this.isCurrent(identity)) return;
           this.serverElements = current;
           const additions = databaseAdditions(current, this.lastSeen, mine, projectUuid);
@@ -417,22 +431,32 @@ export class SyncSession {
             spotsTotal: this.status?.counts.spots ?? current.spots.length,
           };
           let bulk = counts.retireGrains > Math.max(3, counts.grainsTotal * .1) || counts.deleteSpots > Math.max(3, counts.spotsTotal * .1);
-          let preview;
-          try { preview = await api.sync(draft.mount!, { ...body, dry_run: true }); }
-          catch (e) {
-            if (!(e instanceof SyncApiError) || !e.bulkConfirmation) throw e;
-            bulk = true; Object.assign(counts, e.confirmation);
+          if (bulk || approved) {
+            let preview;
+            try { preview = await api.sync(draft.mount!, { ...body, dry_run: true }); }
+            catch (e) {
+              if (!(e instanceof SyncApiError) || !e.bulkConfirmation) throw e;
+              bulk = true; Object.assign(counts, e.confirmation);
+            }
+            if (!this.isCurrent(identity)) return;
+            if (preview && !preview.ok) { this.openReview(applyChanges(draft.base ?? emptyElements(), changesFromEvents(preview.changes, projectUuid)), preview.current_revision); return; }
           }
-          if (!this.isCurrent(identity)) return;
-          if (preview && !preview.ok) { this.openReview(applyChanges(draft.base ?? emptyElements(), changesFromEvents(preview.changes, projectUuid)), preview.current_revision); return; }
-          if (bulk && (!approved || JSON.stringify(approved.counts) !== JSON.stringify(counts))) {
+          const hold = () => {
             this.heldSync = { identity, mine, body, publishPixels, counts }; this.confirmation = counts;
             this.dialog = shellCommand ? null : 'bulk'; this.pendingSync = false;
             this.error = ''; this.failureMessage = ''; this.validationFailed = false;
-            return;
+          };
+          if (bulk && (!approved || JSON.stringify(approved.counts) !== JSON.stringify(counts))) {
+            hold(); return;
           }
           this.confirmation = null; this.heldSync = null;
-          const reply = await api.sync(draft.mount!, { ...body, ...(approved ? { confirm_bulk: true } : {}) });
+          let reply;
+          try { reply = await api.sync(draft.mount!, { ...body, ...(approved ? { confirm_bulk: true } : {}) }); }
+          catch (e) {
+            if (!(e instanceof SyncApiError) || !e.bulkConfirmation) throw e;
+            if (this.isCurrent(identity)) { Object.assign(counts, e.confirmation); hold(); }
+            return;
+          }
           if (!this.isCurrent(identity)) {
             // A different project opened during the POST. Never put the old response in its tab.
             // Leave the old draft conservative for a fresh check; its persisted content is intact.
@@ -529,7 +553,7 @@ export class SyncSession {
           if (!this.isCurrent(identity)) return;
           this.serverElements = latest;
           // Rebuild from the same recorded intent. New rows are pulled; seen removals
-          // become delete lists. The next pass still previews and applies the bulk guard.
+          // become delete lists. The next pass still applies the bulk guard.
           const additions = databaseAdditions(latest, this.lastSeen, mine, projectUuid);
           this.keepDatabase(additions);
           mine = keepAdditions(mine, additions);
