@@ -154,11 +154,19 @@ waiting for its name and an example file).
 
 ```bash
 make setup        # Rust stable + wasm target, wasm-bindgen-cli, UI dependencies, Playwright browser
-make test         # core tests, wasm/native parity of the fixture mosaic, Playwright tests
+make quick        # checks selected from staged, unstaged and untracked changes
+make full         # complete check, including all browser tests and the desktop shell
 make ui-build     # static page in ui/dist (serve it from any static server)
 make ui-dev       # dev server on http://localhost:5174
 make desktop-dev  # desktop app (Tauri 2) on this machine
 ```
+
+Run `make quick` on every change. Use `BASE=HEAD~1 make quick` to include the
+last commit. Run `make full` once before an install or build, and for any change
+to sync, storage, saved-file formats, print layout or anything touching registered
+data. `make test` keeps the core, unit, parity and browser checks; full also checks
+types and desktop compilation. See [test tiers](docs/test-tiers.md)
+for selection rules and measurements.
 
 Development desktop builds use the separate `dev` browser storage profile by default.
 Test bundles must be launched with `GRAINATLAS_PROFILE=test` or `--profile test`; named profiles keep localStorage separate and show their name in the window title (on macOS, separate stores require macOS 14 or later).

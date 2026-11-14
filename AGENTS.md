@@ -33,16 +33,28 @@ audits every diff, runs the browser and app checks and makes the commits.
 ```bash
 make bridge                 # builds ../upbstudio/bridge/dist once (@lab/bridge)
 make wasm                   # wasm core into ui/src/lib/core/pkg
+make quick                  # changed-file checks, BASE=HEAD~1 for the last commit
+make full                   # complete check, including types and desktop compilation
 cd ui && pnpm check         # svelte-check
 make unit                   # node --test ui/unit/*.test.ts
 cd ui && pnpm build         # static build in ui/dist
-cargo check -p grainatlas-desktop   # the Tauri shell compiles
+make desktop-check          # generates icons and checks the Tauri shell
 ```
 
 Playwright (`make e2e`, `ui/tests/*.spec.ts`) needs browsers and the preview
 server; write or update the spec files when the brief asks, and run them if
 `pnpm exec playwright test <file>` works on this machine. You cannot run the
 desktop app; the supervisor does.
+
+## Check tiers
+
+Run `make quick` on every change. It compares HEAD with staged, unstaged and
+untracked files; use `BASE=HEAD~1 make quick` to include the last commit.
+Run `make full` once before an install or build, and for any change to sync,
+storage, saved-file formats, print layout or anything touching registered data.
+Full includes Svelte checks, unit tests, core and CLI tests, native/wasm parity,
+every Playwright test and desktop-check. Quick prints its selection; docs-only
+changes need no checks. See `docs/test-tiers.md` for the selection rules.
 
 ## Style
 

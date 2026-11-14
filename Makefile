@@ -1,10 +1,11 @@
-# grainatlas tasks. `make setup && make test` from a clean clone.
+# grainatlas tasks. `make setup && make full` from a clean clone.
 SHELL := /bin/bash
 WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>/dev/null | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
 WASM_OUT := ui/src/lib/core/pkg
 
 .PHONY: setup bridge core-test unit wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture screenshots site
 .PHONY: updater-setup check-version
+.PHONY: quick full check desktop-check cli-release scripts-test
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upblab/bridge".
@@ -56,6 +57,12 @@ desktop-dev: ui-build icons
 desktop-build: ui-build icons
 	cd tauri && cargo tauri build
 
+desktop-check: icons
+	cargo check -p grainatlas-desktop
+
+check: wasm
+	cd ui && pnpm check
+
 updater-setup:
 	node scripts/setup-updater.mjs
 
@@ -63,26 +70,45 @@ check-version:
 	@node scripts/check-version.mjs
 
 # Native and wasm builds must hash the fixture mosaic identically.
-parity: wasm
-	cargo run --release -q -p grainatlas-cli -- hash tests/fixtures/tm4000/Sweden_XS_150X > target/native.hash
+cli-release:
+	cargo build --release -q -p grainatlas-cli
+
+parity: wasm cli-release
+	target/release/grainatlas hash tests/fixtures/tm4000/Sweden_XS_150X > target/native.hash
 	node ui/scripts/wasm-hash.mjs tests/fixtures/tm4000/Sweden_XS_150X > target/wasm.hash
 	diff target/native.hash target/wasm.hash && echo "parity ok: $$(cat target/native.hash)"
 
 # The fixture's atlas bundle (fixed ids, three spots, linked to a mount), served by the fake
 # laicpmsdb of `pnpm preview` for the open-from-server and results tests.
 ATLAS_FIXTURE_ID := 01972c4e-0000-7000-8000-00000000a7a5
-atlas-fixture:
-	cargo run --release -q -p grainatlas-cli -- atlas tests/fixtures/tm4000/Sweden_XS_150X --out target/atlas-fixture \
+atlas-fixture: cli-release
+	target/release/grainatlas atlas tests/fixtures/tm4000/Sweden_XS_150X --out target/atlas-fixture \
 		--project-id $(ATLAS_FIXTURE_ID) --mount-id 01972c4e-0000-7000-8000-0000000000b1 --demo-spots 3 --exported 2026-11-03T00:00:00Z
 
 e2e: ui-build atlas-fixture
 	cd ui && pnpm exec playwright test
 
 # Browser-free UI unit tests (Node's runner strips the TypeScript types).
-unit:
+unit: atlas-fixture
 	cd ui && node --test 'unit/*.test.ts'
 
-test: core-test unit parity e2e
+# Non-browser checks run as parallel Make jobs, sharing one wasm, release CLI, atlas fixture
+# and web build; Playwright then runs alone (its 10 workers use the cores, and CPU load from
+# cargo running beside it makes timing-sensitive specs flaky).
+scripts-test:
+	node --test scripts/quick-check.test.mjs
+
+full:
+	+$(MAKE) -j4 check unit core-test scripts-test parity desktop-check ui-build atlas-fixture
+	cd ui && pnpm exec playwright test
+
+# CI entry point: like full without svelte-check and desktop-check (no Tauri system libraries).
+test:
+	+$(MAKE) -j4 unit core-test scripts-test parity ui-build atlas-fixture
+	cd ui && pnpm exec playwright test
+
+quick:
+	@bash scripts/quick-check.sh
 
 # Static web build for UPb Studio's modules.lock.json, index.html at the top of
 # the archive. COPYFILE_DISABLE keeps macOS metadata files (._*) out of it.
