@@ -341,7 +341,9 @@
           if (opened[0]) tabs.select(opened[0].id);
         }
       };
-      void import('@tauri-apps/api/event').then(({ listen }) => listen('grainatlas://opened', () => void takeOpened()).then((f) => undo.push(f)));
+      // Drain once now and again once the listener is in place: an OS open that lands between the
+      // two (at launch, macOS sends the paths as an Apple event, never in argv) stays queued in the shell.
+      void import('@tauri-apps/api/event').then(({ listen }) => listen('grainatlas://opened', () => void takeOpened()).then((f) => { undo.push(f); void takeOpened(); }));
       void takeOpened();
       void (async () => {
         const { listen } = await import('@tauri-apps/api/event');
