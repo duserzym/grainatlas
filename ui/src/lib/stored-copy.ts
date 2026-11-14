@@ -30,13 +30,21 @@ function canonical(value: unknown): string {
     ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
 }
 
-/** Only a copy of this UUID at this path can be offered over a project file. */
+/** Prefer this path's copy; an absent copy falls back to the package-name key. */
 export function newerStoredCopy(file: Project, path: string, modifiedMs: number, storage?: CopyStorage): StoredCopy | null {
   try {
-    const scoped = (storage ?? appStorage).getItem(storedCopyKey(file.uuid, path));
-    if (!scoped) return null;
-    const copy = JSON.parse(scoped) as StoredCopy;
-    if (copy.path !== path) return null;
+    const target = storage ?? appStorage;
+    const scoped = target.getItem(storedCopyKey(file.uuid, path));
+    let copy: StoredCopy;
+    if (scoped) {
+      copy = JSON.parse(scoped) as StoredCopy;
+      if (copy.path !== path) return null;
+    } else {
+      const legacy = target.getItem(PROJECT_PREFIX + file.package.name);
+      if (!legacy) return null;
+      const recent = JSON.parse(target.getItem(RECENT_KEY) || '[]') as ReturnType<typeof readRecent>;
+      copy = { project: JSON.parse(legacy) as Project, path, saved_at: recent.find(r => r.name === file.package.name && !r.path)?.when ?? '', ready: false };
+    }
     if (copy.project.uuid !== file.uuid || !copy.saved_at || !Number.isFinite(modifiedMs)) return null;
     const savedMs = Date.parse(copy.saved_at);
     if (!Number.isFinite(savedMs) || savedMs <= modifiedMs) return null;
