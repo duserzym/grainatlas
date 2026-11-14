@@ -52,6 +52,7 @@
   ];
 
   $effect(() => { if (isHosted()) reportHostedStatus(app); });
+  $effect(() => { if (app.project?.uuid) appStorage.reportAvailability(app); });
 
   const menuCollapsed = $derived(app.screen === 'canvas' && app.layout.menuCollapsed);
   function toggleMenu() {

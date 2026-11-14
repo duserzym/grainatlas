@@ -54,6 +54,7 @@ mod memory;
 mod profile;
 mod recent;
 mod project_save;
+mod store;
 mod updater;
 use tauri_plugin_dialog::DialogExt;
 
@@ -923,6 +924,10 @@ pub fn run() {
         .manage(AppState::default())
         .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            store::store_list,
+            store::store_read,
+            store::store_write,
+            store::store_remove,
             atlas_launch_ready,
             enable_quit_guard,
             finish_quit,

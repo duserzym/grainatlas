@@ -102,7 +102,7 @@
   </div>
   <div class="glass panel">
     <h2>Appearance and layout</h2>
-    <p class="faint small" data-testid="app-storage-size">{storageText}</p>
+    <p class="faint small" data-testid="app-storage-size" style="overflow-wrap: anywhere">{storageText}</p>
     <div class="field">Theme <ThemeSwitch labels /></div>
     <div class="openrow">
       <p class="faint small grow">Panel positions and folded panels are remembered on this computer{app.hosted ? '' : ', and the desktop app remembers its window'}. Reset puts everything back where it starts.</p>

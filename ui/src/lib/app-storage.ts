@@ -1,3 +1,4 @@
+import { desktopFileCommands, FileStorage, type FileCommands } from './file-storage.ts';
 import { canWrite, presentation } from './presentation.ts';
 import { reportStorageWrite } from './storage-failure.ts';
 
@@ -9,6 +10,7 @@ interface Options {
   indexedDB?: () => IDBFactory | undefined;
   localStorage?: () => Legacy;
   storageManager?: () => StorageManager | undefined;
+  fileCommands?: () => Promise<FileCommands | null>;
 }
 
 /** Synchronous write-ahead copies in localStorage, kept only until IndexedDB commits the write
@@ -65,9 +67,15 @@ export class AppStorage {
   private legacy: () => Legacy;
   private factory: () => IDBFactory | undefined;
   private manager: () => StorageManager | undefined;
+  private commands: () => Promise<FileCommands | null>;
+  private files: FileStorage | null = null;
+  private desktop = false;
+  private fileFailure = false;
+  private folder: string | null = null;
   persistenceGranted = false;
 
   constructor(options: Options = {}) {
+    this.commands = options.fileCommands ?? desktopFileCommands;
     this.legacy = options.localStorage ?? (() => globalThis.localStorage);
     this.factory = options.indexedDB ?? (() => globalThis.indexedDB);
     this.manager = options.storageManager ?? (() => globalThis.navigator?.storage);
@@ -80,6 +88,10 @@ export class AppStorage {
     this.permission ??= (async () => {
       try { return this.persistenceGranted = await this.manager()?.persist?.() ?? false; } catch { return false; }
     })();
+    let commands: FileCommands | null = null;
+    try { commands = await this.commands(); }
+    catch { this.fileFailure = true; this.desktop = true; }
+    this.desktop ||= commands !== null;
     const legacy = new Map<string, string>();
     try {
       const storage = this.legacy();
@@ -92,9 +104,10 @@ export class AppStorage {
       }
     } catch { /* unavailable legacy storage must not block IndexedDB */ }
     for (const [key, value] of legacy) { this.values.set(key, value); this.fallback.add(key); }
+    let scannedIDB = false;
     try {
       const factory = this.factory();
-      if (!factory) return;
+      if (!factory) throw new Error('IndexedDB unavailable');
       const opening = factory.open('grainatlas', 1);
       opening.onupgradeneeded = () => {
         for (const name of ['items', 'migrated']) if (!opening.result.objectStoreNames.contains(name)) opening.result.createObjectStore(name);
@@ -122,8 +135,9 @@ export class AppStorage {
           this.idbKeys.add(key);
         }
       });
+      scannedIDB = true;
       for (const [key, value] of legacy) {
-        if (!this.fallback.has(key)) continue;
+        if (this.desktop || !this.fallback.has(key)) continue;
         try {
           const carried = await this.carryOver(key, value);
           if (carried === null) this.values.delete(key); else this.values.set(key, carried);
@@ -132,6 +146,20 @@ export class AppStorage {
         } catch { /* retain the identical legacy value until verified */ }
       }
     } catch { this.db?.close(); this.db = null; }
+    if (commands) {
+      try {
+        const files = new FileStorage(commands);
+        const sources = new Map<string, string | null>(this.values);
+        for (const key of this.idbKeys) if (!sources.has(key)) sources.set(key, null);
+        const loaded = await files.load(sources, isAppStorageKey, scannedIDB ? this.idbKeys : new Set());
+        for (const [key, value] of loaded.values) {
+          if (value === null) this.values.delete(key); else this.values.set(key, value);
+          this.fallback.delete(key);
+        }
+        this.files = files;
+        this.folder = loaded.path;
+      } catch { this.fileFailure = true; }
+    }
     this.replayJournal();
   }
   /** A journal entry exists only if its IndexedDB write never committed: it is the newest value. */
@@ -220,6 +248,12 @@ export class AppStorage {
   private enqueue(key: string, value: string | null, journal: string | null = null): void {
     const job = this.queue.then(async () => {
       try {
+        if (this.files) {
+          await this.files.write(key, value);
+          this.fallback.delete(key);
+          this.clearJournal(key, journal);
+          return true;
+        }
         if (!this.db) {
           if (this.idbKeys.has(key)) throw new Error('IndexedDB unavailable');
           const legacy = this.legacy();
@@ -229,8 +263,8 @@ export class AppStorage {
           if (value === null || (original !== null && original !== value)) throw new Error('IndexedDB unavailable');
           if (original === null) legacy.setItem(key, value);
           this.fallback.add(key);
-          this.clearJournal(key, journal);
-          return true;
+          if (!this.desktop) this.clearJournal(key, journal);
+          return !this.fileFailure;
         }
         // A previously unverified legacy key still needs its audit record before
         // any new value may replace it in IndexedDB. Never mutate localStorage.
@@ -251,8 +285,8 @@ export class AppStorage {
         });
         this.fallback.delete(key);
         this.idbKeys.add(key);
-        this.clearJournal(key, journal);
-        return true;
+        if (!this.desktop) this.clearJournal(key, journal);
+        return !this.fileFailure;
       } catch { return false; }
     });
     this.queue = job;
@@ -281,7 +315,7 @@ export class AppStorage {
   }
   private collectTracked(app: Owner, kind: Write, write: () => boolean) {
     const uuid = app.project?.uuid;
-    const report = (ok: boolean) => { if (app.project?.uuid === uuid) reportStorageWrite(app, kind, ok); };
+    const report = (ok: boolean) => { if (app.project?.uuid === uuid) reportStorageWrite(app, kind, ok && !this.fileFailure); };
     const collected = this.collect(write);
     if (!collected.result || !collected.queued) report(collected.result);
     if (collected.queued) void collected.durable.then(report);
@@ -291,7 +325,11 @@ export class AppStorage {
   commit(write: () => boolean): Promise<boolean> {
     return this.collect(write).durable;
   }
+  reportAvailability(app: Owner): void {
+    if (this.fileFailure) reportStorageWrite(app, 'project', false);
+  }
   async usageText(): Promise<string> {
+    if (this.folder) return `Saved projects: ${this.folder}`;
     await this.permission;
     let usage = [...this.values].reduce((total, [key, value]) => total + key.length + value.length, 0) * 2;
     let available: number | undefined;
