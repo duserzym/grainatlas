@@ -46,7 +46,7 @@ export async function setMode(app: AppState, mode: AtlasMode, own = false) {
     } else {
       app.sync.track(false);
       // The shell already asked; preserve its draft before switching to View.
-      if (app.sync.unsynced && (!app.sync.draft || !appStorage.track(app, 'draft', () => writeDraft(app.sync.draft!)))) throw new Error('Could not keep the draft on this computer.');
+      if (app.sync.unsynced && (!app.sync.draft || !(await appStorage.trackDurable(app, 'draft', () => writeDraft(app.sync.draft!))))) throw new Error('Could not keep the draft on this computer.');
       view(app);
     }
   }
@@ -66,7 +66,7 @@ export async function leaveEdit(app: AppState, decision: 'sync' | 'keep-draft' |
     if (app.sync.confirmation || app.sync.validationFailed || app.sync.dialog === 'review' || app.sync.unsynced || app.sync.reachable !== true) return failure(app);
   } else if (decision === 'keep-draft') {
     app.sync.track(false);
-    if (!app.sync.draft || !appStorage.track(app, 'draft', () => writeDraft(app.sync.draft!))) return fail('failed', 'Could not keep the draft on this computer.');
+    if (!app.sync.draft || !(await appStorage.trackDurable(app, 'draft', () => writeDraft(app.sync.draft!)))) return fail('failed', 'Could not keep the draft on this computer.');
   } else {
     const base = app.sync.draft?.base ?? emptyElements();
     app.discardUndo = structuredClone(JSON.parse(JSON.stringify(app.sync.elements)));

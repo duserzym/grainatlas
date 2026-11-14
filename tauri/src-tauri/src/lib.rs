@@ -53,6 +53,7 @@ mod geometry;
 mod memory;
 mod profile;
 mod recent;
+mod project_save;
 mod updater;
 use tauri_plugin_dialog::DialogExt;
 
@@ -547,10 +548,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
             let files = state.with_session_ctl(&app, tab, |s, ctl| s.project_files_with_ctl(&project, ctl)).map_err(e)?;
             for (rel, bytes) in files {
                 let p = dir.join(rel);
-                if let Some(q) = p.parent() {
-                    std::fs::create_dir_all(q).map_err(e)?;
-                }
-                std::fs::write(&p, bytes).map_err(e)?;
+                project_save::write(&p, &bytes).map_err(e)?;
             }
             t.lock().project_path = dir.canonicalize().map_err(e)?.display().to_string();
             return Ok(Some(dir.display().to_string()));
@@ -575,10 +573,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
         let files = state.with_session_ctl(&app, tab, |s, ctl| s.project_files_with_ctl(&project, ctl)).map_err(e)?;
         for (rel, bytes) in files {
             let p = dir.join(rel);
-            if let Some(d) = p.parent() {
-                std::fs::create_dir_all(d).map_err(e)?;
-            }
-            std::fs::write(&p, bytes).map_err(e)?;
+            project_save::write(&p, &bytes).map_err(e)?;
         }
         t.lock().project_path = dir.canonicalize().map_err(e)?.display().to_string();
         Ok(Some(dir.display().to_string()))

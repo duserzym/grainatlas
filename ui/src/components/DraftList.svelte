@@ -1,5 +1,6 @@
 <script lang="ts">
   import { appStorage } from '../lib/app-storage';
+  import { storageFullMessage } from '../lib/storage-failure';
   import { onMount } from 'svelte';
   import { app, tabs } from '../lib/store.svelte';
   import { DRAFTS_CHANGED, draftElements, hasPendingChanges, listDrafts, pendingElements, storedDraftProject, writeDraft, deleteDraft, deleteDraftCopies, type Draft } from '../lib/drafts';
@@ -32,9 +33,9 @@
       const pending = !draft.base || !status || hasChanges(changes) ? pendingElements(elements) : null;
       const updated = { ...draft, server, mount: status?.mount_id ?? draft.mount, base: draft.base, base_revision: draft.base_revision ?? theirs?.revision ?? null, base_hashes: draft.base_hashes ?? null, synced: draft.synced ?? false, changes, pending, pending_at: pending ? draft.pending_at ?? draft.updated_at : null };
       const owner = tabs.list.find(tab => tab.project?.uuid === draft.uuid);
-      const kept = owner ? appStorage.track(owner, 'draft', () => writeDraft(updated)) : writeDraft(updated);
+      const kept = owner ? appStorage.track(owner, 'draft', () => writeDraft(updated)) : await appStorage.commit(() => writeDraft(updated));
       drafts = drafts.map(d => d.uuid === draft.uuid ? updated : d).filter(d => hasPendingChanges(d));
-      if (!kept) note = `${draft.name} could not be kept in this app: its storage is full. Its changes are still in the project; use Save project.`;
+      if (!kept) note = storageFullMessage(draft.name);
       else if (!hasChanges(updated.changes)) note = `${draft.name}: no element changes waiting to sync.`;
     } catch (e) { note = `${draft.name}: ${e instanceof Error ? e.message : e}. Changes kept here.`; }
     finally { busy = null; }

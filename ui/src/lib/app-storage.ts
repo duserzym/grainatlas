@@ -258,20 +258,38 @@ export class AppStorage {
     this.queue = job;
     this.collecting?.push(job);
   }
-  /** Report the whole project/draft write, including its index, after commit.
-   * Capture the tab and UUID so a delayed failure cannot warn a different project.
-   */
-  track(app: Owner, kind: Write, write: () => boolean): boolean {
-    const uuid = app.project?.uuid;
+  /** Run `write` and collect the IndexedDB jobs it queues. */
+  private collect(write: () => boolean): { result: boolean; queued: boolean; durable: Promise<boolean> } {
     const previous = this.collecting;
     const jobs: Promise<boolean>[] = [];
     this.collecting = jobs;
     let result: boolean;
     try { result = write(); } finally { this.collecting = previous; }
-    const report = (ok: boolean) => { if (app.project?.uuid === uuid) reportStorageWrite(app, kind, ok); };
-    if (!result || !jobs.length) report(result);
-    if (jobs.length) void Promise.all(jobs).then(results => report(result && results.every(Boolean)));
+    return { result, queued: jobs.length > 0, durable: jobs.length ? Promise.all(jobs).then(results => result && results.every(Boolean)) : Promise.resolve(result) };
+  }
+  /** Report the whole project/draft write, including its index, after commit.
+   * Capture the tab and UUID so a delayed failure cannot warn a different project.
+   * Returns the immediate result; `trackDurable` waits for the commit.
+   */
+  track(app: Owner, kind: Write, write: () => boolean): boolean {
+    const { result } = this.collectTracked(app, kind, write);
     return result;
+  }
+  /** As `track`, but resolves only after IndexedDB has committed (or failed). */
+  trackDurable(app: Owner, kind: Write, write: () => boolean): Promise<boolean> {
+    return this.collectTracked(app, kind, write).durable;
+  }
+  private collectTracked(app: Owner, kind: Write, write: () => boolean) {
+    const uuid = app.project?.uuid;
+    const report = (ok: boolean) => { if (app.project?.uuid === uuid) reportStorageWrite(app, kind, ok); };
+    const collected = this.collect(write);
+    if (!collected.result || !collected.queued) report(collected.result);
+    if (collected.queued) void collected.durable.then(report);
+    return collected;
+  }
+  /** A pending-list entry may have no open tab to warn. Return its durable result. */
+  commit(write: () => boolean): Promise<boolean> {
+    return this.collect(write).durable;
   }
   async usageText(): Promise<string> {
     await this.permission;

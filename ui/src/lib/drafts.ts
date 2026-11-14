@@ -62,9 +62,9 @@ function newDraft(project: Project, server: string | null): Draft {
 export function ensureDraft(project: Project, server: string | null, storage?: DraftStorage): Draft {
   const previous = readDraft(project.uuid, storage);
   if (previous) return previous;
-  const draft: Draft = { ...newDraft(project, server), pending: null, pending_at: null };
-  writeDraft(draft, storage);
-  return draft;
+  // Creation is in memory only. The caller writes through its tracked save path,
+  // where both immediate and IndexedDB failures can be reported to the tab.
+  return { ...newDraft(project, server), pending: null, pending_at: null };
 }
 /** Listing is read-only, including legacy metadata. Adopt only after an explicit Check or a ready open. */
 export function listDrafts(server: string | null = null, storage?: DraftStorage): Draft[] {
