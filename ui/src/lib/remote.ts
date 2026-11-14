@@ -108,7 +108,21 @@ function mosaicOf(a: AtlasArea, tile: number): MosaicJson {
 }
 
 /** Loads a published bundle and shows it on the Canvas, read-only; selects `spot` when given. */
-export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null, app: AppState = current()) {
+export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null, given?: AppState) {
+  // Callers that pass a tab chose it (and may reload the project there). Without one
+  // (Settings, links), the project's own tab, the empty active tab or a new tab.
+  let app = given ?? current();
+  if (!given) {
+    const { targetTab } = await import('./actions');
+    app = targetTab(projectId);
+  }
+  if (!given && sameId(app.project?.uuid, projectId)) {
+    if (spot) {
+      const { applyShellFocus } = await import('./shellcmd');
+      await applyShellFocus(app, { type: 'focus-spot', project: projectId, spot, flash: false });
+    }
+    return true;
+  }
   await app.sync.settled();
   const server = normalizeServer(serverIn);
   if (!server) {

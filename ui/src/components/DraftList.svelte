@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { existingProject } from '../lib/open-target';
   import { appStorage } from '../lib/app-storage';
   import { storageFullMessage } from '../lib/storage-failure';
   import { onMount } from 'svelte';
@@ -44,7 +45,7 @@
     busy = draft.uuid;
     const server = draft.server ?? app.server;
     if (!server) { note = 'Set the database server in Settings, then Check.'; busy = null; return; }
-    const existing = tabs.list.find(t => t.project?.uuid === draft.uuid);
+    const existing = existingProject(tabs.list, draft.uuid);
     if (existing) { tabs.select(existing.id); await existing.sync.action(); busy = null; return; }
     const tab = tabs.add();
     try {

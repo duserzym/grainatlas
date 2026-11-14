@@ -95,7 +95,7 @@ export async function handleShellCommand(value: unknown) {
     await presentation.command(value, true);
     return;
   }
-  const { current, tabs, reviewSpots } = await import('./store.svelte');
+  const { reviewSpots } = await import('./store.svelte');
   if (isBridgeCommand(value) && value.type === 'review-spots') {
     reviewSpots.projects = value.projects;
     reviewSpots.colors = reviewColours('colors' in value ? value.colors : undefined);
@@ -111,12 +111,8 @@ export async function handleShellCommand(value: unknown) {
   if (!isShellCommand(value)) return;
   const cmd = value;
   const { sameId, packageNameFor } = await import('./deeplink');
-  let app = tabs.list.find((t) => sameId(t.project?.uuid, cmd.project));
-  if (app) tabs.select(app.id);
-  else {
-    const active = current();
-    app = !active.pkg && !active.remote ? active : tabs.add();
-  }
+  const { targetTab } = await import('./actions');
+  const app = targetTab(cmd.project);
   app.pendingCommand = cmd;
   app.deepLink = { project: cmd.project, spot: cmd.spot ?? null, name: packageNameFor(cmd.project) };
   if (!sameId(app.project?.uuid, cmd.project)) {

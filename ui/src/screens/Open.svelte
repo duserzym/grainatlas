@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import { app, shared, tabs } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { pendingProjectNotice, loadProjectFile, openExample, openFiles, openPaths, targetTab } from '../lib/actions';
+  import { pendingProjectNotice, loadProjectFile, openExample, openFiles, openPaths } from '../lib/actions';
   import { isDesktop } from '../lib/core/core';
   import { readRecent, type RecentEntry } from '../lib/deeplink';
   import type { Project } from '../lib/core/types';
@@ -70,7 +70,7 @@
   }
 
   async function openAt(location: RecentLocation) {
-    await openPaths([location.path], targetTab());
+    await openPaths([location.path]);
   }
 
   async function choose(r: RecentEntry) {
@@ -133,7 +133,7 @@
     if (desktop) {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const p = await open({ directory: true, multiple: false, title: 'Choose a package or area folder' });
-      if (typeof p === 'string') openPaths([p], targetTab());
+      if (typeof p === 'string') openPaths([p]);
     } else input.click();
   }
 
@@ -141,8 +141,8 @@
     if (desktop) {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const p = await open({ directory: false, multiple: true, title: 'Choose images', filters: [{ name: 'Images', extensions: IMAGE_EXT }] });
-      if (Array.isArray(p) && p.length) openPaths(p, targetTab());
-      else if (typeof p === 'string') openPaths([p], targetTab());
+      if (Array.isArray(p) && p.length) openPaths(p);
+      else if (typeof p === 'string') openPaths([p]);
     } else imagesInput.click();
   }
 
@@ -150,7 +150,7 @@
     if (!el.files?.length) return;
     const { name, files } = fromInput(el.files);
     el.value = '';
-    await openFiles(name, files, targetTab());
+    await openFiles(name, files);
   }
 
   async function drop(e: DragEvent) {
@@ -158,7 +158,7 @@
     over = false;
     if (desktop || !e.dataTransfer) return;
     const r = await fromDrop(e.dataTransfer);
-    if (r) await openFiles(r.name, r.files, targetTab());
+    if (r) await openFiles(r.name, r.files);
     else app.error = 'Drop a package folder, an area folder or image files.';
   }
 
@@ -220,7 +220,7 @@
   </div>
 
   {#if !desktop}<div class="example">
-    <button onclick={() => openExample(targetTab())} data-testid="example">Try the example</button>
+    <button onclick={() => openExample()} data-testid="example">Try the example</button>
     <span class="faint">one 3 × 2 TM4000 area (HJ-GC1, 150×, SE) from the test fixture</span>
   </div>{/if}
 
@@ -337,7 +337,7 @@
   }
   .cols {
     display: grid;
-    grid-template-columns: 2fr 1fr;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
     gap: var(--space-4);
   }
   .small {

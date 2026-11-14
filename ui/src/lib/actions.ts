@@ -1,4 +1,5 @@
 import { canWrite } from './presentation';
+import { chooseOpenTab, existingProject, holdsWork, pathGroups, sourceKey } from './open-target';
 // Actions shared by the screens: open, stitch, tone, project save/load.
 
 import { beforeCheckedAction } from './checks';
@@ -14,23 +15,34 @@ import { clearStoredCopy, newerStoredCopy, storedCopyDate } from './stored-copy'
 
 /** Where something newly opened goes: the active tab when nothing is open there, else a new tab
  * (opening never replaces the project of a tab). */
-export function targetTab(): AppState {
-  const t = current();
-  return t.empty ? t : tabs.add();
+export function targetTab(uuid?: string, active = current()): AppState {
+  const tab = chooseOpenTab(tabs.list, active, () => tabs.add(), uuid);
+  tabs.select(tab.id);
+  return tab;
+}
+
+/** Same project or the same files already open: show that tab. `spare`, the tab this open had
+ * claimed, is dropped when nothing else is in it. */
+function selectExisting(tab: AppState, spare?: AppState): AppState {
+  if (spare && spare !== tab && !spare.pkg && !spare.project && !spare.remote && !spare.pendingLoose) {
+    spare.packageSource = null;
+    tabs.remove(spare.id);
+  }
+  // From that tab's own Open screen, show the project again.
+  if (tab.screen === 'open' && (tab.pkg || tab.remote)) tab.screen = tab.pkg ? 'area' : 'canvas';
+  tabs.select(tab.id);
+  return tab;
 }
 
 /**
- * Desktop: command-line or dropped paths. Folders (packages, area folders, `.grainatlas`
- * projects) open one tab each; loose files open together in one. Returns the tabs opened.
+ * Desktop: command-line, dropped or OS-opened paths (Finder, `open -b`, a second launch). Folders
+ * (packages, area folders, image folders, `.grainatlas` projects) and `.gaproj` files open one tab
+ * each; image files open together in one. Each claims its tab before the first await, so opens
+ * that arrive together never share a tab. Returns the tabs opened or switched to.
  */
 export async function openPathsInTabs(paths: string[]): Promise<AppState[]> {
-  const isFile = (p: string) => /\.[a-z0-9]{2,5}$/i.test(p) && !PROJECT_PATH.test(p);
-  const files = paths.filter(isFile);
-  const groups = [...paths.filter((p) => !isFile(p)).map((p) => [p]), ...(files.length ? [files] : [])];
-  // Every tab first (in order), then all of them open and render at once: each has its own core.
-  const opened: AppState[] = groups.map((_, i) => (i === 0 ? targetTab() : tabs.add()));
-  await Promise.all(groups.map((g, i) => openPaths(g, opened[i])));
-  return opened;
+  const opened = await Promise.all(pathGroups(paths).map((g) => openPaths(g)));
+  return opened.filter((t, i) => opened.indexOf(t) === i);
 }
 
 /** A saved project: a `.grainatlas/` folder or a `.gaproj` file. */
@@ -38,16 +50,25 @@ const PROJECT_PATH = /\.(grainatlas\/?|gaproj)$/i;
 
 /** Web: a package folder, an area folder or loose images, handed over as files. */
 export async function openFiles(name: string, files: PackageFile[], app: AppState = current()) {
+  const pending = shared.pendingProjects.find(p => p.project.package.name === name);
+  const uuid = pending?.project.uuid ?? savedProject(name)?.uuid;
+  const existing = (uuid ? existingProject(tabs.list, uuid) : undefined) ?? tabs.list.find(t => t.pkg?.name === name);
+  // Another tab has it: show that tab. This tab opening its own files again reloads them here.
+  if (existing && existing !== app) return selectExisting(existing);
+  if (existing !== app) app = targetTab(undefined, app);
+  app.packageSource = { name, files };
   const core = await app.core;
   const r = await app.run(`Reading ${name}`, (p) => core.openFiles(name, files, p));
   if (r) await opened(app, r);
+  else app.packageSource = null;
+  return app;
 }
 
 /**
  * Hosted: files the user dropped on UPb Lab's window or opened through the OS
  * (bridge `onOpenFiles`, ux-conventions rule 4). They open exactly like a drop on
  * the Open screen; `kind` is only the shell's hint, the core still decides. With
- * a project open, the replace dialog asks first.
+ * a project open, a new tab keeps the earlier project intact.
  */
 export async function openOffered(set: OpenedFiles) {
   const app = current();
@@ -59,6 +80,8 @@ export async function openOffered(set: OpenedFiles) {
       if (!file) throw new Error('The project folder has no project.json.');
       const project = JSON.parse(await file.text()) as Project;
       if (!project.uuid || typeof project.uuid !== 'string' || !project.package?.name || typeof project.package.name !== 'string' || !Array.isArray(project.areas)) throw new Error('project.json is missing its project id, package name or areas.');
+      const existing = existingProject(tabs.list, project.uuid);
+      if (existing) { selectExisting(existing); told('selected existing project'); return; }
       const pending = { file, project, name: set.name, files: set.files.length };
       shared.pendingProjects = [...shared.pendingProjects.filter((p) => p.project.package.name !== project.package.name), pending];
       const tab = tabs.list.find((t) => t.pkg?.name === project.package.name);
@@ -81,15 +104,10 @@ export async function openOffered(set: OpenedFiles) {
     told('refused: nothing to open');
     return;
   }
-  if (app.pkg || app.remote) {
-    app.offer = s;
-    told(`asked: replace ${app.pkg?.name ?? 'the project from the server'}`);
-    return;
-  }
-  await openFiles(s.name, s.files, app);
+  const openedTab = await openFiles(s.name, s.files);
   // Read again: the open just changed it (TypeScript still has it narrowed to null).
-  const pkg = app.pkg as PackageInfo | null;
-  told(app.pendingLoose ? 'asked: scale' : pkg ? `opened: ${pkg.kind}, ${pkg.areas.length} area(s)` : `failed: ${app.error ?? 'not opened'}`);
+  const pkg = openedTab.pkg as PackageInfo | null;
+  told(openedTab.pendingLoose ? 'asked: scale' : pkg ? `opened: ${pkg.kind}, ${pkg.areas.length} area(s)` : `failed: ${openedTab.error ?? 'not opened'}`);
 }
 
 export function pendingProjectNotice(project: Project): string {
@@ -97,17 +115,13 @@ export function pendingProjectNotice(project: Project): string {
 }
 
 /** Package picks, drops and shell offers all meet here after opening. */
-async function applyPendingProject(app: AppState): Promise<boolean> {
+async function applyPendingProject(app: AppState, initial = false): Promise<boolean> {
   if (!isHosted()) return false;
   const pending = shared.pendingProjects.find((p) => p.project.package.name === app.pkg?.name);
   if (!pending) return false;
-  if (app.dirty && !sameId(app.project?.uuid, pending.project.uuid)) {
-    app.offer = { name: pending.name, files: [], projectFile: pending.file };
-    return true;
-  }
   if (app.notice === pendingProjectNotice(pending.project)) app.notice = null;
   try {
-    await loadProjectFile(pending.file, app);
+    await loadProjectFile(pending.file, app, initial);
     shared.pendingProjects = shared.pendingProjects.filter((p) => p !== pending);
     void notify({ type: 'grainatlas.files.opened', kind: 'project', name: pending.name, files: pending.files, outcome: `opened: project ${pending.project.package.name}` });
   } catch (e) {
@@ -117,13 +131,13 @@ async function applyPendingProject(app: AppState): Promise<boolean> {
   return true;
 }
 
-/** The replace dialog: Open replaces the open project with the offered files, Cancel keeps it. */
+/** Legacy offers still route through the same non-replacing open actions. */
 export async function answerOffer(open: boolean) {
   const app = current();
   const s = app.offer;
   app.offer = null;
   if (!s) return;
-  void notify({ type: 'grainatlas.files.opened', name: s.name, files: s.files.length, outcome: open ? 'replaced' : 'kept the open project' });
+  void notify({ type: 'grainatlas.files.opened', name: s.name, files: s.files.length, outcome: open ? 'opened' : 'kept the open project' });
   if (s.projectFile) {
     const pending = shared.pendingProjects.find((p) => p.file === s.projectFile);
     if (open) {
@@ -137,11 +151,18 @@ export async function answerOffer(open: boolean) {
 }
 
 /** Desktop: one folder (package, area folder, `.grainatlas` project) or a set of files, by path. */
-export async function openPaths(paths: string[], app: AppState = current()) {
+export async function openPaths(paths: string[], app: AppState = current()): Promise<AppState> {
+  const key = sourceKey(paths);
+  const existing = tabs.list.find(t => t.packageSource && 'paths' in t.packageSource && sourceKey(t.packageSource.paths) === key);
+  if (existing && existing !== app) return selectExisting(existing);
+  if (existing !== app) app = targetTab(undefined, app);
+  app.packageSource = { paths };
   const core = await app.core;
   if (paths.length === 1 && PROJECT_PATH.test(paths[0])) {
     const r = await app.run(`Opening ${paths[0]}`, () => core.openProject(paths[0]));
-    if (!r) return;
+    if (!r) { app.packageSource = null; return app; }
+    const existing = existingProject(tabs.list, r.project.uuid);
+    if (existing && existing !== app) return selectExisting(existing, app);
     const path = { kind: /\.gaproj$/i.test(paths[0]) ? 'file' as const : 'folder' as const, path: paths[0].replace(/\/$/, '') };
     app.loadingProject = true;
     app.clearHistory(); app.viewMode = false; app.draftHere = null;
@@ -151,11 +172,17 @@ export async function openPaths(paths: string[], app: AppState = current()) {
       if (app.storedCopy) app.storedCopy = { ...app.storedCopy, ready: true };
     } finally { app.loadingProject = false; }
     await app.sync.check();
-    return;
+    return app;
   }
   const label = paths.length === 1 ? paths[0] : `${paths.length} files`;
   const r = await app.run(`Reading ${label}`, () => core.openPaths(paths));
-  if (r) await opened(app, r);
+  if (r) {
+    const saved = r.status === 'opened' ? savedProject(r.info.name) : savedProject(r.name);
+    const existing = saved && existingProject(tabs.list, saved.uuid);
+    if (existing && existing !== app) return selectExisting(existing, app);
+    await opened(app, r);
+  } else app.packageSource = null;
+  return app;
 }
 
 const SCALE_KEY = 'grainatlas.looseScale';
@@ -273,7 +300,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.areaId = info.areas[0]?.id ?? null;
   app.screen = 'area';
   app.dirty = false;
-  if (!isHosted() || !(await applyPendingProject(app))) await resolveDeepLink(app);
+  if (!isHosted() || !(await applyPendingProject(app, true))) await resolveDeepLink(app);
   await app.sync.check();
 }
 
@@ -306,9 +333,9 @@ export async function openExample(app: AppState = current()) {
  * screen, which names the project. Without the parameters nothing happens.
  */
 export async function startDeepLink(search = location.search) {
-  const app = current();
   const link = parseDeepLink(search);
   if (!link) return;
+  const app = targetTab(link.project);
   try {
     history.replaceState(null, '', location.pathname + location.hash);
   } catch {
@@ -318,7 +345,7 @@ export async function startDeepLink(search = location.search) {
     // A published bundle: everything comes from the server, no package needed.
     app.serverOverride = link.server;
     const { openFromServer } = await import('./remote');
-    await openFromServer(link.server, link.project, link.spot, link.access ?? null, link.mount ?? null);
+    await openFromServer(link.server, link.project, link.spot, link.access ?? null, link.mount ?? null, app);
     return;
   }
   app.deepLink = { ...link, name: packageNameFor(link.project) };
@@ -361,8 +388,36 @@ async function resolveDeepLink(app: AppState) {
   app.screen = 'canvas';
 }
 
-export async function loadProjectFile(file: File, app: AppState = current()) {
+/**
+ * A project file (Open screen, UPb Lab's project folder). Its own tab when it is open already;
+ * the active tab when that holds no work (empty, or the blank project a package opens with);
+ * otherwise a new tab that reopens the same pixels, so no open project is replaced.
+ */
+export async function loadProjectFile(file: File, app: AppState = current(), initial = false) {
   const p = JSON.parse(await file.text()) as Project;
+  if (!initial) {
+    const existing = existingProject(tabs.list, p.uuid);
+    if (existing) app = selectExisting(existing);
+    else if (holdsWork(app)) {
+      const from = app;
+      const source = tabs.list.find(t => t.pkg?.name === p.package.name && t.packageSource)?.packageSource ?? null;
+      app = targetTab(undefined, from);
+      app.packageSource = source ?? { name: p.package.name, files: [] };
+      if (from.deepLink && sameId(from.deepLink.project, p.uuid)) { app.deepLink = from.deepLink; from.deepLink = null; }
+      if (source) {
+        const core = await app.core;
+        const result = await app.run(`Reading ${p.package.name}`, async (): Promise<OpenResult> => 'paths' in source
+          ? source.paths.length === 1 && PROJECT_PATH.test(source.paths[0])
+            ? { status: 'opened', info: (await core.openProject(source.paths[0])).info }
+            : await core.openPaths(source.paths)
+          : await core.openFiles(source.name, source.files));
+        if (result?.status === 'opened') app.pkg = result.info;
+        else if (result && p.package.loose) app.pkg = (await app.run('Opening images', () => core.openLoose(p.package.loose as LooseSpec))) ?? null;
+        app.areaId = app.pkg?.areas[0]?.id ?? null;
+        if (app.pkg) app.screen = 'area';
+      }
+    }
+  }
   const core = await app.core;
   const path = file.webkitRelativePath || file.name;
   const previous = app.storedCopy;

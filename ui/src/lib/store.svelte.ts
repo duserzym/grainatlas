@@ -176,6 +176,9 @@ class AppState {
   /** Loose images waiting for a scale (the scale dialog is open while set). */
   pendingLoose = $state<{ name: string; images: ImageEntry[]; spec: LooseSpec | null } | null>(null);
   project = $state<Project | null>(null);
+  /** What this tab opened (file handles or paths): set before the first await, so the tab is
+   * taken while it opens; a project file for the same pixels can reopen them in another tab. */
+  packageSource = $state.raw<{ name: string; files: PackageFile[] } | { paths: string[] } | null>(null);
   /** Files UPb Lab handed over while a project was open: the replace dialog asks first. */
   offer = $state.raw<{ name: string; files: PackageFile[]; projectFile?: File } | null>(null);
   /** Protect unsaved changes until the viewer answers the restore dialog. */
@@ -392,7 +395,7 @@ class AppState {
 
   /** Nothing open: a drop or a command-line path may open here instead of in a new tab. */
   get empty(): boolean {
-    return !this.pkg && !this.project && !this.remote && !this.pendingLoose && !this.busy;
+    return !this.pkg && !this.project && !this.remote && !this.pendingLoose && !this.busy && !this.packageSource;
   }
 
   get area(): AreaRecord | null {

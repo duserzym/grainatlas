@@ -16,7 +16,10 @@ export async function openStandaloneLaunch(request: StandaloneLaunch) {
   const { current, tabs } = await import('./store.svelte');
   const { openFromServer, editCopy } = await import('./remote');
   const { listDrafts } = await import('./drafts');
-  const app = tabs.list.find(t => t.project?.uuid === request.project) ?? (!current().project ? current() : tabs.add());
+  const { chooseOpenTab, existingProject } = await import('./open-target');
+  // The project's own tab, else the empty active tab, else a new one: never another project's tab.
+  const app = chooseOpenTab(tabs.list, current(), () => tabs.add(), request.project);
+  tabs.select(app.id);
   const focus = async () => {
     if (!request.spot && !request.grain) return;
     const { applyShellFocus } = await import('./shellcmd');
@@ -31,7 +34,7 @@ export async function openStandaloneLaunch(request: StandaloneLaunch) {
     tabs.select(app.id);
     app.sessionToken = accepted.token; app.sessionServer = accepted.server;
     app.serverOverride = accepted.server;
-    if (app.project?.uuid === request.project && !app.readOnly && app.sync.unsynced && normalizeServer(app.remote?.server ?? app.server) === accepted.server) {
+    if (existingProject([app], request.project) && !app.readOnly && app.sync.unsynced && normalizeServer(app.remote?.server ?? app.server) === accepted.server) {
       if (app.remote) app.remote.token = accepted.token;
       app.draftHere = app.sync.draft?.base_revision ?? 'unknown';
       await app.sync.check(); await focus(); return;

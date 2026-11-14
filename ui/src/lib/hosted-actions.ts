@@ -1,4 +1,5 @@
 import { canWrite } from './presentation';
+import { chooseOpenTab, existingProject } from './open-target';
 import type { AtlasMode, AtlasResultCode, CommandResult } from '@lab/bridge';
 import { hostedSync, ATLAS_EVENTS, type AtlasCommand } from './hosted-sync';
 import { current, tabs, type AppState } from './store.svelte';
@@ -98,7 +99,7 @@ export async function undoDiscard(app: AppState) {
 }
 /** Home actions use pending first; display metadata is optional for a sync. */
 async function draftTab(uuid: string): Promise<AppState | null> {
-  const open = tabs.list.find(t => t.project?.uuid === uuid);
+  const open = existingProject(tabs.list, uuid);
   if (open) { tabs.select(open.id); await setMode(open, 'edit'); return open; }
   const draft = listDrafts(current().server).find(d => d.uuid === uuid) ?? readDraft(uuid);
   if (!draft) return null;
@@ -132,7 +133,7 @@ export async function runHostedCommand(cmd: AtlasCommand): Promise<Partial<Comma
     return;
   }
   if (cmd.type === 'discard-draft') {
-    const tab = tabs.list.find(t => t.project?.uuid === cmd.project);
+    const tab = existingProject(tabs.list, cmd.project);
     if (tab && !tab.readOnly) {
       const outcome = await leaveEdit(tab, 'discard');
       if (outcome.ok === false) return outcome;
@@ -141,9 +142,9 @@ export async function runHostedCommand(cmd: AtlasCommand): Promise<Partial<Comma
     hostedSync.drafts(listDrafts(current().server), true);
     return tab ? result(tab) : {};
   }
-  let app = tabs.list.find(t => t.project?.uuid === cmd.project);
+  let app = existingProject(tabs.list, cmd.project);
   if (cmd.type === 'open-project') {
-    app ??= !current().project ? current() : tabs.add();
+    app ??= chooseOpenTab(tabs.list, current(), () => tabs.add());
     tabs.select(app.id);
     const server = cmd.server ?? app.server;
     if (!server) return fail('failed', 'Set the database server in Settings.');
