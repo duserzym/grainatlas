@@ -15,6 +15,19 @@ RELEASE_DIR := target/release-web
 RELEASE_ASSET := grainatlas-web-$(VERSION).tar.gz
 SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo "shasum -a 256")
 
+# Local macOS install builds (`make desktop-build` and the wasm it builds) share one Cargo
+# target outside the checkout, so a fresh build checkout reuses compiled dependencies (149 s
+# cold, 116 s after a one-file core change; 2.6 GiB of disk; docs/test-tiers.md). `make clean-build`
+# keeps it; `make clean-release-cache` removes it; `make desktop-build RELEASE_TARGET=`
+# builds into target/ as before. Tests, checks and GitHub Actions always use target/.
+ifeq ($(shell uname -s),Darwin)
+ifndef GITHUB_ACTIONS
+RELEASE_TARGET ?= $(HOME)/Library/Caches/lab-builds/grainatlas-target
+endif
+endif
+# Cargo target for the wasm build: target/ normally, the shared target under desktop-build.
+WASM_TARGET_DIR = $(CURDIR)/target
+
 setup:
 	rustup update stable
 	rustup target add wasm32-unknown-unknown
@@ -33,8 +46,8 @@ core-test:
 	cargo test
 
 wasm:
-	cargo build -p grainatlas-wasm --target wasm32-unknown-unknown --release
-	wasm-bindgen --target web --out-dir $(WASM_OUT) --out-name grainatlas target/wasm32-unknown-unknown/release/grainatlas_wasm.wasm
+	CARGO_TARGET_DIR="$(WASM_TARGET_DIR)" cargo build -p grainatlas-wasm --target wasm32-unknown-unknown --release
+	wasm-bindgen --target web --out-dir $(WASM_OUT) --out-name grainatlas "$(WASM_TARGET_DIR)/wasm32-unknown-unknown/release/grainatlas_wasm.wasm"
 
 ui-dev: wasm
 	cd ui && pnpm dev
@@ -54,8 +67,11 @@ tauri/src-tauri/icons/icon.png: tauri/assets-icon.svg
 desktop-dev: ui-build icons
 	cd tauri && cargo tauri dev
 
+# Target-specific, so the wasm built as a prerequisite here also uses the shared target.
+desktop-build: WASM_TARGET_DIR = $(if $(RELEASE_TARGET),$(RELEASE_TARGET),$(CURDIR)/target)
 desktop-build: ui-build icons
-	cd tauri && cargo tauri build
+	cd tauri && CARGO_TARGET_DIR="$(WASM_TARGET_DIR)" cargo tauri build
+	@echo "App: $(WASM_TARGET_DIR)/release/bundle/ (copy the .app out, then delete it there)"
 
 desktop-check: icons
 	cargo check -p grainatlas-desktop
@@ -125,6 +141,16 @@ clean-build:
 	@if pgrep -f "$(CURDIR)/target/" >/dev/null; then echo "A build is writing to $(CURDIR)/target; not cleaning."; exit 1; fi
 	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (before)"}'
 	rm -rf ./target
+	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (after)"}'
+	@$(if $(RELEASE_TARGET),test -d "$(RELEASE_TARGET)" && du -sh "$(RELEASE_TARGET)" | awk '{print "Kept shared release target: " $$1 " in " $$2}' || true,true)
+
+# Removes the shared install-build target (only when the owner asks; the next install is cold).
+.PHONY: clean-release-cache
+clean-release-cache:
+	@test -n "$(RELEASE_TARGET)" || { echo "No shared release target on this machine."; exit 0; }
+	@if pgrep -f "cargo.*$(RELEASE_TARGET)|$(RELEASE_TARGET)/" >/dev/null; then echo "A build is writing to $(RELEASE_TARGET); not cleaning."; exit 1; fi
+	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (before)"}'
+	rm -rf "$(RELEASE_TARGET)"
 	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (after)"}'
 
 # README and site screenshots: one pass through the workflow on the test fixture (Playwright).

@@ -50,3 +50,26 @@ warning outlives a normal notice.
 
 `node scripts/playwright-times.mjs <report.json>` prints the wall time and the ten
 slowest spec files of a Playwright JSON report (`--reporter=json`).
+
+## Install builds: shared Cargo target
+
+On the owner's request (2026-11-14) local macOS install builds keep one shared
+Cargo target, `~/Library/Caches/lab-builds/grainatlas-target`, set by
+`RELEASE_TARGET` in the Makefile. Installs build in a fresh checkout, so
+without it each install build is cold. Measured for the whole `make
+desktop-build` (wasm, web build, desktop release, `.app` and `.dmg`): 149 s
+cold, 116 s with the shared target after a one-file core change; less when
+only the UI changed. It holds 2.6 GiB between installs.
+
+- `make desktop-build` and the wasm it builds use the shared target. The
+  `.app` lands in `~/Library/Caches/lab-builds/grainatlas-target/release/bundle/macos/`;
+  copy it to `/Applications` and delete it there, so Spotlight finds one copy.
+- Tests, checks, `make wasm`, `make ui-build` and the release CLI keep using
+  `target/`.
+- `make clean-build` (after a major update) removes `target/`, keeps the
+  shared target and prints its size; `make clean-release-cache` removes it,
+  only when the owner asks.
+- `make desktop-build RELEASE_TARGET=` builds into `target/` as before.
+  GitHub Actions always does.
+- Cargo locks the target, so two install builds at once wait for each other.
+  The release profile (thin LTO) is unchanged.

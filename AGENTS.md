@@ -77,7 +77,12 @@ any app built from it is installed in `/Applications` and smoke-tested:
 
 1. Note free space (`df -h /`).
 2. Run `make clean-build`. It removes `target/` (native, wasm and Tauri builds, bundles, `target/release-web`). It keeps `ui/dist` (UPb Lab bundles it from here), `ui/src/lib/core/pkg` and `ui/node_modules`. It stops if a build
-   is still writing there, and prints free space before and after.
+   is still writing there, and prints free space before and after. It also
+   keeps the shared install-build target
+   `~/Library/Caches/lab-builds/grainatlas-target` (2.6 GiB, kept on the
+   owner's request so installs are faster; `docs/test-tiers.md`). Delete the
+   `.app` left in its `release/bundle/macos/` after copying it out; remove the
+   whole cache (`make clean-release-cache`) only when the owner asks.
 3. Remove the worktrees and build checkouts you created for this work
    (`git worktree remove`, then `git branch -d` for merged branches).
 4. Keep installed apps and review artifacts (screenshots, previews, print
