@@ -1,3 +1,4 @@
+import { canWrite } from './presentation.ts';
 import { appStorage } from './app-storage.ts';
 import type { Project } from './core/types.ts';
 import { diffElements, elementsOf, emptyElements, hasChanges, type Counts, type Elements, type ReadElements } from './sync.ts';
@@ -31,6 +32,7 @@ export function readDraft(uuid: string, storage?: DraftStorage): Draft | null {
   try { return JSON.parse(target(storage).getItem(DRAFT_PREFIX + uuid) || 'null'); } catch { return null; }
 }
 export function writeDraft(draft: Draft, storage?: DraftStorage): boolean {
+  if (!canWrite()) return true;
   try {
     const s = target(storage);
     const bytes = JSON.stringify(draft);
@@ -44,6 +46,7 @@ export function writeDraft(draft: Draft, storage?: DraftStorage): boolean {
   } catch { return false; /* the open project's edits remain in memory */ }
 }
 export function deleteDraft(uuid: string, storage?: DraftStorage): boolean {
+  if (!canWrite()) return true;
   try {
     const s = target(storage);
     s.removeItem(DRAFT_PREFIX + uuid);
@@ -120,6 +123,7 @@ export function hasPendingChanges(draft: Draft, storage?: DraftStorage): boolean
 }
 /** Only call after the separate, explicit stored-copy deletion confirmation. */
 export function deleteDraftCopies(draft: Draft, storage?: DraftStorage): void {
+  if (!canWrite()) return;
   try {
     const s = target(storage);
     for (const key of draft.source_keys ?? []) {

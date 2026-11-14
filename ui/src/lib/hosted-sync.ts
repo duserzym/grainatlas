@@ -3,7 +3,7 @@ import { ATLAS_EVENTS, atlasStatus, atlasDrafts, atlasSynced, commandResult, isB
   type AtlasStatusEvent, type AtlasSyncedEvent, type BridgeCommand, type BridgeEvent, type CommandResult } from '@lab/bridge';
 import { SyncApiError } from './sync-api.ts';
 import { hasPendingChanges, type Draft } from './drafts.ts';
-export type AtlasCommand = Exclude<BridgeCommand, { type: 'focus-spot' | 'focus-grain' | 'review-spots' }>;
+export type AtlasCommand = Exclude<BridgeCommand, { type: 'focus-spot' | 'focus-grain' | 'review-spots' | 'set-presentation' }>;
 export class HostedSync {
   private lastStatus = '';
   private lastDrafts = '';
@@ -29,7 +29,7 @@ export class HostedSync {
   }
   /** Serialise mutations even on an older shell; emit one result after the awaited action. */
   command(value: unknown, run: (cmd: AtlasCommand) => Promise<Partial<CommandResult> | void>): Promise<void> {
-    if (!isBridgeCommand(value) || ['focus-spot', 'focus-grain', 'review-spots'].includes(value.type)) return Promise.resolve();
+    if (!isBridgeCommand(value) || ['focus-spot', 'focus-grain', 'review-spots', 'set-presentation'].includes(value.type)) return Promise.resolve();
     const cmd = value as AtlasCommand;
     const execute = async () => {
       let result: Partial<CommandResult> = {};

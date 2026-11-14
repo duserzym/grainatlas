@@ -1,3 +1,4 @@
+import { canWrite } from './presentation';
 import { hostedSync } from './hosted-sync';
 import type { AtlasSyncConfirmation } from '@lab/bridge';
 import type { AppState } from './store.svelte';
@@ -25,6 +26,7 @@ export class SyncSession {
   showConfirmation() { if (this.heldSync && this.heldSync.identity === this.identity && !this.app.readOnly) this.dialog = 'bulk'; }
   cancelConfirmation() { this.dialog = null; }
   async confirmBulk() {
+    if (!canWrite()) return;
     const held = this.heldSync;
     if (!held || held.identity !== this.identity) return;
     this.dialog = null;
@@ -150,7 +152,7 @@ export class SyncSession {
   private save(patch: Partial<Draft>) {
     if (!this.draft || this.app.loadingProject || this.app.storedCopy) return;
     this.draft = { ...this.draft, ...clone(patch) };
-    if (!this.suppressDraft) appStorage.track(this.app, 'draft', () => writeDraft(this.draft!));
+    if (canWrite() && !this.suppressDraft) appStorage.track(this.app, 'draft', () => writeDraft(this.draft!));
   }
   track(edited = true) {
     const p = this.app.project;
@@ -239,6 +241,7 @@ export class SyncSession {
     return this.error;
   }
   async link(candidate: Candidate) {
+    if (!canWrite()) return;
     if (this.busy || !this.app.project || this.app.readOnly || !candidate.can_edit) return;
     const identity = this.identity;
     this.busy = true;
@@ -274,6 +277,7 @@ export class SyncSession {
     if (this.draft) this.draft = { ...this.draft, pending: null, pending_at: null, changes: { spots: 0, grains: 0, labels: 0 }, pixels_changed: false };
   }
   async editBase() {
+    if (!canWrite()) return;
     this.suppressDraft = false;
     const revision = this.viewRevision, hashes = this.viewHashes, viewed = this.viewBase;
     const hadDraft = !!this.draft && (this.draft.pending != null || (this.draft.pending === undefined && this.draft.changes === null) || hasChanges(this.draft.changes) || this.draft.pixels_changed);
@@ -292,6 +296,7 @@ export class SyncSession {
     if (project && mount) hostedSync.synced({ project, mount, revision, atlasVersion: this.status?.atlas_version ?? null, changed: { ...counts, pixels }, at: new Date().toISOString() });
   }
   async action() {
+    if (!canWrite()) return;
     if (this.busy || this.syncDisabledReason) return;
     if (this.confirmation) { this.showConfirmation(); return; }
     if (this.state === 'offline' || this.state === 'checking') { await this.check(); return; }
@@ -302,6 +307,7 @@ export class SyncSession {
     await this.sync();
   }
   async register(mount: string, publishPixels = false) {
+    if (!canWrite()) return;
     if (!mount || this.syncDisabledReason) return;
     try { await (await this.app.core).setLink(mount, {}); } catch (e) { this.failed(e); return; }
     this.save({ mount });
@@ -368,6 +374,7 @@ export class SyncSession {
     catch (e) { this.failed(e); } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   async apply(choices: Record<string, Resolution>, publishPixels = false) {
+    if (!canWrite()) return;
     const review = this.review;
     if (!review) return;
     const result = resolveMerge(review.merge, choices);
@@ -410,6 +417,7 @@ export class SyncSession {
   }
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
   async sync(publishPixels = false, shellCommand = false, approved?: HeldSync, reviewedBase?: ReadElements) {
+    if (!canWrite()) return;
     if (this.busy) await this.settled();
     if (this.busy || !this.ready || !this.app.project || this.app.readOnly || this.syncDisabledReason) return;
     if (!this.draft?.mount) { this.showLink(); return; }
@@ -615,6 +623,7 @@ export class SyncSession {
     } catch (e) { if (this.identity === identity) { this.pendingSync = !(e instanceof SyncApiError) || e.status >= 500; this.failed(e); this.track(false); } } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   async afterSave() {
+    if (!canWrite()) return;
     if (!this.ready) return;
     this.track();
     if (this.canSyncOnSave) {

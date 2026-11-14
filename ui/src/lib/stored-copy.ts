@@ -1,3 +1,4 @@
+import { canWrite } from './presentation.ts';
 import { appStorage } from './app-storage.ts';
 import type { Grain, Label, Project, Spot, ToneParams } from './core/types';
 import type { AppState } from './store.svelte';
@@ -50,6 +51,7 @@ export function newerStoredCopy(file: Project, path: string, modifiedMs: number,
 
 /** Saved projects use their uuid and location; packages alone retain their legacy storage. */
 export function persistProject(project: Project, path: string | null, when = new Date().toISOString(), storage?: CopyStorage): boolean {
+  if (!canWrite()) return true;
   try {
     const target = storage ?? appStorage;
     if (path) target.setItem(storedCopyKey(project.uuid, path), JSON.stringify({ saved_at: when, path, project }));
@@ -65,6 +67,7 @@ export function persistProject(project: Project, path: string | null, when = new
 }
 
 export function clearStoredCopy(uuid: string, path: string, storage?: CopyStorage) {
+  if (!canWrite()) return;
   try { (storage ?? appStorage).removeItem(storedCopyKey(uuid, path)); } catch { /* storage unavailable */ }
 }
 
@@ -85,6 +88,7 @@ export function storedCopyCounts(file: Project, copy: Project) {
 
 /** Keep the guard through the checkpoint so it cannot overwrite the unanswered copy. */
 export function answerStoredCopy(app: AppState, restore: boolean, storage?: CopyStorage) {
+  if (!canWrite()) return;
   const pending = app.storedCopy;
   if (!pending?.ready) return;
   if (restore) {

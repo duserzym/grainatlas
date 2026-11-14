@@ -1,3 +1,4 @@
+import { canWrite } from './presentation';
 // Atlas bundles (upblab/docs/WORKFLOW.md section 3.1): save as a `<project_id>.atlas/`
 // folder or a zip, publish to laicpmsdb. The core writes the bytes (identical in the browser
 // and the desktop app); this file only moves them.
@@ -72,6 +73,7 @@ async function bundleZip(app: AppState, projectUuid?: string): Promise<{ project
 
 /** Saves the bundle: a zip, or a `<project_id>.atlas/` folder. */
 export async function saveAtlas(asZip: boolean) {
+  if (!canWrite()) return;
   const app = current();
   const core = await app.core;
   const p = app.fullProject();
@@ -94,8 +96,10 @@ export async function saveAtlas(asZip: boolean) {
   } catch {
     return; // cancelled
   }
+  if (!canWrite()) return;
   await app.run('Writing the atlas folder', async () => {
     for (const { name, data } of unzipStored(b.zip)) {
+      if (!canWrite()) return;
       const parts = name.split('/');
       let dir = parent;
       for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d, { create: true });
@@ -109,6 +113,7 @@ export async function saveAtlas(asZip: boolean) {
 
 /** Posts the bundle to `POST /v1/mounts/{mount_id}/atlas` and records the version in the project. */
 export async function publish(app: AppState = current(), projectUuid = app.sync.draft?.linked_uuid) {
+  if (!canWrite()) return;
   if (!(await beforeCheckedAction(app, 'publish'))) return;
   const server = app.server;
   const mount = app.project?.laicpmsdb.mount_id;

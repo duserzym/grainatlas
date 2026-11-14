@@ -1,3 +1,4 @@
+import { canWrite } from './presentation';
 import type { AtlasMode, AtlasResultCode, CommandResult } from '@lab/bridge';
 import { hostedSync, ATLAS_EVENTS, type AtlasCommand } from './hosted-sync';
 import { current, tabs, type AppState } from './store.svelte';
@@ -27,6 +28,7 @@ function failure(app: AppState): Partial<CommandResult> {
   return fail(/401|403/.test(error) ? 'unauthorized' : app.sync.reachable === false ? 'offline' : 'failed', error);
 }
 export async function setMode(app: AppState, mode: AtlasMode, own = false) {
+  if (!canWrite()) return;
   await app.sync.settled();
   if (mode === 'edit') {
     if (app.remote?.readOnly) await editCopy(app);
@@ -123,6 +125,7 @@ async function draftTab(uuid: string): Promise<AppState | null> {
   return tab;
 }
 export async function runHostedCommand(cmd: AtlasCommand): Promise<Partial<CommandResult> | void> {
+  if (!canWrite() && !['report-status', 'atlas-synced', 'open-project'].includes(cmd.type)) return fail('failed', 'This viewer is read-only.');
   if (cmd.type === 'report-status') { reportHostedStatus(current(), true); hostedSync.drafts(listDrafts(current().server), true); return; }
   if (cmd.type === 'atlas-synced') {
     for (const tab of tabs.list) if (tab.mountId === cmd.mount || tab.sync.status?.mount_id === cmd.mount) await tab.sync.check();

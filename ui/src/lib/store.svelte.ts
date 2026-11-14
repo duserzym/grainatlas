@@ -1,3 +1,4 @@
+import { canWrite, presentation } from './presentation';
 // Application state (Svelte 5 runes). The core holds pixels; the UI holds the
 // project record, grains, spots and labels, and an undo history of edits.
 //
@@ -267,7 +268,7 @@ class AppState {
   get dateChoice(): DateKind { return shared.dateChoice; }
   set dateChoice(v: DateKind) {
     shared.dateChoice = v;
-    try { localStorage.setItem(DATE_CHOICE_KEY, v); } catch { /* storage may be unavailable */ }
+    try { if (canWrite()) localStorage.setItem(DATE_CHOICE_KEY, v); } catch { /* storage may be unavailable */ }
   }
   /** The results layer colours spots by this: 'date' or a metric code. */
   colourBy = $state('date');
@@ -276,7 +277,7 @@ class AppState {
   remoteTiles: import('./remote').RemoteTiles | null = null;
   /** True while a bundle from a server is shown read-only (before "Edit a copy"). */
   get readOnly(): boolean {
-    return this.viewMode || !!this.remote?.readOnly;
+    return presentation.current === 'viewer' || this.viewMode || !!this.remote?.readOnly;
   }
   /** The last publish of this session, with the server's full answer. */
   lastPublish = $state<(import('./core/types').Published & { response: Record<string, unknown> }) | null>(null);
@@ -316,7 +317,7 @@ class AppState {
     shared.themePref = p;
     shared.themeChosen = true;
     try {
-      localStorage.setItem(THEME_KEY, p);
+      if (canWrite()) localStorage.setItem(THEME_KEY, p);
     } catch {
       /* ignore */
     }
@@ -414,6 +415,7 @@ class AppState {
   }
 
   saveLayout() {
+    if (!canWrite()) return;
     try {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify($state.snapshot(this.layout)));
     } catch {
@@ -423,6 +425,7 @@ class AppState {
 
   /** Forgets panel positions and open states; the desktop window goes back to 1280 x 800, centred. */
   async resetLayout() {
+    if (!canWrite()) return;
     try {
       localStorage.removeItem(LAYOUT_KEY);
     } catch {
@@ -437,6 +440,7 @@ class AppState {
   }
 
   saveSettings() {
+    if (!canWrite()) return;
     try {
       const { area_patterns: _patterns, ...defaults } = this.settings;
       localStorage.setItem('grainatlas.settings', JSON.stringify(defaults));

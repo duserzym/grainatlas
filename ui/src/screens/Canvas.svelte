@@ -39,6 +39,37 @@
   import { autoSignalLabel, grainStatus } from '../lib/grain-status';
   import { ownerColourToken, ownerLegend } from '../lib/grain-owners';
 
+  import { presentation } from '../lib/presentation';
+  import { sendSpotAction } from '../lib/spot-action';
+  const isViewer = $derived(presentation.current === 'viewer');
+  let spotMenu = $state<{ spot: string; x: number; y: number } | null>(null);
+  function contextSpot(e: MouseEvent) {
+    if (!isViewer || !view || !(e.target instanceof Element)) return;
+    const host = e.target.closest('.viewer[data-view]');
+    if (!host) return;
+    const bounds = host.getBoundingClientRect();
+    const point = toMosaic(view, e.clientX - bounds.left, e.clientY - bounds.top);
+    const spot = hitSpot(point[0] * umPerPx, point[1] * umPerPx);
+    if (!spot) return;
+    e.preventDefault();
+    pickSpot(spot.id, 'only', true);
+    spotMenu = { spot: spot.id, x: Math.max(0, Math.min(e.clientX, innerWidth - 175)), y: Math.max(0, Math.min(e.clientY, innerHeight - 80)) };
+  }
+  function actionSpot(action: 'edit' | 'studio') {
+    const id = spotMenu?.spot ?? (app.selection.length === 1 ? app.selection[0] : null);
+    const selected = app.spots.find(spot => spot.id === id);
+    sendSpotAction(action, app.project?.uuid, selected?.id);
+    spotMenu = null;
+  }
+  function closeSpotMenu(e: PointerEvent) {
+    if (!(e.target instanceof Element) || !e.target.closest('[data-testid=spot-action-menu]')) spotMenu = null;
+  }
+  $effect(() => {
+    if (!isViewer) { spotMenu = null; return; }
+    editing = null; batch = null; gesture = null; drawing = null;
+    lasso = null; stroke = null; splitLine = null; rectangle = null; measure = null;
+  });
+
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
   const areaId = $derived(app.areaId && app.stitched[app.areaId] ? app.areaId : (Object.keys(app.stitched)[0] ?? null));
@@ -407,7 +438,7 @@
   let contrastFrame = 0;
   // Store the latest geometry; rapid pointer events collapse into one frame.
   const contrastRings = $derived([
-    ...(app.tool === 'spot' && cursorUm && !snapHint ? [{ id: 'ghost', x: cursorUm[0], y: cursorUm[1], r: app.diameter / 2 }] : []),
+    ...(!isViewer && app.tool === 'spot' && cursorUm && !snapHint ? [{ id: 'ghost', x: cursorUm[0], y: cursorUm[1], r: app.diameter / 2 }] : []),
     ...spots.filter((s) => activeIds.includes(s.id)).map((s) => ({ id: s.id, x: s.x_um, y: s.y_um, r: s.diameter_um / 2 })),
   ]);
   function scheduleContrast() {
@@ -894,7 +925,7 @@
     const ev = p.ev as PointerEvent;
     collapseSpot = null;
     pressScreen = [p.sx, p.sy];
-    if (ro && app.tool !== 'measure') {
+    if (isViewer || (ro && app.tool !== 'measure')) {
       // Read-only: a press selects a spot, nothing moves.
       const s = hitSpot(x, y);
       if (!s) return false;
@@ -972,6 +1003,7 @@
   }
 
   function drag(p: CanvasPoint) {
+    if (isViewer) return;
     if (rectangle) {
       rectangle = { ...rectangle, x2: p.sx, y2: p.sy, moved: rectangle.moved || Math.hypot(p.sx - rectangle.x, p.sy - rectangle.y) > CLICK_SLOP };
       return;
@@ -1034,6 +1066,7 @@
   }
 
   async function release(p: CanvasPoint) {
+    if (isViewer) return;
     snapHint = null;
     if (rectangle) {
       const r = rectangle;
@@ -1116,6 +1149,7 @@
   }
 
   async function click(p: CanvasPoint) {
+    if (isViewer) return;
     if (app.busy) return;
     const ev = p.ev as MouseEvent;
     const x = p.x * umPerPx, y = p.y * umPerPx;
@@ -1276,7 +1310,7 @@
     lassoHover = lasso ? [x, y] : null;
     hoverId = hitSpot(x, y)?.id ?? grainAt(detections, x, y, app.layers.artifacts)?.id ?? null;
     updateInfo(hoverId);
-    if (app.tool === 'spot' && app.settings.snap && !(p.ev as MouseEvent).altKey) {
+    if (!isViewer && app.tool === 'spot' && app.settings.snap && !(p.ev as MouseEvent).altKey) {
       const prev = app.spots.filter((s) => s.area_id === areaId).at(-1) ?? null;
       snapHint = snap(x, y, snapTargets(grains, prev, app.diameter), 12 * k);
     } else snapHint = null;
@@ -1293,6 +1327,7 @@
     editing = { id, text: s?.name ?? l?.text ?? '', sx: sx + 6, sy: sy - 12 };
   }
   function commitEdit() {
+    if (ro) { editing = null; return; }
     if (!editing) return;
     const { id, text } = editing;
     editing = null;
@@ -1310,6 +1345,15 @@
 
   // ---- keyboard --------------------------------------------------------------------------
   function key(e: KeyboardEvent) {
+    if (isViewer) {
+      const target = e.target as HTMLElement;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      if (e.key === 'Escape') spotMenu = null;
+      else if (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 's') {
+        e.preventDefault(); actionSpot(e.key.toLowerCase() === 'e' ? 'edit' : 'studio');
+      }
+      return;
+    }
     if (app.busy || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
@@ -1394,7 +1438,7 @@
     }
   }
 
-  const cursor = $derived(app.tool === 'select' ? 'default' : app.tool === 'delete' ? 'not-allowed' : 'crosshair');
+  const cursor = $derived(isViewer ? 'default' : app.tool === 'select' ? 'default' : app.tool === 'delete' ? 'not-allowed' : 'crosshair');
   const fmt = (v: number | null | undefined, d = 0) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
   const toolList: { id: Tool; label: string; key: string; title: string }[] = [
     { id: 'select', label: 'Select', key: 'V', title: 'Select and move; Cmd/Ctrl-click toggles; Shift-click adds (table: range); Shift-drag empty space selects a rectangle; Cmd/Ctrl+A selects all; Escape clears selection and keeps the tool (press again for Select); Delete/Backspace removes selection; drag empty space to pan' },
@@ -1411,7 +1455,14 @@
   {#each DATE_CHOICES as kind (kind)}<option value={kind} title={kind === 'preferred' ? 'Preferred (207Pb/206Pb above 1000 Ma)' : kind}>{dateLabel(kind)}</option>{/each}
 {/snippet}
 
-<svelte:window onkeydown={key} />
+<svelte:window onkeydown={key} oncontextmenu={contextSpot} onpointerdown={closeSpotMenu} />
+
+{#if isViewer && spotMenu}
+  <div class="panel spot-menu" role="menu" data-ui data-testid="spot-action-menu" style:left="{spotMenu.x}px" style:top="{spotMenu.y}px">
+    <button role="menuitem" onclick={() => actionSpot('edit')}>Edit in grainatlas</button>
+    <button role="menuitem" onclick={() => actionSpot('studio')}>Open in Studio</button>
+  </div>
+{/if}
 
 {#snippet spotBatchButtons(testids = false)}
   <div class="row">
@@ -1429,19 +1480,19 @@
     <button class="danger" onclick={deleteGrains} disabled={ro || !!app.busy}>Delete</button>
   </div>
 {/snippet}
-{#if batch}
+{#if !isViewer && batch}
   <SpotBatchDialog spots={areaSpots.filter((s) => batch!.ids.includes(s.id))} project={app.spots} {grains} tableIds={tableSpots.map((s) => s.id)} pattern={patternFor(areaId ?? '')} numbering={batch.numbering} onapply={applyBatch} oncancel={() => batch = null} />
 {/if}
 
 {#if core && tiles && areaId && mosaic}
-  <div class="canvas" class:folded={app.layout.sideCollapsed} use:publishNoticeBounds>
+  <div class="canvas" class:folded={app.layout.sideCollapsed} class:viewer-mode={isViewer} use:publishNoticeBounds>
     {#if rectangle?.moved}
       <div class="selection-rectangle" style:left="{Math.min(rectangle.x, rectangle.x2)}px" style:top="{Math.min(rectangle.y, rectangle.y2)}px" style:width="{Math.abs(rectangle.x2 - rectangle.x)}px" style:height="{Math.abs(rectangle.y2 - rectangle.y)}px"></div>
     {/if}
     {#key areaId}
       {@const viewerArea = areaId}
       <Viewer bind:this={viewer} bind:view={() => view, (next) => setAreaView(viewerArea, next)} core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
-        preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={scheduleContrast} canNudge={() => !selSpots.length}
+        preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={scheduleContrast} canNudge={() => isViewer || !selSpots.length}
         onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
           <g transform="scale({1 / umPerPx})" data-testid="canvas-um-space">
@@ -1462,7 +1513,7 @@
                 <polygon class="grain artifact" class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid="grain-artifact" />
               {/each}
             {/if}
-            {#if app.layers.outlines}
+            {#if isViewer || app.layers.outlines}
               {#each outlinedGrains as g (g.id)}
                 {@const own = owners.get(g.id)}
                 <polygon class="grain" class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} style:--grain-owner={own?.duplicate_of ? ownerColourToken(own.owner_area, app.project?.areas ?? []) : undefined} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined} />
@@ -1488,7 +1539,7 @@
                 <text class="gnum" class:sel={selGrains.includes(g.id)} transform="translate({g.bbox_um[0]} {g.bbox_um[1]}) rotate({-rotDeg}) scale({k})" dy="-3">{grainNumber(g)}</text>
               {/each}
             {/if}
-            {#if app.layers.results && range}
+            {#if (isViewer || app.layers.results) && range}
               <g class="results" data-testid="results-layer">
                 {#each shown as { s, r, v } (s.id)}
                   {#if v}
@@ -1504,7 +1555,7 @@
                 {/each}
               </g>
             {/if}
-            {#if app.layers.spots}
+            {#if isViewer || app.layers.spots}
               {#each spots as s (s.id)}
                 {@const sel = app.selection.includes(s.id)}
                 {@const active = activeIds.includes(s.id)}
@@ -1525,7 +1576,7 @@
                     {#if active || colourHalo}<circle class="contrast-halo" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />{/if}
                     <circle cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />
                     <circle class="dot" cx={s.x_um} cy={s.y_um} r={1.2 * k} />
-                    {#if sel}
+                    {#if sel && !isViewer}
                       <circle class="handle" cx={s.x_um + (s.diameter_um / 2) * Math.SQRT1_2} cy={s.y_um + (s.diameter_um / 2) * Math.SQRT1_2} r={5 * k} />
                     {/if}
                   {/if}
@@ -1545,7 +1596,7 @@
             {#if snapHint}
               <g class="snap"><circle cx={snapHint.x} cy={snapHint.y} r={7 * k} /><line x1={snapHint.x - 10 * k} x2={snapHint.x + 10 * k} y1={snapHint.y} y2={snapHint.y} /><line y1={snapHint.y - 10 * k} y2={snapHint.y + 10 * k} x1={snapHint.x} x2={snapHint.x} /></g>
             {/if}
-            {#if app.tool === 'spot' && cursorUm && !snapHint}
+            {#if !isViewer && app.tool === 'spot' && cursorUm && !snapHint}
               <circle class="ghost contrast-halo" cx={cursorUm[0]} cy={cursorUm[1]} r={app.diameter / 2} style:stroke={activeHalo('ghost')} />
               <circle class="ghost" cx={cursorUm[0]} cy={cursorUm[1]} r={app.diameter / 2}
                 data-testid="spot-ghost" data-contrast={autoColour ? (contrasts.ghost ?? 'light') : 'fixed'} style:stroke={activeColour('ghost')} />
@@ -1582,11 +1633,25 @@
       </Viewer>
     {/key}
 
-    {#if editing}
+    {#if !isViewer && editing}
       <input class="inline-edit" data-ui style:left="{editing.sx}px" style:top="{editing.sy}px" bind:value={editing.text} use:focusInput
         onkeydown={(e) => { if (e.key === 'Enter') commitEdit(); else if (e.key === 'Escape') editing = null; e.stopPropagation(); }} onblur={commitEdit} data-testid="rename" />
     {/if}
 
+    {#if isViewer}
+      <div class="glass toolbar viewer-controls" data-ui data-testid="viewer-controls">
+        <button onclick={() => viewer?.fitAll()}>Fit</button>
+        {#if Object.keys(app.stitched).length > 1}
+          <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
+            {#each Object.keys(app.stitched) as id (id)}<option value={id}>{areaLabel(id)}</option>{/each}
+          </select>
+        {/if}
+        <select bind:value={app.colourBy} aria-label="Colour by">
+          {#each metrics as metric (metric)}<option value={metric}>{metric === 'date' ? 'Date' : metric}</option>{/each}
+        </select>
+        {#if app.colourBy === 'date'}<select bind:value={app.dateChoice} aria-label="Date">{@render dateOptions()}</select>{/if}
+      </div>
+    {:else}
     <div class="glass toolbar" data-ui>
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
       {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
@@ -1628,7 +1693,9 @@
       <button class="icon" title="Rotate right 15° (])" onclick={() => viewer?.rotateBy(Math.PI / 12)}>↻</button>
     </div>
 
-    {#if panel.open && (focus || focusGrain)}
+    {/if}
+
+    {#if !isViewer && panel.open && (focus || focusGrain)}
       <FloatingPanel title={selSpots.length > 1 ? `${selSpots.length} spots` : selGrains.length > 1 ? `${selGrains.length} grains` : focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}
         passive={passiveInfo}
         minimized={app.layout.infoCollapsed} onminimize={() => { app.layout.infoCollapsed = !app.layout.infoCollapsed; app.saveLayout(); }}>
@@ -1736,6 +1803,7 @@
       </FloatingPanel>
     {/if}
 
+    {#if !isViewer}
     {#if app.layout.sideCollapsed}
       <aside class="glass side-mini" data-ui>
         <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" aria-expanded={false} data-testid="side-expand">‹ Panel</button>
@@ -2044,7 +2112,9 @@
     </aside>
     {/if}
 
-    {#if dupCount}
+    {/if}
+
+    {#if !isViewer && dupCount}
       <div class="glass owner-legend" data-ui data-testid="owner-legend">
         {#if app.showNeighbourGrains}
           {#each ownerRows as row (row.area)}
@@ -2056,11 +2126,11 @@
         <label class="check"><input type="checkbox" bind:checked={app.showNeighbourGrains} /> Show grains of neighbouring areas</label>
       </div>
     {/if}
-    {#if app.layers.results && range}
+    {#if (isViewer || app.layers.results) && range}
       <div class="glass legend" data-ui data-testid="results-legend">
         <div class="lt">
           <span>{app.colourBy === 'date' ? `${dateLabel(app.dateChoice)} date` : app.colourBy}{range.unit ? ` (${range.unit})` : ''}</span>
-          {#if app.colourBy === 'date'}<label class="field">Date <select bind:value={app.dateChoice} data-testid="legend-date-choice">{@render dateOptions()}</select></label>{/if}
+          {#if !isViewer && app.colourBy === 'date'}<label class="field">Date <select bind:value={app.dateChoice} data-testid="legend-date-choice">{@render dateOptions()}</select></label>{/if}
         </div>
         <div class="ramp" style:background={app.colourBy === 'date' ? AGE_RAMP_CSS : RAMP_CSS}></div>
         <div class="ends num"><span>{range.lo.toPrecision(4)}</span><span>{range.hi.toPrecision(4)}</span></div>
@@ -2068,9 +2138,9 @@
       </div>
     {/if}
     <div class="glass status" data-ui>
-      {#if cursorUm}<span class="num">x {cursorUm[0].toFixed(1)} µm, y {cursorUm[1].toFixed(1)} µm</span>{/if}
+      {#if !isViewer && cursorUm}<span class="num">x {cursorUm[0].toFixed(1)} µm, y {cursorUm[1].toFixed(1)} µm</span>{/if}
       {#if snapHint}<span class="accent">snap: {snapHint.what}</span>{/if}
-      {#if view}<span class="num muted">{(view.zoom * 100).toFixed(view.zoom < 0.1 ? 1 : 0)}% · {rotDeg.toFixed(0)}°</span>{/if}
+      {#if !isViewer && view}<span class="num muted">{(view.zoom * 100).toFixed(view.zoom < 0.1 ? 1 : 0)}% · {rotDeg.toFixed(0)}°</span>{/if}
       {#if scalebar}
         <span class="bar"><span style:width="{scalebar.px}px"></span>{scalebar.len >= 1000 ? `${scalebar.len / 1000} mm` : `${scalebar.len} µm`}</span>
       {/if}
@@ -2079,6 +2149,14 @@
 {/if}
 
 <style>
+  .spot-menu { position:fixed; z-index:60; display:grid; padding:var(--space-1); }
+  .spot-menu button { text-align:left; }
+  .viewer-mode .viewer-controls { right:var(--space-2); max-width:none; flex-wrap:nowrap; gap:var(--space-1); padding:var(--space-1); }
+  .viewer-controls select { min-width:0; max-width:30%; font-size:0.75rem; padding:2px; }
+  .viewer-controls button { padding:2px var(--space-2); }
+  .viewer-mode .legend { right:var(--space-2); bottom:var(--space-2); width:150px; max-width:45%; padding:var(--space-1); font-size:0.65rem; }
+  .viewer-mode .status { max-width:48%; padding:var(--space-1); }
+
   .selection-rectangle { position: absolute; pointer-events: none; z-index: 6; border: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
   tr[data-spot-id], tr[data-grain-id] { user-select: none; -webkit-user-select: none; }
 

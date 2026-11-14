@@ -1,3 +1,4 @@
+import { canWrite } from './presentation';
 // Open from server: a published atlas bundle read from `<server>/atlas/projects/<id>/`
 // (WORKFLOW.md 3.1). Nothing is stitched: the canvas draws the bundle's WebP tiles, and the
 // grains, spots, labels and scale bars come from its project.json. Read-only until "Edit a
@@ -167,6 +168,7 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
  * raw package is opened, which picks this project up by its package name.
  */
 export async function editCopy(app: AppState = current()) {
+  if (!canWrite()) return;
   const remote = app.remote;
   const p = app.project;
   if (!remote || !p) return;

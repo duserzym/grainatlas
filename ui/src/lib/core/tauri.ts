@@ -1,3 +1,4 @@
+import { canWrite } from '../presentation';
 // Core implementation over Tauri commands: the native core (all cores via
 // rayon) with packages read from disk by path. Mirrors the wasm worker API.
 
@@ -187,6 +188,7 @@ export class TauriCore implements Core {
     return bytes(await this.call<ArrayBuffer>('atlas_zip', { project: JSON.stringify(project), options: JSON.stringify(options) }));
   }
   async saveAtlas(project: Project, options: BundleOptions, zip: boolean): Promise<string | null> {
+    if (!canWrite()) return null;
     return this.call<string | null>('save_atlas', { project: JSON.stringify(project), options: JSON.stringify(options), zip });
   }
   async laserFit(fiducials: Fiducial[], units: string): Promise<LaserFit> {
@@ -208,9 +210,11 @@ export class TauriCore implements Core {
     await this.call('reset_window');
   }
   async saveProjectFile(project: Project, path: string | null, ask: boolean): Promise<string | null> {
+    if (!canWrite()) return null;
     return this.call<string | null>('save_project_file', { project: JSON.stringify(project), path, ask });
   }
   async saveProject(project: Project, _extras: Record<string, string>, dir: string | null = null): Promise<string | null> {
+    if (!canWrite()) return null;
     return this.call<string | null>('save_project', { project: JSON.stringify(project), ask: false, dir });
   }
   async ownership(grains: Record<string, Grain[]>): Promise<Ownership> {
@@ -227,6 +231,7 @@ export class TauriCore implements Core {
 
 /** Saves bytes or text through the native save dialog. */
 export async function saveFile(name: string, data: Uint8Array | string): Promise<string | null> {
+  if (!canWrite()) return null;
   const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
   return tauriInvoke<string | null>('save_bytes', body, { headers: { 'x-name': encodeURIComponent(name), 'x-tab': String(saveTab) } });
 }

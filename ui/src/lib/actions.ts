@@ -1,3 +1,4 @@
+import { canWrite } from './presentation';
 // Actions shared by the screens: open, stitch, tone, project save/load.
 
 import { beforeCheckedAction } from './checks';
@@ -200,7 +201,7 @@ export async function openLoose(spec: LooseSpec, app: AppState = current()) {
   const core = await app.core;
   app.pendingLoose = null;
   try {
-    sessionStorage.setItem(SCALE_KEY, JSON.stringify({ mode: spec.field_width_um ? 'field_width' : 'um_per_px', um_per_px: spec.um_per_px, field_width_um: spec.field_width_um ?? 0 }));
+    if (canWrite()) sessionStorage.setItem(SCALE_KEY, JSON.stringify({ mode: spec.field_width_um ? 'field_width' : 'um_per_px', um_per_px: spec.um_per_px, field_width_um: spec.field_width_um ?? 0 }));
   } catch {
     /* storage may be unavailable */
   }
@@ -647,6 +648,7 @@ function applyParams(app: AppState, areaId: string, p: AreaParams) {
  * project file next to it. The web build downloads the project file.
  */
 export async function saveProject(app: AppState = current()) {
+  if (!canWrite()) return;
   const p = app.fullProject();
   if (!p) return;
   const core = await app.core;
@@ -655,6 +657,7 @@ export async function saveProject(app: AppState = current()) {
     const p = app.fullProject();
     if (!p) return;
     const dir = app.projectPath.path;
+    if (!canWrite()) return;
     const where = await app.run('Saving project', () => core.saveProject(p, {}, dir));
     if (where) {
       app.dirty = false;
@@ -669,11 +672,13 @@ export async function saveProject(app: AppState = current()) {
 
 /** Saves the lightweight project file (`.gaproj`): `ask` = Save As (a dialog on the desktop). */
 export async function saveProjectFile(app: AppState = current(), ask = true) {
+  if (!canWrite()) return;
   if (!(await beforeCheckedAction(app, 'save'))) return;
   const p = app.fullProject();
   if (!p) return;
   const core = await app.core;
   const prev = app.projectPath?.kind === 'file' ? app.projectPath.path : null;
+  if (!canWrite()) return;
   const where = await app.run('Saving project file', () => core.saveProjectFile(p, prev, ask));
   if (core.kind !== 'tauri') {
     if (app.error) return null;

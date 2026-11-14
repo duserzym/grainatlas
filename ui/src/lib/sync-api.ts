@@ -1,3 +1,4 @@
+import { canWrite, requireWrite } from './presentation.ts';
 /** laicpmsdb B1 wire contract (docs/atlas-sync.md). */
 import type { Project } from './core/types';
 import { storedElement, type Changes, type Counts, type Element, type ReadElements, type ReadGrain, type Kind } from './sync.ts';
@@ -102,6 +103,7 @@ export class SyncApi {
   private access: string | null;
   constructor(server: string, token: string | null, access: string | null = null) { this.server = server; this.token = token; this.access = access; }
   private async call(path: string, init: RequestInit = {}): Promise<Response> {
+    if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
     const url = new URL(this.server + path);
     if (this.access && !init.method) url.searchParams.set('access', this.access);
     const r = await fetch(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(init.headers ?? {}) } });
@@ -155,6 +157,7 @@ export class SyncApi {
     return r.json();
   }
   async sync(mount: string, body: SyncBody): Promise<SyncReply> {
+    requireWrite();
     const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(syncWireBody(body)) });
     if (r.status !== 200 && r.status !== 409) throw new Error(`Sync: ${r.status}`);
     return { ...await r.json(), ok: r.ok };

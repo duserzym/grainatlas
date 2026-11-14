@@ -1,3 +1,4 @@
+import { canWrite, requireWrite } from './presentation.ts';
 // Links and hand-overs to laicpmsdb (the sessions database), through the UPb
 // Studio shell. Not hosted, the bridge's open() resolves false.
 
@@ -85,6 +86,7 @@ export function loadLink(): LinkSettings {
 }
 
 export function saveLink(l: LinkSettings) {
+  if (!canWrite()) return;
   try {
     const { token, ...rest } = l;
     localStorage.setItem(LINK_KEY, JSON.stringify(rest));
@@ -153,6 +155,7 @@ function headers(token: string | null, extra: Record<string, string> = {}): Reco
 }
 
 async function call<T>(base: string, path: string, token: string | null, init: RequestInit, what: string): Promise<T> {
+  if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
   let r: Response;
   try {
     r = await fetch(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined) } });

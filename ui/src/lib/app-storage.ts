@@ -1,3 +1,4 @@
+import { canWrite, presentation } from './presentation.ts';
 import { reportStorageWrite } from './storage-failure.ts';
 
 type Owner = Parameters<typeof reportStorageWrite>[0];
@@ -147,11 +148,13 @@ export class AppStorage {
         if (entry) entries.push([target, entry.value]);
       }
     } catch { entries = []; }
+    if (!canWrite()) return;
     for (const [key, value] of entries) {
       if (value === null) this.removeItem(key); else this.setItem(key, value);
     }
   }
   private journal(key: string, value: string | null): string | null {
+    if (!canWrite()) return null;
     const entry = JSON.stringify({ value });
     try { this.legacy().setItem(JOURNAL_PREFIX + key, entry); return entry; } catch { return null; }
   }
@@ -203,11 +206,13 @@ export class AppStorage {
   get length(): number { return this.keys().length; }
   key(index: number): string | null { return this.keys()[index] ?? null; }
   setItem(key: string, value: string): void {
+    if (!canWrite()) return;
     if (!isAppStorageKey(key)) { this.legacy().setItem(key, value); return; }
     this.values.set(key, value);
     this.enqueue(key, value, this.loading ? this.journal(key, value) : null);
   }
   removeItem(key: string): void {
+    if (!canWrite()) return;
     if (!isAppStorageKey(key)) { this.legacy().removeItem(key); return; }
     this.values.delete(key);
     this.enqueue(key, null, this.loading ? this.journal(key, null) : null);
@@ -286,3 +291,5 @@ export class AppStorage {
 }
 
 export const appStorage = new AppStorage();
+
+presentation.beforeViewer(() => appStorage.flushed());

@@ -90,6 +90,11 @@ export async function applyShellFocus(app: AppState, cmd: ShellCommand) {
 export async function handleShellCommand(value: unknown) {
   const { isHosted } = await import('@lab/bridge');
   if (!isHosted()) return;
+  if (isBridgeCommand(value) && value.type === 'set-presentation') {
+    const { presentation } = await import('./presentation.ts');
+    await presentation.command(value, true);
+    return;
+  }
   const { current, tabs, reviewSpots } = await import('./store.svelte');
   if (isBridgeCommand(value) && value.type === 'review-spots') {
     reviewSpots.projects = value.projects;

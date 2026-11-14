@@ -1,11 +1,13 @@
 <script lang="ts">
   import { grainNumber } from './lib/grain-lineage';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import { presentation } from './lib/presentation';
+  import { appStorage } from './lib/app-storage';
   import VersionChip from './components/VersionChip.svelte';
   import { startScheduler } from './lib/updater.svelte';
   import { app, current, tabs, type Screen } from './lib/store.svelte';
   import { isHosted, notify, onCommand, onOpenFiles, SHELL_EVENTS } from '@lab/bridge';
-  import { findAllGrains, liveChanged, liveKey, openLoose, openOffered, openPathsInTabs, saveProject, saveProjectFile, startDeepLink, stitchAll } from './lib/actions';
+  import { findAllGrains, liveChanged, liveIdle, liveKey, openLoose, openOffered, openPathsInTabs, saveProject, saveProjectFile, startDeepLink, stitchAll } from './lib/actions';
   import { isDesktop } from './lib/core/core';
   import TabBar from './components/TabBar.svelte';
   import Open from './screens/Open.svelte';
@@ -29,6 +31,17 @@
   import { hostedSync } from './lib/hosted-sync';
   import { reportHostedStatus } from './lib/hosted-actions';
   import { DRAFTS_CHANGED, listDrafts } from './lib/drafts';
+
+  const isViewer = $derived(presentation.current === 'viewer');
+  onMount(() => presentation.beforeViewer(async () => {
+    await tick(); // let queued editor persistence run before closing the gate
+    for (const tab of tabs.list) {
+      while (tab.busy) await new Promise(resolve => setTimeout(resolve, 20));
+      for (const area of Object.keys(tab.live)) await liveIdle(area, tab);
+      await tab.sync.settled();
+    }
+    await appStorage.flushed();
+  }));
 
   const screens: { id: Screen; label: string; key: string; needs?: 'pkg' | 'mosaic' }[] = [
     { id: 'open', label: 'Open', key: '1' },
@@ -99,6 +112,7 @@
 
   // Hash routing (#/canvas) so the build works from file://, any static host and Tauri.
   function fromHash() {
+    if (isViewer) return;
     const h = location.hash.replace(/^#\/?/, '') as Screen;
     const s = screens.find((x) => x.id === h);
     if (s && enabled(s)) app.screen = s.id;
@@ -356,6 +370,7 @@
     // Ctrl/Cmd 1-4, Ctrl/Cmd , and Ctrl/Cmd R belong to UPb Lab's menu when
     // hosted (bridge README): grainatlas binds Alt 1-5 and Ctrl/Cmd S only.
     const key = (e: KeyboardEvent) => {
+      if (isViewer) return;
       if (quitState !== 'idle' || app.checkPrompt || app.renamePrompt) return;
       const mod = e.metaKey || e.ctrlKey;
       if (tabKeys && mod && !e.altKey) {
@@ -421,12 +436,12 @@
 
 <svelte:window onpointerdown={closeHeaderOutside} onclick={closeDetailsOutside} onkeydowncapture={headerKey} />
 
-{#if app.leaveEditPrompt}<LeaveEditDialog onchoose={app.leaveEditPrompt.answer} />{/if}
+{#if !isViewer && app.leaveEditPrompt}<LeaveEditDialog onchoose={app.leaveEditPrompt.answer} />{/if}
 
-<div class="ga-root app" data-theme={app.theme}>
-  <div class="project-tabs" hidden={menuCollapsed}><TabBar bind:this={tabBar} shortcuts={tabKeys} /></div>
+<div class="ga-root app" class:viewer={isViewer} data-theme={app.theme}>
+  {#if !isViewer}<div class="project-tabs" hidden={menuCollapsed}><TabBar bind:this={tabBar} shortcuts={tabKeys} /></div>{/if}
   {#key tabs.activeId}
-  <div class="glass header-region">
+  {#if !isViewer}<div class="glass header-region">
   <header class="topbar" class:compact={menuCollapsed} class:has-menu-toggle={app.screen === 'canvas'}>
     {#if menuCollapsed}
       <span class="compact-name" data-testid="project-name" title={projectName}>{projectName}</span>
@@ -475,10 +490,10 @@
     </div>
   {/if}
   {#if syncDetailsOpen && app.project}<SyncDetails />{/if}
-  </div>
+  </div>{/if}
 
   <main>
-    {#if app.notice || app.error || (app.storageWarning && hiddenStorageWarning !== app.storageWarning)}
+    {#if !isViewer && (app.notice || app.error || (app.storageWarning && hiddenStorageWarning !== app.storageWarning))}
       <div class="notices">
         {#if app.storageWarning}
           {#if hiddenStorageWarning !== app.storageWarning}
@@ -498,7 +513,9 @@
       </div>
     {/if}
     <div class="screen">
-    {#if app.screen === 'open'}
+    {#if isViewer}
+      {#if hasMosaic}<Canvas />{:else}<p class="faint small">{app.error || app.notice || 'Waiting for a project.'}</p>{/if}
+    {:else if app.screen === 'open'}
       <Open />
     {:else if app.screen === 'area'}
       <Area />
@@ -512,6 +529,7 @@
     </div>
   </main>
 
+  {#if !isViewer}
   {#if quitState === 'prompt'}
     <QuitDialog titles={unsavedTabs.map((tab) => tab.title)} answer={answerQuit} />
   {/if}
@@ -520,9 +538,10 @@
   {#if app.offer}<ReplaceDialog />{/if}
   {#if app.storedCopy?.ready}<StoredCopyDialog />{/if}
   {#if app.pendingLoose}<ScaleDialog />{/if}
+  {/if}
   {#if app.busy}<Busy />{/if}
   {/key}
-  <VersionChip />
+  {#if !isViewer}<VersionChip />{/if}
   {#if dropping}
     <div class="dropzone" aria-hidden="true"><span class="glass">Drop to open{app.empty ? '' : ' in a new tab'}</span></div>
   {/if}
@@ -537,6 +556,7 @@
     overflow: hidden;
     container-type:inline-size;
   }
+  .app.viewer { grid-template-rows: 0 0 minmax(0, 1fr); }
   .header-region { grid-row:2; min-width:0; margin:0 var(--space-2) var(--space-2); z-index:5; }
   .header-overflow { display:flex; align-items:center; justify-content:flex-end; gap:var(--space-3); border-top:1px solid var(--hairline); }
   .header-overflow > span { min-width:0; overflow-wrap:anywhere; font-size:0.8rem; }

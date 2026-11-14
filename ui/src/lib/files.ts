@@ -1,3 +1,4 @@
+import { canWrite } from './presentation';
 // Getting packages in (input, drag and drop) and files out (downloads). What
 // comes in is a package folder, one area folder, or loose files; the core
 // decides which (and asks for a scale when images have no calibration).
@@ -84,6 +85,7 @@ function keep(path: string): boolean {
 }
 
 export function download(data: BlobPart | Uint8Array, name: string, type = 'application/octet-stream') {
+  if (!canWrite()) return;
   if (isDesktop()) {
     // The desktop app saves through the native dialog.
     import('./core/tauri').then(({ saveFile }) => saveFile(name, typeof data === 'string' ? data : data instanceof Uint8Array ? data : new Uint8Array(0)));
