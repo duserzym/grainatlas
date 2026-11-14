@@ -1705,20 +1705,22 @@ fn header(
 
 /// Area boxes in the SEM view (stage axes signed like the mosaic), um.
 fn area_boxes(areas: &[SheetArea]) -> Vec<Option<[f64; 4]>> {
-    areas
-        .iter()
-        .map(|a| {
-            let r = a.rec;
-            let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-            for t in &r.tiles {
-                let st = t.stage_nm?;
-                let (u, v) = (r.stage_sign[0] * st[0] / 1000.0, r.stage_sign[1] * st[1] / 1000.0);
-                let (hw, hh) = (t.w as f64 * t.pixel_size_nm / 2000.0, t.h as f64 * t.pixel_size_nm / 2000.0);
-                b = [b[0].min(u - hw), b[1].min(v - hh), b[2].max(u + hw), b[3].max(v + hh)];
-            }
-            b[0].is_finite().then_some(b)
-        })
-        .collect()
+    areas.iter().map(|a| stage_box(a.rec)).collect()
+}
+
+/// One area's box on the mount in the SEM view (stage µm, axes signed like the mosaic):
+/// `[x0, y0, x1, y1]`, or None when the area has no tiles or a tile has no stage position.
+/// The viewer's mount inset ports this (`stageBox` in ui/src/lib/mount-inset.ts); both are
+/// checked against tests/fixtures/projects/mount-inset-areas.json.
+pub fn stage_box(r: &AreaRecord) -> Option<[f64; 4]> {
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for t in &r.tiles {
+        let st = t.stage_nm?;
+        let (u, v) = (r.stage_sign[0] * st[0] / 1000.0, r.stage_sign[1] * st[1] / 1000.0);
+        let (hw, hh) = (t.w as f64 * t.pixel_size_nm / 2000.0, t.h as f64 * t.pixel_size_nm / 2000.0);
+        b = [b[0].min(u - hw), b[1].min(v - hh), b[2].max(u + hw), b[3].max(v + hh)];
+    }
+    b[0].is_finite().then_some(b)
 }
 
 const MAP_LABEL_MM: f64 = 26.0;

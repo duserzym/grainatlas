@@ -13,6 +13,6 @@ export default defineConfig({
   webServer: { command: 'pnpm preview', url: 'http://localhost:4173/', reuseExistingServer: true, timeout: 60_000 },
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },
-    { name: 'webkit', testMatch: /app-storage/, use: { browserName: 'webkit' } },
+    { name: 'webkit', testMatch: /app-storage|mount-inset/, use: { browserName: 'webkit' } },
   ],
 });

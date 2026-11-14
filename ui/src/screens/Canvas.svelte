@@ -25,6 +25,7 @@
   import { spotLink } from '../lib/laicpmsdb';
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
+  import MountInset from '../components/MountInset.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
   import { DATE_CHOICES, dateLabel, dateOf, fmtValue, matchResults, metricsOf, otherDates, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
   import { ageColor, AGE_RAMP_CSS } from '../lib/colormap';
@@ -87,6 +88,8 @@
   function changeArea(id: string) {
     if (id !== app.areaId) app.areaId = id;
   }
+  const insetMosaics = $derived(Object.fromEntries(Object.entries(app.stitched).flatMap(([id, s]) => (s?.mosaic ? [[id, s.mosaic]] : []))));
+  const insetSpots = $derived(app.spots.filter((s) => app.selection.includes(s.id)));
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
   let cursorScreen = $state<[number, number] | null>(null);
   const cursorUm = $derived(cursorScreen && view ? toMosaic(view, ...cursorScreen).map((x) => x * umPerPx) as [number, number] : null);
@@ -1631,6 +1634,7 @@
         </select>
         {#if app.colourBy === 'date'}<select bind:value={app.dateChoice} aria-label="Date">{@render dateOptions()}</select>{/if}
       </div>
+      <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} selected={insetSpots} onarea={changeArea} />
     {:else}
     <div class="glass toolbar" data-ui>
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
