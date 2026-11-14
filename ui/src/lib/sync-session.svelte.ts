@@ -64,8 +64,10 @@ export class SyncSession {
   keepDatabaseKind(kind: Kind) { if (this.app.readOnly || this.busy) return; this.keepDatabase({ ...emptyElements(), [kind]: this.databaseUnresolved[kind] }); }
   private setStatus(status: ProjectStatus | null) {
     if (status) {
+      // A visible revision must have its measured-spot list already in memory.
+      if (this.elementsRevision === null) return;
       const acknowledged = this.draft?.synced && this.draft.mount === status.mount_id ? this.draft.base_revision ?? 0 : 0;
-      status = { ...status, revision: Math.max(status.revision, acknowledged, this.status?.mount_id === status.mount_id ? this.status.revision : 0) };
+      status = { ...status, revision: Math.min(this.elementsRevision, Math.max(status.revision, acknowledged, this.status?.mount_id === status.mount_id ? this.status.revision : 0)) };
     }
     this.status = status;
   }
@@ -75,9 +77,17 @@ export class SyncSession {
   private serverSpots = $state.raw<Elements['spots']>([]);
   get syncDisabledReason(): string { return this.draft?.link_conflict ? 'This project is linked to another mount' : this.status?.can_edit === false ? 'Read-only access: you do not have permission to sync this mount.' : ''; }
   refuseSpotDeletion(ids: string[]): boolean {
-    if (![...this.serverSpots, ...(this.draft?.base?.spots ?? []), ...this.elements.spots].some(s => ids.includes(s.id) && s.acquisition_ids?.length)) return false;
-    this.app.notice = 'This spot has measurements in the database; it cannot be deleted there';
-    return true;
+    if ([...this.serverSpots, ...(this.draft?.base?.spots ?? []), ...this.elements.spots].some(s => ids.includes(s.id) && s.acquisition_ids?.length)) {
+      this.app.notice = 'This spot has measurements in the database; it cannot be deleted there';
+      return true;
+    }
+    // Until the first measured-spot list is in, nothing shown can vouch for these spots. Later
+    // checks keep the previous list and the revision it belongs to, so deletes stay allowed.
+    if (ids.length && this.checking && this.elementsRevision === null && this.registered !== false) {
+      this.app.notice = 'Checking which spots are measured…';
+      return true;
+    }
+    return false;
   }
   private uuid: string | null = null;
   private viewBase = $state.raw<ReadElements | null>(null);
@@ -186,7 +196,8 @@ export class SyncSession {
       const api = await this.api();
       const status = await api.lookup(this.draft?.linked_uuid ?? p.uuid);
       if (!this.isCurrent(identity)) return;
-      this.setStatus(status); this.registered = !!status; this.reachable = true;
+      if (!status) this.setStatus(null);
+      this.registered = !!status; this.reachable = true;
       if (this.app.error === this.errorHeadline) this.app.error = null;
       if (this.draft?.incomplete) { this.failureMessage = this.draft.incomplete.reason; this.validationFailed = true; }
       if (!this.intentFailure) { this.error = ''; this.failureMessage = ''; this.validationFailed = false; }
@@ -207,6 +218,7 @@ export class SyncSession {
       this.checkedElements = { identity, projectUuid: status.project_uuid, fetchedAt: Date.now(), elements: theirs };
       if (!this.serverElements) this.snapshotNeeded = needsFirstSnapshot(theirs, this.elements);
       this.serverElements = theirs; this.serverSpots = theirs.spots; this.serverHashes = theirs.hashes; this.elementsRevision = theirs.revision;
+      this.setStatus({ ...status, revision: theirs.revision });
       if (this.app.readOnly && this.viewRevision === null) {
         const pending = this.draft ? draftElements(this.draft) : null;
         this.displayElements(pending ?? viewElements(this.elements, theirs));
@@ -247,12 +259,11 @@ export class SyncSession {
     this.busy = true;
     try {
       // Link this project's UUID to the chosen mount. Candidate UUIDs are hints only.
-      const status = await (await this.api()).link(this.app.project.uuid, candidate.mount_id);
+      await (await this.api()).link(this.app.project.uuid, candidate.mount_id);
       if (!this.isCurrent(identity)) return;
       await (await this.app.core).setLink(candidate.mount_id, {});
       if (!this.isCurrent(identity)) return;
       this.app.project.laicpmsdb.mount_id = candidate.mount_id;
-      this.setStatus(status);
       this.save({ mount: candidate.mount_id, link_offered: true, link_candidates: [] });
       this.candidates = []; this.dialog = null;
     } catch (e) {
@@ -547,6 +558,7 @@ export class SyncSession {
           reason = syncIntentFailure(body, syncMine, current, projectUuid, reply, accepted);
           if (reason) { this.intentFailure = reason; throw new SyncApiError(422, [reason]); }
           this.intentFailure = '';
+          this.serverElements = accepted; this.serverSpots = accepted.spots; this.serverHashes = accepted.hashes; this.elementsRevision = accepted.revision;
           // Set the response revision before saving or notifying reactive consumers.
           if (!this.status) this.setStatus(await api.lookup(projectUuid));
           if (!this.isCurrent(identity)) return;
@@ -555,7 +567,6 @@ export class SyncSession {
           if (this.app.error === this.errorHeadline) this.app.error = null;
           this.error = ''; this.failureMessage = ''; this.validationFailed = false;
           this.save({ incomplete: null, base: syncMine, base_revision: reply.revision, base_hashes: null, synced: true, synced_at: new Date().toISOString() });
-          this.serverElements = accepted; this.serverSpots = accepted.spots; this.serverHashes = accepted.hashes; this.elementsRevision = accepted.revision;
           if (accepted.revision === reply.revision) {
             // Edits made in flight remain above the submitted snapshot.
             const local = clone(this.elements);
