@@ -56,6 +56,7 @@ mod recent;
 mod project_save;
 mod store;
 mod updater;
+mod upblab;
 use tauri_plugin_dialog::DialogExt;
 
 /// One open project: a window holds several, as tabs (the UI names them by number).
@@ -100,6 +101,17 @@ type Res<T> = Result<T, String>;
 
 fn e(x: impl std::fmt::Display) -> String {
     x.to_string()
+}
+
+/// Standalone app only (the page never calls it hosted): leave UPb Lab a notice that a mount
+/// changed. Failures are returned for the page to log; they are never shown.
+#[tauri::command]
+fn notify_upblab(app: AppHandle, mount_id: String, project_uuid: String, revision: i64, server: String) -> Result<(), String> {
+    let data = app.path().data_dir().map_err(e)?;
+    upblab::write_notice(&data, &mount_id, &project_uuid, revision, &server, &now_iso()).map(|_| ()).map_err(|error| {
+        eprintln!("notify_upblab: {error}");
+        error
+    })
 }
 
 fn now_iso() -> String {
@@ -929,6 +941,7 @@ pub fn run() {
             store::store_write,
             store::store_remove,
             atlas_launch_ready,
+            notify_upblab,
             enable_quit_guard,
             finish_quit,
             updater::update_check,

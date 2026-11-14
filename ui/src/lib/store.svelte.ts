@@ -9,6 +9,7 @@ import { canWrite, presentation } from './presentation';
 // its tab once (`current()`) so a result lands in the tab that started the work.
 
 import { SyncSession } from './sync-session.svelte';
+import { grainMapWithoutBlankArtifacts } from './sync';
 import type { ShellCommand } from './shellcmd';
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
 import type { DeepLink } from './deeplink';
@@ -542,7 +543,7 @@ class AppState {
     }
     p.settings = $state.snapshot(this.settings) as Settings;
     const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
-    p['grainatlas_ui'] = { grains: $state.snapshot(this.grains), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
+    p['grainatlas_ui'] = { grains: grainMapWithoutBlankArtifacts($state.snapshot(this.grains) as Record<string, Grain[]>), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
     return p;
   }
 
@@ -577,7 +578,7 @@ class AppState {
     this.checksRan = false;
     const ui = p['grainatlas_ui'] as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
     if (ui?.overlays) this.overlays = ui.overlays;
-    if (ui?.grains) this.grains = ui.grains;
+    if (ui?.grains) this.grains = grainMapWithoutBlankArtifacts(ui.grains);
     if (ui?.spots) this.spots = ui.spots;
     if (ui?.labels) this.labels = ui.labels;
     if (ui?.tone) this.tone = ui.tone;

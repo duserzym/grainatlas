@@ -1,7 +1,7 @@
 import { canWrite } from './presentation.ts';
 import { appStorage } from './app-storage.ts';
 import type { Project } from './core/types.ts';
-import { diffElements, elementsOf, emptyElements, hasChanges, type Counts, type Elements, type ReadElements } from './sync.ts';
+import { diffElements, elementsOf, emptyElements, hasChanges, withoutBlankArtifacts, type Counts, type Elements, type ReadElements } from './sync.ts';
 export const DRAFT_PREFIX = 'grainatlas.draft.';
 export const DRAFT_INDEX = 'grainatlas.drafts';
 const DISCARDED = 'grainatlas.discarded-drafts';
@@ -22,6 +22,10 @@ export interface Draft {
   /** Opaque hashes returned by the server, never computed by the browser. */
   base_hashes?: Record<keyof Counts, string> | null; synced?: boolean; synced_at?: string;
   source_keys?: string[]; pixels_base?: string | null; pixels_changed?: boolean;
+  /** Items the last partial sync held back (contract 2026-11); they stay in the pending changes. */
+  held_back?: import('./sync').HeldItem[];
+  /** The sync request awaiting a reply: a retry of the same body reuses its id. */
+  pending_request?: import('./sync-api').PendingRequest | null;
 }
 export type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'length' | 'key'>>;
 const target = (storage?: DraftStorage) => storage ?? appStorage;
@@ -29,7 +33,11 @@ function arrayAt<T>(storage: DraftStorage, key: string): T[] {
   try { const value: unknown = JSON.parse(storage.getItem(key) || '[]'); return Array.isArray(value) ? value as T[] : []; } catch { return []; }
 }
 export function readDraft(uuid: string, storage?: DraftStorage): Draft | null {
-  try { return JSON.parse(target(storage).getItem(DRAFT_PREFIX + uuid) || 'null'); } catch { return null; }
+  try {
+    const draft = JSON.parse(target(storage).getItem(DRAFT_PREFIX + uuid) || 'null') as Draft | null;
+    // Older drafts can hold the database's '' for "no artifact"; clean it in memory only.
+    return draft?.pending ? { ...draft, pending: withoutBlankArtifacts(draft.pending) } : draft;
+  } catch { return null; }
 }
 export function writeDraft(draft: Draft, storage?: DraftStorage): boolean {
   if (!canWrite()) return true;

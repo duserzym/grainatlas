@@ -8,6 +8,7 @@ import { token as shellToken } from '@lab/bridge';
 import type { BundleOptions, Project, Published } from './core/types';
 import { download } from './files';
 import { normalizeServer, publishAtlas } from './laicpmsdb';
+import { notifyUpbLab } from './upblab-notice';
 import { current, type AppState } from './store.svelte';
 
 /** Options for the core from Settings: tile quality, the package's place on the lab storage. */
@@ -144,14 +145,17 @@ export async function publish(app: AppState = current(), projectUuid = app.sync.
   app.project = JSON.parse(await core.projectJson());
   app.persist();
   app.lastPublish = { ...rec, response: res };
-  // laicpmsdb also upserts spots.json and answers with the acquisitions it matched by label.
-  const sp = res.spots as { created?: number; updated?: number; acquisitions?: { id: string; atlas_spot_id?: string | null }[] } | null | undefined;
-  const linked = new Map((sp?.acquisitions ?? []).filter((a) => a && a.atlas_spot_id).map((a) => [a.atlas_spot_id!.toLowerCase(), a.id]));
-  if (linked.size) app.spots = app.spots.map((s) => (linked.has(s.id.toLowerCase()) && !s.acquisition_id ? { ...s, acquisition_id: linked.get(s.id.toLowerCase())! } : s));
-  const warnings = Array.isArray(res.warnings) ? (res.warnings as unknown[]).map(String) : [];
+  // Publishing stores images and files only; spots reach the database by sync (contract 2026-11, section 4).
+  const warnings = Array.isArray(res.warnings) ? res.warnings.map(String) : [];
   const again = res.created === false;
+  const label = app.sync.status?.mount_id === mount ? app.sync.status.mount_label : null;
+  const check = res.spot_check;
+  const differ = check ? (check.differ || 0) + (check.not_in_database || 0) : 0;
+  const names = check?.names?.slice(0, 10) ?? [];
   app.notice =
-    `${again ? 'Already published as' : 'Published'}${rec.version != null ? ` version ${rec.version}` : ''} to mount ${mount} on ${new URL(server).host}` +
-    `${sp && (sp.created || sp.updated) ? `; spots ${sp.created ?? 0} created, ${sp.updated ?? 0} updated` : ''}${linked.size ? `, ${linked.size} acquisitions linked` : ''}` +
-    `${warnings.length ? `. Server notes: ${warnings.join('; ')}` : '.'}`;
+    `${again ? 'Already published as' : 'Published'}${rec.version != null ? ` version ${rec.version}` : ''} to mount ${label || mount.slice(0, 8)} on ${new URL(server).host}.` +
+    (differ ? ` ${differ} ${differ === 1 ? 'spot differs' : 'spots differ'} from the database${names.length ? ` (${names.join(', ')}${differ > names.length ? ' and others' : ''})` : ''}. Sync first?` : '') +
+    (warnings.length ? ` Server notes: ${warnings.join('; ')}` : '');
+  if (differ) app.noticeAction = { label: 'Sync', run: () => void app.sync.sync() };
+  if (app.project) notifyUpbLab(mount, b.project.uuid, app.sync.status?.revision ?? app.sync.draft?.base_revision ?? 0, server);
 }

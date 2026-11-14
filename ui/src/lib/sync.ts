@@ -8,6 +8,21 @@ export type SyncGrain = Pick<Grain, 'id' | 'number' | 'polygon_um' | 'centroid_u
 export type ReadGrain = Omit<SyncGrain, 'id' | 'split_from'> & { id: string | null; server_id?: string; split_from?: string | string[] | null };
 export interface Ownership { project_uuid?: string | null }
 export interface ReadElements { spots: (SyncSpot & Ownership)[]; grains: (ReadGrain & Ownership)[]; labels: (Label & Ownership & { retired?: boolean })[] }
+/** The database stores '' (older rows null) for an ordinary grain; in the client an
+ * ordinary grain has no artifact field at all, and the core accepts only a reason or none. */
+const blankArtifact = (grain: object): boolean => 'artifact' in grain && !(grain as { artifact?: unknown }).artifact;
+export function withoutBlankArtifact<T extends object>(grain: T): T {
+  if (!blankArtifact(grain)) return grain;
+  const { artifact: _blank, ...rest } = grain as T & { artifact?: unknown };
+  return rest as T;
+}
+export function withoutBlankArtifacts<T extends { grains: object[] }>(elements: T): T {
+  return elements.grains.some(blankArtifact) ? { ...elements, grains: elements.grains.map(withoutBlankArtifact) } : elements;
+}
+export function grainMapWithoutBlankArtifacts<G extends object>(grains: Record<string, G[]>): Record<string, G[]> {
+  return Object.values(grains).some(list => list.some(blankArtifact))
+    ? Object.fromEntries(Object.entries(grains).map(([area, list]) => [area, list.map(withoutBlankArtifact)])) : grains;
+}
 export const splitParent = (value: ReadGrain['split_from']): string | undefined => Array.isArray(value) ? value[0] : value || undefined;
 export function identifiedGrains(grains: ReadGrain[]): SyncGrain[] {
   return grains.filter(g => g.id !== null && !g.retired).map(g => ({ ...g, id: g.id!, split_from: splitParent(g.split_from) }));
@@ -34,7 +49,8 @@ export function storedElement<K extends Kind>(kind: K, element: Elements[K][numb
   const out = Object.fromEntries(FIELDS[kind].filter(key => key in element).map(key => [key, (element as unknown as Record<string, unknown>)[key]]));
   if (kind === 'grains') {
     // Artifacts are unnumbered (0); each still needs a unique B1 grain label.
-    out.artifact ||= '';
+    // The database stores '' for an ordinary grain; in the client that is no artifact at all.
+    if (!out.artifact) delete out.artifact;
     if (out.artifact) out.number ??= 0;
     if (out.label == null && out.number != null) out.label = out.artifact && out.number === 0 ? `artifact/${out.id}` : `${out.area_id}/${out.number}`;
     out.sample ||= null;
@@ -71,7 +87,7 @@ export const KINDS: Kind[] = ['spots', 'grains', 'labels'];
 export const emptyElements = (): Elements => ({ spots: [], grains: [], labels: [] });
 export function elementsOf(project: Project): Elements {
   const ui = project.grainatlas_ui as { spots?: Spot[]; grains?: Record<string, Grain[]>; labels?: Label[] } | undefined;
-  return { spots: ui?.spots ?? [], labels: ui?.labels ?? [], grains: Object.entries(ui?.grains ?? {}).flatMap(([area_id, grains]) => grains.map(g => ({ ...g, area_id, sample: g.sample !== undefined ? g.sample : project.areas?.find(a => a.id === area_id)?.sample ?? null }))) };
+  return { spots: ui?.spots ?? [], labels: ui?.labels ?? [], grains: Object.entries(ui?.grains ?? {}).flatMap(([area_id, grains]) => grains.map(g => ({ ...withoutBlankArtifact(g), area_id, sample: g.sample !== undefined ? g.sample : project.areas?.find(a => a.id === area_id)?.sample ?? null }))) };
 }
 /** Rebuild UI-only geometry for narrowed server grains; preserve local display metadata. */
 export function groupedGrains(grains: ReadGrain[], previous: Record<string, Grain[]> = {}): Record<string, Grain[]> {
@@ -90,11 +106,11 @@ export function groupedGrains(grains: ReadGrain[], previous: Record<string, Grai
     const bbox: Grain['bbox_um'] = points.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : [0, 0, 0, 0];
     const old = existing.get(grain.id);
     const samePolygon = old && canonicalJson(old.polygon_um) === canonicalJson(points);
-    (out[area_id] ??= []).push({
+    (out[area_id] ??= []).push(withoutBlankArtifact({
       eq_diameter_um: Math.sqrt(4 * grain.area_um2 / Math.PI), major_um: bbox[2] - bbox[0], minor_um: bbox[3] - bbox[1],
       orientation_deg: 0, mean_intensity: 0, manual: false, scale_bar_um: 0,
-      ...old, ...grain, polygon_um: points, centroid_um: grain.centroid_um ?? old?.centroid_um ?? [0, 0], area_um2: grain.area_um2 ?? old?.area_um2 ?? 0, number: grain.number ?? old?.number ?? 0, artifact: grain.artifact ?? undefined, bbox_um: samePolygon ? old.bbox_um : bbox,
-    });
+      ...old, ...grain, polygon_um: points, centroid_um: grain.centroid_um ?? old?.centroid_um ?? [0, 0], area_um2: grain.area_um2 ?? old?.area_um2 ?? 0, number: grain.number ?? old?.number ?? 0, artifact: grain.artifact || '', bbox_um: samePolygon ? old.bbox_um : bbox,
+    } as Grain));
   }
   return out;
 }
@@ -336,4 +352,85 @@ export function applyChanges(base: ReadElements, changes: Changes): ReadElements
 /** What one sync wrote, from SyncOut.applied (not totals: a snapshot reports only real writes). */
 export function appliedCounts(a: { spots: { created: number; updated: number; deleted: number }; grains: { created: number; adopted: number; updated: number; retired: number }; labels: { created: number; updated: number; retired: number } }) {
   return { spots: a.spots.created + a.spots.updated + a.spots.deleted, grains: a.grains.created + a.grains.adopted + a.grains.updated + a.grains.retired, labels: a.labels.created + a.labels.updated + a.labels.retired };
+}
+
+/** One item a partial sync held back (laicpmsdb sync contract 2026-11, section 2). */
+export interface HeldItem {
+  kind: string; id: string; op?: 'upsert' | 'delete'; label?: string; code?: string; reason?: string;
+  related?: { kind: string; id: string; label?: string }[];
+}
+export function heldKind(kind: string): Kind | null {
+  const k = kind.replace(/s$/, '');
+  return k === 'spot' ? 'spots' : k === 'grain' ? 'grains' : k === 'label' || k === 'annotation' ? 'labels' : null;
+}
+/** What a partial reply applied. Held upserts keep the database version (new ones stay out),
+ * held deletes keep the element: the next base is exactly what the database now has, so the
+ * held items stay local changes and the next sync sends them again with any new edits. */
+export function appliedPart(changes: Changes, mine: Elements, current: ReadElements, held: HeldItem[], uuid: string): { changes: Changes; mine: Elements } {
+  const out = { changes: structuredClone(changes), mine: { ...mine } as Elements };
+  const owned = storedElements(projectElements(current, uuid));
+  for (const item of held) {
+    const kind = heldKind(item.kind);
+    if (!kind) continue;
+    const op = item.op ?? (changes[kind].upsert.some(e => e.id === item.id) ? 'upsert' : 'delete');
+    const c = out.changes[kind] as { upsert: Element[]; delete: string[]; retire?: string[] };
+    if (op === 'upsert') c.upsert = c.upsert.filter(e => e.id !== item.id);
+    else { c.delete = c.delete.filter(id => id !== item.id); if (c.retire) c.retire = c.retire.filter(id => id !== item.id); }
+    const stored = (owned[kind] as Element[]).find(e => e.id === item.id);
+    (out.mine[kind] as Element[]) = [...(out.mine[kind] as Element[]).filter(e => e.id !== item.id), ...(stored ? [stored] : [])];
+  }
+  return out;
+}
+/** A person-readable name: spot name, grain label, annotation text; 8 id characters only as a last resort. */
+export function elementLabel(kind: Kind, id: string, ...sources: (Partial<Record<Kind, readonly (Element | ReadGrain)[]>> | null | undefined)[]): string {
+  for (const source of sources) {
+    const element = source?.[kind]?.find(e => e.id === id || ('server_id' in e && e.server_id === id));
+    if (!element) continue;
+    if (kind === 'spots' && 'name' in element && element.name) return element.name;
+    if (kind === 'labels' && 'text' in element && element.text) return element.text.slice(0, 40);
+    if (kind === 'grains') {
+      const g = element as ReadGrain;
+      if (g.label) return g.label;
+      if (g.number != null) return `${g.area_id}/${g.number}`;
+    }
+  }
+  return id.slice(0, 8);
+}
+/** "a, b, c and 4 more": duplicates removed, at most three names. */
+export function nameList(names: string[], max = 3): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, max);
+  const more = unique.length - shown.length;
+  if (more) return `${shown.join(', ')} and ${more} more`;
+  return shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown.at(-1)}` : shown[0] ?? '';
+}
+/** Short readable lines for one side of a difference (base to after); JSON stays under Details. */
+export function describeChange(kind: Kind, before: Element | ReadGrain | undefined, after: Element | ReadGrain | undefined, grainName: (id: string | null | undefined) => string = id => id ? id.slice(0, 8) : 'none'): string[] {
+  if (!before && !after) return [];
+  if (!after) return [kind === 'grains' ? 'retired' : 'deleted'];
+  if (!before) return ['added'];
+  const b = before as unknown as Record<string, unknown>, a = after as unknown as Record<string, unknown>;
+  const lines: string[] = [];
+  const num = (v: unknown) => typeof v === 'number' ? v : null;
+  const point = (o: Record<string, unknown>): [number, number] | null => kind === 'grains'
+    ? Array.isArray(o.centroid_um) ? [Number(o.centroid_um[0]), Number(o.centroid_um[1])] : null
+    : num(o.x_um) !== null && num(o.y_um) !== null ? [o.x_um as number, o.y_um as number] : null;
+  const nameKey = kind === 'spots' ? 'name' : kind === 'grains' ? 'label' : 'text';
+  if (a[nameKey] != null && b[nameKey] != null && a[nameKey] !== b[nameKey]) lines.push(`renamed ${b[nameKey]} to ${a[nameKey]}`);
+  if ('retired' in b || 'retired' in a) { if (!b.retired && a.retired) lines.push('retired'); else if (b.retired && !a.retired) lines.push('restored'); }
+  const p = point(b), q = point(a);
+  if (p && q) { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d >= 0.05) lines.push(`moved ${d.toFixed(1)} µm`); }
+  if (kind === 'grains') {
+    const pb = Array.isArray(b.polygon_um) ? b.polygon_um as number[][] : null, pa = Array.isArray(a.polygon_um) ? a.polygon_um as number[][] : null;
+    if (pb && pa && !equal(pb, pa)) lines.push(`outline changed (${pb.length} to ${pa.length} vertices)`);
+    if ((b.artifact || '') !== (a.artifact || '')) lines.push(a.artifact ? `marked ${a.artifact}` : 'artifact mark removed');
+  }
+  if (kind === 'spots') {
+    if ((b.grain_id ?? null) !== (a.grain_id ?? null) && 'grain_id' in a) lines.push(`grain changed (${grainName(b.grain_id as string | null)} to ${grainName(a.grain_id as string | null)})`);
+    if (num(b.diameter_um) !== null && num(a.diameter_um) !== null && !equal(b.diameter_um, a.diameter_um)) lines.push(`size changed (${b.diameter_um} to ${a.diameter_um} µm)`);
+    if ((b.comment || '') !== (a.comment || '') && 'comment' in a) lines.push('comment changed');
+  }
+  if (lines.length) return lines;
+  const same = equalElement(kind, storedElement(kind, before as never) as Element, storedElement(kind, after as never) as Element);
+  return same ? [] : ['other fields changed'];
 }

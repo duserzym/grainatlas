@@ -1,14 +1,15 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
   import SyncLinkOffer from './SyncLinkOffer.svelte';
-  import { changeCounts, KINDS, type Changes, type Element, type Kind, type ReadGrain } from '../lib/sync';
+  import HeldItems from './HeldItems.svelte';
+  import { changeCounts, nameList, KINDS, type Changes, type Element, type Kind, type ReadGrain } from '../lib/sync';
 
   const session = $derived(app.sync);
   function name(element: Element | ReadGrain | undefined, id: string) {
-    if (!element) return id;
-    if ('name' in element) return element.name;
-    if ('text' in element) return element.text;
-    return element.label || `${element.area_id}/${element.number}`;
+    if (!element) return id.slice(0, 8);
+    if ('name' in element) return element.name || id.slice(0, 8);
+    if ('text' in element) return element.text?.slice(0, 40) || id.slice(0, 8);
+    return element.label || (element.number != null ? `${element.area_id}/${element.number}` : id.slice(0, 8));
   }
   function names(changes: Changes, kind: Kind) {
     const removed = [...changes[kind].delete, ...(kind === 'grains' ? changes.grains.retire : [])];
@@ -21,6 +22,7 @@
 </script>
 
 <section id="sync-details" class="panel" data-testid="sync-details" aria-label="Sync details">
+  <HeldItems />
   <div class="changes">
     {#each [{ label: 'Local changes', changes: session.localChanges }, { label: 'Database changes', changes: session.databaseChanges }] as group}
       <div>
@@ -58,11 +60,14 @@
       {/if}
     {/if}
     {#if session.databaseContext[kind].length}
-      <p>{kind} kept by the database (not part of this project's copy): {session.databaseContext[kind].join(', ')}.</p>
+      <p>{kind} kept by the database (not part of this project's copy): {nameList(session.databaseContext[kind].map(id => session.label(kind, id)))}.</p>
     {/if}
   {/each}
   {#if session.pixelsChanged}<p>Images changed; a new atlas version has not been published.</p>{/if}
-  {#if session.syncDisabledReason || session.error}<p>{session.syncDisabledReason || session.error}</p>{/if}
+  {#if session.syncDisabledReason || session.error}<p data-testid="sync-error">{session.syncDisabledReason || session.errorHeadline}</p>{/if}
+  {#if !session.syncDisabledReason && session.error && (session.errorDetails || session.error !== session.errorHeadline)}
+    <details><summary class="faint small">Details</summary><pre class="faint small" data-testid="sync-error-details">{session.errorDetails || session.error}</pre></details>
+  {/if}
   <SyncLinkOffer />
 </section>
 
@@ -74,4 +79,5 @@
   dt { color:var(--text-muted); }
   dd { margin:0; overflow-wrap:anywhere; }
   .small { font-size:0.8rem; }
+  pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:8rem; overflow:auto; margin:0; }
 </style>

@@ -1,5 +1,6 @@
 import { canWrite } from './presentation.ts';
 import { appStorage } from './app-storage.ts';
+import { grainMapWithoutBlankArtifacts } from './sync.ts';
 import type { Grain, Label, Project, Spot, ToneParams } from './core/types';
 import type { AppState } from './store.svelte';
 import { PROJECT_PREFIX, readRecent, RECENT_KEY } from './deeplink.ts';
@@ -102,7 +103,7 @@ export function answerStoredCopy(app: AppState, restore: boolean, storage?: Copy
   if (restore) {
     app.checkpoint();
     const changes = structuredClone(projectChanges(pending.project));
-    app.grains = changes.grains;
+    app.grains = grainMapWithoutBlankArtifacts(changes.grains);
     app.spots = changes.spots;
     app.labels = changes.labels;
     app.tone = changes.tone;

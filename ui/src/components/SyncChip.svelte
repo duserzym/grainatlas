@@ -2,7 +2,7 @@
   import { app } from '../lib/store.svelte';
   import MountPicker from './MountPicker.svelte';
   import SyncLinkOffer from './SyncLinkOffer.svelte';
-  import type { Resolution } from '../lib/sync';
+  import { describeChange, elementLabel, type Difference, type Resolution } from '../lib/sync';
   let dialogElement = $state<HTMLDialogElement>();
   let { detailsOpen = $bindable(false) }: { detailsOpen?: boolean } = $props();
   let mount = $state('');
@@ -13,6 +13,15 @@
   const pillState = $derived(session.confirmation ? 'needs-confirmation' : session.checking ? 'checking' : session.state === 'in-sync' && session.pixelsChanged ? 'local-changes' : session.state);
   const text = $derived(session.text + (app.draftHere === 'unknown' ? ' · Your draft here, base not checked' : app.draftHere !== null ? ` · Your draft here, based on r${app.draftHere}` : ''));
   const title = $derived([text, session.syncedAt ? `Last synced ${new Date(session.syncedAt).toLocaleString()}` : '', session.syncDisabledReason || session.error].filter(Boolean).join(' · '));
+  const kindName = (d: Difference) => d.kind === 'labels' ? 'Annotation' : d.kind === 'grains' ? 'Grain' : 'Spot';
+  const nameOf = (d: Difference) => elementLabel(d.kind, d.id, { [d.kind]: [d.mine, d.theirs, d.base].filter(e => !!e) }, session.draft?.base);
+  const grainName = (id: string | null | undefined) => id ? session.label('grains', id) : 'none';
+  function sideText(d: Difference, side: 'mine' | 'theirs'): string {
+    const after = d[side];
+    if (!after && d.base) return side === 'theirs' ? d.kind === 'grains' ? 'Retired in the database' : 'Deleted in the database' : d.kind === 'grains' ? 'Retired here' : 'Deleted here';
+    const lines = describeChange(d.kind, d.base, after, grainName);
+    return lines.length ? lines.join(', ') : 'No change';
+  }
   const complete = $derived(session.review?.merge.differences.filter(d => d.collision).every(d => choices[`${d.kind}:${d.id}`]));
   $effect(() => { if (session.dialog === 'review') choices = {}; });
   $effect(() => { if (session.dialog && dialogElement && !dialogElement.open) dialogElement.showModal(); });
@@ -62,9 +71,13 @@
         <div class="differences">
           {#each session.review.merge.differences as d (`${d.kind}:${d.id}`)}
             <section class="panel" data-testid={d.collision ? 'sync-collision' : 'sync-combined'}>
-              <strong>{d.kind} · {d.id}</strong>
+              <strong data-testid="sync-difference-name">{kindName(d)} {nameOf(d)}</strong>
               <p class="faint small">{d.collision ? 'Both changed' : 'Combined automatically'}</p>
-              <div class="versions"><div><b>Mine</b><pre>{d.mine ? JSON.stringify(d.mine, null, 2) : 'Deleted'}</pre></div><div><b>Database</b><pre>{d.theirs ? JSON.stringify(d.theirs, null, 2) : 'Deleted'}</pre></div></div>
+              <div class="versions"><div><b>Mine</b><p data-testid="sync-mine-change">{sideText(d, 'mine')}</p></div><div><b>Database</b><p data-testid="sync-theirs-change">{sideText(d, 'theirs')}</p></div></div>
+              <details><summary class="faint small">Details</summary>
+                <p class="faint small mono">{d.kind} {d.id}</p>
+                <div class="versions"><pre>{d.mine ? JSON.stringify(d.mine, null, 2) : 'Deleted'}</pre><pre>{d.theirs ? JSON.stringify(d.theirs, null, 2) : 'Deleted'}</pre></div>
+              </details>
               {#if d.collision}
                 <div class="actions">
                   {#each ['mine', 'theirs', ...(d.bothAllowed ? ['both'] : [])] as option}

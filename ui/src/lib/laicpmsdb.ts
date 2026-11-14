@@ -1,4 +1,5 @@
 import { canWrite, requireWrite } from './presentation.ts';
+import { errorSentence } from './sync-api.ts';
 // Links and hand-overs to laicpmsdb (the sessions database), through the UPb
 // Studio shell. Not hosted, the bridge's open() resolves false.
 
@@ -49,8 +50,8 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[], gra
 //
 // Endpoints (upblab/docs/WORKFLOW.md v1 and laicpmsdb's schemas/openapi.json):
 //   GET  /v1/mounts                         mount picker (MountOut list)
-//   POST /v1/mounts/{id}/spots              spot sync (MountSpots body)
-//   POST /v1/mounts/{id}/atlas              publish: multipart/form-data, field `bundle` = the zip
+//   POST /v1/mounts/{id}/atlas              publish: multipart/form-data, field `bundle` = the zip;
+//                                           writes no spot rows (spots go by sync), answers spot_check
 //   GET  /v1/mounts/{id}/results            results overlay (MountResults)
 //   GET  /atlas/projects/<project_id>/<path> a published bundle, read-only (open from server)
 
@@ -134,20 +135,17 @@ export class ApiError extends Error {
 }
 
 async function failure(r: Response, what: string): Promise<ApiError> {
-  let detail = '';
+  let raw = '';
+  let body: unknown = null;
   try {
-    const t = await r.text();
-    try {
-      const j = JSON.parse(t);
-      detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail ?? j);
-    } catch {
-      detail = t.slice(0, 200);
-    }
+    raw = await r.text();
+    try { body = JSON.parse(raw); } catch { /* not JSON */ }
   } catch {
     /* no body */
   }
-  const hint = r.status === 401 ? ' (sign in, or paste a token in Settings)' : r.status === 403 ? ' (no permission on this mount)' : '';
-  return new ApiError(r.status, `${what}: ${r.status} ${r.statusText}${hint}${detail ? ` — ${detail}` : ''}`);
+  // Raw status and body go to the console; people get one sentence.
+  console.warn(`${what}: ${r.status} ${r.statusText}`, raw.slice(0, 2000));
+  return new ApiError(r.status, `${what}: ${errorSentence(r.status, body)}`);
 }
 
 function headers(token: string | null, extra: Record<string, string> = {}): Record<string, string> {
@@ -160,7 +158,8 @@ async function call<T>(base: string, path: string, token: string | null, init: R
   try {
     r = await fetch(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined) } });
   } catch (e) {
-    throw new ApiError(0, `${what}: cannot reach ${base} (${e instanceof Error ? e.message : e})`);
+    console.warn(`${what}: cannot reach ${base}`, e);
+    throw new ApiError(0, `${what}: ${errorSentence(0, null)}`);
   }
   if (!r.ok) throw await failure(r, what);
   return (await r.json()) as T;
@@ -180,23 +179,8 @@ export function listMounts(base: string, token: string | null): Promise<MountOut
   return call(base, '/v1/mounts', token, { method: 'GET' }, 'Listing mounts');
 }
 
-/** laicpmsdb's answer to a spot upload (SpotImportOut). */
-export interface SpotImportOut {
-  mount_id: string;
-  project_id: string;
-  sample_id: string | null;
-  sample_name: string | null;
-  created: number;
-  updated: number;
-  unchanged: number;
-  grains_created: number;
-  acquisitions: { id: string; label: string; session_id: string; session_key: string; spot_id: string; atlas_spot_id: string; linked: boolean }[];
-}
-
-export function postSpots(base: string, token: string | null, mountId: string, body: MountSpots): Promise<SpotImportOut> {
-  return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/spots`, token, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }, 'Sending spots');
-}
-
+/** Publish compares the bundle's spots.json with the database (contract 2026-11, section 4). */
+export interface SpotCheck { in_bundle: number; differ: number; not_in_database: number; only_in_database: number; names: string[] }
 /** What grainatlas reads from the publish response; other fields are kept as they come. */
 export interface AtlasPublishOut {
   mount_id?: string;
@@ -204,6 +188,8 @@ export interface AtlasPublishOut {
   version?: number | null;
   sha256?: string;
   url?: string;
+  spot_check?: SpotCheck;
+  warnings?: string[];
   [k: string]: unknown;
 }
 

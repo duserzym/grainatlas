@@ -162,6 +162,74 @@ from preview or the write. A second refusal displays the message and stops with
 the draft intact; hosted returns `ok: false, code: 'failed'`. Other 422s carry
 `code: null, missing: null` and do not retry.
 
+## Partial syncs, request ids and errors (contract 2026-11)
+
+These follow laicpmsdb `docs/sync-contract-2026-11.md`. Every new field is
+optional, so the client behaves as before against a server that sends none.
+
+Every sync is sent with `partial: true`. A 200 reply with a non-empty
+`held_back` list applied everything else. The client then acknowledges only
+that part: the new base takes the database version of each held item (a held
+new element stays out of the base, a held delete keeps the element), so the
+held items remain local changes and stay in the draft's pending set. Items the
+server holds because they depend on a held item are treated the same way. A
+held entry's `op` says whether it was an upsert or a delete; without it the
+client infers it from what it sent. The chip says "N items held back", and the
+sync details show a Held items panel: one item at a time with Previous and
+Next, its label, reason and related labels, and Show, which selects and
+centres the grain or spot on the canvas. Ids are under Details. After fixing,
+Sync again sends the held items with any new edits. The held list is saved in
+the draft (`held_back`) and an item drops out of it once it is no longer a
+local change.
+
+Each sync request carries a `request_id` (a UUID). It is kept in the draft
+(`pending_request`, with a key of the request body) until a reply arrives. A
+retry after a network failure, a lost reply or a 5xx sends the same body with
+the same id, so the server can answer with its stored reply and
+`replayed: true`, which is success. A 422 `request_id_reused` makes a new id
+and sends the request once more. Dry runs carry no request id.
+
+Error replies become one sentence (`errorSentence` in `sync-api.ts`): the
+server's `message` or `detail` when the reply has a `code`, otherwise by status
+(cannot be reached, sign in again, no permission, not found, server problem,
+try again). The raw status and body go to the console and to Details in the
+sync drawer. Problem lists are shown without duplicates, at most three by
+label and "and N more", with one line saying what to do. Notices that used to
+list UUIDs (left-out elements, elements kept by the database, the published
+mount) name spot names, grain labels and the mount label instead, with the
+first 8 characters of an id only when nothing else exists.
+
+The database stores `artifact: ""` for an ordinary grain. In the client an
+ordinary grain has no artifact field: database grains are normalised wherever
+they enter the project (sync merges, adoption, saved projects, stored drafts,
+published bundles read back), in memory only. The diff treats "" and absent as
+equal. The wire still sends `artifact: ""` for every grain, because the
+database keeps an omitted artifact and "" is the only way to clear a mark.
+
+## Publishing and the notice for UPb Lab
+
+Publish atlas stores images and files only. It sends no spots by any other path:
+the old Send spots action (`POST /v1/mounts/{id}/spots`) is removed. When the
+publish reply's `spot_check` counts `differ + not_in_database > 0`, the notice
+says "N spots differ from the database. Sync first?", names up to 10 of them,
+and offers Sync, which runs the normal sync. `warnings` are shown as server
+notes in the same notice.
+
+In the standalone desktop app (not hosted, not the web build), after a sync
+that wrote something (a partial one included; not a replay that wrote nothing,
+not a refusal) and after a successful publish, the page calls the Tauri command
+`notify_upblab(mount_id, project_uuid, revision, server)`. It validates both
+UUIDs and the revision and writes one JSON file atomically (temporary file in
+the same folder, then rename) to
+`<data dir>/edu.umn.upbstudio/inbox/atlas-synced/<mount_id>.json`, where the
+data dir is the platform app-data base (on macOS `~/Library/Application
+Support`). UPb Lab's folder must exist; only the inbox subfolders are created.
+The file holds `v`, `type: "lab.atlas.synced"`, `mount_id`, `project_uuid`,
+`revision`, `server`, `at` and `source: "grainatlas-standalone"`. UPb Lab reads
+and deletes it; GrainAtlas never launches or focuses UPb Lab. Failures are
+logged, never shown. Hosted, the bridge notice (`hosted-sync.ts`) is used and
+no file is written.
+
 ## Hashes
 
 B1 hashes each non-retired element with a non-null atlas ID with SHA-256 over

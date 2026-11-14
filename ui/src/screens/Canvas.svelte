@@ -22,7 +22,7 @@
   import FloatingPanel from '../components/FloatingPanel.svelte';
   import SizeBox from '../components/SizeBox.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
-  import { mountSpotDocuments, postSpots, spotLink } from '../lib/laicpmsdb';
+  import { spotLink } from '../lib/laicpmsdb';
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
@@ -672,39 +672,6 @@
     const ok = await openLink(url);
     app.error = ok ? null : `UPb Lab did not open ${url}`;
   }
-  /**
-   * Spot sync: with a server, a mount and a token (the shell's, or one pasted in Settings) the
-   * spots go straight to POST /v1/mounts/{mount}/spots and the acquisitions laicpmsdb matched by
-   * label come back as the spots' acquisition ids; otherwise the same body is downloaded.
-   */
-  async function sendSpots() {
-    const state = current();
-    if (!state.project || !(await beforeCheckedAction(state))) return;
-    const { documents, skipped } = mountSpotDocuments(state.project, $state.snapshot(state.spots) as Spot[], $state.snapshot(state.grains) as Record<string, Grain[]>);
-    const count = documents.reduce((n, d) => n + d.spots.length, 0);
-    const mount = state.project.laicpmsdb.mount_id;
-    const server = state.server;
-    const tok = server && mount ? await authToken(state) : null;
-    if (!server || !mount || !tok) {
-      download(JSON.stringify({ project_id: state.project.uuid, documents }, null, 2), `${state.pkg?.name ?? state.project.package.name}_laicpmsdb-spots.json`, 'application/json');
-      state.notice = `${count} spots from all areas, ${documents.length} samples for ${mount ? `mount ${mount}` : 'laicpmsdb (no mount id set)'}${skipped ? `; ${skipped} lines and rasters left out` : ''}. Downloaded: ${!server ? 'no server set' : !mount ? 'no mount linked' : 'no token'}.`;
-      return;
-    }
-    const responses = await state.run(`Sending ${count} spots from all areas`, async () => {
-      const results = [];
-      for (const doc of documents) results.push(await postSpots(server, tok, mount, doc));
-      return results;
-    });
-    if (!responses) return;
-    const linked = new Map(responses.flatMap((r) => r.acquisitions ?? []).filter((a) => a.atlas_spot_id).map((a) => [a.atlas_spot_id.toLowerCase(), a.id]));
-    if (linked.size) {
-      state.checkpoint();
-      state.spots = state.spots.map((s) => (linked.has(s.id.toLowerCase()) && !s.acquisition_id ? { ...s, acquisition_id: linked.get(s.id.toLowerCase())! } : s));
-    }
-    const sum = (key: 'created' | 'updated' | 'unchanged' | 'grains_created') => responses.reduce((n, r) => n + r[key], 0);
-    state.notice = `Sent to mount ${mount}: ${sum('created')} created, ${sum('updated')} updated, ${sum('unchanged')} unchanged, ${sum('grains_created')} grains created; ${count} spots from all areas (${documents.length} samples)${linked.size ? `; ${linked.size} acquisitions linked` : ''}${skipped ? `; ${skipped} lines and rasters left out` : ''}.`;
-  }
-
   // ---- spots --------------------------------------------------------------------
   function now() {
     return new Date().toISOString();
@@ -1924,8 +1891,6 @@
 
         </div>
         <details><summary>Advanced</summary><div class="row">
-          <button onclick={sendSpots} disabled={ro || !app.spots.length} data-testid="send-laicpmsdb"
-            title={app.server && app.project?.laicpmsdb.mount_id ? "POST all areas’ spots, grouped by sample to the linked mount (with the sign-in token; downloads the JSON body when there is none)" : "Download all areas’ spots, grouped by sample as the JSON body of laicpmsdb's POST /v1/mounts/{mount_id}/spots (mosaic µm)"}>Send spots to laicpmsdb</button>
           <button onclick={() => publish()} disabled={noPixels || !app.server || !app.project?.laicpmsdb.mount_id} data-testid="publish"
             title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the laicpmsdb server in Settings' : !app.project?.laicpmsdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to laicpmsdb</button>
         </div></details>

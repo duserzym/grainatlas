@@ -113,7 +113,7 @@ export function createFake() {
       const project = JSON.parse(atlas.files.get('project.json').toString('utf8'));
       const mount = project.laicpmsdb.mount_id ?? MOUNTS[0].id;
       const elements = snapshot ? storedElements(elementsOf(project)) : publishedElements(project);
-      if (snapshot) for (const kind of kinds) elements[kind] = elements[kind].map(e => ({ ...e, server_id: `db-${kind}-${e.id}`, project_uuid: uuid, ...(kind === 'spots' ? { acquisition_ids: [] } : {}), ...(kind === 'grains' ? { retired: false, split_from: [], merged_from: [], children: [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) }));
+      if (snapshot) for (const kind of kinds) elements[kind] = elements[kind].map(e => ({ ...e, server_id: `db-${kind}-${e.id}`, project_uuid: uuid, ...(kind === 'spots' ? { acquisition_ids: [] } : {}), ...(kind === 'grains' ? { artifact: e.artifact || '', retired: false, split_from: [], merged_from: [], children: [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) }));
       if (adopted) {
         const unlinked = elements.grains.filter(g => !elements.spots.some(s => s.grain_id === g.id));
         for (const grain of unlinked.slice(-3)) grain.retired = true;
@@ -126,7 +126,7 @@ export function createFake() {
       projects.set(uuid, { uuid, mount, name: project.package.name, version: atlas.version || 1, elements, changed_at: new Date().toISOString() });
       mounts.get(mount).revision = adopted ? 2 : 1; mounts.get(mount).current ??= uuid;
     }
-    return { atlases, projects, mounts, published: [], spots: [], syncs: [], dryRuns: [], requests: [], offline: false, options: {} };
+    return { atlases, projects, mounts, published: [], spots: [], syncs: [], dryRuns: [], requests: [], requestIds: [], replies: new Map(), offline: false, options: {} };
   };
   const allElements = (state, mount) => Object.fromEntries(kinds.map(k => [k, [...state.projects.values()].filter(q => q.mount === mount).flatMap(q => q.elements[k]).concat(state.mounts.get(mount).shared[k])]));
   const elementsFor = (state, project) => Object.fromEntries(kinds.map(k => [k, [...project.elements[k], ...state.mounts.get(project.mount).shared[k]]]));
@@ -182,7 +182,7 @@ export function createFake() {
         }
         const data = { ...old, ...storedElement(kind, el), server_id: old?.server_id ?? el.server_id ?? `db-${kind}-${el.id}`, project_uuid: old?.project_uuid ?? project.uuid,
           ...(kind === 'spots' ? { acquisition_ids: el.acquisition_ids ?? old?.acquisition_ids ?? [] } : {}),
-          ...(kind === 'grains' ? { sample: adopted ? old?.sample ?? null : el.sample !== undefined ? el.sample : old?.sample ?? null, retired: false, children: old?.children ?? [], split_from: el.split_from ? (Array.isArray(el.split_from) ? el.split_from : [el.split_from]) : old?.split_from ?? [], merged_from: el.merged_from ?? old?.merged_from ?? [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) };
+          ...(kind === 'grains' ? { artifact: 'artifact' in el ? el.artifact ?? '' : old?.artifact ?? '', sample: adopted ? old?.sample ?? null : el.sample !== undefined ? el.sample : old?.sample ?? null, retired: false, children: old?.children ?? [], split_from: el.split_from ? (Array.isArray(el.split_from) ? el.split_from : [el.split_from]) : old?.split_from ?? [], merged_from: el.merged_from ?? old?.merged_from ?? [] } : {}), ...(kind === 'labels' ? { retired: false } : {}) };
         if (kind === 'spots') delete data.sample;
         if (kind === 'labels') delete data.server_id;
         values.set(el.id ?? data.server_id, data); record(el.id ?? data.server_id, 'upsert', data);
@@ -229,7 +229,7 @@ export function createFake() {
     state.requests.push({ method: req.method, path, auth: req.headers.authorization ?? null, access: url.searchParams.has('access') });
     let m;
     try {
-      if (path === '/_fake/state') return send(res, 200, { published: state.published, spots: state.spots, syncs: state.syncs, dryRuns: state.dryRuns, offline: state.offline, requests: state.requests, atlases: [...state.atlases.keys()] });
+      if (path === '/_fake/state') return send(res, 200, { published: state.published, spots: state.spots, syncs: state.syncs, dryRuns: state.dryRuns, offline: state.offline, requests: state.requests, requestIds: state.requestIds, atlases: [...state.atlases.keys()] });
       if (path === '/_fake/reset' && req.method === 'POST') {
         // Snapshot/delta fixture or a mount adopted by another client at r2 with
         // three retired grains. Default reset reproduces legacy publishing.
@@ -314,8 +314,21 @@ export function createFake() {
       }
       if ((m = path.match(/^\/v1\/mounts\/([^/]+)\/sync$/)) && req.method === 'POST') {
         if (!authed(req)) return send(res, 401, { detail: 'Unauthorized' });
-        const doc = JSON.parse((await body(req)).toString('utf8'));
+        const { request_id, ...doc } = JSON.parse((await body(req)).toString('utf8'));
         (doc.dry_run ? state.dryRuns : state.syncs).push({ mount_id: m[1], doc: structuredClone(doc) });
+        state.requestIds.push({ request_id: request_id ?? null, dry_run: !!doc.dry_run });
+        // Contract 2026-11: the same request_id and body replays the stored reply; another body is refused.
+        const requestKey = JSON.stringify(doc);
+        if (request_id && state.replies.has(request_id)) {
+          const stored = state.replies.get(request_id);
+          if (stored.key !== requestKey) return send(res, 422, { detail: 'This request id was already used for other changes.', code: 'request_id_reused' });
+          return send(res, 200, { ...stored.reply, replayed: true });
+        }
+        if (state.options.fail_once) {
+          const { status, body: failure } = state.options.fail_once;
+          delete state.options.fail_once;
+          return send(res, status, failure);
+        }
         // Execute the same validation and prospective write on isolated state.
         // Neither revisions, adoption, audit rows nor registrations escape a preview.
         if (doc.dry_run) state = structuredClone(state);
@@ -335,6 +348,23 @@ export function createFake() {
         if (!p) {
           p = { uuid: doc.project_uuid, mount: m[1], name: doc.project_uuid, version: null, elements: emptyElements(), changed_at: new Date().toISOString() };
           state.projects.set(p.uuid, p); mount.current ??= p.uuid;
+        }
+        // Partial syncs: options.hold names items to hold back; spots on a held grain are held too.
+        const held_back = [];
+        if (doc.partial && state.options.hold?.length) {
+          const known = elementsFor(state, p);
+          const name = (kind, id) => { const e = [...doc[kind].upsert, ...known[kind]].find(x => x.id === id); return e?.name ?? e?.label ?? e?.text?.slice(0, 40) ?? id.slice(0, 8); };
+          const holdItem = (kind, id, extra = {}) => {
+            if (held_back.some(h => h.id === id)) return;
+            const op = doc[kind].upsert.some(e => e.id === id) ? 'upsert' : 'delete';
+            held_back.push({ kind: kind.slice(0, -1), id, op, label: name(kind, id), code: 'invalid', reason: `${name(kind, id)} was not accepted.`, related: [], ...extra });
+            doc[kind].upsert = doc[kind].upsert.filter(e => e.id !== id);
+            doc[kind].delete = doc[kind].delete.filter(x => x !== id);
+          };
+          for (const h of state.options.hold) holdItem(`${h.kind}s`, h.id, { ...(h.code ? { code: h.code } : {}), ...(h.reason ? { reason: h.reason } : {}), ...(h.related ? { related: h.related } : {}) });
+          for (const grain of held_back.filter(h => h.kind === 'grain' && h.op === 'upsert' && !known.grains.some(g => g.id === h.id))) {
+            for (const spot of doc.spots.upsert.filter(s => s.grain_id === grain.id)) holdItem('spots', spot.id, { code: 'depends_on_held', reason: `Spot ${spot.name} is on grain ${grain.label}, which was held back.`, related: [{ kind: 'grain', id: grain.id, label: grain.label }] });
+          }
         }
         const labels = new Map();
         for (const grain of doc.grains.upsert) {
@@ -405,9 +435,18 @@ export function createFake() {
         const all = allElements(state, p.mount);
         const not_in_snapshot = Object.fromEntries(kinds.map(k => [k, doc.mode === 'snapshot' ? all[k].filter(e => !e.retired && !doc[k].upsert.some(s => s.id === e.id)).map(e => e.id ?? e.server_id) : []]));
         if (kinds.some(k => not_in_snapshot[k].length)) warnings.push('Some database elements were absent from the snapshot; they were kept.');
-        return send(res, 200, { mount_id: p.mount, project_uuid: p.uuid, mode: doc.mode, previous_revision, revision: mount.revision, applied,
-          ids: Object.fromEntries(kinds.map(k => [k, Object.fromEntries(doc[k].upsert.map(e => [e.id, k === 'labels' ? e.id : elementsFor(state, p)[k].find(s => s.id === e.id).server_id]))])),
-          acquisitions_linked: 0, complete: !kinds.some(k => not_in_snapshot[k].length), warnings: [...new Set(warnings)], rebased_over: previous_revision - doc.base_revision, not_in_snapshot, dry_run: !!doc.dry_run });
+        const reply = { mount_id: p.mount, project_uuid: p.uuid, mode: doc.mode, previous_revision, revision: mount.revision, applied,
+          ids: Object.fromEntries(kinds.map(k => [k, Object.fromEntries(doc[k].upsert.map(e => [e.id, k === 'labels' ? e.id : elementsFor(state, p)[k].find(s => s.id === e.id)?.server_id ?? null]))])),
+          acquisitions_linked: 0, complete: !held_back.length && !kinds.some(k => not_in_snapshot[k].length), warnings: [...new Set(warnings)], rebased_over: previous_revision - doc.base_revision, not_in_snapshot, dry_run: !!doc.dry_run,
+          ...(doc.partial ? { held_back } : {}) };
+        if (request_id && !doc.dry_run) state.replies.set(request_id, { key: requestKey, reply });
+        if (state.options.lose_reply_once && !doc.dry_run) {
+          // The write happened but the reply never arrives: a dropped connection, else a gateway timeout.
+          delete state.options.lose_reply_once;
+          if (res.socket?.destroy) { res.socket.destroy(); return; }
+          return send(res, 504, 'Gateway Timeout', 'text/plain');
+        }
+        return send(res, 200, reply);
       }
 
       if ((m = path.match(/^\/atlas\/projects\/([^/]+)\/(.+)$/)) && req.method === 'GET') {
@@ -475,8 +514,9 @@ export function createFake() {
         const base = `/atlas/projects/${atlas.project_id}/`;
         const rec = {
           mount_id: m[1], project_id: atlas.project_id, version, sha256: zsha, url: `http://${req.headers.host}${PREFIX}${ns ? `/ns/${ns}` : ''}${base}`,
-          created: true, is_current: true, file_count: files.size, total_bytes: zip.length, base_url: base, warnings: [],
-          spots: { created: n, updated: 0, unchanged: 0, grains_created: 0, mount_id: m[1], project_id: atlas.project_id, acquisitions: [] },
+          created: true, is_current: true, file_count: files.size, total_bytes: zip.length, base_url: base, warnings: state.options.publish_warnings ?? [],
+          // Contract 2026-11 section 4: publishing writes no spot rows; it compares spots.json with the database.
+          spot_check: { in_bundle: n, differ: 0, not_in_database: 0, only_in_database: 0, names: [], ...state.options.spot_check },
           filename: file.name,
         };
         state.published.push(rec);
