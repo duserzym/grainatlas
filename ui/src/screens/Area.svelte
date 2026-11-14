@@ -200,7 +200,7 @@
           <span>Residual RMS <b class="num" data-testid="rms">{fmt(placement?.rms_residual ?? 0)}</b> px, max <b class="num">{fmt(placement?.max_residual ?? 0)}</b> px</span>
           <span>Overlap RMS <b class="num">{fmt(summary.photometric.overlap_rms_before * 255, 1)} → {fmt(summary.photometric.overlap_rms_after * 255, 1)}</b> grey levels</span>
           {#if summary.photometric.fallback}<div class="faint small">{summary.photometric.fallback}</div>{/if}
-          <span class="faint" title={summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}>{summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}</span>
+          <span class="faint timings" title={summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}>{summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}</span>
         </div>
       {/if}
     </section>
@@ -360,11 +360,12 @@
     align-items: center;
     gap: var(--space-3);
   }
+  .head h2 { min-width: 0; overflow-wrap: anywhere; }
   .actions {
     margin-left: auto;
     display: flex;
-    flex-shrink: 0;
-    white-space: nowrap;
+    min-width: 0;
+    flex-wrap: wrap;
     gap: var(--space-2);
     align-items: center;
   }
@@ -408,14 +409,19 @@
     left: var(--space-2);
     top: var(--space-2);
   }
-  /* One line per cell, the cell count fixed: the view keeps its size when the numbers change. */
+  /* Measured values wrap between complete values, so no number is cut off; each row keeps room
+     for two lines, so the view keeps its size when the numbers change. The timings line (full
+     text in its title) stays on one line. */
   .stats {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
+    grid-auto-rows: minmax(2.6em, auto);
     gap: var(--space-1) var(--space-4);
     font-size: 0.85rem;
+    line-height: 1.3;
   }
-  .stats > span {
+  .stats .num { white-space: nowrap; }
+  .stats > .timings {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

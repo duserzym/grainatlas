@@ -10,7 +10,7 @@
     {#if app.busy?.progress}<span class="muted">{app.busy.progress.stage} {pct}%</span>{/if}
     <button onclick={() => app.cancel()}>Cancel</button>
   </div>
-  <div class="bar"><div class="fill" style:width="{pct ?? 0}%"></div></div>
+  <div class="bar"><div class="fill" style:transform="scaleX({(pct ?? 0) / 100})"></div></div>
 </div>
 
 <style>
@@ -41,7 +41,8 @@
   .fill {
     height: 100%;
     background: var(--accent);
-    transition: width var(--motion);
+    transform-origin: left;
+    transition: transform var(--motion);
   }
   .spinner {
     width: 14px;
@@ -50,6 +51,9 @@
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
   }
   @keyframes spin {
     to {

@@ -282,6 +282,16 @@
   const tableArtifacts = $derived(artifacts.filter((g) => !showOnlyNew || g.added));
   const visibleGrains = $derived(grains.filter((g) => app.showNeighbourGrains || !owners.get(g.id)?.duplicate_of));
   const tableGrains = $derived(visibleGrains.filter((g) => !showOnlyNew || g.added));
+  /** Clears the table filters: show only new, hidden neighbour grains and Review's spot subset. */
+  function showAll() {
+    showOnlyNew = false;
+    app.showNeighbourGrains = true;
+    const project = app.project?.uuid;
+    if (project) {
+      const { [project]: _hidden, ...rest } = reviewSpots.projects;
+      reviewSpots.projects = rest;
+    }
+  }
   const outlinedGrains = $derived(reviewVisible
     ? visibleGrains.filter(g => spots.some(s => s.grain_id === g.id))
     : visibleGrains);
@@ -393,12 +403,14 @@
     }
   }
   function setSpotSelection(sel: Sel, canvas = false) {
+    app.flash = null;
     app.selection = sel.ids;
     spotAnchor = sel.anchor;
     selGrains = [];
     if (canvas) void scrollAnchor('spot', spotAnchor);
   }
   function setGrainSelection(sel: Sel, canvas = false) {
+    app.flash = null;
     selGrains = sel.ids;
     grainAnchor = sel.anchor;
     app.selection = [];
@@ -1355,6 +1367,7 @@
       return;
     }
     if (app.busy || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
+    if (e.key.startsWith('Arrow')) app.flash = null;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
     const mod = e.metaKey || e.ctrlKey;
@@ -1860,10 +1873,10 @@
             <tbody>
               {#each tableSpots as s (s.id)}
                 <tr data-spot-id={s.id} class:selected={app.selection.includes(s.id)} onclick={(e) => spotRow(s, e)}>
-                  <td>{s.name}</td><td class="num">{s.diameter_um}</td>
+                  <td class="spot-name">{s.name}</td><td class="num">{s.diameter_um}</td>
                 </tr>
               {:else}
-                <tr><td colspan="2" class="muted">{ro ? 'No registered spots in this area.' : 'Pick the Spot tool (S) and click on a grain.'}</td></tr>
+                <tr><td colspan="2" class="muted">{areaSpots.length ? 'No spots match the current filter' : ro ? 'No registered spots in this area.' : 'Pick the Spot tool (S) and click on a grain.'}</td></tr>
               {/each}
             </tbody>
           </table>
@@ -2052,6 +2065,8 @@
                   <td>{grainNumber(g)}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
                   <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
+              {:else}
+                <tr><td colspan="5" class="muted">{showOnlyNew || !app.showNeighbourGrains ? 'No grains match the current filter' : 'No grains in this area.'}</td></tr>
               {/each}
             </tbody>
           </table>
@@ -2074,8 +2089,12 @@
         {/if}
       {/if}
       </fieldset>
+      <!-- Outside the fieldset: clearing a filter changes no data, so it works read-only too. -->
+      {#if (tab === 'spots' && !tableSpots.length && areaSpots.length) || (tab === 'grains' && !tableGrains.length && (showOnlyNew || !app.showNeighbourGrains))}
+        <div class="row"><button onclick={showAll} data-testid="show-all">Show all</button></div>
+      {/if}
       {#if !ro}
-      <details class="spot-entry" open={app.layout.spotEntryOpen} ontoggle={(e) => { app.layout.spotEntryOpen = e.currentTarget.open; app.saveLayout(); }}>
+      <details class="spot-entry" open={app.layout.spotEntryOpen} ontoggle={(e) => { if (app.layout.spotEntryOpen === e.currentTarget.open) return; app.layout.spotEntryOpen = e.currentTarget.open; app.saveLayout(); }}>
         <summary>Spot entry</summary>
         <div class="entry-body">
           <div class="diam">⌀ <SizeBox value={app.diameter} onchange={setDiameter} label="Spot diameter (µm) for the next spot and the selected spots" testid="size-side" /></div>
@@ -2445,6 +2464,7 @@
     width: 12rem;
     font-family: var(--font-mono);
   }
+  .spot-name { overflow-wrap: anywhere; }
   :global(.ga-root) .shell-flash {
     fill: none;
     stroke: var(--ov-number);

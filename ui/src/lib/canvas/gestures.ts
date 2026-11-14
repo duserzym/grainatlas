@@ -19,6 +19,7 @@
 // -3 × deltaY for trackpads and a multiple of 120 for mouse notches;
 // Firefox has no wheelDeltaY and reports mouse notches in lines (deltaMode 1).
 
+import { frameView } from './frame-view';
 import { type View, panBy, rotateAt, toMosaic, zoomAt } from './view';
 
 export interface ViewPoint {
@@ -93,6 +94,7 @@ function isTyping(t: EventTarget | null) {
 /** Attaches the gestures to `o.host`; returns the detach function. */
 export function attachGestures(o: GestureOptions): () => void {
   const host = o.host;
+  const view = frameView(o.getView, o.setView);
   if (!host.hasAttribute('tabindex')) host.tabIndex = 0;
   let spaceDown = false;
   let inside = false;
@@ -107,11 +109,11 @@ export function attachGestures(o: GestureOptions): () => void {
   const pt = (e: PointerEvent | MouseEvent): ViewPoint => {
     const r = rect();
     const sx = e.clientX - r.left, sy = e.clientY - r.top;
-    const [x, y] = toMosaic(o.getView(), sx, sy);
+    const [x, y] = toMosaic(view.get(), sx, sy);
     return { x, y, sx, sy, ev: e };
   };
   const onUi = (e: Event) => !!(e.target as Element | null)?.closest?.('[data-ui]');
-  const set = (v: View) => o.setView(v);
+  const set = (v: View) => view.set(v);
 
   function down(e: PointerEvent) {
     if (onUi(e)) return;
@@ -141,7 +143,7 @@ export function attachGestures(o: GestureOptions): () => void {
       const d = Math.hypot(b.x - a.x, b.y - a.y), ang = Math.atan2(b.y - a.y, b.x - a.x);
       const r = rect();
       const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
-      let nv = zoomAt(o.getView(), mx, my, d / pinch.d);
+      let nv = zoomAt(view.get(), mx, my, d / pinch.d);
       if (o.rotate) nv = rotateAt(nv, mx, my, ang - pinch.a);
       pinch = { d, a: ang };
       set(nv);
@@ -149,7 +151,7 @@ export function attachGestures(o: GestureOptions): () => void {
     }
     if (mode === 'tool') o.ondrag?.(pt(e));
     else if (mode === 'maybe' && Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_SLOP) mode = 'pan';
-    if (mode === 'pan') set(panBy(o.getView(), e.clientX - last.x, e.clientY - last.y));
+    if (mode === 'pan') set(panBy(view.get(), e.clientX - last.x, e.clientY - last.y));
     last = { x: e.clientX, y: e.clientY };
     if (mode === 'none' && !onUi(e)) o.onhover?.(pt(e));
   }
@@ -173,19 +175,19 @@ export function attachGestures(o: GestureOptions): () => void {
     if (kind === 'pinch') {
       if (gesture) return; // WebKit sends gesture events for the same pinch
       // Pinch deltas are small; a ctrl+mouse notch is large: clamp so both feel the same.
-      set(zoomAt(o.getView(), sx, sy, Math.exp(-Math.max(-50, Math.min(50, dy)) * PINCH_ZOOM)));
+      set(zoomAt(view.get(), sx, sy, Math.exp(-Math.max(-50, Math.min(50, dy)) * PINCH_ZOOM)));
       return;
     }
     if (e.altKey && o.rotate) {
-      set(rotateAt(o.getView(), sx, sy, dy * 0.002));
+      set(rotateAt(view.get(), sx, sy, dy * 0.002));
       return;
     }
     if (kind === 'mouse') {
-      if (e.shiftKey) set(panBy(o.getView(), -(dx || dy), 0));
-      else set(zoomAt(o.getView(), sx, sy, Math.exp(-dy * WHEEL_ZOOM)));
+      if (e.shiftKey) set(panBy(view.get(), -(dx || dy), 0));
+      else set(zoomAt(view.get(), sx, sy, Math.exp(-dy * WHEEL_ZOOM)));
       return;
     }
-    set(panBy(o.getView(), -dx, -dy));
+    set(panBy(view.get(), -dx, -dy));
   }
 
   // WebKit trackpad gestures (Safari, WKWebView in Tauri on macOS): pinch and rotate.
@@ -199,7 +201,7 @@ export function attachGestures(o: GestureOptions): () => void {
     if (!gesture) return;
     const r = rect();
     const sx = (g.clientX ?? r.left + r.width / 2) - r.left, sy = (g.clientY ?? r.top + r.height / 2) - r.top;
-    let nv = zoomAt(o.getView(), sx, sy, g.scale / gesture.scale);
+    let nv = zoomAt(view.get(), sx, sy, g.scale / gesture.scale);
     if (o.rotate) nv = rotateAt(nv, sx, sy, (((g.rotation ?? 0) - gesture.rot) * Math.PI) / 180);
     gesture = { scale: g.scale, rot: g.rotation ?? 0 };
     set(nv);
@@ -212,6 +214,7 @@ export function attachGestures(o: GestureOptions): () => void {
   function dbl(e: MouseEvent) {
     if (onUi(e)) return;
     if (o.ondblclick?.(pt(e))) return;
+    view.clear();
     o.fit();
   }
 
@@ -229,16 +232,17 @@ export function attachGestures(o: GestureOptions): () => void {
     if (nudge[e.key]) {
       if (o.canNudge && !o.canNudge()) return;
       e.preventDefault();
-      set(panBy(o.getView(), ...nudge[e.key]));
+      set(panBy(view.get(), ...nudge[e.key]));
     } else if (e.key === '+' || e.key === '=') {
       e.preventDefault();
-      set(zoomAt(o.getView(), r.width / 2, r.height / 2, 1.5));
+      set(zoomAt(view.get(), r.width / 2, r.height / 2, 1.5));
     } else if (e.key === '-' || e.key === '_') {
       e.preventDefault();
-      set(zoomAt(o.getView(), r.width / 2, r.height / 2, 1 / 1.5));
+      set(zoomAt(view.get(), r.width / 2, r.height / 2, 1 / 1.5));
     } else if (e.key === '0') {
       e.preventDefault();
-      o.fit();
+      view.clear();
+    o.fit();
     }
   }
 
@@ -262,6 +266,7 @@ export function attachGestures(o: GestureOptions): () => void {
   window.addEventListener('keydown', key);
   window.addEventListener('keyup', key);
   return () => {
+    view.clear();
     host.removeEventListener('pointerdown', down);
     host.removeEventListener('pointermove', move);
     host.removeEventListener('pointerup', up);

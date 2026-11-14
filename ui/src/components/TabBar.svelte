@@ -215,6 +215,9 @@
     animation: spin 0.8s linear infinite;
     flex: none;
   }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
   @keyframes spin {
     to {
       transform: rotate(360deg);

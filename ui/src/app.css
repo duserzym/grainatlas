@@ -157,9 +157,12 @@
   transition: background var(--motion), border-color var(--motion);
 }
 .ga-root button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.ga-root .tab, .ga-root [role="tab"], .ga-root [aria-pressed] { transition: none; }
+.ga-root button:active:not(:disabled), .ga-root .btn:active:not(:disabled) { background: var(--hairline); transition: none; }
 .ga-root button:disabled { opacity: 0.45; cursor: default; }
 .ga-root button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); font-weight: 600; }
 .ga-root button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.ga-root button.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 80%, var(--text)); filter: none; }
 .ga-root button.danger { color: var(--danger); }
 .ga-root button.icon { padding: 0.3rem 0.5rem; min-width: 2rem; }
 .ga-root button[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
