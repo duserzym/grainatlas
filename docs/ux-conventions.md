@@ -102,8 +102,8 @@ Delete or Backspace deletes the selected spots, or the selected grains.
 
 - Everything that needs laicpmsdb sits behind one Settings entry (the
   server) and works the same without it; a missing server, mount or token
-  turns a server action into its file equivalent (grainatlas: "Send spots"
-  downloads the body, the atlas bundle saves as a folder or zip) and the
+  turns a server action into its file equivalent (grainatlas: the atlas
+  bundle saves as a folder or zip) and the
   message says which was missing.
 - Sign-in: the shell's `token()` when hosted; standalone, a token pasted in
   Settings, kept until the tab closes unless "remember" is ticked. Never in

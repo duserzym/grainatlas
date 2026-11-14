@@ -53,7 +53,7 @@ the three bridge commands are allowed there, not grainatlas's own commands.
   spot panel). "Open in laicpmsdb" calls `open('laicpmsdb://acquisition/<id>')`,
   else `open('laicpmsdb://search?label=<spot name>')`; it is disabled with a
   tooltip when not hosted. Selecting one spot sends `{ type:
-  'lab.spot.selected', project, spot, name, grain, area, via }`. "Send spots to
+  'lab.spot.selected', project, spot, name, grain, area, via }`. (2026-11: "Send spots to laicpmsdb" is retired; spots reach the database only by sync, see docs/sync-client.md.) The former "Send spots to
   laicpmsdb" on the Spots tab downloads the body of `POST
   /v1/mounts/{mount_id}/spots`: `{ project_id, sample, spots: [{ id, name,
   grain, x_um, y_um, diameter_um, kind: 'spot' }] }` for the current area's
