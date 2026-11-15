@@ -54,6 +54,7 @@ mod memory;
 mod profile;
 mod recent;
 mod project_save;
+mod signin;
 mod store;
 mod updater;
 mod upblab;
@@ -944,6 +945,8 @@ pub fn run() {
             notify_upblab,
             enable_quit_guard,
             finish_quit,
+            signin::sign_in_browser,
+            signin::sign_in_cancel,
             updater::update_check,
             updater::update_download,
             updater::update_install,

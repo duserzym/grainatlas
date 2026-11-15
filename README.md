@@ -257,8 +257,12 @@ See `docs/decisions/ADR-0005-hosted-module.md`.
 
 All of this is optional; without a server grainatlas works as before.
 
-- **Settings → laicpmsdb**: the server (`http://host:8000`), a token when
-  grainatlas runs on its own (inside UPb Studio the shell's sign-in is used),
+- **Settings → laicpmsdb**: the server (`http://host:8000`) and, when
+  grainatlas runs on its own, **Sign in…**: it opens the server's sign-in page
+  in the browser (password, ORCID, Google or GitHub, whatever the server
+  offers), the person confirms, and the browser hands a one-time code back to
+  the app on `127.0.0.1` (RFC 8252 loopback; laicpmsdb's `#/connect` page). A
+  pasted token still works. Inside UPb Studio the shell's sign-in is used,
   the atlas tile quality (lossless WebP, or near-lossless at 97 or 92) and the
   folder where SEM packages live on the lab storage. A `?server=` in the page
   address wins for that page load; served by laicpmsdb under `/atlas/`,

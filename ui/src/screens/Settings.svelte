@@ -6,6 +6,7 @@
   import UpdatesPanel from '../components/UpdatesPanel.svelte';
   import { normalizeServer } from '../lib/laicpmsdb';
   import { openFromServer } from '../lib/remote';
+  import { canSignInWithBrowser, cancelSignIn, signInWithBrowser } from '../lib/signin';
 
   let openId = $state('');
   let storageText = $state('');
@@ -19,6 +20,36 @@
     app.link.server = normalizeServer(serverText) ?? '';
     serverText = app.link.server;
     app.saveLink();
+  }
+
+  const browserSignIn = canSignInWithBrowser(hosted);
+  let signingIn = $state(false);
+  let signInText = $state('');
+  let signInError = $state('');
+  async function signIn() {
+    saveServer();
+    if (!app.server) { signInError = 'Set the laicpmsdb server first.'; return; }
+    signingIn = true;
+    signInError = '';
+    signInText = 'Finish signing in in your browser…';
+    try {
+      const { token, name } = await signInWithBrowser(app.server);
+      app.link.token = token;
+      app.link.rememberToken = true;
+      app.saveLink();
+      signInText = `Signed in as ${name}. The token is kept on this computer.`;
+    } catch (e) {
+      signInText = '';
+      signInError = e instanceof Error ? e.message : String(e);
+    } finally {
+      signingIn = false;
+    }
+  }
+  function signOut() {
+    app.link.token = '';
+    app.saveLink();
+    signInText = 'Signed out on this computer.';
+    signInError = '';
   }
 
   let presets = $state(app.settings.spot_presets_um.join(', '));
@@ -76,6 +107,19 @@
     {#if hosted}
       <p class="faint small">In UPb Lab the shell's sign-in is used (no token needed here).</p>
     {:else}
+      {#if browserSignIn}
+        <div class="openrow">
+          {#if signingIn}
+            <button onclick={() => void cancelSignIn()} data-testid="sign-in-cancel">Cancel</button>
+          {:else}
+            <button class="primary" onclick={signIn} disabled={!app.server && !serverText.trim()} data-testid="sign-in">Sign in…</button>
+            {#if app.link.token}<button onclick={signOut} data-testid="sign-out">Sign out</button>{/if}
+          {/if}
+        </div>
+        {#if signInText}<p class="small" role="status">{signInText}</p>{/if}
+        {#if signInError}<p class="small error" role="alert">{signInError}</p>{/if}
+        <p class="faint small">Opens the server's sign-in page in your browser (any method it offers). Or paste a token below.</p>
+      {/if}
       <label class="field">Token
         <input type="password" autocomplete="off" placeholder="bearer token from laicpmsdb" bind:value={app.link.token} onchange={() => app.saveLink()} data-testid="token" />
       </label>
@@ -134,6 +178,9 @@
 </section>
 
 <style>
+  .error {
+    color: var(--danger);
+  }
   /* The whole screen scrolls inside main (never past the window): padding, not margin. */
   .settings {
     max-width: 960px;
