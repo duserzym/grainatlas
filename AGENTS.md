@@ -11,8 +11,12 @@ audits every diff, runs the browser and app checks and makes the commits.
 
 1. **Never commit, tag, push, or create remotes, releases or secrets.** Leave
    the work in the working tree. `git status` and `git diff` are fine.
-2. **No real data in the repository.** `tests/fixtures/` holds the one small
-   TM4000 area; never copy files from `~/My Drive…` or other repositories.
+2. **No real data in the repository; it is public.** The only image is
+   `docs/app-blank.png` (the app before anything opens). The sample-based
+   test suite and fixtures were removed when the repository went public
+   (2026-11-15); a copy is kept outside git in
+   `~/Github/lab-builds/grainatlas-private/`. Never copy files from
+   `~/My Drive…` or other repositories, and never re-add sample images.
 3. **CI stays quiet.** Workflows run only on `v*` tags and
    `workflow_dispatch`. Never add push or pull-request triggers.
 4. **Light theme by default; every screen fits 1440 x 900 and 1280 x 800**
@@ -33,28 +37,20 @@ audits every diff, runs the browser and app checks and makes the commits.
 ```bash
 make bridge                 # builds ../upbstudio/bridge/dist once (@lab/bridge)
 make wasm                   # wasm core into ui/src/lib/core/pkg
-make quick                  # changed-file checks, BASE=HEAD~1 for the last commit
-make full                   # complete check, including types and desktop compilation
+make full                   # Rust unit tests, svelte-check and desktop compilation
 cd ui && pnpm check         # svelte-check
-make unit                   # node --test ui/unit/*.test.ts
 cd ui && pnpm build         # static build in ui/dist
 make desktop-check          # generates icons and checks the Tauri shell
 ```
 
-Playwright (`make e2e`, `ui/tests/*.spec.ts`) needs browsers and the preview
-server; write or update the spec files when the brief asks, and run them if
-`pnpm exec playwright test <file>` works on this machine. You cannot run the
-desktop app; the supervisor does.
+You cannot run the desktop app; the supervisor does.
 
-## Check tiers
+## Checks
 
-Run `make quick` on every change. It compares HEAD with staged, unstaged and
-untracked files; use `BASE=HEAD~1 make quick` to include the last commit.
-Run `make full` once before an install or build, and for any change to sync,
+Run `make full` before an install or build, and for any change to sync,
 storage, saved-file formats, print layout or anything touching registered data.
-Full includes Svelte checks, unit tests, core and CLI tests, native/wasm parity,
-every Playwright test and desktop-check. Quick prints its selection; docs-only
-changes need no checks. See `docs/test-tiers.md` for the selection rules.
+It runs the Rust unit tests, svelte-check and desktop-check. Docs-only changes
+need no checks.
 
 ## Style
 
@@ -80,7 +76,7 @@ any app built from it is installed in `/Applications` and smoke-tested:
    is still writing there, and prints free space before and after. It also
    keeps the shared install-build target
    `~/Library/Caches/lab-builds/grainatlas-target` (2.6 GiB, kept on the
-   owner's request so installs are faster; `docs/test-tiers.md`). Delete the
+   owner's request so installs are faster). Delete the
    `.app` left in its `release/bundle/macos/` after copying it out; remove the
    whole cache (`make clean-release-cache`) only when the owner asks.
 3. Remove the worktrees and build checkouts you created for this work

@@ -6,12 +6,9 @@ Worker) and as a desktop app (Tauri 2, native and multithreaded) behind the
 same Svelte interface. Nothing leaves your computer: packages are read
 in place. Companion to [laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
 
-![grainatlas: CL zircon grains outlined on the canvas, with spots named sample_n](docs/images/07-dark.webp)
+![grainatlas on first launch, before a package is opened](docs/app-blank.png)
 
 ## Workflow
-
-The screenshots are of the bundled test fixture: one 3 × 2 tile area of a
-Hitachi TM4000 CL package at 150×. `make screenshots` takes them again.
 
 ### 1. Open a package
 
@@ -20,7 +17,6 @@ package (`.zag`, one subfolder per area), a single area folder, any folder of
 images with a `positions.csv`, or loose images with a scale you type once.
 Several packages or saved projects open as tabs.
 
-![Open screen](docs/images/01-open.webp)
 
 ### 2. Stitch and tone
 
@@ -30,7 +26,6 @@ mosaic). Gain, offset, beam-exposure steps and background are corrected in
 one solve. **Auto** sets the tone from the histogram; every control re-renders
 the mosaic live, and **After ⇄** compares with the raw tiles.
 
-![Area screen after stitching and Auto tone](docs/images/02-stitch-tone.webp)
 
 ### 3. Find the grains
 
@@ -41,7 +36,6 @@ they show dimmed with their reason, and one click keeps one as a grain.
 Grains are numbered in reading order, stable across re-runs. Grains that a
 neighbouring area also captured are dashed in that area's colour.
 
-![Grains found on the canvas](docs/images/03-grains.webp)
 
 ### 4. Make the final call by hand
 
@@ -56,7 +50,6 @@ You decide what a grain is.
 
 **Find again** keeps the grains you drew, and ⌘Z undoes any edit.
 
-![Outlining a grain click by click with edge snapping](docs/images/04-outline.webp)
 
 ### 5. Place spots
 
@@ -76,7 +69,6 @@ then takes a new diameter, **Renumber…** (from a start number, in table,
 placement or row order, with a preview and a check for names used twice),
 **Sample or pattern…** or Delete, each one undo step.
 
-![Spots named HJ-GC1_1 … HJ-GC1_6, with a spot card open](docs/images/05-spots.webp)
 
 ### 6. Print sheets for the laser session
 
@@ -92,7 +84,6 @@ one scale (tabloid, 1 mm = 8 µm by default):
 **Save project** (⌘S) writes the project back into the `.grainatlas` folder
 it came from.
 
-![A tabloid print sheet](docs/images/06-sheets.webp)
 
 After the session, laicpmsdb's results show on the spots. A fiducial fit maps
 the mosaic to the laser stage and writes the spot list (see "laicpmsdb and the
@@ -153,29 +144,26 @@ waiting for its name and an example file).
 ## Quick start
 
 ```bash
-make setup        # Rust stable + wasm target, wasm-bindgen-cli, UI dependencies, Playwright browser
-make quick        # checks selected from staged, unstaged and untracked changes
-make full         # complete check, including all browser tests and the desktop shell
+make setup        # Rust stable + wasm target, wasm-bindgen-cli, UI dependencies
+make full         # Rust unit tests, svelte-check and the desktop crate
 make ui-build     # static page in ui/dist (serve it from any static server)
 make ui-dev       # dev server on http://localhost:5174
 make desktop-dev  # desktop app (Tauri 2) on this machine
 ```
 
-Run `make quick` on every change. Use `BASE=HEAD~1 make quick` to include the
-last commit. Run `make full` once before an install or build, and for any change
-to sync, storage, saved-file formats, print layout or anything touching registered
-data. `make test` keeps the core, unit, parity and browser checks; full also checks
-types and desktop compilation. See [test tiers](docs/test-tiers.md)
-for selection rules and measurements.
+The public repository carries no sample images and no image-based test suite;
+those stay with the lab. `make full` runs the Rust unit tests, type checks and a
+desktop compile.
 
 Development desktop builds use the separate `dev` browser storage profile by default.
 Test bundles must be launched with `GRAINATLAS_PROFILE=test` or `--profile test`; named profiles keep localStorage separate and show their name in the window title (on macOS, separate stores require macOS 14 or later).
 Release launches without a profile keep the normal app's existing storage.
 
-CI: until the first release, GitHub Actions runs only on `v*` tags and by hand,
-not on push or pull requests. Run it with `gh workflow run ci` (tests),
-`gh workflow run desktop` (installers) or `gh workflow run release` (web
-archive); all three need the `UPBSTUDIO_TOKEN` secret below.
+CI: GitHub Actions runs only on `v*` tags and by hand, not on push or pull
+requests. All three workflows (`ci`, `desktop`, `release`) need the
+`UPBSTUDIO_TOKEN` secret below while upblab is private, so `desktop` and
+`release` are disabled for now and the macOS release is built on a Mac
+(`make desktop-build` with `tauri.release.conf.json`; see Updates).
 
 ## Re-render saved areas
 
@@ -286,7 +274,7 @@ All of this is optional; without a server grainatlas works as before.
   (`laicpmsdb.published`). The mount comes from `GET /v1/mounts` when the
   server answers, else it is typed. `grainatlas atlas <package> --out <dir or
   .zip>` writes the same bundle from the command line, and native and browser
-  builds write identical bytes (`make parity`).
+  builds write identical bytes.
 - **Open from server**: `index.html?server=<base>&project=<id>[&spot=<id>]`
   (`&mount=<id>&access=<token>` in laicpmsdb's own viewer links, enough for
   the files and the mount's results without signing in),
@@ -302,11 +290,6 @@ All of this is optional; without a server grainatlas works as before.
   coordinates read off the laser give an affine map (least squares, residuals
   in µm, a warning above 5 µm); "Export spot list" writes the generic CSV in
   the laser's units. Adding the lab's laser software: `docs/laser-adapters.md`.
-- **Developing without laicpmsdb**: `pnpm dev` and `pnpm preview` mount a fake
-  laicpmsdb at `/fake-laicpmsdb` (`ui/scripts/fake-laicpmsdb.mjs`, token
-  `test-token`) with atlas upload and serving, mounts, spot upload and
-  `ui/tests/fixtures/mount-results.json` as the results; `make atlas-fixture`
-  writes the fixture bundle it serves. Never part of a build.
 
 ## Updates
 
@@ -402,15 +385,13 @@ crates/grainatlas-wasm   the core for the browser (wasm-bindgen)
 crates/grainatlas-cli    `grainatlas` command line
 ui/                    Svelte 5 + TypeScript + Vite; src/lib/core/{wasm,tauri}.ts implement the Core interface
 tauri/                 Tauri 2 desktop shell (src-tauri)
-tests/fixtures/        one TM4000 area (6 tiles) for tests; tests/golden/ the fixture mosaic hash
-docs/                  ADRs, stitch notes, legacy workflow, UX conventions, laser adapters; images/ README screenshots
+docs/                  ADRs, stitch notes, legacy workflow, UX conventions, laser adapters
 site/                  project website (static, no build step)
 ```
 
 Code only lives here. Image data stays on the lab NAS or your laptop; the only
-images in this repository are the small test fixture under `tests/fixtures/`
-and the README screenshots in `docs/images/` (WebP, about 600 KB in all,
-taken of that fixture by `make screenshots`).
+image in this repository is `docs/app-blank.png`, the app before anything is
+opened.
 
 The project website lives in `site/` (`make site` assembles it in
 `target/site`); it is published to GitHub Pages only by running the Pages

@@ -1711,7 +1711,7 @@ fn area_boxes(areas: &[SheetArea]) -> Vec<Option<[f64; 4]>> {
 /// One area's box on the mount in the SEM view (stage µm, axes signed like the mosaic):
 /// `[x0, y0, x1, y1]`, or None when the area has no tiles or a tile has no stage position.
 /// The viewer's mount inset ports this (`stageBox` in ui/src/lib/mount-inset.ts); both are
-/// checked against tests/fixtures/projects/mount-inset-areas.json.
+/// checked against a hand-made mount-inset project.
 pub fn stage_box(r: &AreaRecord) -> Option<[f64; 4]> {
     let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     for t in &r.tiles {

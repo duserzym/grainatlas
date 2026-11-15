@@ -1,4 +1,4 @@
-# Publishes the project website (site/ plus the docs/images screenshots) to GitHub Pages.
+# Publishes the project website (site/ plus docs/app-blank.png) to GitHub Pages.
 # By hand only: `gh workflow run pages`. Pages must first be enabled for the repository
 # (Settings → Pages → Source: GitHub Actions).
 name: pages

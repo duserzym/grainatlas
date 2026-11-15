@@ -304,33 +304,12 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   await app.sync.check();
 }
 
-/** The example package bundled with the web build (the test fixture), or null when absent. */
-async function exampleManifest(): Promise<{ name: string; files: string[] } | null> {
-  try {
-    const r = await fetch('./demo/manifest.json');
-    return r.ok ? await r.json() : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function openExample(app: AppState = current()) {
-  const m = await exampleManifest();
-  if (!m) {
-    app.error = 'This build has no example package.';
-    return;
-  }
-  const files = await Promise.all(m.files.map(async (path: string) => ({ path, file: await fetch(`./demo/${path}`).then((r) => r.blob()) })));
-  await openFiles(m.name, files, app);
-}
-
 /**
  * Start-up: `?project=<id>&spot=<id>` (from UPb Lab, or typed); with `&server=<base>` the
  * project's published bundle opens read-only from that server instead (laicpmsdb's links). The query is
  * dropped from the address afterwards so a reload does not repeat it. The
- * browser keeps no pixels, so the package must be opened again: the bundled
- * example opens by itself, any other package waits for the user on the Open
- * screen, which names the project. Without the parameters nothing happens.
+ * browser keeps no pixels, so the package must be opened again: it waits for
+ * the user on the Open screen, which names the project. Without the parameters nothing happens.
  */
 export async function startDeepLink(search = location.search) {
   const link = parseDeepLink(search);
@@ -354,8 +333,6 @@ export async function startDeepLink(search = location.search) {
     return;
   }
   app.screen = 'open';
-  const name = app.deepLink.name;
-  if (name && (await exampleManifest())?.name === name) await openExample(app);
 }
 
 /** After a package opened: if a deep link waits for this project, select its spot and center the canvas on it. */

@@ -35,6 +35,6 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: grainatlas/ui/pnpm-lock.yaml
-      # The same entry points as on a laptop: core tests, wasm/native parity, Playwright.
+      # The same entry point as on a laptop: Rust unit tests and the web build.
       - run: make setup
       - run: make test

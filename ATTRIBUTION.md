@@ -72,6 +72,5 @@
 
 ## Data
 
-- Example SEM data in `tests/fixtures/` were collected by Yiming Zhang at the
-  Boise State Isotope Geology Laboratory on a Hitachi TM4000 (2026) and are
-  provided under the repository license for testing.
+- The repository contains no SEM data. `docs/app-blank.png` is a screenshot
+  of the app itself.

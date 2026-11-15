@@ -31,13 +31,12 @@
         </p>
       </div>
       <figure class="shot hero-shot">
-        <img src="images/07-dark.webp" width="1440" height="900" alt="grainatlas canvas in dark mode: CL zircon grains outlined in blue, laser spots named HJ-GC1_1 to HJ-GC1_6, the spot card open on the left and the grain table on the right.">
+        <img src="app-blank.png" width="1440" height="900" alt="grainatlas on first launch, before a package is opened.">
       </figure>
     </section>
 
     <section id="workflow" class="workflow">
       <h2>Six steps, one window</h2>
-      <p class="section-lede">The screenshots are of the bundled test fixture: one 3 × 2 tile area of a Hitachi TM4000 CL package at 150×.</p>
 
       <article class="step">
         <div class="step-text">
@@ -45,7 +44,6 @@
           <h3>Open a package</h3>
           <p>Drop a folder on the window. grainatlas reads a TM4000 Zigzag package, a single area folder, any folder of images with a <code>positions.csv</code>, or loose images with a scale you type once. Several packages or saved projects open as tabs.</p>
         </div>
-        <figure class="shot"><img src="images/01-open.webp" width="1440" height="900" loading="lazy" alt="The Open screen with Choose folder, Choose images and Try the example."></figure>
       </article>
 
       <article class="step">
@@ -54,7 +52,6 @@
           <h3>Stitch and tone</h3>
           <p>Tiles are placed from the stage positions, every overlap is refined, and the whole area is solved at once. Gain, offset, beam-exposure steps and background are corrected in one solve. <strong>Auto</strong> sets the tone from the histogram, and every control re-renders the mosaic live.</p>
         </div>
-        <figure class="shot"><img src="images/02-stitch-tone.webp" width="1440" height="900" loading="lazy" alt="The Area screen: a stitched mosaic with tile residuals, and the Tone panel with Auto, a histogram and CLAHE."></figure>
       </article>
 
       <article class="step">
@@ -63,7 +60,6 @@
           <h3>Find the grains</h3>
           <p>One click outlines every grain, including CL-dark zircons. Epoxy bubbles, tile-seam slivers, exposure blocks and specks are flagged with a reason, never silently dropped. Grains carry no numbers; spots do.</p>
         </div>
-        <figure class="shot"><img src="images/03-grains.webp" width="1440" height="900" loading="lazy" alt="The Canvas with grains outlined in blue and the Segmentation settings in the side panel."></figure>
       </article>
 
       <article class="step">
@@ -79,7 +75,6 @@
             <li><kbd>K</kbd> Split</li>
           </ul>
         </div>
-        <figure class="shot"><img src="images/04-outline.webp" width="1440" height="900" loading="lazy" alt="A grain being outlined click by click: a dashed yellow lasso around the grain, with snap to edges on."></figure>
       </article>
 
       <article class="step">
@@ -88,7 +83,6 @@
           <h3>Place spots</h3>
           <p>Click a grain to place a laser spot. Spots are named <code>sample_n</code>, and <em>n</em> counts up across samples within a session, like an instrument run number; type a start number at any time, or restart at 1 for each sample. Select several spots to change their size, renumber them or rename them at once. Export the spots as CSV or GeoJSON, or send them to laicpmsdb.</p>
         </div>
-        <figure class="shot"><img src="images/05-spots.webp" width="1440" height="900" loading="lazy" alt="Six spots named HJ-GC1_1 to HJ-GC1_6 on the canvas, the spot list on the right, and the card for HJ-GC1_3 on the left."></figure>
       </article>
 
       <article class="step">
@@ -97,7 +91,6 @@
           <h3>Print every grain once</h3>
           <p>Tabloid sheets at one scale (1 mm = 8 µm by default), cut straight out of the mosaic as bands, sample by sample. Each sheet has the instrument header, a mount map and the laser spot sizes at print scale. A registration file maps every band on paper back to the mosaic.</p>
         </div>
-        <figure class="shot"><img src="images/06-sheets.webp" width="1440" height="900" loading="lazy" alt="The Layout screen showing a tabloid print sheet with a header, a mount map and grain bands."></figure>
       </article>
     </section>
 
@@ -106,7 +99,7 @@
       <div class="grid">
         <div class="card">
           <h3>One core, two shells</h3>
-          <p>A Rust core runs in the browser (wasm in a Web Worker) and natively in a Tauri 2 desktop app, and both builds hash the fixture mosaic identically.</p>
+          <p>A Rust core runs in the browser (wasm in a Web Worker) and natively in a Tauri 2 desktop app, and both builds produce identical mosaics.</p>
         </div>
         <div class="card">
           <h3>Stitching that checks itself</h3>
@@ -133,10 +126,10 @@
 
     <section id="install" class="install">
       <h2>Install</h2>
-      <p>Build from source on macOS, Linux or Windows. You need Rust (stable), Node with pnpm, and a checkout of <code>upbstudio</code> next to <code>grainatlas</code> for the <code>@lab/bridge</code> package.</p>
+      <p>Download the macOS app (Apple Silicon) from <a href="https://github.com/duserzym/grainatlas/releases/latest">the latest release</a>. Or build from source on macOS, Linux or Windows: you need Rust (stable), Node with pnpm, and a checkout of <code>upblab</code> next to <code>grainatlas</code> for the <code>@lab/bridge</code> package.</p>
 <pre><code>git clone https://github.com/duserzym/grainatlas
 cd grainatlas
-make setup         # Rust + wasm target, wasm-bindgen, UI dependencies, Playwright
+make setup         # Rust + wasm target, wasm-bindgen, UI dependencies
 make ui-dev        # web app on http://localhost:5174
 make desktop-dev   # desktop app (Tauri 2)</code></pre>
       <p>For batch work, the command line stitches a package and writes print sheets in one go:</p>

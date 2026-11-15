@@ -1349,10 +1349,6 @@ fn now_rfc3339() -> String {
     )
 }
 
-#[cfg(test)]
-#[path = "../../grainatlas-core/tests/common/legacy.rs"]
-mod legacy_fixtures;
-
 /// `--scale`: micrometres per millimetre, or "auto" (0).
 fn parse_scale(s: &str) -> std::result::Result<f64, String> {
     if s.trim().eq_ignore_ascii_case("auto") {
@@ -1363,62 +1359,3 @@ fn parse_scale(s: &str) -> std::result::Result<f64, String> {
         _ => Err(format!("{s:?}: a positive number of um per mm, or auto")),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TempPackage(PathBuf);
-
-    impl TempPackage {
-        fn new() -> Self {
-            let root = std::env::temp_dir()
-                .join(format!("grainatlas-cli-legacy-{}", uuid::Uuid::now_v7()));
-            for (path, bytes) in legacy_fixtures::nested_package().files {
-                write(&root.join(path), &bytes).unwrap();
-            }
-            Self(root)
-        }
-    }
-
-    impl Drop for TempPackage {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn open_prefers_own_zag_even_when_parent_names_the_folder_as_an_area() {
-        let tmp = TempPackage::new();
-        for (folder, name) in [
-            ("001_SU3_L", "SU3_zircon"),
-            ("S_Mount", "S_Mount"),
-            ("S_Mount_2", "S_Mount_2"),
-            ("SJ2_zircon", "SJ2_zircon"),
-        ] {
-            let folder = tmp.0.join(folder).canonicalize().unwrap();
-            let (pkg, only, root) = open(&folder).unwrap();
-            assert_eq!(pkg.info().name, name);
-            assert_eq!(pkg.info().areas.len(), 1);
-            assert_eq!(pkg.info().areas[0].tiles.len(), 6);
-            assert_eq!(only, None);
-            assert_eq!(root, folder);
-        }
-
-        let (pkg, only, root) = open(&tmp.0.join("001_Mount_XL")).unwrap();
-        assert_eq!(pkg.info().name, "BSU1480_1483");
-        assert_eq!(only.as_deref(), Some("001_Mount_XL"));
-        assert_eq!(root, tmp.0.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn own_zag_does_not_require_opening_parent_package() {
-        let tmp = TempPackage::new();
-        std::fs::write(tmp.0.join("BSU1480_1483.zag"), b"invalid XML").unwrap();
-        let (pkg, only, root) = open(&tmp.0.join("001_SU3_L")).unwrap();
-        assert_eq!(pkg.info().name, "SU3_zircon");
-        assert_eq!(only, None);
-        assert_eq!(root, tmp.0.join("001_SU3_L").canonicalize().unwrap());
-    }
-}
-

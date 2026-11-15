@@ -93,7 +93,7 @@ them as workflow artifacts without publishing a release; it is the dry run.
   `?update-preview=` query (`ready`, `available`, `downloading`, `error`,
   `none`, `unsupported`) that the page honours outside Tauri.
 - With `SCREENSHOTS=1`, the browser test saves screenshots of the chip and
-  the panel in `docs/screenshots/`.
+  the panel under `target/` (the repository keeps no screenshots).
 
 ## grainatlas specifics
 

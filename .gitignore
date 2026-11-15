@@ -6,12 +6,11 @@
 /tauri/src-tauri/target
 /tauri/src-tauri/gen
 *.wasm
-!tests/fixtures/**/*.wasm
 # env and OS
 .env
 .DS_Store
 Thumbs.db
-# image data never lives in git except the fixture
+# image data never lives in git (the public repository has one screenshot of the app)
 *.jpg
 *.jpeg
 *.png
@@ -22,12 +21,8 @@ Thumbs.db
 *.zag
 *.pdf
 *.grainatlas/
-!tests/fixtures/**
-!docs/**/*.png
-!docs/images/*.webp
+!docs/app-blank.png
 !ui/public/**
 !ui/static/**
 /ui/src/lib/core/pkg/
-/ui/test-results/
-/ui/playwright-report/
 /tauri/src-tauri/icons/

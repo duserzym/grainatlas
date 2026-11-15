@@ -1,11 +1,11 @@
-# grainatlas tasks. `make setup && make full` from a clean clone.
+# grainatlas tasks. `make setup && make full` from a clean clone (with upblab checked out beside it).
 SHELL := /bin/bash
 WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>/dev/null | sed -n 's/version = "\(.*\)"/\1/p' | head -1)
 WASM_OUT := ui/src/lib/core/pkg
 
-.PHONY: setup bridge core-test unit wasm ui-dev ui-build icons desktop-dev desktop-build test parity e2e release-web atlas-fixture screenshots site
+.PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test release-web site
 .PHONY: updater-setup check-version
-.PHONY: quick full check desktop-check cli-release scripts-test
+.PHONY: full check desktop-check
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upblab/bridge".
@@ -17,7 +17,7 @@ SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo
 
 # Local macOS install builds (`make desktop-build` and the wasm it builds) share one Cargo
 # target outside the checkout, so a fresh build checkout reuses compiled dependencies (149 s
-# cold, 116 s after a one-file core change; 2.6 GiB of disk; docs/test-tiers.md). `make clean-build`
+# cold, 116 s after a one-file core change; 2.6 GiB of disk). `make clean-build`
 # keeps it; `make clean-release-cache` removes it; `make desktop-build RELEASE_TARGET=`
 # builds into target/ as before. Tests, checks and GitHub Actions always use target/.
 ifeq ($(shell uname -s),Darwin)
@@ -34,7 +34,7 @@ setup:
 	@if [ -n "$(WASM_BINDGEN_VERSION)" ] && ! wasm-bindgen --version 2>/dev/null | grep -q "$(WASM_BINDGEN_VERSION)"; then \
 		cargo install --locked wasm-bindgen-cli --version $(WASM_BINDGEN_VERSION); fi
 	$(MAKE) bridge
-	@if [ -d ui ]; then cd ui && pnpm install --frozen-lockfile && pnpm exec playwright install chromium; fi
+	@if [ -d ui ]; then cd ui && pnpm install --frozen-lockfile; fi
 
 # Builds $(UPBSTUDIO)/bridge/dist once (writes only build outputs there).
 bridge:
@@ -85,46 +85,12 @@ updater-setup:
 check-version:
 	@node scripts/check-version.mjs
 
-# Native and wasm builds must hash the fixture mosaic identically.
-cli-release:
-	cargo build --release -q -p grainatlas-cli
-
-parity: wasm cli-release
-	target/release/grainatlas hash tests/fixtures/tm4000/Sweden_XS_150X > target/native.hash
-	node ui/scripts/wasm-hash.mjs tests/fixtures/tm4000/Sweden_XS_150X > target/wasm.hash
-	diff target/native.hash target/wasm.hash && echo "parity ok: $$(cat target/native.hash)"
-
-# The fixture's atlas bundle (fixed ids, three spots, linked to a mount), served by the fake
-# laicpmsdb of `pnpm preview` for the open-from-server and results tests.
-ATLAS_FIXTURE_ID := 01972c4e-0000-7000-8000-00000000a7a5
-atlas-fixture: cli-release
-	target/release/grainatlas atlas tests/fixtures/tm4000/Sweden_XS_150X --out target/atlas-fixture \
-		--project-id $(ATLAS_FIXTURE_ID) --mount-id 01972c4e-0000-7000-8000-0000000000b1 --demo-spots 3 --exported 2026-11-03T00:00:00Z
-
-e2e: ui-build atlas-fixture
-	cd ui && pnpm exec playwright test
-
-# Browser-free UI unit tests (Node's runner strips the TypeScript types).
-unit: atlas-fixture
-	cd ui && node --test 'unit/*.test.ts'
-
-# Non-browser checks run as parallel Make jobs, sharing one wasm, release CLI, atlas fixture
-# and web build; Playwright then runs alone (its 10 workers use the cores, and CPU load from
-# cargo running beside it makes timing-sensitive specs flaky).
-scripts-test:
-	node --test scripts/quick-check.test.mjs
-
+# Checks: Rust unit tests, svelte-check and the desktop crate.
 full:
-	+$(MAKE) -j4 check unit core-test scripts-test parity desktop-check ui-build atlas-fixture
-	cd ui && pnpm exec playwright test
+	+$(MAKE) -j3 check core-test desktop-check
 
 # CI entry point: like full without svelte-check and desktop-check (no Tauri system libraries).
-test:
-	+$(MAKE) -j4 unit core-test scripts-test parity ui-build atlas-fixture
-	cd ui && pnpm exec playwright test
-
-quick:
-	@bash scripts/quick-check.sh
+test: core-test ui-build
 
 # Static web build for UPb Studio's modules.lock.json, index.html at the top of
 # the archive. COPYFILE_DISABLE keeps macOS metadata files (._*) out of it.
@@ -153,17 +119,10 @@ clean-release-cache:
 	rm -rf "$(RELEASE_TARGET)"
 	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (after)"}'
 
-# README and site screenshots: one pass through the workflow on the test fixture (Playwright).
-# PNGs land in target/screenshots, WebP copies (cwebp; `brew install webp`) in docs/images.
-screenshots: ui-build
-	mkdir -p target/screenshots docs/images
-	cd ui && pnpm exec playwright test -c playwright.screenshots.config.ts
-	for f in target/screenshots/*.png; do cwebp -quiet -q 86 -m 6 "$$f" -o docs/images/$$(basename "$${f%.png}").webp; done
-
-# The project website, assembled in target/site (site/ plus the docs/images screenshots).
+# The project website, assembled in target/site.
 # Preview: `python3 -m http.server -d target/site 8000`. Publishing is by hand (pages.yml).
 site:
-	mkdir -p target/site/images
+	mkdir -p target/site
 	cp -R site/. target/site/
-	cp docs/images/*.webp target/site/images/
+	cp docs/app-blank.png target/site/
 	cp ui/public/favicon.svg target/site/

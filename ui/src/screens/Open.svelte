@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import { app, shared, tabs } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
-  import { pendingProjectNotice, loadProjectFile, openExample, openFiles, openPaths } from '../lib/actions';
+  import { pendingProjectNotice, loadProjectFile, openFiles, openPaths } from '../lib/actions';
   import { isDesktop } from '../lib/core/core';
   import { readRecent, type RecentEntry } from '../lib/deeplink';
   import type { Project } from '../lib/core/types';
@@ -219,10 +219,6 @@
     <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
   </div>
 
-  {#if !desktop}<div class="example">
-    <button onclick={() => openExample()} data-testid="example">Try the example</button>
-    <span class="faint">one 3 × 2 TM4000 area (HJ-GC1, 150×, SE) from the test fixture</span>
-  </div>{/if}
 
   <div class="cols">
     <div class="glass panel">
