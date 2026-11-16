@@ -36,6 +36,70 @@ pub struct AreaOutput {
     pub mosaic_json: MosaicJson,
 }
 
+/// Published pixels are a complete mosaic, never raw stitch inputs. Does not mutate the record.
+pub fn bundle_output(
+    rec: &AreaRecord,
+    w: usize,
+    h: usize,
+    pixels: std::sync::Arc<Vec<u8>>,
+) -> AreaOutput {
+    let linear = crate::image::Gray {
+        w,
+        h,
+        px: pixels.iter().map(|&v| v as f32 / 255.0).collect(),
+    };
+    let coverage = vec![1.0; pixels.len()];
+    let placement = Placement {
+        tiles: vec![crate::mosaic::TilePlacement {
+            index: 0,
+            x: 0,
+            y: 0,
+            w,
+            h,
+            prior: [0.0; 2],
+            pos: [0.0; 2],
+            drift: [0.0; 2],
+            failed: false,
+        }],
+        pairs: Vec::new(),
+        width: w,
+        height: h,
+        rms_residual: 0.0,
+        max_residual: 0.0,
+    };
+    let histogram = base_histogram(&pixels, &coverage);
+    let auto_tone = crate::photometric::tone::auto(
+        &linear,
+        Some(&coverage),
+        rec.um_per_px(),
+        &crate::photometric::ToneParams::neutral(),
+    );
+    let sha256 = crate::util::sha256_hex(&pixels);
+    let pyramid = Pyramid::build_shared(w, h, pixels.clone());
+    let mosaic_json = MosaicJson {
+        w,
+        h,
+        um_per_px: rec.um_per_px(),
+        origin_um: [0.0; 2],
+        tile_size: TILE,
+        format: "png".into(),
+        levels: pyramid.infos(),
+        sha256,
+    };
+    AreaOutput {
+        placement,
+        linear,
+        coverage,
+        base: pixels,
+        histogram,
+        auto_tone,
+        auto_photometric: rec.params.photometric.clone(),
+        auto_blend: rec.params.blend.clone(),
+        pyramid,
+        mosaic_json,
+    }
+}
+
 /// A monotonic clock supplied by the host (native `Instant`, `performance.now()` in the browser).
 pub type Clock<'a> = &'a dyn Fn() -> f64;
 

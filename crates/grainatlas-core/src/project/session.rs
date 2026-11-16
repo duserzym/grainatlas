@@ -39,6 +39,7 @@ pub fn with_header(w: usize, h: usize, px: &[u8]) -> Vec<u8> {
 #[derive(Default, Debug, serde::Serialize)]
 pub struct AreaMemory {
     pub base: usize,
+    pub source: usize,
     pub pyramid: usize,
     pub linear: usize,
     pub coverage: usize,
@@ -86,6 +87,8 @@ pub struct Session {
     small: BTreeMap<(String, usize), Vec<crate::image::Gray>>,
     /// The UI's current grains per area (for per-grain tone normalisation).
     grains: BTreeMap<String, Vec<Grain>>,
+    bundle_sources: BTreeMap<String, Arc<Vec<u8>>>,
+    bundle_digest: Option<crate::atlas::PackageDigest>,
 }
 
 impl Session {
@@ -106,6 +109,8 @@ impl Session {
             path: String::new(),
             small: BTreeMap::new(),
             grains: BTreeMap::new(),
+            bundle_sources: BTreeMap::new(),
+            bundle_digest: None,
         }
     }
 
@@ -130,6 +135,11 @@ impl Session {
         for (id, o) in &self.outputs {
             let a = areas.entry(id.clone()).or_default();
             a.base = o.base.capacity();
+            a.source = self
+                .bundle_sources
+                .get(id)
+                .filter(|px| !Arc::ptr_eq(px, &o.base))
+                .map_or(0, |px| px.capacity());
             a.pyramid = o
                 .pyramid
                 .levels
@@ -151,7 +161,7 @@ impl Session {
                 .sum::<usize>();
         }
         for a in areas.values_mut() {
-            a.total = a.base + a.pyramid + a.linear + a.coverage + a.work + a.small;
+            a.total = a.source + a.base + a.pyramid + a.linear + a.coverage + a.work + a.small;
         }
         MemoryReport {
             total: areas.values().map(|a| a.total).sum(),
@@ -233,17 +243,28 @@ impl Session {
             ctl.report("rebuilding mosaic", 0.0);
             ctl.check()?;
             let rec = self.rec(id)?;
-            let pkg = self.pkg()?;
+            let (linear, coverage) = if let Some(px) = self.bundle_sources.get(id) {
+                let o = self.out(id)?;
+                (
+                    crate::image::Gray {
+                        w: o.linear.w,
+                        h: o.linear.h,
+                        px: px.iter().map(|&v| v as f32 / 255.0).collect(),
+                    },
+                    vec![1.0; px.len()],
+                )
+            } else {
+                let pkg = self.pkg()?;
             let ai = pkg
                 .info()
                 .areas
                 .iter()
                 .position(|a| a.id == id)
                 .ok_or_else(|| Error::NotFound(id.into()))?;
-            let (linear, coverage) =
                 pipeline::rebuild_heavy(rec, pkg.tiles_ctl(ai, ctl)?, &self.out(id)?.placement,
                 ctl,
-            )?;
+            )?
+            };
             let auto_tone = crate::photometric::tone::auto(
                 &linear,
                 Some(&coverage),
@@ -278,8 +299,11 @@ impl Session {
     /// Returns a `readers::Probe` as JSON: `{"status":"opened","info":…}` for a package or an area
     /// folder, `{"status":"needs_scale","name":…,"images":[…]}` for images without calibration
     /// (then call [`Session::open_loose`] with the scale the user gave).
-    pub fn open_source(&mut self, src: Arc<dyn Source>, path: &str, created: &str) -> Result<String> {
+    pub fn open_source(&mut self, src: Arc<dyn Source>, path: &str, created: &str,
+    ) -> Result<String> {
         let (probe, pkg) = readers::probe(src.clone())?;
+        self.bundle_sources.clear();
+        self.bundle_digest = None;
         self.outputs.clear();
         self.recent.clear();
         self.work.clear();
@@ -300,6 +324,8 @@ impl Session {
         let src = self.src.clone().ok_or_else(|| Error::Invalid("nothing opened".into()))?;
         let pkg = LoosePackage::open(src, &spec)?;
         let info = serde_json::to_string(pkg.info()).map_err(invalid)?;
+        self.bundle_sources.clear();
+        self.bundle_digest = None;
         self.outputs.clear();
         self.recent.clear();
         self.work.clear();
@@ -342,6 +368,60 @@ impl Session {
         Ok(())
     }
 
+    /// Load an already displayed mosaic without changing any raw package metadata.
+    pub fn load_bundle_area(
+        &mut self,
+        area_id: &str,
+        w: usize,
+        h: usize,
+        pixels: Vec<u8>,
+    ) -> Result<String> {
+        if w == 0 || h == 0 || w.checked_mul(h) != Some(pixels.len()) {
+            return Err(invalid("published image dimensions do not match pixels"));
+        }
+        self.rec(area_id)?;
+        // Release old heavy buffers before allocating this area's full-resolution f32 data.
+        self.evict_to(0);
+        let pixels = Arc::new(pixels);
+        let out = pipeline::bundle_output(self.rec(area_id)?, w, h, pixels.clone());
+        let json = serde_json::to_string(&out.mosaic_json).map_err(invalid)?;
+        self.bundle_sources.insert(area_id.into(), pixels);
+        self.outputs.insert(area_id.into(), out);
+        self.work.remove(area_id);
+        self.small.retain(|(a, _), _| a != area_id);
+        self.touch(area_id);
+        self.trim(None);
+        Ok(json)
+    }
+
+    pub fn set_package_digest(&mut self, sha256: &str, files: usize) {
+        self.bundle_digest = Some(crate::atlas::PackageDigest {
+            sha256: sha256.into(),
+            files,
+        });
+    }
+
+    /// Rebase further tone edits on the image just published.
+    pub fn bake_bundle_area(&mut self, area_id: &str, display_tone: &str) -> Result<String> {
+        if !self.bundle_sources.contains_key(area_id) {
+            return Err(invalid("not a bundle-backed area"));
+        }
+        let tone: ToneParams = serde_json::from_str(display_tone).map_err(invalid)?;
+        let o = self.out(area_id)?;
+        let lut = crate::photometric::tone::lut(&tone);
+        let pixels = o.base.iter().map(|&v| lut[v as usize]).collect();
+        self.load_bundle_area(area_id, o.linear.w, o.linear.h, pixels)
+    }
+
+    fn require_raw(&self, id: &str) -> Result<()> {
+        if self.bundle_sources.contains_key(id) {
+            return Err(invalid(
+                "Stitching and shading correction need the raw package.",
+            ));
+        }
+        Ok(())
+    }
+
     /// Metadata signal for Auto, regardless of a saved segmentation override.
     pub fn area_signal(&self, area_id: &str) -> Result<String> {
         serde_json::to_string(&self.rec(area_id)?.signal()).map_err(invalid)
@@ -375,6 +455,7 @@ impl Session {
     /// Runs the whole pipeline for one area (`params` = AreaParams JSON, "" = the project's).
     pub fn stitch(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock,
     ) -> Result<String> {
+        self.require_raw(area_id)?;
         let pkg = self.pkg.as_deref().ok_or_else(|| Error::Invalid("no package".into()))?;
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
         let ai = pkg.info().areas.iter().position(|a| a.id == area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
@@ -415,6 +496,7 @@ impl Session {
     /// parameters → full stitch. Returns the same summary as `stitch`.
     pub fn recompute(&mut self, area_id: &str, params: &str, ctl: &Ctl, clock: Clock,
     ) -> Result<String> {
+        self.require_raw(area_id)?;
         let p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
         let Some(rec) = self.project.as_ref().and_then(|pr| pr.areas.iter().find(|a| a.id == area_id)) else {
             return self.stitch(area_id, params, ctl, clock);
@@ -487,6 +569,42 @@ impl Session {
         let p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
         let k = 1usize << level.min(12);
         let rec = self.rec(area_id)?.clone();
+        if let Some(px) = self.bundle_sources.get(area_id) {
+            // Downsample bytes first: previews never rehydrate the full f32 mosaic.
+            let o = self.out(area_id)?;
+            let w = o.linear.w.div_ceil(k);
+            let h = o.linear.h.div_ceil(k);
+            let mut values = Vec::with_capacity(w * h);
+            for y in 0..h {
+                for x in 0..w {
+                    let mut sum = 0u64;
+                    let mut n = 0u64;
+                    for yy in y * k..((y + 1) * k).min(o.linear.h) {
+                        for xx in x * k..((x + 1) * k).min(o.linear.w) {
+                            sum += px[yy * o.linear.w + xx] as u64;
+                            n += 1;
+                        }
+                    }
+                    values.push(sum as f32 / n as f32 / 255.0);
+                }
+            }
+            let lin = crate::image::Gray { w, h, px: values };
+            let neutral = p.tone == ToneParams::neutral();
+            let mut tone = p.tone;
+            tone.clahe_tile = (tone.clahe_tile / k).max(8);
+            let base = if neutral {
+                lin.to_u8()
+            } else {
+                pipeline::tone_base_with(
+                    &lin,
+                    &vec![1.0; w * h],
+                    &tone,
+                    self.grains_of(area_id),
+                    rec.um_per_px() * k as f64,
+                )
+            };
+            return Ok(with_header(w, h, &base));
+        }
         let placement = rec.placement.clone().ok_or_else(|| Error::Invalid(format!("{area_id} is not stitched")))?;
         self.touch(area_id);
         if rec.params.photometric == p.photometric && rec.params.blend == p.blend {
@@ -546,6 +664,17 @@ impl Session {
 
     fn auto_params_controlled(&mut self, area_id: &str, params: &str, ctl: &Ctl) -> Result<String> {
         let mut p: AreaParams = serde_json::from_str(params).map_err(invalid)?;
+        if self.bundle_sources.contains_key(area_id) {
+            self.ensure_heavy(area_id, ctl)?;
+            let o = self.out(area_id)?;
+            p.tone = crate::photometric::tone::auto(
+                &o.linear,
+                Some(&o.coverage),
+                self.rec(area_id)?.um_per_px(),
+                &p.tone,
+            );
+            return serde_json::to_string(&p).map_err(invalid);
+        }
         p.photometric.background = true;
         self.out(area_id)?;
         self.touch(area_id);
@@ -606,12 +735,35 @@ impl Session {
 
     fn retone_controlled(&mut self, area_id: &str, tone: &str, ctl: &Ctl) -> Result<String> {
         let tone: ToneParams = serde_json::from_str(tone).map_err(invalid)?;
-        self.ensure_heavy(area_id, ctl)?;
+        if !self.bundle_sources.contains_key(area_id) || tone != ToneParams::neutral() {
+            self.ensure_heavy(area_id, ctl)?;
+        }
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
         let rec = project.area_mut(area_id).ok_or_else(|| Error::NotFound(area_id.into()))?;
         let o = self.outputs.get_mut(area_id).ok_or_else(|| Error::Invalid("not stitched".into()))?;
-        pipeline::retone(rec, o, &tone, self.grains.get(area_id).map_or(&[][..], |g| g.as_slice()),
+        if let Some(source) = self.bundle_sources.get(area_id) {
+            let base = if tone == ToneParams::neutral() {
+                source.clone()
+            } else {
+                Arc::new(pipeline::tone_base_with(
+                    &o.linear,
+                    &o.coverage,
+                    &tone,
+                    self.grains.get(area_id).map_or(&[][..], |g| g.as_slice()),
+                    rec.um_per_px(),
+                ))
+            };
+            o.pyramid =
+                crate::mosaic::pyramid::Pyramid::build_shared(o.linear.w, o.linear.h, base.clone());
+            o.base = base;
+            o.histogram = vec![0; 256];
+            for &value in o.base.iter() { o.histogram[value as usize] += 1; }
+            o.mosaic_json.sha256 = crate::util::sha256_hex(&o.base);
+            o.mosaic_json.levels = o.pyramid.infos();
+        } else {
+            pipeline::retone(rec, o, &tone, self.grains.get(area_id).map_or(&[][..], |g| g.as_slice()),
         );
+        }
         let json = serde_json::to_string(&o.mosaic_json).map_err(invalid);
         self.trim(None);
         json
@@ -1083,6 +1235,9 @@ impl Session {
     /// hashes recorded while stitching, the other tiles read again from the source.
     pub fn package_digest(&self) -> Result<crate::atlas::PackageDigest> {
         let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
+        if self.src.is_none() && let Some(digest) = &self.bundle_digest {
+            return Ok(digest.clone());
+        }
         let mut entries = Vec::new();
         for rec in &project.areas {
             for t in &rec.tiles {
@@ -1100,7 +1255,8 @@ impl Session {
 
     /// The files of the atlas bundle for a full project JSON (with `grainatlas_ui`) and
     /// [`crate::atlas::BundleOptions`] JSON; every stitched area is included.
-    pub fn atlas_files(&self, full_project_json: &str, options: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    pub fn atlas_files(&self, full_project_json: &str, options: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
         let project = Project::from_json(full_project_json)?;
         let opts: crate::atlas::BundleOptions = if options.trim().is_empty() { Default::default() } else { serde_json::from_str(options).map_err(invalid)? };
         let digest = self.package_digest()?;
@@ -1109,7 +1265,9 @@ impl Session {
             .iter()
             .filter_map(|rec| {
                 let o = self.outputs.get(&rec.id)?;
-                Some(crate::atlas::AreaPixels { rec, w: o.linear.w, h: o.linear.h, base: &o.base })
+                Some(crate::atlas::AreaPixels { rec, w: o.linear.w, h: o.linear.h, base: &o.base,
+                    bundle_backed: self.bundle_sources.contains_key(&rec.id),
+                })
             })
             .collect();
         crate::atlas::build(&project, &areas, &digest, &opts)

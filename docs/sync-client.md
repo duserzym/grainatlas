@@ -297,9 +297,13 @@ normal save workflow.
 ## Pixels, saving and closing
 
 Element sync and image publication are separate calls. Raw packages with
-stitched areas can offer image publishing. Pixel signatures cover mosaic,
-scale, stitch, blend, rendering and display tone, excluding segmentation, spots,
-labels and print settings. The chip appends New images not published until a
+stitched areas can offer image publishing, and so can a project edited from the
+database once Area or Layout has loaded its published images. Pixel signatures
+cover mosaic, scale, stitch, blend, rendering, display tone and the tone on top
+of a published image (`grainatlas_ui.bundle_tone`), excluding segmentation,
+spots, labels and print settings. A published bundle's `project.json` never
+carries `bundle_tone`: its tiles already include it, and after publishing the
+app makes the new image the base with a neutral tone. The chip appends New images not published until a
 successful publication is confirmed. Failure to publish does not undo element
 sync.
 

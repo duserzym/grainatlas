@@ -1,3 +1,4 @@
+import { bundlePixels } from './bundle-tone';
 import type { AppState } from './store.svelte.ts';
 import type { AreaParams, Grain, SegmentParams } from './core/types.ts';
 import { relinkSpots, linkUnlinkedSpots } from './spots.ts';
@@ -5,7 +6,7 @@ import { keepSpotGrains, restoreSpotGrains } from './keep-spot-grains.ts';
 
 /** Keep the operation busy until its grains, spot links and stored copy agree. */
 export async function findGrainsInArea(app: AppState, id: string, missing = false) {
-  if (app.readOnly || app.remote || app.busy || !app.params[id] || (missing && app.grains[id] === undefined)) return;
+  if (app.readOnly || (app.remote && !bundlePixels(app)) || app.busy || !app.params[id] || (missing && app.grains[id] === undefined)) return;
   const core = await app.core;
   if (app.busy) return;
   const params = JSON.parse(JSON.stringify(app.params[id].segment)) as SegmentParams;
@@ -43,7 +44,7 @@ export async function findGrainsInArea(app: AppState, id: string, missing = fals
  * One checkpoint restores all grain lists and spot links together.
  */
 export async function findGrainsInAreas(app: AppState) {
-  if (app.readOnly || app.remote || app.busy) return;
+  if (app.readOnly || (app.remote && !bundlePixels(app)) || app.busy) return;
   const core = await app.core;
   const areas = app.project?.areas ?? [];
   const missing = areas.filter((a) => app.grains[a.id] === undefined);

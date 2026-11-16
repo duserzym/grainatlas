@@ -1,11 +1,14 @@
 <script lang="ts">
+  import { bundlePixels } from './lib/bundle-tone';
+  import { loadPublishedPixels } from './lib/remote';
+  import { screenEnabled } from './lib/screens';
   import { grainNumber } from './lib/grain-lineage';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { presentation } from './lib/presentation';
   import { appStorage } from './lib/app-storage';
   import VersionChip from './components/VersionChip.svelte';
   import { startScheduler } from './lib/updater.svelte';
-  import { app, current, tabs, type Screen } from './lib/store.svelte';
+  import { app, current, tabs, type AppState, type Screen } from './lib/store.svelte';
   import { isHosted, notify, onCommand, onOpenFiles, SHELL_EVENTS } from '@lab/bridge';
   import { findAllGrains, liveChanged, liveIdle, liveKey, openLoose, openOffered, openPathsInTabs, saveProject, saveProjectFile, startDeepLink, stitchAll } from './lib/actions';
   import { isDesktop } from './lib/core/core';
@@ -104,12 +107,16 @@
 
   const hasMosaic = $derived(Object.keys(app.stitched).length > 0);
   function enabled(s: (typeof screens)[number]) {
-    if (s.needs === 'pkg') return !!app.pkg;
-    // A bundle from a server has tiles, not a mosaic in the core: the Canvas only.
-    if (s.id === 'layout' && app.remote) return false;
-    if (s.needs === 'mosaic') return hasMosaic;
-    return true;
+    return screenEnabled(s.id, { viewer: isViewer, readOnly: app.readOnly, remote: !!app.remote, pkg: !!app.pkg, mosaic: hasMosaic });
   }
+
+  $effect(() => {
+    if (app.remote && !app.readOnly && !app.bundle && (app.screen === 'area' || app.screen === 'layout')) {
+      const state = current();
+      untrack(() => { void loadPublishedPixels(state); });
+    }
+    if (app.remote && app.readOnly && (app.screen === 'area' || app.screen === 'layout')) app.screen = 'canvas';
+  });
 
   // Hash routing (#/canvas) so the build works from file://, any static host and Tauri.
   function fromHash() {
@@ -127,8 +134,7 @@
   // any screen, Auto and Reset included) re-renders its mosaic live.
   // (Per tab: two projects can have areas of the same id.)
   $effect(() => {
-    // Pixels from a server's bundle are final: nothing to re-render.
-    if (app.remote) return;
+    if (app.readOnly || (app.remote && !bundlePixels(app))) return;
     const liveKeys = app.liveKeys;
     for (const id of Object.keys(liveKeys)) if (!app.stitched[id]) delete liveKeys[id];
     for (const id of Object.keys(app.stitched)) {
@@ -136,7 +142,7 @@
       // the stitch ran must not be lost).
       if (liveKeys[id] === undefined) {
         const used = app.project?.areas.find((a) => a.id === id)?.params;
-        liveKeys[id] = used ? liveKey(used, used.tone, app.grains[id]) : '';
+        liveKeys[id] = app.bundle?.[id] ? liveKey(app.params[id], app.tone[id], app.grains[id]) : used ? liveKey(used, used.tone, app.grains[id]) : '';
       }
       const key = liveKey(app.params[id], app.tone[id], app.grains[id]);
       if (key !== liveKeys[id]) {
@@ -144,6 +150,16 @@
         liveChanged(id);
       }
     }
+  });
+
+  const bundleToneKeys = new WeakMap<AppState, string>();
+  $effect(() => {
+    if (!bundlePixels(app)) return;
+    const state = current();
+    const key = JSON.stringify(app.tone);
+    const before = bundleToneKeys.get(state);
+    bundleToneKeys.set(state, key);
+    if (before !== undefined && key !== before) untrack(() => state.persist());
   });
 
   // Tell UPb Lab which spot is selected (a no-op when not hosted).
@@ -520,13 +536,13 @@
       {#if hasMosaic}<Canvas />{:else}<p class="faint small">{app.error || app.notice || 'Waiting for a project.'}</p>{/if}
     {:else if app.screen === 'open'}
       <Open />
-    {:else if app.screen === 'area'}
+    {:else if app.screen === 'area' && (!app.remote || app.bundle)}
       <Area />
     {:else if app.screen === 'canvas'}
       <Canvas />
-    {:else if app.screen === 'layout'}
+    {:else if app.screen === 'layout' && (!app.remote || app.bundle)}
       <Layout />
-    {:else}
+    {:else if app.screen === 'settings'}
       <Settings />
     {/if}
     </div>

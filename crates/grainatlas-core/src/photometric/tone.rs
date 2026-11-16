@@ -32,6 +32,16 @@ impl Default for ToneParams {
     }
 }
 
+impl ToneParams {
+    /// Identity over an already published image (including no percentile stretch).
+    pub fn neutral() -> Self {
+        Self {
+            low_pct: 0.0,
+            high_pct: 100.0,
+            ..Self::default() }
+    }
+}
+
 /// One-click tone that is hard to get wrong: a percentile stretch that clips almost nothing,
 /// CLAHE with a tile of about a grain (250 µm) and a clip limit (1.5 to 3) from the histogram of
 /// the stretched mosaic (low contrast → more enhancement, already spread → gentle), levels and gamma

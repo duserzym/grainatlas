@@ -69,12 +69,14 @@
 
   $effect(() => {
     if (!stitchedIds.includes(wholeArea)) wholeArea = stitchedIds[0] ?? '';
-    if (!params.title && app.pkg) params.title = app.pkg.name;
+    if (!params.title) params.title = app.pkg?.name ?? app.project?.package.name ?? '';
     if (!hasGrains && params.items === 'grains') params.items = 'areas';
   });
 
   async function generateSheets() {
     if (app.busy) return;
+    const { liveIdle } = await import('../lib/actions');
+    for (const id of stitchedIds) await liveIdle(id);
     const core = await app.core;
     const p = $state.snapshot(sheet) as SheetParams;
     const name = app.pkg?.name ?? app.project?.package.name ?? 'grainatlas';
@@ -113,6 +115,8 @@
 
   async function generate() {
     if (app.busy) return;
+    const { liveIdle } = await import('../lib/actions');
+    for (const id of stitchedIds) await liveIdle(id);
     const core = await app.core;
     const p = $state.snapshot(params) as LayoutParams;
     if (!p.area_ids.length) p.area_ids = stitchedIds;
@@ -134,10 +138,10 @@
     const pages = $state.snapshot(result.pages) as string[];
     const bytes = await app.run('Writing PDF', () => core.pdf(pages));
     const what = style === 'sheets' ? `${whole ? 'whole_area' : 'grain_sheets'}_${sheet.paper}` : `${params.items}_${params.paper}`;
-    if (bytes) download(bytes, `${app.pkg?.name ?? 'grainatlas'}_${what}.pdf`, 'application/pdf');
+    if (bytes) download(bytes, `${app.pkg?.name ?? app.project?.package.name ?? 'grainatlas'}_${what}.pdf`, 'application/pdf');
   }
   function svgs() {
-    result?.pages.forEach((s, i) => download(s, `${app.pkg?.name ?? 'grainatlas'}_page${i + 1}.svg`, 'image/svg+xml'));
+    result?.pages.forEach((s, i) => download(s, `${app.pkg?.name ?? app.project?.package.name ?? 'grainatlas'}_page${i + 1}.svg`, 'image/svg+xml'));
   }
   function browserPrint() {
     if (!result) return;
@@ -147,7 +151,7 @@
       app.error = 'The print window was blocked; allow pop-ups or use the PDF.';
       return;
     }
-    win.document.write(`<!doctype html><title>${style === 'sheets' ? sheet.title || app.pkg?.name : params.title}</title><style>@page{size:${w}mm ${h}mm;margin:0}body{margin:0}svg{display:block;width:${w}mm;height:${h}mm;page-break-after:always}</style>${result.pages.join('')}`);
+    win.document.write(`<!doctype html><title>${style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name : params.title}</title><style>@page{size:${w}mm ${h}mm;margin:0}body{margin:0}svg{display:block;width:${w}mm;height:${h}mm;page-break-after:always}</style>${result.pages.join('')}`);
     win.document.close();
     win.focus();
     setTimeout(() => win.print(), 300);
@@ -174,7 +178,7 @@
       {#if sheetMode === 'grains'}
       <p class="muted small-text">Grains are printed in continuous pieces of the mosaic with their neighbours. Where a piece must be cut, a greyed strip repeats the other side.</p>
       {/if}
-      <label class="field">Title <input type="text" bind:value={sheet.title} placeholder={app.pkg?.name ?? ''} /></label>
+      <label class="field">Title <input type="text" bind:value={sheet.title} placeholder={app.pkg?.name ?? app.project?.package.name ?? ''} /></label>
       <label class="field">Lab and operator <input type="text" bind:value={sheet.lab} placeholder="e.g. lab name · operator" /></label>
       <div class="two">
         <label class="field">Paper
@@ -194,7 +198,7 @@
       {#if sheetMode === 'whole'}
       <label class="field">Area
         <select bind:value={wholeArea} data-testid="whole-area">
-          {#each stitchedIds as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
+          {#each stitchedIds as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
         </select>
       </label>
       <div class="two">
@@ -277,7 +281,7 @@
     <fieldset>
       <legend class="muted">Areas</legend>
       {#each stitchedIds as id (id)}
-        <label class="check"><input type="checkbox" checked={!params.area_ids.length || params.area_ids.includes(id)} onchange={() => toggleArea(id)} /> {app.pkg?.areas.find((a) => a.id === id)?.name ?? id}</label>
+        <label class="check"><input type="checkbox" checked={!params.area_ids.length || params.area_ids.includes(id)} onchange={() => toggleArea(id)} /> {app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</label>
       {/each}
     </fieldset>
     <div class="two">

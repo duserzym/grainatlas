@@ -26,6 +26,9 @@ export interface Core {
   /** Drops the open package and project: an empty session for a project without its package. */
   blank(name: string): Promise<void>;
   loadProject(json: string): Promise<void>;
+  loadBundleArea(areaId: string, w: number, h: number, pixels: Uint8Array): Promise<MosaicJson>;
+  setPackageDigest(sha256: string, files: number): Promise<void>;
+  bakeBundleArea(areaId: string, displayTone: ToneParams): Promise<MosaicJson>;
   projectJson(): Promise<string>;
   memoryReport(): Promise<import('./types').MemoryReport>;
   navigation(): Promise<RawImage | null>;

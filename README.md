@@ -373,7 +373,13 @@ All of this is optional; without a server grainatlas works as before.
   or Settings → "Open a published project", reads
   `<base>/atlas/projects/<id>/` and shows the bundle read-only (tiles straight
   from the server, nothing stitched). **Edit a copy** makes it a local
-  project with the same id; opening the raw package later picks it up.
+  project with the same id. Area and Layout then load the published images
+  (full-resolution tiles) into the core: the tone can be adjusted on top of
+  the published image and print sheets made again from the current grains.
+  Stitching and shading correction still need the raw package; opening it
+  later picks the project up. A tone change is saved as
+  `grainatlas_ui.bundle_tone` and published as a new atlas version; the raw
+  package's own tone in the project is left as it was.
 - **Results**: with a server and a linked mount, `GET /v1/mounts/{id}/results`
   fills the spot panel (preferred date ± 2σ, ratios, concentrations, flags,
   "Open acquisition") and a coloured results layer with a legend. Results are

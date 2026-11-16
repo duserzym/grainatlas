@@ -46,20 +46,29 @@ impl Pyramid {
 
     /// A pyramid of `tile`-pixel tiles.
     pub fn build_tiled(w: usize, h: usize, px: Vec<u8>, tile: usize) -> Pyramid {
+        Self::build_shared_tiled(w, h, std::sync::Arc::new(px), tile)
+    }
+
+    pub fn build_shared(w: usize, h: usize, px: std::sync::Arc<Vec<u8>>) -> Pyramid {
+        Self::build_shared_tiled(w, h, px, TILE)
+    }
+
+    fn build_shared_tiled(w: usize, h: usize, px: std::sync::Arc<Vec<u8>>, tile: usize) -> Pyramid {
         let tile = tile.max(1);
         let mut levels = Vec::new();
         let (mut cw, mut ch, mut cur) = (w, h, px);
         let mut l = 0;
         loop {
-            let info = LevelInfo { level: l, w: cw, h: ch, cols: cw.div_ceil(tile).max(1), rows: ch.div_ceil(tile).max(1), scale: 1 << l };
+            let info = LevelInfo { level: l, w: cw, h: ch, cols: cw.div_ceil(tile).max(1), rows: ch.div_ceil(tile).max(1), scale: 1 << l,
+            };
             let last = info.cols == 1 && info.rows == 1;
             let next = if last { None } else { Some(half_u8(cw, ch, &cur)) };
-            levels.push((info, std::sync::Arc::new(cur)));
+            levels.push((info, cur));
             match next {
                 Some((nw, nh, n)) => {
                     cw = nw;
                     ch = nh;
-                    cur = n;
+                    cur = std::sync::Arc::new(n);
                     l += 1;
                 }
                 None => break,

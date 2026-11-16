@@ -7,6 +7,7 @@ import { findGrainsInArea, findGrainsInAreas } from './grain-finding';
 
 import type { PackageFile } from './core/core';
 import type { AreaParams, Grain, ImageEntry, LooseSpec, OpenResult, PackageInfo, Project, ToneParams } from './core/types';
+import { bundlePixels, curveTone, neutralTone } from './bundle-tone';
 import { current, shared, tabs, type AppState, type LiveState } from './store.svelte';
 import { isHosted, notify, type OpenedFiles } from '@lab/bridge';
 import { download, fromShell } from './files';
@@ -260,6 +261,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.storedCopy = fromFolder && path ? newerStoredCopy(fromFolder, path.path, modifiedMs) : null;
   app.notice = null;
   app.projectPath = path;
+  app.bundle = null;
   app.remote = null;
   app.remoteTiles = null;
   app.pkg = info;
@@ -555,7 +557,8 @@ async function syncGrains(app: AppState, areaId: string) {
 
 /** Call after a photometric parameter of a stitched area changed. */
 export function liveChanged(areaId: string, settleMs = 450, app: AppState = current()) {
-  if (!app.stitched[areaId]) return;
+  if (app.readOnly || (app.remote && !bundlePixels(app)) || !app.stitched[areaId]) return;
+  if (bundlePixels(app)) app.params[areaId] = { ...app.params[areaId], tone: curveTone(JSON.parse(JSON.stringify(app.tone[areaId] ?? app.params[areaId].tone))) };
   const l: LiveState = (app.live[areaId] ??= { seq: 0, settled: 0, timer: 0, previewing: false, again: false, settling: null });
   l.seq++;
   if (!app.liveBusy[areaId]) app.liveBusy = { ...app.liveBusy, [areaId]: true };
@@ -585,7 +588,9 @@ async function livePreview(app: AppState, areaId: string) {
       const seq = l.seq;
       const level = previewLevel(app, areaId);
       await syncGrains(app, areaId);
-      const img = await core.preview(areaId, $snapshotParams(app, areaId), level);
+      const params = $snapshotParams(app, areaId);
+      if (bundlePixels(app)) params.tone = curveTone(params.tone);
+      const img = await core.preview(areaId, params, level);
       if (seq > l.settled && img) app.preview = { ...app.preview, [areaId]: { level, img, over: app.pixelsVersion } };
     } while (l.again);
   } catch {
@@ -605,9 +610,14 @@ async function settle(app: AppState, areaId: string) {
     app.rendering++;
     try {
       await syncGrains(app, areaId);
-      const r = await core.recompute(areaId, $snapshotParams(app, areaId));
+      if (app.readOnly || (app.remote && !bundlePixels(app))) { l.settled = Math.max(l.settled, seq); return; }
+      const params = $snapshotParams(app, areaId);
+      if (bundlePixels(app)) params.tone = JSON.parse(JSON.stringify(app.params[areaId].tone));
+      const published = bundlePixels(app);
+      const r = published ? { ...app.stitched[areaId], mosaic: await core.retone(areaId, params.tone) } : await core.recompute(areaId, params);
       l.settled = Math.max(l.settled, seq);
-      app.project = JSON.parse(await core.projectJson());
+      // A published image's re-tone leaves the core's record as it was: keep the adopted project.
+      if (!published) app.project = JSON.parse(await core.projectJson());
       app.stitched = { ...app.stitched, [areaId]: r };
       app.pixelsVersion++;
       app.persist();
@@ -662,15 +672,16 @@ export function toggleBeforeAfter(areaId: string) {
 export async function resetTone(areaId: string) {
   const app = current();
   const core = await app.core;
-  const d = await core.defaultParams();
   const cur = $snapshotParams(app, areaId);
+  const d = bundlePixels(app) ? { ...cur, tone: neutralTone() } : await core.defaultParams();
   app.compare = { ...app.compare, [areaId]: null };
   applyParams(app, areaId, { ...cur, photometric: d.photometric, blend: d.blend, tone: d.tone });
 }
 
 function applyParams(app: AppState, areaId: string, p: AreaParams) {
   const cur = app.params[areaId];
-  app.params = { ...app.params, [areaId]: { ...cur, photometric: p.photometric, blend: p.blend, tone: p.tone } };
+  const curve = bundlePixels(app) ? curveTone(JSON.parse(JSON.stringify(p.tone))) : p.tone;
+  app.params = { ...app.params, [areaId]: { ...cur, photometric: p.photometric, blend: p.blend, tone: curve } };
   app.tone = { ...app.tone, [areaId]: p.tone };
 }
 
@@ -681,6 +692,7 @@ function applyParams(app: AppState, areaId: string, p: AreaParams) {
  */
 export async function saveProject(app: AppState = current()) {
   if (!canWrite()) return;
+  for (const id of Object.keys(app.live)) await liveIdle(id, app);
   const p = app.fullProject();
   if (!p) return;
   const core = await app.core;
@@ -705,6 +717,7 @@ export async function saveProject(app: AppState = current()) {
 /** Saves the lightweight project file (`.gaproj`): `ask` = Save As (a dialog on the desktop). */
 export async function saveProjectFile(app: AppState = current(), ask = true) {
   if (!canWrite()) return;
+  for (const id of Object.keys(app.live)) await liveIdle(id, app);
   if (!(await beforeCheckedAction(app, 'save'))) return;
   const p = app.fullProject();
   if (!p) return;

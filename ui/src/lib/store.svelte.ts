@@ -1,3 +1,4 @@
+import { saveBundleTones, type BundleSources } from './bundle-tone';
 import { canWrite, presentation } from './presentation';
 // Application state (Svelte 5 runes). The core holds pixels; the UI holds the
 // project record, grains, spots and labels, and an undo history of edits.
@@ -185,6 +186,7 @@ class AppState {
   /** Protect unsaved changes until the viewer answers the restore dialog. */
   storedCopy = $state.raw<StoredCopy | null>(null);
   loadingProject = false;
+  cancelTask: (() => void) | null = null;
   areaId = $state<string | null>(null);
   stitched = $state<Record<string, StitchSummary>>({});
   /** Bumps when pyramid pixels change (re-stitch, re-tone): the canvas drops its tile cache. */
@@ -278,6 +280,7 @@ class AppState {
   colourBy = $state('date');
   /** A published bundle opened from a server (pixels from its tiles); null for local projects. */
   remote = $state<import('./remote').Remote | null>(null);
+  bundle = $state<BundleSources | null>(null);
   remoteTiles: import('./remote').RemoteTiles | null = null;
   /** True while a bundle from a server is shown read-only (before "Edit a copy"). */
   get readOnly(): boolean {
@@ -470,6 +473,7 @@ class AppState {
   }
 
   async cancel() {
+    if (this.cancelTask) { this.cancelTask(); return; }
     (await this.core).cancel();
   }
 
@@ -544,6 +548,7 @@ class AppState {
     p.settings = $state.snapshot(this.settings) as Settings;
     const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
     p['grainatlas_ui'] = { grains: grainMapWithoutBlankArtifacts($state.snapshot(this.grains) as Record<string, Grain[]>), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
+    saveBundleTones(p, $state.snapshot(this.bundle), $state.snapshot(this.params), $state.snapshot(this.tone), $state.snapshot(this.project));
     return p;
   }
 
@@ -585,7 +590,7 @@ class AppState {
     if (ui?.spots) this.spots = ui.spots;
     if (ui?.labels) this.labels = ui.labels;
     if (ui?.tone) this.tone = ui.tone;
-    for (const a of p.areas) this.params[a.id] = a.params;
+    for (const a of p.areas) this.params[a.id] = JSON.parse(JSON.stringify(a.params));
   }
 }
 

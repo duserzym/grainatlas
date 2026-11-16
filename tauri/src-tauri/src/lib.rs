@@ -348,6 +348,38 @@ async fn histogram(state: State<'_, AppState>, tab: u32, area_id: String) -> Res
     }).await.map_err(e)?
 }
 
+/// Published grey pixels arrive as a raw body; metadata stays in request headers.
+#[tauri::command]
+async fn load_bundle_area(state: State<'_, AppState>, request: Request<'_>) -> Res<String> {
+    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).ok_or_else(|| format!("Missing {name}"));
+    let tab: u32 = header("x-tab")?.parse().map_err(e)?;
+    let area_id = percent_decode(header("x-area")?);
+    let w: usize = header("x-width")?.parse().map_err(e)?;
+    let h: usize = header("x-height")?.parse().map_err(e)?;
+    let pixels = match request.body() {
+        InvokeBody::Raw(bytes) => bytes.clone(),
+        _ => return Err("Expected raw grey pixels".into()),
+    };
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.load_bundle_area(&area_id, w, h, pixels)).map_err(e)
+    }).await.map_err(e)?
+}
+
+#[tauri::command]
+async fn set_package_digest(state: State<'_, AppState>, tab: u32, sha256: String, files: usize) -> Res<()> {
+    state.with_session(tab, |s| s.set_package_digest(&sha256, files));
+    Ok(())
+}
+
+#[tauri::command]
+async fn bake_bundle_area(state: State<'_, AppState>, tab: u32, area_id: String, display_tone: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.bake_bundle_area(&area_id, &display_tone)).map_err(e)
+    }).await.map_err(e)?
+}
+
 #[tauri::command]
 async fn retone(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, tone: String) -> Res<String> {
     let state = state.inner().clone();
@@ -974,6 +1006,9 @@ pub fn run() {
             histogram,
             memory_report,
             retone,
+            load_bundle_area,
+            set_package_digest,
+            bake_bundle_area,
             tone_lut,
             export_png,
             area_signal,

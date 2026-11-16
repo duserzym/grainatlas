@@ -49,6 +49,25 @@ impl Session {
     pub fn load_project(&mut self, json: &str) -> Result<(), JsError> {
         self.0.load_project(json).map_err(err)
     }
+    pub fn load_bundle_area(
+        &mut self,
+        area_id: &str,
+        w: usize,
+        h: usize,
+        pixels: Vec<u8>,
+    ) -> Result<String, JsError> {
+        self.0.load_bundle_area(area_id, w, h, pixels).map_err(err)
+    }
+    pub fn set_package_digest(&mut self, sha256: &str, files: usize) {
+        self.0.set_package_digest(sha256, files);
+    }
+    pub fn bake_bundle_area(
+        &mut self,
+        area_id: &str,
+        display_tone: &str,
+    ) -> Result<String, JsError> {
+        self.0.bake_bundle_area(area_id, display_tone).map_err(err)
+    }
     pub fn project_json(&self) -> Result<String, JsError> {
         self.0.project_json().map_err(err)
     }

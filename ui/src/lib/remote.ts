@@ -1,9 +1,9 @@
+import { bundlePixels, isNeutral, overlayFor, type BundleSources } from './bundle-tone';
 import { canWrite } from './presentation';
 // Open from server: a published atlas bundle read from `<server>/atlas/projects/<id>/`
 // (WORKFLOW.md 3.1). Nothing is stitched: the canvas draws the bundle's WebP tiles, and the
 // grains, spots, labels and scale bars come from its project.json. Read-only until "Edit a
-// copy" makes it a local project (spots, grains and labels editable; new pixels need the raw
-// package). This is how UPbDB's mount page embeds grainatlas and how a spot link from
+// copy" makes it a local project (annotations, tone and print sheets editable). This is how UPbDB's mount page embeds grainatlas and how a spot link from
 // anywhere reaches the images (`?server=&project=&spot=`).
 
 import { isBridgeCommand } from '@lab/bridge';
@@ -41,7 +41,7 @@ export interface AtlasJson {
   tile_format: string;
   tile_encoding: string;
   areas: AtlasArea[];
-  package: { name: string; content_sha256: string; nas_path: string | null; path: string };
+  package: { name: string; content_sha256: string; content_files: number; nas_path: string | null; path: string };
   grainatlas_version: string;
   exported: string;
   files: { path: string; size: number; sha256: string }[];
@@ -148,6 +148,7 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   if (!r) return false;
   const remote: Remote = { server, projectId, atlas: r.atlas, readOnly: true, token, access, mount };
   app.clearHistory(); app.viewMode = false; app.draftHere = null;
+  app.bundle = null;
   app.remote = remote;
   app.remoteTiles = new RemoteTiles(remote);
   app.pkg = null;
@@ -181,8 +182,8 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
 
 /**
  * Makes the opened bundle a local project: same project id (a re-publish becomes the next
- * version), kept in this browser like any project, editable. Pixels stay the server's until the
- * raw package is opened, which picks this project up by its package name.
+ * version), kept in this browser like any project, editable. Area and Layout load the published
+ * images into the core; only stitching and shading correction need the raw package.
  */
 export async function editCopy(app: AppState = current()) {
   if (!canWrite()) return;
@@ -194,6 +195,11 @@ export async function editCopy(app: AppState = current()) {
   const packageCopy = savedProject(p.package.name);
   const existing = draft?.pending === null ? null : sameUuid ?? (draft ? packageCopy : null);
   if (packageCopy && !sameId(packageCopy.uuid, p.uuid) && !confirm(`This computer already has a project for ${p.package.name} (${packageCopy.uuid}). Replace it with this project from the server?`)) return;
+  if (app.bundle) {
+    app.remote = { ...remote, readOnly: false };
+    await app.sync.editBase();
+    return;
+  }
   const core = await app.core;
   const ok = await app.run('Making a local copy', async () => {
     await core.blank(p.package.name);
@@ -202,9 +208,12 @@ export async function editCopy(app: AppState = current()) {
     return true;
   });
   if (!ok) return;
-  app.project = JSON.parse(await core.projectJson());
+  // Keep the published JSON numbers verbatim; the core's f32 serialization can spell them differently.
+  app.project = p;
+  app.adopt(p);
   app.remote = { ...remote, readOnly: false };
-  if (existing && sameId(existing.uuid, p.uuid)) app.adopt(existing);
+  if (existing && sameId(existing.uuid, p.uuid)) { app.project = existing; app.adopt(existing); }
+  app.tone = {}; // Server tiles already carry the raw display tone.
   const pending = draft ? draftElements(draft) : null;
   if (pending) {
     app.spots = uiSpots(pending.spots, pending.grains, app.spots);
@@ -214,5 +223,91 @@ export async function editCopy(app: AppState = current()) {
   await app.sync.editBase();
   if (pending) app.draftHere = app.sync.draft?.base_revision ?? 'unknown';
   app.persist();
-  app.notice = `Editing ${remote.atlas.name}. Spots, grains and labels can be changed; open the raw package (${p.package.name}) to re-stitch or publish new pixels.`;
+  app.notice = `Editing ${remote.atlas.name}. Spots, grains and labels can be changed. Tone and print sheets are in Area and Layout. Re-stitching needs the raw package.`;
+}
+
+
+// One load per tab, even when routing changes while fetches are in flight.
+const loading = new WeakMap<AppState, Promise<boolean>>();
+export function loadPublishedPixels(app: AppState): Promise<boolean> {
+  if (bundlePixels(app)) return Promise.resolve(true);
+  if (!app.remote || app.readOnly) return Promise.resolve(false);
+  const pending = loading.get(app);
+  if (pending) return pending;
+  const remote = app.remote;
+  const project = app.fullProject()!;
+  const controller = new AbortController();
+  app.cancelTask = () => controller.abort();
+  const promise = (async () => {
+    const core = await app.core;
+    const result = await app.run('Loading published images', async () => {
+      const sources: BundleSources = {};
+      const mosaics: typeof app.stitched = {};
+      const total = remote.atlas.areas.reduce((n, a) => n + Math.ceil(a.w / remote.atlas.tile_size) * Math.ceil(a.h / remote.atlas.tile_size), 0);
+      let done = 0;
+      // Areas are sequential: only one assembled byte image resides in JS at a time.
+      for (const area of remote.atlas.areas) {
+        if (app.remote?.projectId !== remote.projectId || app.readOnly) throw new Error('Published image loading stopped.');
+        const pixels = new Uint8Array(area.w * area.h);
+        const tile = remote.atlas.tile_size;
+        const cols = Math.ceil(area.w / tile), rows = Math.ceil(area.h / tile);
+        let next = 0;
+        const jobs = await Promise.allSettled(Array.from({ length: Math.min(8, cols * rows) }, async () => {
+          try {
+            const canvas = new OffscreenCanvas(tile, tile);
+            const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+            for (;;) {
+              const index = next++;
+              if (index >= cols * rows) return;
+              const x = index % cols, y = Math.floor(index / cols);
+              controller.signal.throwIfAborted();
+              const [url, init] = fileRequest(remote, `${area.path}/0/${x}_${y}.webp`);
+              const response = await fetch(url, { ...init, signal: controller.signal });
+              if (!response.ok) throw new Error(`Published tile ${area.id}/${x}_${y}: ${response.status}`);
+              const bmp = await createImageBitmap(await response.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+              try {
+                const w = Math.min(tile, area.w - x * tile), h = Math.min(tile, area.h - y * tile);
+                if (bmp.width !== w || bmp.height !== h) throw new Error('Published tile dimensions do not match atlas.json.');
+                ctx.clearRect(0, 0, tile, tile);
+                ctx.drawImage(bmp, 0, 0);
+                const rgba = ctx.getImageData(0, 0, w, h).data;
+                for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) pixels[(y * tile + yy) * area.w + x * tile + xx] = rgba[(yy * w + xx) * 4];
+              } finally { bmp.close(); }
+              done++;
+              if (app.busy) app.busy.label = `Loading published images (${done} of ${total} tiles)`;
+            }
+          } catch (error) { controller.abort(); throw error; }
+        }));
+        const failed = jobs.find(r => r.status === 'rejected');
+        if (failed?.status === 'rejected') throw failed.reason;
+        controller.signal.throwIfAborted();
+        const mosaic = await core.loadBundleArea(area.id, area.w, area.h, pixels);
+        const raw = project.areas.find(a => a.id === area.id);
+        if (!raw) throw new Error(`Published area ${area.id} is missing from the project.`);
+        const rawDisplay = (project.grainatlas_ui as { tone?: Record<string, import('./core/types').ToneParams> })?.tone?.[area.id] ?? raw.params.tone;
+        sources[area.id] = { rawCurve: structuredClone(raw.params.tone), rawDisplay: structuredClone(rawDisplay), sha256: mosaic.sha256 };
+        const overlay = overlayFor(project, area.id, mosaic.sha256);
+        await core.setGrains(area.id, JSON.parse(JSON.stringify(app.grains[area.id] ?? [])));
+        const toned = isNeutral(overlay.curve) ? mosaic : await core.retone(area.id, overlay.curve);
+        mosaics[area.id] = { ...app.stitched[area.id], mosaic: toned };
+      }
+      await core.setPackageDigest(remote.atlas.package.content_sha256, remote.atlas.package.content_files);
+      controller.signal.throwIfAborted();
+      if (app.remote?.projectId !== remote.projectId || app.readOnly) throw new Error('Published image loading stopped.');
+      for (const [id, source] of Object.entries(sources)) {
+        const overlay = overlayFor(project, id, source.sha256);
+        app.params[id] = { ...app.params[id], tone: overlay.curve };
+        app.tone[id] = overlay.display;
+      }
+      app.stitched = mosaics;
+      app.bundle = sources;
+      app.remoteTiles = null;
+      app.liveKeys = {};
+      app.pixelsVersion++;
+      return true;
+    });
+    return !!result;
+  })().finally(() => { loading.delete(app); app.cancelTask = null; });
+  loading.set(app, promise);
+  return promise;
 }

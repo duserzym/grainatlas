@@ -65,14 +65,14 @@ export class WasmCore implements Core {
     };
   }
 
-  private async call<T>(op: string, args: unknown = {}, onProgress?: (p: Progress) => void): Promise<T> {
+  private async call<T>(op: string, args: unknown = {}, onProgress?: (p: Progress) => void, transfer: Transferable[] = []): Promise<T> {
     const worker = this.worker;
     await this.workerReady;
     if (this.disposed || worker !== this.worker) throw new Error('cancelled');
     const id = ++this.seq;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, onProgress });
-      this.worker.postMessage({ id, op, args });
+      this.worker.postMessage({ id, op, args }, transfer);
     });
   }
 
@@ -95,6 +95,8 @@ export class WasmCore implements Core {
 
   cancel() {
     if (this.disposed) return;
+    // A bundle has no package to replay after termination. Keep its published source alive.
+    if (!this.opened && this.project) return;
     this.worker.terminate();
     for (const p of this.pending.values()) p.reject(new Error('cancelled'));
     this.pending.clear();
@@ -156,6 +158,18 @@ export class WasmCore implements Core {
     await this.call('loadProject', { json });
   }
 
+  async loadBundleArea(areaId: string, w: number, h: number, pixels: Uint8Array): Promise<MosaicJson> {
+    await this.ready();
+    return this.call('loadBundleArea', { areaId, w, h, pixels }, undefined, [pixels.buffer as ArrayBuffer]);
+  }
+  async setPackageDigest(sha256: string, files: number): Promise<void> {
+    await this.ready();
+    return this.call('setPackageDigest', { sha256, files });
+  }
+  async bakeBundleArea(areaId: string, displayTone: ToneParams): Promise<MosaicJson> {
+    await this.ready();
+    return this.call('bakeBundleArea', { areaId, displayTone });
+  }
   async projectJson(): Promise<string> {
     await this.ready();
     const j = await this.call<string>('projectJson');

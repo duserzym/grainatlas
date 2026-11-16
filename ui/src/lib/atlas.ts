@@ -1,3 +1,4 @@
+import { neutralTone, storedBundleTones } from './bundle-tone';
 import { canWrite } from './presentation';
 // Atlas bundles (upblab/docs/WORKFLOW.md section 3.1): save as a `<project_id>.atlas/`
 // folder or a zip, publish to UPbDB. The core writes the bytes (identical in the browser
@@ -64,6 +65,8 @@ export function canSaveFolder(): boolean {
 }
 
 async function bundleZip(app: AppState, projectUuid?: string): Promise<{ project: Project; zip: Uint8Array } | null> {
+  const { liveIdle } = await import('./actions');
+  for (const id of Object.keys(app.stitched)) await liveIdle(id, app);
   const p = app.fullProject();
   if (!p) return null;
   if (projectUuid) p.uuid = projectUuid;
@@ -141,8 +144,25 @@ export async function publish(app: AppState = current(), projectUuid = app.sync.
     at: new Date().toISOString(),
   };
   const core = await app.core;
+  const overlays = storedBundleTones(b.project);
+  if (app.bundle) {
+    for (const [id, overlay] of Object.entries(overlays)) {
+      const source = app.bundle[id];
+      if (!source) continue;
+      const mosaic = await core.bakeBundleArea(id, overlay.display);
+      app.bundle[id] = { ...source, sha256: mosaic.sha256 };
+      app.stitched[id] = { ...app.stitched[id], mosaic };
+      app.params[id] = { ...app.params[id], tone: neutralTone() };
+      app.tone[id] = neutralTone();
+      app.preview[id] = null;
+      app.compare[id] = null;
+    }
+    app.liveKeys = {};
+    app.pixelsVersion++;
+  }
   await core.recordPublished(rec);
   app.project = JSON.parse(await core.projectJson());
+  if (app.bundle && app.project?.grainatlas_ui) delete (app.project.grainatlas_ui as { bundle_tone?: unknown }).bundle_tone;
   app.persist();
   app.lastPublish = { ...rec, response: res };
   // Publishing stores images and files only; spots reach the database by sync (contract 2026-11, section 4).

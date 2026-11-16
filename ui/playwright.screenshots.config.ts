@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test';
 
-// Documentation capture only. The application test suite is intentionally absent.
+// Documentation capture only. The e2e tests (synthetic data only) use playwright.config.ts.
 export default defineConfig({
   testDir: './screenshots',
   testMatch: 'screenshots.spec.ts',

@@ -45,6 +45,8 @@ make bridge                 # builds ../upbstudio/bridge/dist once (@lab/bridge)
 make wasm                   # wasm core into ui/src/lib/core/pkg
 make full                   # Rust unit tests, svelte-check and desktop compilation
 cd ui && pnpm check         # svelte-check
+cd ui && pnpm test          # UI unit tests (node --test, part of make full)
+cd ui && npx playwright test # e2e with a synthetic bundle and a mocked server (needs a port)
 cd ui && pnpm build         # static build in ui/dist
 make desktop-check          # generates icons and checks the Tauri shell
 ```

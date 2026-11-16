@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { bundlePixels } from '../lib/bundle-tone';
   import { grainNumber } from '../lib/grain-lineage';
   // Area screen: the area in the shared image view (tile thumbnails at their
   // stage positions before stitching, the mosaic after), metadata, stitch and
@@ -12,7 +13,7 @@
   import Histogram from '../components/Histogram.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import type { Core } from '../lib/core/core';
-  import type { TileOverride } from '../lib/core/types';
+  import type { AreaMeta, TileOverride } from '../lib/core/types';
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
@@ -25,7 +26,9 @@
   let showResiduals = $state(true);
   let showTiles = $state(false);
 
-  const meta = $derived(app.areaMeta);
+  const bundle = $derived(bundlePixels(app));
+  const areas = $derived<AreaMeta[]>(app.pkg?.areas ?? (bundle ? (app.project?.areas ?? []).filter(a => app.bundle?.[a.id]).map(a => ({ id: a.id, name: a.name, pixel_size_nm: a.pixel_size_nm, stage_sign: a.stage_sign, tiles: [], grid: null, field_um: null, pitch_um: null, meta: {} })) : []));
+  const meta = $derived(areas.find(a => a.id === app.areaId) ?? null);
   const areaIdx = $derived(app.pkg?.areas.findIndex((a) => a.id === app.areaId) ?? -1);
   const params = $derived(app.areaId ? app.params[app.areaId] : null);
   const tone = $derived(app.areaId ? app.tone[app.areaId] : null);
@@ -118,22 +121,23 @@
   const fmt = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '–');
 </script>
 
-{#if app.pkg && meta && params && tone}
+{#if meta && params && tone && (!app.remote || bundle)}
   <div class="area">
     <aside class="glass list">
       <h3>Areas</h3>
       <ul>
-        {#each app.pkg.areas as a (a.id)}
+        {#each areas as a (a.id)}
           <li>
             <button class="arearow" aria-pressed={a.id === app.areaId} onclick={() => { app.areaId = a.id; tileSel = null; }} data-testid="area-{a.id}">
               <span class="nm">{a.name}{#if app.grains[a.id] === undefined} <span class="faint" title="no grains yet" aria-label="no grains yet">○</span>{/if}</span>
               <span class="faint mono">{a.id}</span>
-              <span class="faint">{a.grid ? `${a.grid[0]}×${a.grid[1]}` : ''} · {a.tiles.length} tiles</span>
-              {#if app.stitched[a.id]}<span class="pill ok">stitched</span>{/if}
+              {#if !bundle}<span class="faint">{a.grid ? `${a.grid[0]}×${a.grid[1]}` : ''} · {a.tiles.length} tiles</span>{/if}
+              {#if app.stitched[a.id]}<span class="pill ok">{bundle ? 'published' : 'stitched'}</span>{/if}
             </button>
           </li>
         {/each}
       </ul>
+      {#if app.pkg && !bundle}
       <button class="primary wide" onclick={() => stitchAll()} disabled={!!app.busy}>Stitch all areas</button>
       {#if app.pkg.navigation}<p class="faint small">Navigation image and stage calibration found.</p>{/if}
       <p class="faint small" data-testid="open-kind">
@@ -141,17 +145,19 @@
         {:else if app.pkg.kind === 'loose'}Loose images{app.project?.package.loose ? `, ${scaleText(app.project.package.loose)}` : ''}. <button class="link" onclick={changeScale} disabled={!!app.busy}>Change…</button>
         {:else}Package ({app.pkg.reader}).{/if}
       </p>
+      {/if}
+      {#if bundle}<p class="faint small">Published image from the database. Stitching and shading correction need the raw package.</p>{/if}
     </aside>
 
     <section class="glass preview">
       <div class="head">
         <h2>{meta.name} <span class="muted mono">{meta.id}</span></h2>
         <div class="actions">
-          <label class="check"><input type="checkbox" bind:checked={showTiles} /> tiles</label>
+          {#if !bundle}<label class="check"><input type="checkbox" bind:checked={showTiles} /> tiles</label>
           <label class="check"><input type="checkbox" bind:checked={showResiduals} /> residuals</label>
-          <button class="primary" onclick={() => stitch(meta.id)} disabled={!!app.busy} data-testid="stitch">{summary ? 'Re-stitch' : 'Stitch'}</button>
+          <button class="primary" onclick={() => stitch(meta.id)} disabled={!!app.busy} data-testid="stitch">{summary ? 'Re-stitch' : 'Stitch'}</button>{/if}
           <button onclick={() => (app.screen = 'canvas')} disabled={!summary} data-testid="to-canvas">Open canvas</button>
-          {#if summary && !areaGrains.length && !app.readOnly && !app.remote}
+          {#if summary && !areaGrains.length && !app.readOnly && (!app.remote || bundle)}
             <button onclick={() => findGrains(meta.id)} disabled={!!app.busy} data-testid="area-find-grains">Find grains</button>
           {/if}
         </div>
@@ -196,11 +202,11 @@
       {#if summary}
         <div class="stats">
           <span>Mosaic <b class="num">{summary.mosaic.w}×{summary.mosaic.h}</b> px · <b class="num">{fmt((summary.mosaic.w * summary.mosaic.um_per_px) / 1000)}×{fmt((summary.mosaic.h * summary.mosaic.um_per_px) / 1000)}</b> mm</span>
-          <span>Pairs <b class="num">{placement?.pairs.filter((p) => p.used).length}/{placement?.pairs.length}</b> measured</span>
+          {#if !bundle}<span>Pairs <b class="num">{placement?.pairs.filter((p) => p.used).length}/{placement?.pairs.length}</b> measured</span>
           <span>Residual RMS <b class="num" data-testid="rms">{fmt(placement?.rms_residual ?? 0)}</b> px, max <b class="num">{fmt(placement?.max_residual ?? 0)}</b> px</span>
           <span>Overlap RMS <b class="num">{fmt(summary.photometric.overlap_rms_before * 255, 1)} → {fmt(summary.photometric.overlap_rms_after * 255, 1)}</b> grey levels</span>
           {#if summary.photometric.fallback}<div class="faint small">{summary.photometric.fallback}</div>{/if}
-          <span class="faint timings" title={summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}>{summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}</span>
+          {/if}<span class="faint timings" title={summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}>{summary.timings.map(([n, t]) => `${n} ${Math.round(t)} ms`).join(' · ')}</span>
         </div>
       {/if}
     </section>
@@ -209,9 +215,9 @@
       <section>
         <h3>Tone</h3>
         <div class="row3">
-          <button class="primary" onclick={() => autoTone(meta.id)} disabled={!summary || !!app.busy} title="Background leveling on, stretch and CLAHE chosen from the histogram" data-testid="auto-tone">Auto</button>
+          <button class="primary" onclick={() => autoTone(meta.id)} disabled={!summary || !!app.busy} title={bundle ? "Stretch and CLAHE chosen from the published image" : "Background leveling on, stretch and CLAHE chosen from the histogram"} data-testid="auto-tone">Auto</button>
           <button aria-pressed={compare?.showing === 'before'} disabled={!compare} onclick={() => toggleBeforeAfter(meta.id)} title="Swap between the result of Auto and what was there before" data-testid="before-after">{compare?.showing === 'before' ? 'Before' : 'After'} ⇄</button>
-          <button onclick={() => resetTone(meta.id)} title="Correction, blending and tone back to the defaults" data-testid="reset-tone">Reset</button>
+          <button onclick={() => resetTone(meta.id)} title={bundle ? "Back to the published image" : "Correction, blending and tone back to the defaults"} data-testid="reset-tone">Reset</button>
         </div>
         <Histogram bins={hist} bind:black={tone.black} bind:white={tone.white} gamma={tone.gamma} />
         <div class="row3">
@@ -253,7 +259,7 @@
         {/if}
       </section>
 
-      <section>
+      {#if !bundle}<section>
         <h3>Correction</h3>
         <label class="field">Gain / offset
           <select bind:value={params.photometric.model}>
@@ -309,7 +315,7 @@
           </details>
         {/if}
       </section>
-      <section>
+      {/if}<section>
         <button onclick={() => exportPng(meta.id)} disabled={!summary}>Export mosaic PNG</button>
       </section>
     </aside>

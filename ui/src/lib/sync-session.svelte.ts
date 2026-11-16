@@ -1,3 +1,4 @@
+import { bundlePixels } from './bundle-tone';
 import { canWrite } from './presentation';
 import { hostedSync } from './hosted-sync';
 import type { AtlasSyncConfirmation } from '@lab/bridge';
@@ -142,12 +143,12 @@ export class SyncSession {
     return this.ready && !this.app.readOnly && this.app.link.syncOnSave && this.registered === true && this.reachable === true && this.status?.can_edit === true;
   }
   get pixelsChanged(): boolean {
-    if (!this.app.pkg || !Object.keys(this.app.stitched).length || !this.app.project) return false;
+    if ((!this.app.pkg && !bundlePixels(this.app)) || !Object.keys(this.app.stitched).length || !this.app.project) return false;
     return this.currentPixels() !== this.draft?.pixels_base;
   }
   private currentPixels(): string {
     const p = this.app.fullProject()!;
-    p.areas = p.areas.map(a => ({ ...a, params: this.app.params[a.id] ?? a.params, mosaic: this.app.stitched[a.id]?.mosaic ?? a.mosaic }));
+    if (!this.app.bundle) p.areas = p.areas.map(a => ({ ...a, params: this.app.params[a.id] ?? a.params, mosaic: this.app.stitched[a.id]?.mosaic ?? a.mosaic }));
     return pixelSignature(p);
   }
   get state() {
@@ -640,7 +641,7 @@ export class SyncSession {
           this.error = ''; this.failureMessage = ''; this.validationFailed = false;
           this.track();
           if (this.app.draftHere != null && !this.unsynced) this.app.draftHere = null;
-          if (publishPixels && this.app.pkg) {
+          if (publishPixels && (this.app.pkg || bundlePixels(this.app))) {
             const before = this.app.lastPublish?.at;
             await publish(this.app);
             if (this.app.lastPublish?.at && this.app.lastPublish.at !== before) {

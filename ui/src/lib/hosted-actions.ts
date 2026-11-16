@@ -57,6 +57,7 @@ function view(app: AppState) {
   app.sync.viewed(app.sync.status?.revision ?? app.sync.draft?.base_revision ?? null);
   if (app.remote) app.remote = { ...app.remote, readOnly: true };
   else app.viewMode = true;
+  if (app.screen === 'area' || app.screen === 'layout') app.screen = 'canvas';
   app.tool = 'select';
 }
 export async function leaveEdit(app: AppState, decision: 'sync' | 'keep-draft' | 'discard', shellCommand = true): Promise<Partial<CommandResult>> {

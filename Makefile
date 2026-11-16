@@ -94,6 +94,7 @@ check-version:
 # Checks: Rust unit tests, svelte-check and the desktop crate.
 full:
 	+$(MAKE) -j3 check core-test desktop-check
+	cd ui && pnpm test
 
 # CI entry point: like full without svelte-check and desktop-check (no Tauri system libraries).
 test: core-test ui-build

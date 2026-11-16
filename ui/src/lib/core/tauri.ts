@@ -70,6 +70,15 @@ export class TauriCore implements Core {
   async loadProject(json: string) {
     await this.call('load_project', { json });
   }
+  async loadBundleArea(areaId: string, w: number, h: number, pixels: Uint8Array): Promise<MosaicJson> {
+    return JSON.parse(await tauriInvoke<string>('load_bundle_area', pixels, { headers: { 'x-tab': String(this.tab), 'x-area': encodeURIComponent(areaId), 'x-width': String(w), 'x-height': String(h) } }));
+  }
+  async setPackageDigest(sha256: string, files: number): Promise<void> {
+    await this.call('set_package_digest', { sha256, files });
+  }
+  async bakeBundleArea(areaId: string, displayTone: ToneParams): Promise<MosaicJson> {
+    return JSON.parse(await this.call<string>('bake_bundle_area', { areaId, displayTone: JSON.stringify(displayTone) }));
+  }
   async projectJson(): Promise<string> {
     return this.call<string>('project_json');
   }

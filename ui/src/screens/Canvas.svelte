@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { bundlePixels } from '../lib/bundle-tone';
   // Canvas screen: the infinite canvas with grains and spots.
   // Pointer-first: navigate with trackpad or mouse, click to place, drag a spot
   // to move it, drag its ring handle to resize, double-click its name to rename;
@@ -259,7 +260,7 @@
 
   /** A bundle from a server shown read-only; `noPixels`: no stitched mosaic in the core (server tiles). */
   const ro = $derived(app.readOnly);
-  const noPixels = $derived(!!app.remote);
+  const noPixels = $derived(!!app.remote && !bundlePixels(app));
   const tiles = $derived(app.remote && app.remoteTiles ? app.remoteTiles : core);
   const area = $derived(app.project?.areas.find((a) => a.id === areaId) ?? null);
   const mosaic = $derived(areaId ? app.stitched[areaId].mosaic : null);

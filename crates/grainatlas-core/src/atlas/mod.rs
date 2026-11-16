@@ -77,6 +77,8 @@ pub struct AreaPixels<'a> {
     pub w: usize,
     pub h: usize,
     pub base: &'a [u8],
+    /// True when base comes from a published image rather than raw package tiles.
+    pub bundle_backed: bool,
 }
 
 /// A path segment from an area id (folder names may hold spaces or other characters).
@@ -232,7 +234,19 @@ pub fn build(project: &Project, areas: &[AreaPixels], package: &PackageDigest, o
     let mut area_json = Vec::new();
     let quality = opts.quality.clamp(90, 100);
     for a in areas {
-        let tone = ui.tone.get(&a.rec.id).unwrap_or(&a.rec.params.tone);
+        let overlay: Option<ToneParams> = project
+            .extra
+            .get("grainatlas_ui")
+            .and_then(|ui| ui.get("bundle_tone"))
+            .and_then(|v| v.get(&a.rec.id))
+            .and_then(|v| v.get("display"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let identity = ToneParams::neutral();
+        let tone = if a.bundle_backed {
+            overlay.as_ref().unwrap_or(&identity)
+        } else {
+            ui.tone.get(&a.rec.id).unwrap_or(&a.rec.params.tone)
+        };
         let lut = crate::photometric::tone::lut(tone);
         let px: Vec<u8> = a.base.iter().map(|&v| lut[v as usize]).collect();
         let pyr = Pyramid::build_tiled(a.w, a.h, px, TILE);
@@ -272,7 +286,14 @@ pub fn build(project: &Project, areas: &[AreaPixels], package: &PackageDigest, o
     files.push(("grains.geojson".into(), pretty(&grains_geojson(project, &ui.grains, &ids))?));
     files.push(("spots.json".into(), pretty(&spots_document(project, &ui.spots, &ids))?));
     files.push(("scalebars.json".into(), pretty(&scalebars(&ui.grains, areas))?));
-    files.push(("project.json".into(), pretty(&serde_json::to_value(project).map_err(|e| Error::Invalid(e.to_string()))?)?));
+    let mut saved = serde_json::to_value(project).map_err(|e| Error::Invalid(e.to_string()))?;
+    if let Some(ui) = saved
+        .get_mut("grainatlas_ui")
+        .and_then(|v| v.as_object_mut())
+    {
+        ui.remove("bundle_tone");
+    }
+    files.push(("project.json".into(), pretty(&saved)?));
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let listed: Vec<serde_json::Value> = files.iter().map(|(p, b)| json!({ "path": p, "size": b.len(), "sha256": crate::util::sha256_hex(b) })).collect();
