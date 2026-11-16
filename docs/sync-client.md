@@ -396,7 +396,7 @@ values to split siblings and put the value-to-uuid mapping in grains.json;
 normal unique numbers keep their previous mask values. Checks already compare
 grain ids and do not require unique grain numbers.
 
-Standalone handoffs are documented in README.md. Revision arguments are a
+Standalone handoffs are documented in docs/developing.md (Opened from UPb Lab). Revision arguments are a
 hint for the current-state lookup, not a request for a historical bundle.
 No package installation, crate fetch, Rust build, Tauri formatting, port,
 Playwright run or commit is part of this update. The new browser spec uses

@@ -40,7 +40,7 @@ setup:
 bridge:
 	@if [ -f $(UPBSTUDIO)/bridge/dist/index.js ]; then echo "@lab/bridge: $(UPBSTUDIO)/bridge/dist is built"; \
 	elif [ -d $(UPBSTUDIO)/bridge ]; then cd $(UPBSTUDIO) && pnpm install --frozen-lockfile --filter @lab/bridge && pnpm --filter @lab/bridge build; \
-	else echo "@lab/bridge: no $(UPBSTUDIO) checkout next to grainatlas; see README.md (Dependencies) for the tarball fallback"; exit 1; fi
+	else echo "@lab/bridge: no $(UPBSTUDIO) checkout next to grainatlas; see docs/developing.md (Dependencies) for the tarball fallback"; exit 1; fi
 
 core-test:
 	cargo test
