@@ -10,7 +10,7 @@
 .env
 .DS_Store
 Thumbs.db
-# image data never lives in git (the public repository has one screenshot of the app)
+# Source image data stays out of git; only deliberate documentation screenshots are allowed.
 *.jpg
 *.jpeg
 *.png
@@ -22,6 +22,7 @@ Thumbs.db
 *.pdf
 *.grainatlas/
 !docs/app-blank.png
+!docs/images/*.webp
 !ui/public/**
 !ui/static/**
 /ui/src/lib/core/pkg/

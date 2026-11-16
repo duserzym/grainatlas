@@ -168,7 +168,7 @@
 .ga-root button[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .ga-root :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.ga-root input[type='text'], .ga-root input[type='number'], .ga-root select, .ga-root textarea {
+.ga-root input[type='text'], .ga-root input[type='number'], .ga-root input[type='url'], .ga-root input[type='password'], .ga-root select, .ga-root textarea {
   font: inherit;
   font-size: 0.9rem;
   color: var(--text);

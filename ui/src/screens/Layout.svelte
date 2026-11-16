@@ -175,7 +175,7 @@
       <p class="muted small-text">Grains are printed in continuous pieces of the mosaic with their neighbours. Where a piece must be cut, a greyed strip repeats the other side.</p>
       {/if}
       <label class="field">Title <input type="text" bind:value={sheet.title} placeholder={app.pkg?.name ?? ''} /></label>
-      <label class="field">Lab and operator <input type="text" bind:value={sheet.lab} placeholder="e.g. Boise State Isotope Geology Lab · Y. Zhang" /></label>
+      <label class="field">Lab and operator <input type="text" bind:value={sheet.lab} placeholder="e.g. lab name · operator" /></label>
       <div class="two">
         <label class="field">Paper
           <select bind:value={sheet.paper}>
