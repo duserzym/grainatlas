@@ -6,7 +6,7 @@ Stitch, tone, segment, spot and print SEM grain-mount images (CL, BSE, SE) for
 LA-ICP-MS sessions. The same interface runs as a macOS desktop app, in a
 browser and inside UPb Lab; packages are read locally, with optional UPbDB sync.
 
-[Docs site](https://duserzym.github.io/grainatlas/) · [Download](https://github.com/duserzym/grainatlas/releases/tag/v0.1.1) · [UPb Lab](https://github.com/duserzym/upblab) · [UPbRPy](https://github.com/duserzym/UPbRPy) · [UPbDB](https://github.com/duserzym/upbdb)
+[Docs site](https://duserzym.github.io/grainatlas/) · [Download](https://github.com/duserzym/grainatlas/releases/tag/v0.1.2) · [UPb Lab](https://github.com/duserzym/upblab) · [UPbRPy](https://github.com/duserzym/UPbRPy) · [UPbDB](https://github.com/duserzym/upbdb)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/grains-1440x900-dark.webp">
@@ -15,7 +15,7 @@ browser and inside UPb Lab; packages are read locally, with optional UPbDB sync.
 
 ## Install
 
-On **macOS with Apple silicon**, download `grainatlas_0.1.1_aarch64.dmg` from
+On **macOS with Apple silicon**, download `grainatlas_0.1.2_aarch64.dmg` from
 [the latest release](https://github.com/duserzym/grainatlas/releases/latest),
 open it and drag GrainAtlas to Applications.
 
