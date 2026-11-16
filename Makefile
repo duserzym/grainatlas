@@ -67,10 +67,16 @@ tauri/src-tauri/icons/icon.png: tauri/assets-icon.svg
 desktop-dev: ui-build icons
 	cd tauri && cargo tauri dev
 
+# Sign macOS builds with the lab's code-signing certificate when this Mac has it
+# ("UPb Lab Code Signing" in the login keychain; ~/Github/lab-builds/SIGNING.md), so
+# keychain permissions survive rebuilds and updates. Elsewhere builds stay ad hoc.
+LAB_SIGNING_IDENTITY ?= $(shell security find-identity -p codesigning 2>/dev/null | grep -q '"UPb Lab Code Signing"' && echo 'UPb Lab Code Signing')
+SIGN_ENV = $(if $(LAB_SIGNING_IDENTITY),APPLE_SIGNING_IDENTITY="$(LAB_SIGNING_IDENTITY)")
+
 # Target-specific, so the wasm built as a prerequisite here also uses the shared target.
 desktop-build: WASM_TARGET_DIR = $(if $(RELEASE_TARGET),$(RELEASE_TARGET),$(CURDIR)/target)
 desktop-build: ui-build icons
-	cd tauri && CARGO_TARGET_DIR="$(WASM_TARGET_DIR)" cargo tauri build
+	cd tauri && $(SIGN_ENV) CARGO_TARGET_DIR="$(WASM_TARGET_DIR)" cargo tauri build
 	@echo "App: $(WASM_TARGET_DIR)/release/bundle/ (copy the .app out, then delete it there)"
 
 desktop-check: icons
