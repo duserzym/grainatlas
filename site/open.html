@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open images · GrainAtlas</title>
+<meta name="description" content="Open SEM packages, single areas, loose images and saved projects.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script>
+try {
+  const theme = localStorage.getItem('grainatlas-site.theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top glass">
+  <a class="brand" href="index.html"><img src="icon.svg" alt="" width="36" height="36">GrainAtlas</a>
+  <div class="theme" id="theme-control" hidden><label for="theme">Theme </label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system" selected>System</option></select></div>
+  <details class="mobile-menu"><summary>Manual</summary><nav aria-label="Mobile manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html" aria-current="page">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav></details>
+</header>
+<div class="shell">
+  <nav class="sidebar glass" aria-label="Manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html" aria-current="page">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav>
+  <main id="main" tabindex="-1">
+<p class="eyebrow">Open screen</p><h1>Open images</h1><p class="lede">Read the original images and their scale before stitching.</p>
+<ol><li>Drop a folder or image files on the window, or use <strong>Choose folder…</strong> or <strong>Choose images…</strong>.</li><li>For loose images, enter µm per pixel or the field width. Choose whether the images are separate areas or one grid.</li><li>Check the areas, then continue to <a href="area.html">Stitch and tone</a>.</li></ol>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/open-1440x900-dark.webp">
+  <img src="images/open-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Open screen after reading Example_mount, with Sample-A and Sample-B before stitching">
+</picture><figcaption>Example_mount is read, with Sample-A and Sample-B ready to stitch.</figcaption></figure>
+<h2>Supported inputs</h2><table class=""><thead><tr><th scope="col">Input</th><th scope="col">What to open</th></tr></thead><tbody><tr><td>TM4000 Zigzag package</td><td>The folder containing the <code>.zag</code> file and one subfolder per area.</td></tr><tr><td>Single TM4000 area</td><td>An area folder with its <code>.ini</code>, tiles and <code>.txt</code> sidecars. Scale and stage positions come from the sidecars.</td></tr><tr><td>Images with positions</td><td>A folder with <code>positions.csv</code>: <code>file,x_um,y_um,pixel_size_nm</code>.</td></tr><tr><td>Loose images</td><td>JPEG, PNG, TIFF or BMP images, with a scale you enter once.</td></tr></tbody></table>
+<h2>Return to a project</h2><p>Choose an entry in <strong>Recent projects</strong>. If its folder has moved or is unavailable, locate it again. In a browser, images are not kept between visits: open the package again, then use <strong>Project file</strong> to load the saved record.</p>
+<p>A <code>.gaproj</code> holds parameters, grain outlines, spots and labels, without pixels. On desktop, opening it reads the images from the recorded path and renders saved placements without stitching again.</p>
+<h2>Work in tabs</h2><p>Several packages or saved projects can stay open as tabs. Use <kbd>⌘T</kbd> for a new tab, <kbd>⌘W</kbd> to close, and <kbd>Ctrl</kbd> + <kbd>Tab</kbd> to switch. A dot marks unsaved changes; closing asks before discarding them. Use <kbd>Ctrl</kbd> instead of <kbd>⌘</kbd> where applicable.</p>
+<div class="callout"><p>Packages are read locally. Publishing an atlas to UPbDB is a separate, optional action.</p></div>
+  <nav class="page-links" aria-label="Previous and next pages"><a rel="prev" href="install.html">← Previous: Install</a><a rel="next" href="area.html">Next: Stitch and tone →</a></nav>
+  </main>
+</div>
+<footer><a href="https://github.com/duserzym/grainatlas">GitHub</a> · <a href="https://github.com/duserzym/grainatlas/blob/main/LICENSE">MIT license</a> · GrainAtlas manual</footer>
+<script>
+(() => {
+  const select = document.getElementById('theme');
+  const pictures = document.querySelectorAll('picture source');
+  function apply(theme) {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    pictures.forEach(source => source.media = theme === 'system' ? '(prefers-color-scheme: dark)' : theme === 'dark' ? 'all' : 'not all');
+  }
+  select.value = document.documentElement.dataset.theme || 'system';
+  apply(select.value);
+  document.getElementById('theme-control').hidden = false;
+  select.addEventListener('change', () => {
+    apply(select.value);
+    try { localStorage.setItem('grainatlas-site.theme', select.value); } catch {}
+  });
+})();
+</script>
+</body>
+</html>

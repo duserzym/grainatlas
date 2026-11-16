@@ -1,147 +1,64 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>grainatlas</title>
-  <meta name="description" content="Stitch, tone, segment, spot and print SEM grain-mount images (CL, BSE, SE) for LA-ICP-MS sessions. Open source, runs in the browser or as a desktop app.">
-  <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview · GrainAtlas</title>
+<meta name="description" content="GrainAtlas manual: stitch SEM images, outline grains, place spots and print sheets.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script>
+try {
+  const theme = localStorage.getItem('grainatlas-site.theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="top">
-    <a class="brand" href="#"><img src="favicon.svg" alt="" width="28" height="28"> grainatlas</a>
-    <nav>
-      <a href="#workflow">Workflow</a>
-      <a href="#features">Features</a>
-      <a href="#install">Install</a>
-      <a href="https://github.com/duserzym/grainatlas">GitHub</a>
-    </nav>
-  </header>
-
-  <main>
-    <section class="hero">
-      <div class="hero-text">
-        <p class="eyebrow">Open source · MIT · Rust + Svelte</p>
-        <h1>From SEM tiles to laser-ready print sheets</h1>
-        <p class="lede">grainatlas stitches CL, BSE and SE grain-mount images, finds every grain, lets you make the final call by hand, places LA-ICP-MS spots and prints every grain once at one scale. It runs as a web page or a desktop app, and your images never leave your computer.</p>
-        <p class="cta">
-          <a class="button primary" href="#install">Get started</a>
-          <a class="button" href="#workflow">See the workflow</a>
-        </p>
-      </div>
-      <figure class="shot hero-shot">
-        <img src="app-blank.png" width="1440" height="900" alt="grainatlas on first launch, before a package is opened.">
-      </figure>
-    </section>
-
-    <section id="workflow" class="workflow">
-      <h2>Six steps, one window</h2>
-
-      <article class="step">
-        <div class="step-text">
-          <span class="num">1</span>
-          <h3>Open a package</h3>
-          <p>Drop a folder on the window. grainatlas reads a TM4000 Zigzag package, a single area folder, any folder of images with a <code>positions.csv</code>, or loose images with a scale you type once. Several packages or saved projects open as tabs.</p>
-        </div>
-      </article>
-
-      <article class="step">
-        <div class="step-text">
-          <span class="num">2</span>
-          <h3>Stitch and tone</h3>
-          <p>Tiles are placed from the stage positions, every overlap is refined, and the whole area is solved at once. Gain, offset, beam-exposure steps and background are corrected in one solve. <strong>Auto</strong> sets the tone from the histogram, and every control re-renders the mosaic live.</p>
-        </div>
-      </article>
-
-      <article class="step">
-        <div class="step-text">
-          <span class="num">3</span>
-          <h3>Find the grains</h3>
-          <p>One click outlines every grain, including CL-dark zircons. Epoxy bubbles, tile-seam slivers, exposure blocks and specks are flagged with a reason, never silently dropped. Grains carry no numbers; spots do.</p>
-        </div>
-      </article>
-
-      <article class="step">
-        <div class="step-text">
-          <span class="num">4</span>
-          <h3>Make the final call by hand</h3>
-          <p>Delete what is not a grain. Redraw an outline with a lasso that snaps to grain edges, freehand or click by click; ⇧ adds and ⌥ cuts. Touch up an outline with a brush sized in µm. Hand-drawn grains survive <strong>Find again</strong>, and every edit undoes.</p>
-          <ul class="keys">
-            <li><kbd>D</kbd> Delete</li>
-            <li><kbd>O</kbd> Outline</li>
-            <li><kbd>B</kbd> Brush</li>
-            <li><kbd>G</kbd> +Grain</li>
-            <li><kbd>K</kbd> Split</li>
-          </ul>
-        </div>
-      </article>
-
-      <article class="step">
-        <div class="step-text">
-          <span class="num">5</span>
-          <h3>Place spots</h3>
-          <p>Click a grain to place a laser spot. Spots are named <code>sample_n</code>, and <em>n</em> counts up across samples within a session, like an instrument run number; type a start number at any time, or restart at 1 for each sample. Select several spots to change their size, renumber them or rename them at once. Export the spots as CSV or GeoJSON, or send them to UPbDB.</p>
-        </div>
-      </article>
-
-      <article class="step">
-        <div class="step-text">
-          <span class="num">6</span>
-          <h3>Print every grain once</h3>
-          <p>Tabloid sheets at one scale (1 mm = 8 µm by default), cut straight out of the mosaic as bands, sample by sample. Each sheet has the instrument header, a mount map and the laser spot sizes at print scale. A registration file maps every band on paper back to the mosaic.</p>
-        </div>
-      </article>
-    </section>
-
-    <section id="features" class="features">
-      <h2>What's inside</h2>
-      <div class="grid">
-        <div class="card">
-          <h3>One core, two shells</h3>
-          <p>A Rust core runs in the browser (wasm in a Web Worker) and natively in a Tauri 2 desktop app, and both builds produce identical mosaics.</p>
-        </div>
-        <div class="card">
-          <h3>Stitching that checks itself</h3>
-          <p>Stage prior, phase correlation, a Lucas-Kanade refinement and a global least-squares solve, with residuals drawn on the mosaic.</p>
-        </div>
-        <div class="card">
-          <h3>Photometric correction</h3>
-          <p>One joint solve for per-tile gain and offset, beam-exposure steps and background, then seam or multiband blending.</p>
-        </div>
-        <div class="card">
-          <h3>Segmentation you can overrule</h3>
-          <p>Bright and CL-dark grains, flagged artifacts, GrabCut refinement, and a live-wire lasso and brush for the hard ones.</p>
-        </div>
-        <div class="card">
-          <h3>Spots, lines, rasters</h3>
-          <p>Placed with the mouse or trackpad alone, with UUIDv7 ids, presets in µm and names that follow your lab's numbering.</p>
-        </div>
-        <div class="card">
-          <h3>Paper and the laser</h3>
-          <p>Print sheets with a registration sidecar, atlas bundles for UPbDB, results on the spots, and a fiducial fit to the laser stage.</p>
-        </div>
-      </div>
-    </section>
-
-    <section id="install" class="install">
-      <h2>Install</h2>
-      <p>Download the macOS app (Apple Silicon) from <a href="https://github.com/duserzym/grainatlas/releases/latest">the latest release</a>. Or build from source on macOS, Linux or Windows: you need Rust (stable), Node with pnpm, and a checkout of <code>upblab</code> next to <code>grainatlas</code> for the <code>@lab/bridge</code> package.</p>
-<pre><code>git clone https://github.com/duserzym/grainatlas
-cd grainatlas
-make setup         # Rust + wasm target, wasm-bindgen, UI dependencies
-make ui-dev        # web app on http://localhost:5174
-make desktop-dev   # desktop app (Tauri 2)</code></pre>
-      <p>For batch work, the command line stitches a package and writes print sheets in one go:</p>
-<pre><code>cargo run --release -p grainatlas-cli -- stitch &lt;package&gt; \
-  --out &lt;name&gt;.grainatlas --auto --polarity both --print tabloid</code></pre>
-      <p class="note">Supported now: Hitachi TM4000 Zigzag packages, single area folders, image folders with <code>positions.csv</code>, and loose images with a typed scale.</p>
-    </section>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top glass">
+  <a class="brand" href="index.html"><img src="icon.svg" alt="" width="36" height="36">GrainAtlas</a>
+  <div class="theme" id="theme-control" hidden><label for="theme">Theme </label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system" selected>System</option></select></div>
+  <details class="mobile-menu"><summary>Manual</summary><nav aria-label="Mobile manual"><ul class="nav-list"><li><a href="index.html" aria-current="page">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav></details>
+</header>
+<div class="shell">
+  <nav class="sidebar glass" aria-label="Manual"><ul class="nav-list"><li><a href="index.html" aria-current="page">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav>
+  <main id="main" tabindex="-1">
+<img class="hero-icon" src="icon.svg" width="96" height="96" alt="GrainAtlas icon">
+<p class="eyebrow">SEM images · LA-ICP-MS U-Pb</p><h1>GrainAtlas</h1>
+<p class="lede">Stitch SEM tiles, outline grains, place laser spots and make print sheets.</p>
+<p>Work with CL, BSE and SE grain-mount images in the macOS app, a browser or UPb Lab. Read packages locally and connect to UPbDB when you need to share an atlas or see results.</p>
+<div class="actions"><a class="btn primary" href="https://github.com/duserzym/grainatlas/releases/latest">Download for macOS</a><a class="btn" href="open.html">Read the manual</a></div>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/grains-1440x900-dark.webp">
+  <img src="images/grains-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Canvas with numbered grain outlines and the Grains panel open">
+</picture><figcaption>Numbered grains on the Canvas, with the Grains panel open.</figcaption></figure>
+<h2>What it does</h2><div class="grid">
+<a class="glass panel card" href="open.html"><h3>Open your images</h3><p>Read a package, one area or loose images with a known scale.</p></a><a class="glass panel card" href="area.html"><h3>Stitch and tone</h3><p>Join tiles from stage positions and adjust the mosaic with live tone controls.</p></a><a class="glass panel card" href="canvas.html"><h3>Grains and spots</h3><p>Find grains, edit their outlines and name laser spots.</p></a><a class="glass panel card" href="layout.html"><h3>Print sheets</h3><p>Keep neighbouring grains together on paper and export registration files.</p></a><a class="glass panel card" href="settings.html"><h3>Connect to UPbDB</h3><p>Sign in, compare project changes and read results on spots.</p></a><a class="glass panel card" href="cli.html"><h3>Batch work</h3><p>Stitch, segment, re-render and export from the command line.</p></a></div>
+<h2>Part of the lab workflow</h2>
+<p><a href="https://github.com/duserzym/upblab">UPb Lab</a> opens the workflow in one place. GrainAtlas prepares images and spots; <a href="https://github.com/duserzym/upbdb">UPbDB</a> stores sessions and links acquisitions to spots; <a href="https://github.com/duserzym/UPbRPy">UPbRPy</a> reduces the session and submits results to UPbDB. Stored results can then be read beside the SEM images.</p>
+<h2>Open source</h2><p>GrainAtlas is released under the <a href="https://github.com/duserzym/grainatlas/blob/main/LICENSE">MIT license</a>. Sample data and test fixtures stay outside the public repository. See the <a href="https://github.com/duserzym/grainatlas/blob/main/docs/screenshots.md">screenshot policy</a> for the manual images.</p>
+  <nav class="page-links" aria-label="Previous and next pages"><a rel="prev" href="cli.html">← Previous: Command line</a><a rel="next" href="install.html">Next: Install →</a></nav>
   </main>
-
-  <footer>
-    <p>grainatlas is MIT licensed. Image algorithms are reused from <a href="https://github.com/storytold/photocraft">storytold/photocraft</a> and <a href="https://github.com/image-rs/image-webp">image-rs/image-webp</a> (MIT or Apache-2.0).</p>
-    <p>Companion to UPbDB and UPbRPy.</p>
-  </footer>
+</div>
+<footer><a href="https://github.com/duserzym/grainatlas">GitHub</a> · <a href="https://github.com/duserzym/grainatlas/blob/main/LICENSE">MIT license</a> · GrainAtlas manual</footer>
+<script>
+(() => {
+  const select = document.getElementById('theme');
+  const pictures = document.querySelectorAll('picture source');
+  function apply(theme) {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    pictures.forEach(source => source.media = theme === 'system' ? '(prefers-color-scheme: dark)' : theme === 'dark' ? 'all' : 'not all');
+  }
+  select.value = document.documentElement.dataset.theme || 'system';
+  apply(select.value);
+  document.getElementById('theme-control').hidden = false;
+  select.addEventListener('change', () => {
+    apply(select.value);
+    try { localStorage.setItem('grainatlas-site.theme', select.value); } catch {}
+  });
+})();
+</script>
 </body>
 </html>

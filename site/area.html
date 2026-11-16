@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stitch and tone · GrainAtlas</title>
+<meta name="description" content="Stitch SEM tiles and adjust tone, correction and grain normalization.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script>
+try {
+  const theme = localStorage.getItem('grainatlas-site.theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top glass">
+  <a class="brand" href="index.html"><img src="icon.svg" alt="" width="36" height="36">GrainAtlas</a>
+  <div class="theme" id="theme-control" hidden><label for="theme">Theme </label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system" selected>System</option></select></div>
+  <details class="mobile-menu"><summary>Manual</summary><nav aria-label="Mobile manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html" aria-current="page">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav></details>
+</header>
+<div class="shell">
+  <nav class="sidebar glass" aria-label="Manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html" aria-current="page">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav>
+  <main id="main" tabindex="-1">
+<p class="eyebrow">Area screen</p><h1>Stitch and tone</h1><p class="lede">Join the tiles, inspect the overlaps and choose the image tone.</p>
+<ol><li>Select an area in the list. Before stitching, tiles appear at their stage positions.</li><li>Choose <strong>Stitch all areas</strong>, or <strong>Stitch</strong> for the selected area.</li><li>Choose <strong>Auto</strong> under Tone to set background leveling, stretch and CLAHE from the histogram.</li><li>Inspect the mosaic, then choose <strong>Open canvas</strong> or <strong>Find grains</strong>.</li></ol>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/stitch-1440x900-dark.webp">
+  <img src="images/stitch-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Area screen after stitching and Auto tone, with tone controls and the histogram">
+</picture><figcaption>A stitched area with Auto tone, histogram and correction controls.</figcaption></figure>
+<h2>Adjust tone</h2><p>Black and White set the displayed range; Gamma adjusts the middle tones. Low % and High % set the stretch percentiles. CLAHE adjusts local contrast. Changes to correction and tone re-render the mosaic live.</p>
+<p><strong>Before / After ⇄</strong> compares Auto’s result with the state before Auto. <strong>Reset levels</strong> resets black, white and gamma; <strong>Reset</strong> returns correction, blending and tone to defaults.</p>
+<h2>Check the stitch</h2><p>Turn on <strong>tiles</strong> to see tile frames and <strong>residuals</strong> to see overlap measurements. The summary reports residual RMS and maximum in px. Click a tile for its metadata, stage position and drift.</p>
+<p>Correction controls adjust gain and offset, background leveling, beam-exposure steps and blending. Tile overrides let you change one tile’s gain and offset; <strong>Match neighbours</strong> clears its override. Changes to the stitching threshold require <strong>Re-stitch</strong>.</p>
+<h2>Match grain tone</h2><p>After finding grains, enable <strong>equalize grains</strong> to match their median and spread to the area or a chosen grain. Adjust strength and the soft edge in µm.</p>
+<h2>Move around the image</h2><p>The mouse wheel zooms about the cursor; two-finger scroll pans and pinch zooms. Drag empty space to pan and double-click to fit. Area, Canvas and Layout previews use the same gestures.</p>
+  <nav class="page-links" aria-label="Previous and next pages"><a rel="prev" href="open.html">← Previous: Open images</a><a rel="next" href="canvas.html">Next: Grains and spots →</a></nav>
+  </main>
+</div>
+<footer><a href="https://github.com/duserzym/grainatlas">GitHub</a> · <a href="https://github.com/duserzym/grainatlas/blob/main/LICENSE">MIT license</a> · GrainAtlas manual</footer>
+<script>
+(() => {
+  const select = document.getElementById('theme');
+  const pictures = document.querySelectorAll('picture source');
+  function apply(theme) {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    pictures.forEach(source => source.media = theme === 'system' ? '(prefers-color-scheme: dark)' : theme === 'dark' ? 'all' : 'not all');
+  }
+  select.value = document.documentElement.dataset.theme || 'system';
+  apply(select.value);
+  document.getElementById('theme-control').hidden = false;
+  select.addEventListener('change', () => {
+    apply(select.value);
+    try { localStorage.setItem('grainatlas-site.theme', select.value); } catch {}
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Command line · GrainAtlas</title>
+<meta name="description" content="GrainAtlas command line reference for batch processing and exports.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script>
+try {
+  const theme = localStorage.getItem('grainatlas-site.theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top glass">
+  <a class="brand" href="index.html"><img src="icon.svg" alt="" width="36" height="36">GrainAtlas</a>
+  <div class="theme" id="theme-control" hidden><label for="theme">Theme </label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system" selected>System</option></select></div>
+  <details class="mobile-menu"><summary>Manual</summary><nav aria-label="Mobile manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html" aria-current="page">Command line</a></li></ul></nav></details>
+</header>
+<div class="shell">
+  <nav class="sidebar glass" aria-label="Manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html" aria-current="page">Command line</a></li></ul></nav>
+  <main id="main" tabindex="-1">
+<p class="eyebrow">Command line</p><h1>Batch and export work</h1><p class="lede">Use the Rust command line for repeatable processing of local packages.</p>
+<p>Run from a source checkout with <code>cargo run --release -p grainatlas-cli --</code>, followed by a command. With an installed CLI binary, start with <code>grainatlas</code>. Use <code>--help</code> on a command for its full options.</p><h2>Commands</h2><table class=""><thead><tr><th scope="col">Command</th><th scope="col">Purpose</th></tr></thead><tbody><tr><td><code>stitch</code></td><td>Stitch an area or all areas of a package into a project folder.</td></tr><tr><td><code>sheets</code></td><td>Re-render print sheets from saved mosaics and grains; whole-area output is also available.</td></tr><tr><td><code>batch</code></td><td>Stitch each direct package folder and continue after failures.</td></tr><tr><td><code>info</code></td><td>List the areas and tiles of a package without stitching.</td></tr><tr><td><code>segment</code></td><td>Segment saved areas using their saved placements, parameters and manual decisions.</td></tr><tr><td><code>rerender</code></td><td>Re-run correction, blend and tone from saved placements without stitching or segmenting.</td></tr><tr><td><code>import-grains</code></td><td>Copy saved grains from another copy of the same project into areas without grains, and re-link spots.</td></tr><tr><td><code>overlay</code></td><td>List a printout photo and initialize its area overlay.</td></tr><tr><td><code>render</code></td><td>Stack saved mosaics with grain outlines for visual checking.</td></tr><tr><td><code>check</code></td><td>Report saved-project warnings; warnings exit successfully.</td></tr><tr><td><code>atlas</code></td><td>Stitch a package, find grains, apply Auto tone and write an atlas folder or zip.</td></tr><tr><td><code>atlas-project</code></td><td>Write an atlas zip from a saved project, preserving its grains, spots and labels.</td></tr><tr><td><code>hash</code></td><td>Print base and Auto-plus-grain-tone mosaic hashes for native/browser parity checks.</td></tr><tr><td><code>photometry</code></td><td>Compare correction parameter sets and write reduced Auto-toned mosaics with overlap reports.</td></tr></tbody></table>
+<h2>Stitch and print</h2><pre><code>cargo run --release -p grainatlas-cli -- stitch &lt;package-or-area-folder&gt; --out &lt;name&gt;.grainatlas --auto --polarity both --print tabloid</code></pre>
+<p><code>--print tabloid</code> makes context-first sheets with each owned grain printed once. Scale is chosen from grain sizes, targeting a median grain about 15 mm on paper; <code>--scale 8</code> fixes 1 mm of paper to 8 µm of sample. <code>--print-style grains</code> requests the older single-grain crop layout.</p>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/print-1440x900-dark.webp">
+  <img src="images/print-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Layout screen with print sheets made and a sheet preview">
+</picture><figcaption>The app’s Layout preview shows the same kind of context-first sheets the CLI exports.</figcaption></figure><pre><code>grainatlas sheets &lt;name&gt;.grainatlas --out &lt;dir&gt;</code></pre><p>The output directory must be outside the saved project folder. Use <code>--svg</code> for individual pages as well as the PDF, registration and sheet statistics.</p>
+<h2>Find missing grains</h2><pre><code>grainatlas segment &lt;project&gt; --missing
+grainatlas segment &lt;project&gt; --add-missing [--area ID]... [--signal auto|cl|bse] [--dry-run]</code></pre><p><code>--missing</code> processes areas without a saved grain entry. <code>--add-missing</code> needs an existing grain list and adds uncovered detections while preserving outlines, numbers and spot links. The two flags cannot be combined.</p>
+<h2>Re-render saved areas</h2><pre><code>grainatlas rerender &lt;project.grainatlas&gt; [--area ID]... [--background keep|on|off] [--dry-run]</code></pre><p>Save and close the project first. The original package must remain at its saved path. The command keeps geometry, grains, spots and annotations, and backs up the project record and selected mosaics before replacement. Reopen the project after it finishes.</p><p><code>--dry-run</code> computes a JSON report without writing. With no area flag, areas without saved placements are skipped; explicitly selecting one is an error. See the <a href="https://github.com/duserzym/grainatlas#re-render-saved-areas">README recovery instructions</a> before recovering an interrupted replacement.</p>
+<h2>Export an atlas</h2><pre><code>grainatlas atlas &lt;package&gt; --out &lt;dir-or-archive.zip&gt;</code></pre><p>To export an existing project with its saved decisions, use <code>atlas-project</code> instead.</p>
+<h2>Desktop launch arguments</h2><p>These are arguments for the desktop app, separate from the CLI subcommands:</p><pre><code>grainatlas &lt;package-or-area-folder&gt; [--stitch] [--segment]
+grainatlas &lt;images…&gt; --um-per-px &lt;µm&gt; | --field-um &lt;µm&gt; [--stitch]
+open -a grainatlas --args A.grainatlas B.grainatlas C.gaproj --stitch</code></pre><p>Several folders open as separate tabs. Saved <code>.grainatlas</code> folders and <code>.gaproj</code> files also open directly.</p>
+  <nav class="page-links" aria-label="Previous and next pages"><a rel="prev" href="settings.html">← Previous: Settings and sync</a><a rel="next" href="index.html">Next: Overview →</a></nav>
+  </main>
+</div>
+<footer><a href="https://github.com/duserzym/grainatlas">GitHub</a> · <a href="https://github.com/duserzym/grainatlas/blob/main/LICENSE">MIT license</a> · GrainAtlas manual</footer>
+<script>
+(() => {
+  const select = document.getElementById('theme');
+  const pictures = document.querySelectorAll('picture source');
+  function apply(theme) {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    pictures.forEach(source => source.media = theme === 'system' ? '(prefers-color-scheme: dark)' : theme === 'dark' ? 'all' : 'not all');
+  }
+  select.value = document.documentElement.dataset.theme || 'system';
+  apply(select.value);
+  document.getElementById('theme-control').hidden = false;
+  select.addEventListener('change', () => {
+    apply(select.value);
+    try { localStorage.setItem('grainatlas-site.theme', select.value); } catch {}
+  });
+})();
+</script>
+</body>
+</html>

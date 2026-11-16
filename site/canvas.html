@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grains and spots · GrainAtlas</title>
+<meta name="description" content="Find grains, edit outlines, place laser spots and export selections.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script>
+try {
+  const theme = localStorage.getItem('grainatlas-site.theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top glass">
+  <a class="brand" href="index.html"><img src="icon.svg" alt="" width="36" height="36">GrainAtlas</a>
+  <div class="theme" id="theme-control" hidden><label for="theme">Theme </label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system" selected>System</option></select></div>
+  <details class="mobile-menu"><summary>Manual</summary><nav aria-label="Mobile manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html" aria-current="page">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav></details>
+</header>
+<div class="shell">
+  <nav class="sidebar glass" aria-label="Manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html" aria-current="page">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav>
+  <main id="main" tabindex="-1">
+<p class="eyebrow">Canvas screen</p><h1>Grains and spots</h1><p class="lede">Find the grains, make the final call by hand and place laser spots.</p>
+<h2>Find and review grains</h2><ol><li>Open the <strong>Grains</strong> panel and choose <strong>Find grains</strong>.</li><li>Check the signal profile. For CL, choose <strong>brighter or darker</strong> to include CL-dark grains.</li><li>Review dimmed artifacts and their reasons. Choose <strong>Keep as grain</strong> when a flagged object is a grain.</li></ol>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/grains-1440x900-dark.webp">
+  <img src="images/grains-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Canvas with numbered grain outlines and the Grains panel open">
+</picture><figcaption>Grains are numbered in reading order; the panel lists them for review.</figcaption></figure>
+<p>Grain numbers stay stable across re-runs. Grains also captured by a neighbouring area appear dashed in that area’s colour. <strong>Find missed grains</strong> adds uncovered detections while keeping existing outlines, numbers and spot links; added outlines are dashed until accepted.</p>
+<h2>Edit outlines</h2><p>Choose a tool, then work on the grain in the image.</p><table class="tools"><thead><tr><th scope="col">Tool</th><th scope="col">Key</th><th scope="col">What it does</th></tr></thead><tbody><tr><td><strong>Delete</strong></td><td><kbd>D</kbd></td><td>Click a grain to remove it. The grain card also has <strong>Not a grain</strong> and <strong>Delete grain</strong>.</td></tr><tr><td><strong>Outline</strong></td><td><kbd>O</kbd></td><td>Draw a lasso, freehand or click by click. It snaps to grain edges; hold <kbd>⌘</kbd> for no snap. Close with a double-click, <kbd>Enter</kbd> or the first point. A new outline replaces the grain under it; <kbd>Shift</kbd> adds to that grain, <kbd>Option</kbd> cuts from it.</td></tr><tr><td><strong>Brush</strong></td><td><kbd>B</kbd></td><td>Paint a grain larger at a size in µm; <kbd>Option</kbd> erases.</td></tr><tr><td><strong>+Grain</strong>, <strong>Split</strong></td><td><kbd>G</kbd>, <kbd>K</kbd></td><td>Add a grain at a click; split touching grains by drawing a line.</td></tr></tbody></table><figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/outline-1440x900-dark.webp">
+  <img src="images/outline-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Outline tool drawing a lasso around a grain, with its grain card open">
+</picture><figcaption>Draw a lasso around a grain and inspect its grain card.</figcaption></figure>
+<p><strong>Find again</strong> in the current area keeps hand-drawn grains. Finding again in every area warns that hand edits will be replaced. Use <kbd>⌘Z</kbd> to undo and <kbd>Shift</kbd> + <kbd>⌘Z</kbd> to redo.</p>
+<h2>Place spots</h2><ol><li>Choose <strong>Spot</strong> with <kbd>S</kbd>, then click a grain.</li><li>Set the diameter in µm in the toolbar or <strong>Spot entry</strong>. Arrow steps are 1 µm, <kbd>Shift</kbd> steps 5 µm and <kbd>Option</kbd> steps 0.5 µm. Typed decimals are kept; <kbd>1</kbd>–<kbd>6</kbd> choose presets.</li><li>Check the next name before placing. The default pattern is <code>{sample}_{n}</code>; for example, <code>Sample-A_1</code>.</li></ol>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/spots-1440x900-dark.webp">
+  <img src="images/spots-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Laser spots on grains and the Spots panel listing names starting with Sample-A_1">
+</picture><figcaption>Spots placed on grains, with their names in the Spots panel.</figcaption></figure>
+<p>Within a session, <code>n</code> counts up across samples and areas. Type <strong>Next n</strong> to start elsewhere, or enable <strong>restart at 1 for each sample</strong>. Spot entry warns when the next name is already used.</p>
+<p>Drag a spot to move it, drag its ring to resize it and double-click its name to rename it. Hold <kbd>Option</kbd> for free placement without snapping.</p>
+<h2>Edit several items</h2><p><kbd>⌘</kbd>-click toggles selection. <kbd>Shift</kbd>-click selects a table range or adds on the canvas; <kbd>Shift</kbd>-drag on empty space selects a rectangle. <kbd>⌘A</kbd> selects all in the area and <kbd>Esc</kbd> clears selection.</p>
+<p>Change diameter, use <strong>Renumber…</strong> or <strong>Sample or pattern…</strong>, or delete the selection. Renumber previews the order and checks duplicate names. Each batch action is one undo step.</p>
+<h2>Save and export</h2><p>Export spots as CSV or GeoJSON from the Spots panel, and grains with <strong>Grain CSV</strong>. Save the project with <kbd>⌘S</kbd>. In a browser, Save downloads a <code>.gaproj</code>; desktop saves beside the package or back to the project file or folder it came from.</p>
+<p>With an optional UPbDB connection and linked mount, stored results appear on spots. The Laser panel fits stage coordinates from fiducial spots and exports a generic spot list; see the <a href="https://github.com/duserzym/grainatlas#upbdb-and-the-laser">developer reference</a>.</p>
+  <nav class="page-links" aria-label="Previous and next pages"><a rel="prev" href="area.html">← Previous: Stitch and tone</a><a rel="next" href="layout.html">Next: Print sheets →</a></nav>
+  </main>
+</div>
+<footer><a href="https://github.com/duserzym/grainatlas">GitHub</a> · <a href="https://github.com/duserzym/grainatlas/blob/main/LICENSE">MIT license</a> · GrainAtlas manual</footer>
+<script>
+(() => {
+  const select = document.getElementById('theme');
+  const pictures = document.querySelectorAll('picture source');
+  function apply(theme) {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    pictures.forEach(source => source.media = theme === 'system' ? '(prefers-color-scheme: dark)' : theme === 'dark' ? 'all' : 'not all');
+  }
+  select.value = document.documentElement.dataset.theme || 'system';
+  apply(select.value);
+  document.getElementById('theme-control').hidden = false;
+  select.addEventListener('change', () => {
+    apply(select.value);
+    try { localStorage.setItem('grainatlas-site.theme', select.value); } catch {}
+  });
+})();
+</script>
+</body>
+</html>

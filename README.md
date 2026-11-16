@@ -1,12 +1,35 @@
-# grainatlas
+<p align="center"><img src="tauri/assets-icon.svg" width="128" alt="GrainAtlas icon"></p>
+
+# GrainAtlas
 
 Stitch, tone, segment, spot and print SEM grain-mount images (CL, BSE, SE) for
-LA-ICP-MS sessions. One Rust core runs as a static web page (wasm in a Web
-Worker) and as a desktop app (Tauri 2, native and multithreaded) behind the
-same Svelte interface. Nothing leaves your computer: packages are read
-in place. Companion to [UPbDB](../upbdb) and [UPbRPy](../UPbRPy).
+LA-ICP-MS sessions. The same interface runs as a macOS desktop app, in a
+browser and inside UPb Lab; packages are read locally, with optional UPbDB sync.
 
-![grainatlas on first launch, before a package is opened](docs/app-blank.png)
+[Docs site](https://duserzym.github.io/grainatlas/) · [Download](https://github.com/duserzym/grainatlas/releases/tag/v0.1.1) · [UPb Lab](https://github.com/duserzym/upblab) · [UPbRPy](https://github.com/duserzym/UPbRPy) · [UPbDB](https://github.com/duserzym/upbdb)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/grains-1440x900-dark.webp">
+  <img src="docs/images/grains-1440x900-light.webp" width="1440" height="900" alt="Canvas with numbered grain outlines and the Grains panel open">
+</picture>
+
+## Install
+
+On **macOS with Apple silicon**, download `grainatlas_0.1.1_aarch64.dmg` from
+[the latest release](https://github.com/duserzym/grainatlas/releases/latest),
+open it and drag GrainAtlas to Applications.
+
+The app is not notarized, so macOS blocks its first launch. Open it once,
+then go to **System Settings → Privacy & Security → Open Anyway** on macOS 15
+and later. On older macOS, Control-click the app and choose **Open**.
+
+After that, the app updates itself. Click the version chip at the bottom
+right, or open **Settings → Updates**, to check and download updates; choose
+**Restart to update** when ready. See [In-app updates](docs/in-app-updates.md).
+
+A Windows build is not yet published. A static browser build is available
+with `make ui-build`; GrainAtlas also runs inside
+[UPb Lab](https://github.com/duserzym/upblab).
 
 ## Workflow
 
@@ -18,14 +41,24 @@ images with a `positions.csv`, or loose images with a scale you type once.
 Several packages or saved projects open as tabs.
 
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/open-1440x900-dark.webp">
+  <img src="docs/images/open-1440x900-light.webp" width="1440" height="900" alt="Open screen after reading Example_mount, with Sample-A and Sample-B before stitching">
+</picture>
+
 ### 2. Stitch and tone
 
 **Stitch all areas** places the tiles from the stage positions, refines every
 overlap and solves the whole area at once (the residuals are shown on the
 mosaic). Gain, offset, beam-exposure steps and background are corrected in
 one solve. **Auto** sets the tone from the histogram; every control re-renders
-the mosaic live, and **After ⇄** compares with the raw tiles.
+the mosaic live, and **After ⇄** compares with the state before Auto.
 
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/stitch-1440x900-dark.webp">
+  <img src="docs/images/stitch-1440x900-light.webp" width="1440" height="900" alt="Area screen after stitching and Auto tone, with tone controls and the histogram">
+</picture>
 
 ### 3. Find the grains
 
@@ -36,6 +69,11 @@ they show dimmed with their reason, and one click keeps one as a grain.
 Grains are numbered in reading order, stable across re-runs. Grains that a
 neighbouring area also captured are dashed in that area's colour.
 
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/grains-1440x900-dark.webp">
+  <img src="docs/images/grains-1440x900-light.webp" width="1440" height="900" alt="Canvas with numbered grain outlines and the Grains panel open">
+</picture>
 
 ### 4. Make the final call by hand
 
@@ -50,6 +88,11 @@ You decide what a grain is.
 
 **Find again** keeps the grains you drew, and ⌘Z undoes any edit.
 
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/outline-1440x900-dark.webp">
+  <img src="docs/images/outline-1440x900-light.webp" width="1440" height="900" alt="Outline tool drawing a lasso around a grain, with its grain card open">
+</picture>
 
 ### 5. Place spots
 
@@ -70,26 +113,86 @@ placement or row order, with a preview and a check for names used twice),
 **Sample or pattern…** or Delete, each one undo step.
 
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/spots-1440x900-dark.webp">
+  <img src="docs/images/spots-1440x900-light.webp" width="1440" height="900" alt="Laser spots on grains and the Spots panel listing names starting with Sample-A_1">
+</picture>
+
 ### 6. Print sheets for the laser session
 
 **Layout → Make print sheets** puts every grain of the mount on paper once, at
-one scale (tabloid, 1 mm = 8 µm by default):
+one scale (tabloid by default, with scale chosen from the grain sizes):
 
 - Each sample is cut into bands straight out of the mosaic.
 - Each sheet carries the instrument header, a mount map and the laser spot
   sizes at print scale.
-- **Export** writes the PDF and its `print_registration.json`, which maps
-  every band back to the mosaic.
+- **Export PDF** writes the sheets; **Registration** saves the
+  `print_registration.json` sidecar that maps every band back to the mosaic.
 
-**Save project** (⌘S) writes the project back into the `.grainatlas` folder
-it came from.
+**Save project** (⌘S) writes a `.gaproj` next to the package, or back to the
+`.gaproj` file or `.grainatlas` folder it came from.
 
 
 After the session, UPbDB's results show on the spots. A fiducial fit maps
 the mosaic to the laser stage and writes the spot list (see "UPbDB and the
 laser" below).
 
-## What it does, in detail
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/print-1440x900-dark.webp">
+  <img src="docs/images/print-1440x900-light.webp" width="1440" height="900" alt="Layout screen with print sheets made and a sheet preview">
+</picture>
+
+### 7. Sync with UPbDB
+
+In **Settings → UPbDB**, set the server and choose **Sign in…** in the desktop
+app. It opens the server's sign-in page in your browser and hands a one-time
+code back to the app. Inside UPb Lab, the shell supplies the sign-in.
+
+The sync chip in the top bar shows whether the project matches the database.
+Click it for details, then register a project, sync local changes or review
+differences as needed. This is optional; GrainAtlas works without a server.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-1440x900-dark.webp">
+  <img src="docs/images/settings-1440x900-light.webp" width="1440" height="900" alt="Settings showing the UPbDB server and Sign in control">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/sync-1440x900-dark.webp">
+  <img src="docs/images/sync-1440x900-light.webp" width="1440" height="900" alt="Top bar sync chip with its project and database details open">
+</picture>
+
+## For developers
+
+### Quick start
+
+```bash
+make setup        # Rust stable + wasm target, wasm-bindgen-cli, UI dependencies
+make full         # Rust unit tests, svelte-check and the desktop crate
+make ui-build     # static page in ui/dist (serve it from any static server)
+make ui-dev       # dev server on http://localhost:5174
+make desktop-dev  # desktop app (Tauri 2) on this machine
+```
+
+Sample data and the image-based test suite stay outside the public repository.
+`make full` runs the Rust unit tests, type checks and a desktop compile.
+
+One Rust core runs in a Web Worker through wasm in the static browser build,
+and natively with multiple threads in the Tauri 2 desktop app. Both use the
+same Svelte interface.
+
+Development desktop builds use the separate `dev` browser storage profile by default.
+Test bundles must be launched with `GRAINATLAS_PROFILE=test` or `--profile test`; named profiles keep localStorage separate and show their name in the window title (on macOS, separate stores require macOS 14 or later).
+Release launches without a profile keep the normal app's existing storage.
+
+CI: `ci`, `desktop` and `release` run on `v*` tags and by hand, never on
+branch pushes or pull requests. They check out `upblab` alongside this
+repository; a private checkout needs the read-only `UPBSTUDIO_TOKEN` secret.
+`desktop` builds macOS and Windows installers and signed updates; `release`
+builds the web archive. Tags attach assets to a draft release; manual runs
+keep workflow artifacts. Pages is a separate, manual-only workflow.
+
+### What it does, in detail
 
 Status: roadmap phases 1–11 of `ARCHITECTURE_PLAN.md` are implemented (readers
 and stitching, photometric correction, web UI, segmentation and scale, spots,
@@ -141,31 +244,7 @@ waiting for its name and an example file).
    UPbDB's results on the spots; registers the laser stage and writes the
    spot list (see "UPbDB and the laser" below).
 
-## Quick start
-
-```bash
-make setup        # Rust stable + wasm target, wasm-bindgen-cli, UI dependencies
-make full         # Rust unit tests, svelte-check and the desktop crate
-make ui-build     # static page in ui/dist (serve it from any static server)
-make ui-dev       # dev server on http://localhost:5174
-make desktop-dev  # desktop app (Tauri 2) on this machine
-```
-
-The public repository carries no sample images and no image-based test suite;
-those stay with the lab. `make full` runs the Rust unit tests, type checks and a
-desktop compile.
-
-Development desktop builds use the separate `dev` browser storage profile by default.
-Test bundles must be launched with `GRAINATLAS_PROFILE=test` or `--profile test`; named profiles keep localStorage separate and show their name in the window title (on macOS, separate stores require macOS 14 or later).
-Release launches without a profile keep the normal app's existing storage.
-
-CI: GitHub Actions runs only on `v*` tags and by hand, not on push or pull
-requests. All three workflows (`ci`, `desktop`, `release`) need the
-`UPBSTUDIO_TOKEN` secret below while upblab is private, so `desktop` and
-`release` are disabled for now and the macOS release is built on a Mac
-(`make desktop-build` with `tauri.release.conf.json`; see Updates).
-
-## Re-render saved areas
+### Re-render saved areas
 
 `grainatlas rerender <project.grainatlas>` re-runs photometric correction,
 blend and tone from each area's saved placement and parameters. It requires
@@ -198,9 +277,9 @@ then move the backed-up folder back to `mosaic/<area>/`. Leave areas absent
 from that backup alone; they were not moved. Keep the backups until the
 restored project opens correctly.
 
-## Dependencies: `@lab/bridge`
+### Dependencies: `@lab/bridge`
 
-grainatlas runs on its own and as the Images tab of UPb Studio. It talks to
+grainatlas runs on its own and as the Images tab of UPb Lab. It talks to
 the shell through `@lab/bridge`, which is not on npm yet: `ui/package.json`
 depends on a sibling checkout, `"@lab/bridge": "file:../../upblab/bridge"`
 (paths from `ui/`), so clone `upblab` next to `grainatlas`. `make setup`
@@ -217,7 +296,7 @@ one (`pnpm --filter @lab/bridge pack` in `upbstudio` writes
 cd ui && pnpm add ./lab-bridge-0.1.0.tgz
 ```
 
-## Inside UPb Studio
+### Inside UPb Lab
 
 - Hosted (the bridge's `isHosted()`), grainatlas uses the wasm core and the
   web file paths (`<input type=file webkitdirectory>`, drag-drop), even though
@@ -225,7 +304,7 @@ cd ui && pnpm add ./lab-bridge-0.1.0.tgz
 - `index.html?project=<id>&spot=<id>` (the shell's mapping of
   `grainatlas://project/<id>/spot/<id>`) opens that project, selects the spot
   and centers the canvas on it. The browser keeps projects without pixels, so
-  the package folder is opened again; the bundled example opens by itself.
+  the package folder is opened again.
 - A spot's panel has "Open in UPbDB" (`upbdb://acquisition/<id>` when
   the spot has an acquisition id, else `upbdb://search?label=<name>`);
   selecting a spot sends `lab.spot.selected` with `{project, spot, name,
@@ -253,16 +332,17 @@ cd ui && pnpm add ./lab-bridge-0.1.0.tgz
 
 See `docs/decisions/ADR-0005-hosted-module.md`.
 
-## UPbDB and the laser
+### UPbDB and the laser
 
 All of this is optional; without a server grainatlas works as before.
 
-- **Settings → UPbDB**: the server (`http://host:8000`) and, when
-  grainatlas runs on its own, **Sign in…**: it opens the server's sign-in page
+- **Settings → UPbDB**: the server (`http://host:8000`) and, in the
+  standalone desktop app, **Sign in…**: it opens the server's sign-in page
   in the browser (password, ORCID, Google or GitHub, whatever the server
   offers), the person confirms, and the browser hands a one-time code back to
   the app on `127.0.0.1` (RFC 8252 loopback; UPbDB's `#/connect` page). A
-  pasted token still works. Inside UPb Studio the shell's sign-in is used,
+  pasted token still works; the static browser build uses token entry.
+  Inside UPb Lab the shell's sign-in is used. Settings also holds
   the atlas tile quality (lossless WebP, or near-lossless at 97 or 92) and the
   folder where SEM packages live on the lab storage. A `?server=` in the page
   address wins for that page load; served by UPbDB under `/atlas/`,
@@ -295,13 +375,13 @@ All of this is optional; without a server grainatlas works as before.
   in µm, a warning above 5 µm); "Export spot list" writes the generic CSV in
   the laser's units. Adding the lab's laser software: `docs/laser-adapters.md`.
 
-## Updates
+### Updates
 
 The version chip stays in the bottom-right corner, including on the Canvas.
 It shows when an update is available or ready; click it to open Settings >
 Updates. Use **Check now** to check explicitly, choose Stable or Beta
 (pre-releases), and turn automatic downloads on or off. A downloaded update
-waits for **Restart to update**. UPb Studio updates hosted copies with its shell.
+waits for **Restart to update**. UPb Lab updates hosted copies with its shell.
 
 One-time owner setup (generates the signing key, writes the public key, and
 sets `TAURI_SIGNING_PRIVATE_KEY` with `gh` when signed in):
@@ -316,7 +396,7 @@ a draft release with installers, signed update bundles and `latest.json` on
 `v*` tags; manual runs keep workflow artifacts. Publish the draft after the
 workflows pass. See [In-app updates](docs/in-app-updates.md) for setup and channels.
 
-## Release asset for UPb Studio
+### Release asset for UPb Lab
 
 ```bash
 make release-web
@@ -337,6 +417,8 @@ builds `ui/dist` and packs it as
   `Get-FileHash -Algorithm SHA256 grainatlas-web-<version>.tar.gz` (Windows
   PowerShell; lower-case it). Use the hash of the published file, or the
   `.sha256` next to it: a local `make release-web` packs different bytes.
+
+### Command line
 
 The command line does batch work:
 
@@ -359,7 +441,7 @@ The desktop app also takes `grainatlas <package-or-area-folder> [--stitch] [--se
 or `grainatlas <images…> --um-per-px <µm> | --field-um <µm> [--stitch]`, and
 opens saved `<name>.grainatlas` folders and `<name>.gaproj` project files.
 
-### Tabs and project files
+#### Tabs and project files
 
 One window holds several projects as tabs (desktop and web): **+** or Cmd/Ctrl+T for a new
 tab, × or Cmd/Ctrl+W to close (a dot marks unsaved changes and closing asks), Cmd/Ctrl+1..9
@@ -381,7 +463,7 @@ path and every stitched area is rendered from its saved placement, without stitc
 (`--stitch` stitches only areas that have none). In the web build Save downloads the
 `.gaproj`, and the Open screen's Project file loads one onto an opened package.
 
-## Layout
+### Layout
 
 ```text
 crates/grainatlas-core   all pixel operations (readers, mosaic, photometric, blend, segment, scale, spots, layout, project, atlas, laser)
@@ -393,9 +475,10 @@ docs/                  ADRs, stitch notes, legacy workflow, UX conventions, lase
 site/                  project website (static, no build step)
 ```
 
-Code only lives here. Image data stays on the lab NAS or your laptop; the only
-image in this repository is `docs/app-blank.png`, the app before anything is
-opened.
+The repository holds no sample data or test fixtures. The screenshots in
+`docs/images/` are the only images from real mounts, with all names and metadata
+removed; see [Screenshot policy](docs/screenshots.md). `docs/app-blank.png`
+shows the app before anything opens.
 
 The project website lives in `site/` (`make site` assembles it in
 `target/site`); it is published to GitHub Pages only by running the Pages
@@ -407,7 +490,7 @@ Apache-2.0) and the lossless WebP encoder of
 [image-rs/image-webp](https://github.com/image-rs/image-webp) (MIT OR
 Apache-2.0); see `ATTRIBUTION.md`.
 
-## Opened from UPb Lab
+### Opened from UPb Lab
 
 UPb Lab launches the installed standalone app with a one-time sign-in code:
 

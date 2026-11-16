@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings and sync · GrainAtlas</title>
+<meta name="description" content="Set spot and outline defaults, sign in to UPbDB and read sync status.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script>
+try {
+  const theme = localStorage.getItem('grainatlas-site.theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top glass">
+  <a class="brand" href="index.html"><img src="icon.svg" alt="" width="36" height="36">GrainAtlas</a>
+  <div class="theme" id="theme-control" hidden><label for="theme">Theme </label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system" selected>System</option></select></div>
+  <details class="mobile-menu"><summary>Manual</summary><nav aria-label="Mobile manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html" aria-current="page">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav></details>
+</header>
+<div class="shell">
+  <nav class="sidebar glass" aria-label="Manual"><ul class="nav-list"><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="open.html">Open images</a></li><li><a href="area.html">Stitch and tone</a></li><li><a href="canvas.html">Grains and spots</a></li><li><a href="layout.html">Print sheets</a></li><li><a href="settings.html" aria-current="page">Settings and sync</a></li><li><a href="cli.html">Command line</a></li></ul></nav>
+  <main id="main" tabindex="-1">
+<p class="eyebrow">Settings screen</p><h1>Settings and sync</h1><p class="lede">Set editing defaults and connect to UPbDB when you need it.</p>
+<h2>Spot and outline defaults</h2><p>Set the naming pattern with <code>{sample}</code>, <code>{grain}</code>, <code>{n}</code> or a zero-padded form such as <code>{n:03}</code>. Edit diameter presets and the default diameter in µm, snapping and the active spot colour.</p><p>Under <strong>Outlines</strong>, set a margin in µm and choose whether to smooth new outlines. These settings apply to outlines found or drawn from now on; existing outlines stay as they are.</p>
+<h2>Sign in to UPbDB</h2><ol><li>Enter the server address under <strong>UPbDB → Server</strong>.</li><li>In the standalone desktop app, choose <strong>Sign in…</strong>. The server’s sign-in page opens in your browser.</li><li>Finish with any method the server offers. The browser hands a one-time code back to the app.</li></ol>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/settings-1440x900-dark.webp">
+  <img src="images/settings-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Settings showing the UPbDB server and Sign in control">
+</picture><figcaption>The UPbDB server and Sign in… control in Settings.</figcaption></figure>
+<p>A pasted token also works. Choose whether to remember it on this computer or keep it only until the tab closes. A static browser build uses token entry; hosted in UPb Lab, GrainAtlas uses the shell’s sign-in.</p>
+<div class="callout"><p>The server is optional. Leave it empty to work locally.</p></div>
+<h2>Read the sync chip</h2><p>The top-bar chip compares the project with the database. Click it for details about local and database changes, the base revision and the last sync. Its adjacent action follows the current state.</p>
+<figure class="glass"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/sync-1440x900-dark.webp">
+  <img src="images/sync-1440x900-light.webp" width="1440" height="900" loading="lazy" alt="Top bar sync chip with its project and database details open">
+</picture><figcaption>Open the sync chip for project and database details.</figcaption></figure><table class=""><thead><tr><th scope="col">State</th><th scope="col">Chip text</th><th scope="col">What to do</th></tr></thead><tbody><tr><td><code>checking</code></td><td>Checking database…</td><td>Wait for the database check.</td></tr><tr><td><code>unregistered</code></td><td>Not in the database</td><td>Choose Register… and pick an existing mount. Create mounts in UPbDB.</td></tr><tr><td><code>in-sync</code></td><td>In sync · v… r…</td><td>The project’s elements match the checked database revision.</td></tr><tr><td><code>local-changes</code></td><td>Local changes · … / Not yet synced · …</td><td>Choose Sync to database. Counts describe changed grains, spots and labels.</td></tr><tr><td><code>server-newer</code></td><td>Database is newer</td><td>Choose Update from database.</td></tr><tr><td><code>both-changed</code></td><td>Both changed / Database has more</td><td>Review differences, or sync to keep database additions. Conflicting elements need a choice.</td></tr><tr><td><code>offline</code></td><td>Offline, changes kept here</td><td>Work locally, then Retry when the server is available.</td></tr><tr><td><code>needs-confirmation</code></td><td>Needs confirmation</td><td>Review the proposed grain retirements and spot deletions before continuing.</td></tr></tbody></table>
+<p><strong>New images not published</strong> is added when the mosaic images changed. Element changes and images are saved separately; choose whether to publish a new atlas version when syncing. Even with elements in sync, unpublished images keep the action available.</p>
+<p>Other messages can take priority: <strong>Read-only access</strong>, <strong>Sync failed</strong>, <strong>This project is linked to another mount</strong>, or a count of items held back. Details explain the problem. A draft held on this computer is marked <strong>Your draft here</strong>, with its base revision or a note that the base has not been checked.</p>
+<p>For conflicting elements, choose Mine, Theirs or, where offered, Both to keep a separate copy. Other changes combine automatically. <strong>Sync to the database when saving</strong> runs only for registered projects when the server is reachable and editing is allowed.</p>
+<h2>Published atlases and results</h2><p>Choose lossless or near-lossless WebP atlas tiles and set the package root on lab storage. Bundles record the package path and content hash; the raw package is never uploaded. Publishing sends the atlas images and project elements.</p>
+<p>Enter a project id and choose <strong>Open from server</strong> to read a published atlas. It opens read-only; <strong>Edit a copy</strong> creates a local copy. A linked mount supplies results on spots; results are not saved in the project.</p>
+<h2>Appearance and updates</h2><p>Choose Light, Dark or System. The image surface stays dark in both themes. Hosted copies follow the shell’s theme. <strong>Reset layout</strong> restores panel positions and folded panels. See <a href="install.html">Install</a> for the Updates controls.</p>
+  <nav class="page-links" aria-label="Previous and next pages"><a rel="prev" href="layout.html">← Previous: Print sheets</a><a rel="next" href="cli.html">Next: Command line →</a></nav>
+  </main>
+</div>
+<footer><a href="https://github.com/duserzym/grainatlas">GitHub</a> · <a href="https://github.com/duserzym/grainatlas/blob/main/LICENSE">MIT license</a> · GrainAtlas manual</footer>
+<script>
+(() => {
+  const select = document.getElementById('theme');
+  const pictures = document.querySelectorAll('picture source');
+  function apply(theme) {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    pictures.forEach(source => source.media = theme === 'system' ? '(prefers-color-scheme: dark)' : theme === 'dark' ? 'all' : 'not all');
+  }
+  select.value = document.documentElement.dataset.theme || 'system';
+  apply(select.value);
+  document.getElementById('theme-control').hidden = false;
+  select.addEventListener('change', () => {
+    apply(select.value);
+    try { localStorage.setItem('grainatlas-site.theme', select.value); } catch {}
+  });
+})();
+</script>
+</body>
+</html>

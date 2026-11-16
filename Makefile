@@ -5,7 +5,7 @@ WASM_OUT := ui/src/lib/core/pkg
 
 .PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test release-web site
 .PHONY: updater-setup check-version
-.PHONY: full check desktop-check
+.PHONY: full check desktop-check screenshots
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upblab/bridge".
@@ -125,10 +125,16 @@ clean-release-cache:
 	rm -rf "$(RELEASE_TARGET)"
 	@df -h / | awk 'NR==2 {print "Free on /: " $$4 " (after)"}'
 
+# Docs screenshots from a neutralised package in target/screenshot-package (docs/screenshots.md).
+screenshots:
+	scripts/screenshots.sh
+
 # The project website, assembled in target/site.
 # Preview: `python3 -m http.server -d target/site 8000`. Publishing is by hand (pages.yml).
 site:
-	mkdir -p target/site
+	mkdir -p target/site/images
 	cp -R site/. target/site/
+	@if compgen -G 'docs/images/*.webp' > /dev/null; then cp docs/images/*.webp target/site/images/; fi
 	cp docs/app-blank.png target/site/
+	cp tauri/assets-icon.svg target/site/icon.svg
 	cp ui/public/favicon.svg target/site/
