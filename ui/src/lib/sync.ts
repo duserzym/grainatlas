@@ -354,7 +354,7 @@ export function appliedCounts(a: { spots: { created: number; updated: number; de
   return { spots: a.spots.created + a.spots.updated + a.spots.deleted, grains: a.grains.created + a.grains.adopted + a.grains.updated + a.grains.retired, labels: a.labels.created + a.labels.updated + a.labels.retired };
 }
 
-/** One item a partial sync held back (laicpmsdb sync contract 2026-11, section 2). */
+/** One item a partial sync held back (UPbDB sync contract 2026-11, section 2). */
 export interface HeldItem {
   kind: string; id: string; op?: 'upsert' | 'delete'; label?: string; code?: string; reason?: string;
   related?: { kind: string; id: string; label?: string }[];

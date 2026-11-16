@@ -65,7 +65,7 @@ export function deleteDraft(uuid: string, storage?: DraftStorage): boolean {
   } catch { return false; }
 }
 function newDraft(project: Project, server: string | null): Draft {
-  return { uuid: project.uuid, name: project.name || project.package.name, server, mount: project.laicpmsdb?.mount_id ?? null, base_revision: null, base: null, updated_at: new Date().toISOString(), changes: null };
+  return { uuid: project.uuid, name: project.name || project.package.name, server, mount: project.upbdb?.mount_id ?? null, base_revision: null, base: null, updated_at: new Date().toISOString(), changes: null };
 }
 export function ensureDraft(project: Project, server: string | null, storage?: DraftStorage): Draft {
   const previous = readDraft(project.uuid, storage);

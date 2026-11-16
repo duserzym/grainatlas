@@ -220,7 +220,7 @@ export interface Spot {
   y2_um: number | null;
   diameter_um: number;
   kind: SpotKind;
-  /** laicpmsdb acquisition this spot was measured as (UI-held; set by hand or by a later import). */
+  /** UPbDB acquisition this spot was measured as (UI-held; set by hand or by a later import). */
   acquisition_id?: string | null;
   comment: string;
   created: string;
@@ -250,7 +250,7 @@ export interface Project {
   name: string;
   created: string;
   package: { path: string; reader: string; name: string; kind: OpenKind; loose?: LooseSpec; files?: string[]; meta: Record<string, string> };
-  laicpmsdb: { mount_id: string | null; published?: Published[] };
+  upbdb: { mount_id: string | null; published?: Published[] };
   /** Laser stage registration per area (phase 11). */
   laser?: { areas: Record<string, AreaRegistration> };
   areas: AreaRecord[];
@@ -429,7 +429,7 @@ export interface SheetResult { pages: string[]; registration: PrintRegistration;
 
 export interface Progress { stage: string; fraction: number }
 
-/** One publish of the atlas bundle to laicpmsdb (recorded in project.json). */
+/** One publish of the atlas bundle to UPbDB (recorded in project.json). */
 export interface Published {
   server: string;
   mount_id: string | null;

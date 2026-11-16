@@ -4,7 +4,7 @@ Stitch, tone, segment, spot and print SEM grain-mount images (CL, BSE, SE) for
 LA-ICP-MS sessions. One Rust core runs as a static web page (wasm in a Web
 Worker) and as a desktop app (Tauri 2, native and multithreaded) behind the
 same Svelte interface. Nothing leaves your computer: packages are read
-in place. Companion to [laicpmsdb](../laicpmsdb) and [UPbRPy](../UPbRPy).
+in place. Companion to [UPbDB](../upbdb) and [UPbRPy](../UPbRPy).
 
 ![grainatlas on first launch, before a package is opened](docs/app-blank.png)
 
@@ -85,15 +85,15 @@ one scale (tabloid, 1 mm = 8 µm by default):
 it came from.
 
 
-After the session, laicpmsdb's results show on the spots. A fiducial fit maps
-the mosaic to the laser stage and writes the spot list (see "laicpmsdb and the
+After the session, UPbDB's results show on the spots. A fiducial fit maps
+the mosaic to the laser stage and writes the spot list (see "UPbDB and the
 laser" below).
 
 ## What it does, in detail
 
 Status: roadmap phases 1–11 of `ARCHITECTURE_PLAN.md` are implemented (readers
 and stitching, photometric correction, web UI, segmentation and scale, spots,
-print layout, desktop, the laicpmsdb link, atlas bundles, results overlay and
+print layout, desktop, the UPbDB link, atlas bundles, results overlay and
 laser registration), except a reader for a second instrument (phase 8, waiting
 for example files) and an adapter for the lab's laser software (phase 11,
 waiting for its name and an example file).
@@ -137,9 +137,9 @@ waiting for its name and an example file).
    frames) to the mosaic by point pairs, to recover spots of legacy sessions
    (`docs/legacy_workflow.md`).
 7. Writes **atlas bundles** (`upblab/docs/WORKFLOW.md` section 3.1) and
-   publishes them to laicpmsdb; opens published ones from a server; shows
-   laicpmsdb's results on the spots; registers the laser stage and writes the
-   spot list (see "laicpmsdb and the laser" below).
+   publishes them to UPbDB; opens published ones from a server; shows
+   UPbDB's results on the spots; registers the laser stage and writes the
+   spot list (see "UPbDB and the laser" below).
 
 ## Quick start
 
@@ -226,8 +226,8 @@ cd ui && pnpm add ./lab-bridge-0.1.0.tgz
   `grainatlas://project/<id>/spot/<id>`) opens that project, selects the spot
   and centers the canvas on it. The browser keeps projects without pixels, so
   the package folder is opened again; the bundled example opens by itself.
-- A spot's panel has "Open in laicpmsdb" (`laicpmsdb://acquisition/<id>` when
-  the spot has an acquisition id, else `laicpmsdb://search?label=<name>`);
+- A spot's panel has "Open in UPbDB" (`upbdb://acquisition/<id>` when
+  the spot has an acquisition id, else `upbdb://search?label=<name>`);
   selecting a spot sends `lab.spot.selected` with `{project, spot, name,
   grain, area, via}`. `grain` is `<area_id>/<grain_number>` or null; `via` is
   `shell` for a command's selection until the user selects something else,
@@ -245,29 +245,29 @@ cd ui && pnpm add ./lab-bridge-0.1.0.tgz
   automatically; an already open matching package loads it immediately, asking
   before replacing a different dirty project. `grainatlas.files.opened`
   reports `waiting: package <name>` and then `opened: project <name>`.
-- "Send spots to laicpmsdb" on the Spots tab posts the spots with the shell's
+- "Send spots to UPbDB" on the Spots tab posts the spots with the shell's
   `token()` when a server and a mount are set, else downloads the JSON body of
-  laicpmsdb's `POST /v1/mounts/{mount_id}/spots`.
+  UPbDB's `POST /v1/mounts/{mount_id}/spots`.
 - Storage keys all start with `grainatlas.` (the desktop shell shares one
   origin between its pages).
 
 See `docs/decisions/ADR-0005-hosted-module.md`.
 
-## laicpmsdb and the laser
+## UPbDB and the laser
 
 All of this is optional; without a server grainatlas works as before.
 
-- **Settings → laicpmsdb**: the server (`http://host:8000`) and, when
+- **Settings → UPbDB**: the server (`http://host:8000`) and, when
   grainatlas runs on its own, **Sign in…**: it opens the server's sign-in page
   in the browser (password, ORCID, Google or GitHub, whatever the server
   offers), the person confirms, and the browser hands a one-time code back to
-  the app on `127.0.0.1` (RFC 8252 loopback; laicpmsdb's `#/connect` page). A
+  the app on `127.0.0.1` (RFC 8252 loopback; UPbDB's `#/connect` page). A
   pasted token still works. Inside UPb Studio the shell's sign-in is used,
   the atlas tile quality (lossless WebP, or near-lossless at 97 or 92) and the
   folder where SEM packages live on the lab storage. A `?server=` in the page
-  address wins for that page load; served by laicpmsdb under `/atlas/`,
+  address wins for that page load; served by UPbDB under `/atlas/`,
   grainatlas uses its own origin.
-- **Atlas bundle** (Canvas → laicpmsdb tab): `<project_id>.atlas/` with
+- **Atlas bundle** (Canvas → UPbDB tab): `<project_id>.atlas/` with
   `atlas.json` (format `grainatlas-atlas` v1, ids, mount, scale, areas and
   levels, the raw package's content hash and storage path, sha256 and size of
   every file), `pyramid/<area>/<z>/<x>_<y>.webp` (256 px tiles, z = 0 full
@@ -275,12 +275,12 @@ All of this is optional; without a server grainatlas works as before.
   `project.json`. Save it as a folder (desktop, or Chromium) or a zip, or
   **Publish** it: a multipart `POST /v1/mounts/{mount}/atlas` (field
   `bundle`); each publish is recorded in `project.json`
-  (`laicpmsdb.published`). The mount comes from `GET /v1/mounts` when the
+  (`upbdb.published`). The mount comes from `GET /v1/mounts` when the
   server answers, else it is typed. `grainatlas atlas <package> --out <dir or
   .zip>` writes the same bundle from the command line, and native and browser
   builds write identical bytes.
 - **Open from server**: `index.html?server=<base>&project=<id>[&spot=<id>]`
-  (`&mount=<id>&access=<token>` in laicpmsdb's own viewer links, enough for
+  (`&mount=<id>&access=<token>` in UPbDB's own viewer links, enough for
   the files and the mount's results without signing in),
   or Settings → "Open a published project", reads
   `<base>/atlas/projects/<id>/` and shows the bundle read-only (tiles straight
@@ -375,7 +375,7 @@ open -a grainatlas --args A.grainatlas B.grainatlas C.gaproj --stitch
 **Save project** (Cmd/Ctrl+S) writes `<name>.gaproj` next to the package, or back to the
 `.gaproj` file or `.grainatlas` folder the tab came from; **Save as…** writes a `.gaproj`
 where you choose. A `.gaproj` is the project record alone (parameters, solved placements,
-photometric results, grains, spots, labels, the laicpmsdb link; about 1-2 MB, no pixels).
+photometric results, grains, spots, labels, the UPbDB link; about 1-2 MB, no pixels).
 Double-clicking one opens it as a tab: the package's own images are read from the recorded
 path and every stitched area is rendered from its saved placement, without stitching again
 (`--stitch` stitches only areas that have none). In the web build Save downloads the

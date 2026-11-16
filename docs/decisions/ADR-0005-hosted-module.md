@@ -50,11 +50,11 @@ the three bridge commands are allowed there, not grainatlas's own commands.
   grep and asserted in the deep-link Playwright test); there is no IndexedDB
   use. The desktop shell gives all bundled pages one origin.
 - **Outbound.** A spot may carry `acquisition_id` (UI-held, editable in the
-  spot panel). "Open in laicpmsdb" calls `open('laicpmsdb://acquisition/<id>')`,
-  else `open('laicpmsdb://search?label=<spot name>')`; it is disabled with a
+  spot panel). "Open in UPbDB" calls `open('upbdb://acquisition/<id>')`,
+  else `open('upbdb://search?label=<spot name>')`; it is disabled with a
   tooltip when not hosted. Selecting one spot sends `{ type:
-  'lab.spot.selected', project, spot, name, grain, area, via }`. (2026-11: "Send spots to laicpmsdb" is retired; spots reach the database only by sync, see docs/sync-client.md.) The former "Send spots to
-  laicpmsdb" on the Spots tab downloads the body of `POST
+  'lab.spot.selected', project, spot, name, grain, area, via }`. (2026-11: "Send spots to UPbDB" is retired; spots reach the database only by sync, see docs/sync-client.md.) The former "Send spots to
+  UPbDB" on the Spots tab downloads the body of `POST
   /v1/mounts/{mount_id}/spots`: `{ project_id, sample, spots: [{ id, name,
   grain, x_um, y_um, diameter_um, kind: 'spot' }] }` for the current area's
   point spots, in mosaic micrometres (lines and rasters left out, counted in a
@@ -88,9 +88,9 @@ never register commands; older shells continue without commands.
 - A deep link to a project other than the example costs the user one folder
   pick: the browser cannot reopen a folder by itself without the File System
   Access API, which the contract excludes (WebView2 and WKWebView differ).
-- `laicpmsdb://search?label=` is refused by today's shell resolver (it knows
-  `acquisition`, `session`, `sample`); the shell and laicpmsdb need a search
-  route, or grainatlas needs the acquisition id from laicpmsdb.
+- `upbdb://search?label=` is refused by today's shell resolver (it knows
+  `acquisition`, `session`, `sample`); the shell and UPbDB need a search
+  route, or grainatlas needs the acquisition id from UPbDB.
 - In the desktop shell, Tauri's native drag-drop handler is on by default for
   child webviews and swallows HTML file drops; the shell should build module
   webviews with `disable_drag_drop_handler()` for drag-drop to reach the page.

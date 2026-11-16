@@ -27,7 +27,7 @@ audits every diff, runs the browser and app checks and makes the commits.
 5. **Hosted in UPb Studio** (`isHosted()` from `@lab/bridge`) the page must
    not do what the shell does: no own window chrome, no own updater, the
    shell's theme wins.
-6. Other repositories (`../upbstudio`, `../laicpmsdb`, `../UPbRPy`) are
+6. Other repositories (`../upbstudio`, `../upbdb`, `../UPbRPy`) are
    read-only unless the brief says otherwise.
 7. Tests must pass before you stop; never skip, delete or loosen a test to
    make it pass. If a test is wrong, say so in your final message.

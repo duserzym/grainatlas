@@ -1,13 +1,13 @@
 import { canWrite } from './presentation';
 // Atlas bundles (upblab/docs/WORKFLOW.md section 3.1): save as a `<project_id>.atlas/`
-// folder or a zip, publish to laicpmsdb. The core writes the bytes (identical in the browser
+// folder or a zip, publish to UPbDB. The core writes the bytes (identical in the browser
 // and the desktop app); this file only moves them.
 
 import { beforeCheckedAction } from './checks';
 import { token as shellToken } from '@lab/bridge';
 import type { BundleOptions, Project, Published } from './core/types';
 import { download } from './files';
-import { normalizeServer, publishAtlas } from './laicpmsdb';
+import { normalizeServer, publishAtlas } from './upbdb';
 import { notifyUpbLab } from './upblab-notice';
 import { current, type AppState } from './store.svelte';
 
@@ -117,9 +117,9 @@ export async function publish(app: AppState = current(), projectUuid = app.sync.
   if (!canWrite()) return;
   if (!(await beforeCheckedAction(app, 'publish'))) return;
   const server = app.server;
-  const mount = app.project?.laicpmsdb.mount_id;
+  const mount = app.project?.upbdb.mount_id;
   if (!server) {
-    app.error = 'No laicpmsdb server: set one in Settings.';
+    app.error = 'No UPbDB server: set one in Settings.';
     return;
   }
   if (!mount) {

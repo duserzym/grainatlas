@@ -1,9 +1,9 @@
-//! Browser sign-in to laicpmsdb for the standalone desktop app (RFC 8252
+//! Browser sign-in to UPbDB for the standalone desktop app (RFC 8252
 //! loopback redirect).
 //!
 //! `sign_in_browser` listens once on `127.0.0.1:<free port>`, opens the
 //! system browser at `<server>/app/#/connect?app=grainatlas&callback=…&state=…`
-//! and waits up to five minutes for laicpmsdb's page to send the browser back
+//! and waits up to five minutes for UPbDB's page to send the browser back
 //! to `http://127.0.0.1:<port>/grainatlas/callback?code=…&state=…`. The code
 //! (single use, two minutes) goes to the page, which trades it at
 //! `POST /v1/auth/exchange`; no token passes through here. Requests whose
@@ -32,7 +32,7 @@ enum Answer {
 pub async fn sign_in_browser(server: String, state: String) -> Result<String, String> {
     let server = server.trim().trim_end_matches('/').to_string();
     if !(server.starts_with("https://") || server.starts_with("http://")) || server.chars().any(char::is_whitespace) {
-        return Err("Set the laicpmsdb server first (http:// or https://).".into());
+        return Err("Set the UPbDB server first (http:// or https://).".into());
     }
     if !(16..=128).contains(&state.len()) || !state.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err("Invalid sign-in state.".into());

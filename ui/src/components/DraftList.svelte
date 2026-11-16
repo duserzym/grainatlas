@@ -64,7 +64,7 @@
         schema_version: 1, created: draft.pending_at ?? draft.updated_at,
         package: { path: '', reader: '', name: draft.name, kind: 'package', meta: {} },
         areas: [], settings: tab.settings,
-      }), uuid: draft.uuid, name: draft.name, laicpmsdb: { mount_id: draft.mount } };
+      }), uuid: draft.uuid, name: draft.name, upbdb: { mount_id: draft.mount } };
       const core = await tab.core;
       await core.blank(project.package.name);
       const { grainatlas_ui: _ui, ...record } = project;

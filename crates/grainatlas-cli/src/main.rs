@@ -149,7 +149,7 @@ enum Cmd {
         project: PathBuf,
         #[arg(long)]
         out: PathBuf,
-        /// laicpmsdb mount to record in atlas.json instead of the project's link.
+        /// UPbDB mount to record in atlas.json instead of the project's link.
         #[arg(long)]
         mount_id: Option<String>,
         /// 100 = lossless WebP tiles, 90 to 99 = near-lossless.
@@ -196,7 +196,7 @@ struct AtlasOptions {
     /// Fixed project id (areas get the following ids); a new UUIDv7 otherwise.
     #[arg(long)]
     project_id: Option<String>,
-    /// laicpmsdb mount the project is linked to.
+    /// UPbDB mount the project is linked to.
     #[arg(long)]
     mount_id: Option<String>,
     /// 100 = lossless WebP tiles, 90 to 99 = near-lossless.

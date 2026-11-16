@@ -1,18 +1,18 @@
 import { canWrite, requireWrite } from './presentation.ts';
 import { errorSentence } from './sync-api.ts';
-// Links and hand-overs to laicpmsdb (the sessions database), through the UPb
+// Links and hand-overs to UPbDB (the sessions database), through the UPb
 // Studio shell. Not hosted, the bridge's open() resolves false.
 
 import type { Grain, Spot } from './core/types';
 
-/** The laicpmsdb link for a spot: its acquisition when known, else a search by label (= spot name). */
+/** The UPbDB link for a spot: its acquisition when known, else a search by label (= spot name). */
 export function spotLink(s: Pick<Spot, 'name' | 'acquisition_id'>): string {
   const acq = s.acquisition_id?.trim();
-  if (acq) return `laicpmsdb://acquisition/${encodeURIComponent(acq)}`;
-  return `laicpmsdb://search?label=${encodeURIComponent(s.name)}`;
+  if (acq) return `upbdb://acquisition/${encodeURIComponent(acq)}`;
+  return `upbdb://search?label=${encodeURIComponent(s.name)}`;
 }
 
-/** Body of laicpmsdb's `POST /v1/mounts/{mount_id}/spots` (mount id goes in the path). */
+/** Body of UPbDB's `POST /v1/mounts/{mount_id}/spots` (mount id goes in the path). */
 export interface MountSpots {
   project_id: string;
   sample: string;
@@ -46,19 +46,19 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[], gra
   };
 }
 
-// ---- the laicpmsdb server: where it is, the token, and the calls grainatlas makes ----------
+// ---- the UPbDB server: where it is, the token, and the calls grainatlas makes ----------
 //
-// Endpoints (upblab/docs/WORKFLOW.md v1 and laicpmsdb's schemas/openapi.json):
+// Endpoints (upblab/docs/WORKFLOW.md v1 and UPbDB's schemas/openapi.json):
 //   GET  /v1/mounts                         mount picker (MountOut list)
 //   POST /v1/mounts/{id}/atlas              publish: multipart/form-data, field `bundle` = the zip;
 //                                           writes no spot rows (spots go by sync), answers spot_check
 //   GET  /v1/mounts/{id}/results            results overlay (MountResults)
 //   GET  /atlas/projects/<project_id>/<path> a published bundle, read-only (open from server)
 
-/** The user's laicpmsdb settings on this computer (never in the project). */
+/** The user's UPbDB settings on this computer (never in the project). */
 export interface LinkSettings {
   syncOnSave: boolean;
-  /** Base URL of the laicpmsdb service, e.g. `http://localhost:8000`; empty = none. */
+  /** Base URL of the UPbDB service, e.g. `http://localhost:8000`; empty = none. */
   server: string;
   /** Bearer token pasted when grainatlas runs on its own (hosted, the shell's token is used). */
   token: string;
@@ -70,8 +70,8 @@ export interface LinkSettings {
   nasRoot: string;
 }
 
-const LINK_KEY = 'grainatlas.laicpmsdb';
-const TOKEN_KEY = 'grainatlas.laicpmsdb.token';
+const LINK_KEY = 'grainatlas.upbdb';
+const TOKEN_KEY = 'grainatlas.upbdb.token';
 
 export const DEFAULT_LINK: LinkSettings = { server: '', token: '', rememberToken: false, quality: 100, nasRoot: '', syncOnSave: true };
 
@@ -112,8 +112,8 @@ export function normalizeServer(s: string | null | undefined): string | null {
 }
 
 /**
- * The laicpmsdb server: `?server=` of this page load, else Settings, else this page's own
- * origin when grainatlas is served by laicpmsdb itself (under `/atlas/`).
+ * The UPbDB server: `?server=` of this page load, else Settings, else this page's own
+ * origin when grainatlas is served by UPbDB itself (under `/atlas/`).
  */
 export function resolveServer(override: string | null, configured: string): string | null {
   const o = normalizeServer(override) ?? normalizeServer(configured);
@@ -204,13 +204,13 @@ export function atlasUrl(base: string, projectId: string, path = ''): string {
   return `${base}/atlas/projects/${encodeURIComponent(projectId)}/${path}`;
 }
 
-/** With no bearer token, laicpmsdb's viewer `access` token (read-only, that project's mount only) works too. */
+/** With no bearer token, UPbDB's viewer `access` token (read-only, that project's mount only) works too. */
 export function getResults(base: string, token: string | null, mountId: string, access: string | null = null): Promise<import('./results').MountResults> {
   const q = !token && access ? `?access=${encodeURIComponent(access)}` : '';
   return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/results${q}`, token, { method: 'GET' }, 'Mount results');
 }
 
-/** laicpmsdb's own page for an acquisition (when the shell cannot route a laicpmsdb:// link). */
+/** UPbDB's own page for an acquisition (when the shell cannot route a upbdb:// link). */
 export function acquisitionPage(base: string, id: string): string {
   return `${base}/app/#/acquisitions/${encodeURIComponent(id)}`;
 }

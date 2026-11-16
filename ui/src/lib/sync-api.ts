@@ -1,5 +1,5 @@
 import { canWrite, requireWrite } from './presentation.ts';
-/** laicpmsdb B1 wire contract (docs/atlas-sync.md). */
+/** UPbDB B1 wire contract (docs/atlas-sync.md). */
 import type { Project } from './core/types';
 import { nameList, storedElement, type Changes, type Counts, type Element, type HeldItem, type ReadElements, type ReadGrain, type Kind } from './sync.ts';
 export interface ProjectStatus {

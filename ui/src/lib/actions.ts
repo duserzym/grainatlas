@@ -306,7 +306,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
 
 /**
  * Start-up: `?project=<id>&spot=<id>` (from UPb Lab, or typed); with `&server=<base>` the
- * project's published bundle opens read-only from that server instead (laicpmsdb's links). The query is
+ * project's published bundle opens read-only from that server instead (UPbDB's links). The query is
  * dropped from the address afterwards so a reload does not repeat it. The
  * browser keeps no pixels, so the package must be opened again: it waits for
  * the user on the Open screen, which names the project. Without the parameters nothing happens.

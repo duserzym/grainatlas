@@ -595,7 +595,7 @@ async fn save_project(app: AppHandle, state: State<'_, AppState>, tab: u32, proj
 }
 
 /// Writes the project file `<name>.gaproj`: the project record alone (parameters, placements,
-/// photometric results, grains, spots, labels, the laicpmsdb link), no pixels. It reopens with
+/// photometric results, grains, spots, labels, the UPbDB link), no pixels. It reopens with
 /// the package's own images by their recorded path. `path` = where it was opened from or saved
 /// before; otherwise next to the package, or in a save dialog when `ask`.
 #[tauri::command]
@@ -636,7 +636,7 @@ fn take_opened(state: State<'_, AppState>) -> Vec<String> {
     std::mem::take(&mut *state.opened.lock().unwrap_or_else(|p| p.into_inner()))
 }
 
-/// The atlas bundle as zip bytes (`<project_id>.atlas/…`), for publishing to laicpmsdb.
+/// The atlas bundle as zip bytes (`<project_id>.atlas/…`), for publishing to UPbDB.
 #[tauri::command]
 async fn atlas_zip(state: State<'_, AppState>, tab: u32, project: String, options: String) -> Res<Response> {
     let state = state.inner().clone();

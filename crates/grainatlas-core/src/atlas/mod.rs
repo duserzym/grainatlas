@@ -1,5 +1,5 @@
 //! Atlas bundles (`upblab/docs/WORKFLOW.md` section 3.1): what grainatlas
-//! publishes to laicpmsdb, or hands over as files.
+//! publishes to UPbDB, or hands over as files.
 //!
 //! ```text
 //! <project_id>.atlas/
@@ -123,7 +123,7 @@ impl UiParts {
 
 /// `spots.json`: the body of `POST /v1/mounts/{mount_id}/spots`. One sample: that body (each
 /// spot also names its `area`). Several samples: `{ project_id, documents: [body per sample] }`,
-/// the form laicpmsdb also accepts in bundles (its docs/workflow_api.md).
+/// the form UPbDB also accepts in bundles (its docs/workflow_api.md).
 pub fn spots_document(project: &Project, spots: &[Spot], areas: &[&str]) -> serde_json::Value {
     let grains = UiParts::of(project).grains;
     let spots: Vec<&Spot> = spots.iter().filter(|s| areas.contains(&s.area_id.as_str())).collect();
@@ -281,7 +281,7 @@ pub fn build(project: &Project, areas: &[AreaPixels], package: &PackageDigest, o
         "version": VERSION,
         "project_id": project.uuid,
         "name": project.name,
-        "mount_id": project.laicpmsdb.mount_id,
+        "mount_id": project.upbdb.mount_id,
         "opened_from": project.package.kind,
         "scale_um_per_px": areas[0].rec.um_per_px(),
         "tile_size": TILE,

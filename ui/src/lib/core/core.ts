@@ -69,7 +69,7 @@ export interface Core {
   renumber(grains: Grain[], tolerance: number, from?: { grainId: string; number: number }): Promise<Grain[]>;
   checkProject(project: Project, labels: string[] | null): Promise<import('./types').Finding[]>;
   exportSpots(spots: Spot[], grains: Record<string, Grain[]>, format: 'csv' | 'geojson'): Promise<string>;
-  /** laicpmsdb mount id and per-area sample names into the project record. */
+  /** UPbDB mount id and per-area sample names into the project record. */
   setLink(mountId: string | null, samples: Record<string, string>): Promise<void>;
   exportGrains(areaId: string, grains: Grain[]): Promise<string>;
   exportPng(areaId: string, tone: ToneParams): Promise<Uint8Array>;
@@ -88,7 +88,7 @@ export interface Core {
   setLaser(areaId: string, reg: AreaRegistration | null): Promise<void>;
   /** The area's spot list in the laser software's format. */
   laserExport(spots: Spot[], areaId: string, adapter?: string): Promise<string>;
-  /** Records a publish in the project's laicpmsdb link. */
+  /** Records a publish in the project's UPbDB link. */
   recordPublished(p: Published): Promise<void>;
   /** Desktop: the window back to its default size, centred (Reset layout); nothing in a browser. */
   resetWindow(): Promise<void>;

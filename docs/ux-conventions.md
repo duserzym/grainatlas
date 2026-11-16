@@ -1,4 +1,4 @@
-# UX conventions (grainatlas, laicpmsdb, UPb Studio)
+# UX conventions (grainatlas, UPbDB, UPb Studio)
 
 Seven rules, applied in grainatlas on 2026-11-03, for the three apps of the
 lab workflow to adopt. Each says what to do and where grainatlas does it.
@@ -42,7 +42,7 @@ report a pinch as `ctrlKey` + small `deltaY`; WebKit (Safari, WKWebView in
 Tauri on macOS) sends `gesturestart/change/end` instead; a trackpad scroll
 has `wheelDeltaY === -3 * deltaY` in both, a mouse notch a multiple of 120;
 Firefox has no `wheelDeltaY` and reports notches with `deltaMode` 1. Plots
-inside a scrolling page (laicpmsdb's timeline) are not image views: plain
+inside a scrolling page (UPbDB's timeline) are not image views: plain
 wheel keeps scrolling the page there, ctrl + wheel zooms.
 
 **Selecting several.** Cmd-click (macOS) or Ctrl-click toggles a spot or
@@ -100,7 +100,7 @@ Delete or Backspace deletes the selected spots, or the selected grains.
 
 ## 6. Server features are additive, and say where data comes from
 
-- Everything that needs laicpmsdb sits behind one Settings entry (the
+- Everything that needs UPbDB sits behind one Settings entry (the
   server) and works the same without it; a missing server, mount or token
   turns a server action into its file equivalent (grainatlas: the atlas
   bundle saves as a folder or zip) and the
@@ -156,7 +156,7 @@ Delete or Backspace deletes the selected spots, or the selected grains.
   module URL, or set `data-theme` on the module document from the host;
   a bridge `theme` event would cover live changes). Settings says "module
   tabs keep their own theme settings for now".
-- **laicpmsdb**: default theme is `system` (`ui/src/lib/theme.svelte.ts`);
+- **UPbDB**: default theme is `system` (`ui/src/lib/theme.svelte.ts`);
   make nothing-stored mean light, keep the three-way choice, and when
   hosted read `?theme=` before its own stored choice. It writes
   `data-theme` on its own `<html>`, so the shell should use `?theme=` for

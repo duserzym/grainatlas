@@ -1,4 +1,4 @@
-import { normalizeServer } from './laicpmsdb.ts';
+import { normalizeServer } from './upbdb.ts';
 export interface StandaloneLaunch { project: string; server: string; code: string; revision: number | null; spot?: string | null; grain?: string | null }
 /** The host confirmation precedes even the exchange. No code or token is persisted. */
 export async function exchangeLaunch(request: StandaloneLaunch, configured: string | null, ask: (message: string) => boolean | Promise<boolean>, fetcher: typeof fetch = fetch): Promise<{ server: string; token: string } | null> {

@@ -3,7 +3,7 @@ import { canWrite } from './presentation';
 // (WORKFLOW.md 3.1). Nothing is stitched: the canvas draws the bundle's WebP tiles, and the
 // grains, spots, labels and scale bars come from its project.json. Read-only until "Edit a
 // copy" makes it a local project (spots, grains and labels editable; new pixels need the raw
-// package). This is how laicpmsdb's mount page embeds grainatlas and how a spot link from
+// package). This is how UPbDB's mount page embeds grainatlas and how a spot link from
 // anywhere reaches the images (`?server=&project=&spot=`).
 
 import { isBridgeCommand } from '@lab/bridge';
@@ -12,7 +12,7 @@ import { draftElements, listDrafts, storedDraftProject } from './drafts';
 import { groupedGrains, uiSpots } from './sync';
 import type { RawImage } from './core/core';
 import type { LevelInfo, MosaicJson, Project, StitchSummary } from './core/types';
-import { atlasUrl, normalizeServer } from './laicpmsdb';
+import { atlasUrl, normalizeServer } from './upbdb';
 import { current, type AppState } from './store.svelte';
 import { savedProject, sameId } from './deeplink';
 import { authToken } from './atlas';
@@ -52,7 +52,7 @@ export interface Remote {
   projectId: string;
   atlas: AtlasJson;
   readOnly: boolean;
-  /** laicpmsdb serves bundles to a bearer token or a signed read-only `access` token (12 h). */
+  /** UPbDB serves bundles to a bearer token or a signed read-only `access` token (12 h). */
   token: string | null;
   access: string | null;
   /** The mount the server says the project is published on (`?mount=`), when given. */

@@ -11,5 +11,5 @@ SHA-256, never copied. Every automatic step stores its parameters; manual
 edits are stored as parameters, not baked pixels.
 
 Consequences: a project can be re-linked to moved tiles by hash, re-run
-deterministically, and later ingested by laicpmsdb as attachments without
+deterministically, and later ingested by UPbDB as attachments without
 transformation.

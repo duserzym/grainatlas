@@ -1,7 +1,7 @@
 // Fetches the linked mount's results (GET /v1/mounts/{id}/results) on demand; memory only.
 
 import { authToken } from './atlas';
-import { getResults } from './laicpmsdb';
+import { getResults } from './upbdb';
 import { normalize, type MountResults } from './results';
 import { current, type AppState } from './store.svelte';
 

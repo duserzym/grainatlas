@@ -1,4 +1,4 @@
-// Results overlay (WORKFLOW.md section 5): what laicpmsdb holds for the spots of a mount, from
+// Results overlay (WORKFLOW.md section 5): what UPbDB holds for the spots of a mount, from
 // `GET /v1/mounts/{id}/results` (the preferred run of each session by default). Shown in the
 // spot panel and as a coloured layer; never written into the project. Pure functions only;
 // fetching is in results-load.ts.
@@ -17,14 +17,14 @@ export interface Value {
   /** Absolute uncertainty (2σ, 2SE or 95% CI: `utype`). */
   sigma2?: number | null;
   unit?: string | null;
-  /** Kind of uncertainty as laicpmsdb names it ("2se", "95ci"); the date's is 2σ when absent. */
+  /** Kind of uncertainty as UPbDB names it ("2se", "95ci"); the date's is 2σ when absent. */
   utype?: string | null;
-  /** Dates: the method ("206Pb/238U") and whether it passes laicpmsdb's filters. */
+  /** Dates: the method ("206Pb/238U") and whether it passes UPbDB's filters. */
   method?: string | null;
   passes?: boolean | null;
 }
 
-/** One spot's results as laicpmsdb returns them. */
+/** One spot's results as UPbDB returns them. */
 export interface SpotResult {
   atlas_spot_id: string | null;
   physical_spot_id?: string | null;
@@ -54,7 +54,7 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : n
 const str = (v: unknown) => (typeof v === 'string' ? v : null);
 
 function values(raw: unknown): Value[] {
-  // laicpmsdb sends maps keyed by name ({"206Pb/238U": {value, uncertainty, uncertainty_type, unit}});
+  // UPbDB sends maps keyed by name ({"206Pb/238U": {value, uncertainty, uncertainty_type, unit}});
   // lists of {metric, value, sigma2, unit} are read too.
   const entries: [string, RawValue][] = Array.isArray(raw)
     ? (raw as RawValue[]).map((v) => [String(v.metric ?? ''), v])
@@ -105,7 +105,7 @@ const hasValues = (r: SpotResult) => !!r.date || Object.keys(r.dates ?? {}).leng
 const rank = (r: SpotResult) => (r.date ? 2 : 0) + (r.is_preferred === false ? 0 : 1);
 
 /** Results by grainatlas spot id: by `atlas_spot_id`, else by label = spot name (case-insensitive).
- * Spots laicpmsdb lists without values (not measured yet) are left out. */
+ * Spots UPbDB lists without values (not measured yet) are left out. */
 export function matchResults(spots: Spot[], r: MountResults): Record<string, SpotResult> {
   const byId = new Map<string, SpotResult>();
   const byLabel = new Map<string, SpotResult>();

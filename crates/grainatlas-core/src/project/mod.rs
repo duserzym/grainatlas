@@ -20,7 +20,7 @@ use crate::spots::Settings;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// A new UUIDv7 (the scheme laicpmsdb uses).
+/// A new UUIDv7 (the scheme UPbDB uses).
 pub fn new_id() -> Uuid {
     Uuid::now_v7()
 }
@@ -33,7 +33,7 @@ pub struct Project {
     pub created: String,
     pub package: PackageRef,
     #[serde(default)]
-    pub laicpmsdb: LaicpmsdbLink,
+    pub upbdb: UpbdbLink,
     pub areas: Vec<AreaRecord>,
     #[serde(default)]
     pub settings: Settings,
@@ -46,9 +46,9 @@ pub struct Project {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
-pub struct LaicpmsdbLink {
+pub struct UpbdbLink {
     pub mount_id: Option<Uuid>,
-    /// Atlas bundles published to laicpmsdb, oldest first (append-only on the server).
+    /// Atlas bundles published to UPbDB, oldest first (append-only on the server).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub published: Vec<Published>,
 }
@@ -151,7 +151,7 @@ impl Project {
                 files: Vec::new(),
                 meta: info.meta.clone(),
             },
-            laicpmsdb: LaicpmsdbLink::default(),
+            upbdb: UpbdbLink::default(),
             areas: info.areas.iter().map(AreaRecord::from_meta).collect(),
             settings: Settings::default(),
             laser: Default::default(),

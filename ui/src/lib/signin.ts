@@ -1,9 +1,9 @@
 // Browser sign-in for the standalone desktop app. The Rust side
 // (tauri/src-tauri/src/signin.rs) listens once on 127.0.0.1 and opens
-// <server>/app/#/connect; laicpmsdb's page sends a single-use code back, and
+// <server>/app/#/connect; UPbDB's page sends a single-use code back, and
 // this trades it at POST /v1/auth/exchange for the app's own token.
 
-import { normalizeServer } from './laicpmsdb.ts';
+import { normalizeServer } from './upbdb.ts';
 
 export interface SignedIn { token: string; name: string }
 
@@ -27,7 +27,7 @@ async function tauriInvoke(cmd: string, args?: Record<string, unknown>): Promise
 
 export async function signInWithBrowser(server: string, invoke: Invoke = tauriInvoke, fetcher: typeof fetch = fetch): Promise<SignedIn> {
   const base = normalizeServer(server);
-  if (!base) throw new Error('Set the laicpmsdb server first.');
+  if (!base) throw new Error('Set the UPbDB server first.');
   const code = await invoke('sign_in_browser', { server: base, state: randomState() });
   if (typeof code !== 'string' || !code) throw new Error('The browser returned no sign-in code.');
   let response: Response;

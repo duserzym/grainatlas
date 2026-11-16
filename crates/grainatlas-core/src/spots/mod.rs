@@ -1,6 +1,6 @@
 //! Spots (plan section 6.7): the spot record, the naming pattern with
 //! continuation, and the CSV and GeoJSON exports. A spot carries its UUIDv7
-//! from birth so it can become a laicpmsdb `physical_spot` without translation.
+//! from birth so it can become a UPbDB `physical_spot` without translation.
 
 use std::collections::BTreeMap;
 
@@ -185,7 +185,7 @@ fn csv_field(s: &str) -> String {
 pub fn spots_csv(project: &Project, spots: &[Spot]) -> String {
     let grains = crate::atlas::UiParts::of(project).grains;
     let mut s = String::from(
-        "id,name,sample,area,grain,grain_id,x_um,y_um,x_px,y_px,diameter_um,kind,x2_um,y2_um,stage_x_nm,stage_y_nm,comment,created,created_by,area_uuid,project_uuid,laicpmsdb_mount_id\n",
+        "id,name,sample,area,grain,grain_id,x_um,y_um,x_px,y_px,diameter_um,kind,x2_um,y2_um,stage_x_nm,stage_y_nm,comment,created,created_by,area_uuid,project_uuid,upbdb_mount_id\n",
     );
     for sp in spots {
         let area = project.areas.iter().find(|a| a.id == sp.area_id);
@@ -219,7 +219,7 @@ pub fn spots_csv(project: &Project, spots: &[Spot]) -> String {
             csv_field(&sp.created_by),
             area.map_or(String::new(), |a| a.uuid.to_string()),
             project.uuid,
-            project.laicpmsdb.mount_id.map_or(String::new(), |m| m.to_string()),
+            project.upbdb.mount_id.map_or(String::new(), |m| m.to_string()),
         ));
     }
     s
@@ -269,7 +269,7 @@ pub fn geojson(project: &Project, grains: &BTreeMap<String, Vec<Grain>>, spots: 
     json!({
         "type": "FeatureCollection",
         "name": project.name,
-        "grainatlas": { "project_uuid": project.uuid, "units": "micrometre", "frame": "mosaic, origin top-left, y down", "laicpmsdb_mount_id": project.laicpmsdb.mount_id },
+        "grainatlas": { "project_uuid": project.uuid, "units": "micrometre", "frame": "mosaic, origin top-left, y down", "upbdb_mount_id": project.upbdb.mount_id },
         "features": features,
     })
 }

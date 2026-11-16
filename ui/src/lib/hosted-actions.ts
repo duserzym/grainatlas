@@ -111,7 +111,7 @@ async function draftTab(uuid: string): Promise<AppState | null> {
   const legacy = storedDraftProject(draft);
   // Opening pixels is optional: an unpublished or offline draft still stays intact.
   await openFromServer(server, draft.linked_uuid ?? uuid, null, null, draft.mount, tab);
-  const project: Project = { ...(legacy ?? tab.project ?? { schema_version: 1, created: draft.updated_at, package: { name: draft.name, path: '', reader: '', kind: 'package', meta: {} }, areas: [], settings: tab.settings }), uuid, name: draft.name, laicpmsdb: { mount_id: draft.mount } };
+  const project: Project = { ...(legacy ?? tab.project ?? { schema_version: 1, created: draft.updated_at, package: { name: draft.name, path: '', reader: '', kind: 'package', meta: {} }, areas: [], settings: tab.settings }), uuid, name: draft.name, upbdb: { mount_id: draft.mount } };
   const core = await tab.core;
   await core.blank(project.package.name);
   const { grainatlas_ui: _ui, ...record } = project;

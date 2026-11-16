@@ -22,7 +22,7 @@
   import FloatingPanel from '../components/FloatingPanel.svelte';
   import SizeBox from '../components/SizeBox.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
-  import { spotLink } from '../lib/laicpmsdb';
+  import { spotLink } from '../lib/upbdb';
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
   import MountInset from '../components/MountInset.svelte';
@@ -35,7 +35,7 @@
   import { CHECK_TITLES } from '../lib/check-presentation';
   import { reviewSpots } from '../lib/store.svelte';
   import { reviewColourLookup } from '../lib/shellcmd';
-  import { acquisitionPage } from '../lib/laicpmsdb';
+  import { acquisitionPage } from '../lib/upbdb';
   import { findAllGrains, stitch } from '../lib/actions';
   import { autoSignalLabel, grainStatus } from '../lib/grain-status';
   import { ownerColourToken, ownerLegend } from '../lib/grain-owners';
@@ -506,10 +506,10 @@
   });
   const laserOf = (s: Spot) => app.project?.laser?.areas?.[s.area_id]?.fit ?? null;
   async function openAcquisition(id: string) {
-    if (await openLink(`laicpmsdb://acquisition/${encodeURIComponent(id)}`)) return;
-    // Not inside UPb Lab: laicpmsdb's own page, when the server is known.
+    if (await openLink(`upbdb://acquisition/${encodeURIComponent(id)}`)) return;
+    // Not inside UPb Lab: UPbDB's own page, when the server is known.
     if (app.server) window.open(acquisitionPage(app.server, id), '_blank', 'noopener');
-    else app.notice = `Acquisition ${id}: open it in laicpmsdb (no server set here).`;
+    else app.notice = `Acquisition ${id}: open it in UPbDB (no server set here).`;
   }
 
   const focusGrain = $derived(!focus ? (detections.find((g) => g.id === (selGrains[0] ?? infoId)) ?? null) : null);
@@ -668,9 +668,9 @@
   const flashingSpot = $derived(app.flash?.kind === 'spot' && app.flash.area === areaId ? spots.find((s) => s.id === app.flash?.id) : null);
   const flashingGrain = $derived(app.flash?.kind === 'grain' && app.flash.area === areaId ? detections.find((g) => g.id === app.flash?.id) : null);
 
-  // ---- laicpmsdb (through UPb Lab) -------------------------------------------
+  // ---- UPbDB (through UPb Lab) -------------------------------------------
   const hosted = isHosted();
-  async function openInLaicpmsdb(s: Spot) {
+  async function openInUpbdb(s: Spot) {
     const url = spotLink(s);
     const ok = await openLink(url);
     app.error = ok ? null : `UPb Lab did not open ${url}`;
@@ -785,7 +785,7 @@
   async function setSample(v: string) {
     if (!area || !core) return;
     area.sample = v;
-    await core.setLink(app.project?.laicpmsdb.mount_id ?? null, Object.fromEntries((app.project?.areas ?? []).map((a) => [a.id, a.sample])));
+    await core.setLink(app.project?.upbdb.mount_id ?? null, Object.fromEntries((app.project?.areas ?? []).map((a) => [a.id, a.sample])));
     app.persist();
   }
   async function setMount(v: string) {
@@ -793,7 +793,7 @@
     const id = v.trim() || null;
     try {
       await core.setLink(id, {});
-      app.project.laicpmsdb.mount_id = id;
+      app.project.upbdb.mount_id = id;
       app.persist();
     } catch (e) {
       app.error = `Mount id must be a UUID: ${e instanceof Error ? e.message : e}`;
@@ -1741,9 +1741,9 @@
               <tr><td>id</td><td class="mono small">{focus.id}</td></tr>
             </tbody>
           </table>
-          <label class="field">laicpmsdb acquisition <input type="text" placeholder="id (optional)" value={focus.acquisition_id ?? ''} onchange={(e) => updateSpot(focus.id, { acquisition_id: e.currentTarget.value.trim() || null })} data-testid="panel-acquisition" /></label>
-          <button class="linkout" onclick={() => openInLaicpmsdb(focus)} disabled={!hosted} data-testid="open-laicpmsdb"
-            title={hosted ? (focus.acquisition_id ? 'Open this acquisition in the Sessions tab' : `Search laicpmsdb for the label ${focus.name}`) : 'Available when grainatlas runs inside UPb Lab'}>Open in laicpmsdb</button>
+          <label class="field">UPbDB acquisition <input type="text" placeholder="id (optional)" value={focus.acquisition_id ?? ''} onchange={(e) => updateSpot(focus.id, { acquisition_id: e.currentTarget.value.trim() || null })} data-testid="panel-acquisition" /></label>
+          <button class="linkout" onclick={() => openInUpbdb(focus)} disabled={!hosted} data-testid="open-upbdb"
+            title={hosted ? (focus.acquisition_id ? 'Open this acquisition in the Sessions tab' : `Search UPbDB for the label ${focus.name}`) : 'Available when grainatlas runs inside UPb Lab'}>Open in UPbDB</button>
           <div class="two">
             <button onclick={() => renameFromPattern([focus.id])}>Rename from pattern</button>
             <button class="danger" onclick={() => { app.selection = [focus.id]; deleteSelection(); }}>Delete</button>
@@ -1804,7 +1804,7 @@
         <button aria-pressed={tab === 'grains'} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
         <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
         <button aria-pressed={tab === 'laser'} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
-        <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to laicpmsdb" data-testid="tab-link">laicpmsdb</button>
+        <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to UPbDB" data-testid="tab-link">UPbDB</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
@@ -1885,7 +1885,7 @@
       {:else if tab === 'laser'}
         <LaserPanel {core} {areaId} {spots} selected={app.selection} />
       {:else if tab === 'link'}
-        <MountPicker value={app.project?.laicpmsdb.mount_id ?? null} onchange={setMount} disabled={ro} />
+        <MountPicker value={app.project?.upbdb.mount_id ?? null} onchange={setMount} disabled={ro} />
         <p class="faint small-text">Server: {app.server ?? 'none — set it in Settings'}</p>
         <h3 class="sub">Atlas bundle</h3>
         <p class="faint small-text">The corrected mosaic as 256 px WebP tiles ({app.link.quality >= 100 ? 'lossless' : `near-lossless ${app.link.quality}`}), grains, spots, scale bars and this project, with a hash of every file. The raw SEM package is not included.</p>
@@ -1895,14 +1895,14 @@
 
         </div>
         <details><summary>Advanced</summary><div class="row">
-          <button onclick={() => publish()} disabled={noPixels || !app.server || !app.project?.laicpmsdb.mount_id} data-testid="publish"
-            title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the laicpmsdb server in Settings' : !app.project?.laicpmsdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to laicpmsdb</button>
+          <button onclick={() => publish()} disabled={noPixels || !app.server || !app.project?.upbdb.mount_id} data-testid="publish"
+            title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the UPbDB server in Settings' : !app.project?.upbdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to UPbDB</button>
         </div></details>
-        {#if app.project?.laicpmsdb.published?.length}
+        {#if app.project?.upbdb.published?.length}
           <table class="data" data-testid="published">
             <thead><tr><th>Published</th><th>Version</th><th>atlas.json</th></tr></thead>
             <tbody>
-              {#each [...app.project.laicpmsdb.published].reverse() as pb (pb.at)}
+              {#each [...app.project.upbdb.published].reverse() as pb (pb.at)}
                 <tr title="{pb.server} · mount {pb.mount_id}"><td>{pb.at.replace('T', ' ').slice(0, 16)}</td><td class="num">{pb.version ?? '–'}</td><td class="mono small">{pb.atlas_sha256.slice(0, 12)}</td></tr>
               {/each}
             </tbody>
@@ -1910,7 +1910,7 @@
         {/if}
         <h3 class="sub">Results</h3>
         {#if !mountId || !app.server}
-          <p class="faint small-text">With a server and a linked mount, the dates, ratios, concentrations and flags laicpmsdb holds for these spots show here and on the canvas.</p>
+          <p class="faint small-text">With a server and a linked mount, the dates, ratios, concentrations and flags UPbDB holds for these spots show here and on the canvas.</p>
         {:else}
           <p class="faint small-text" data-testid="results-status">
             {#if app.results?.loading}Loading results…{:else if app.results?.error}{app.results.error}{:else if app.results?.data}{Object.keys(resultsBy).length} of {app.spots.length} spots have results ({app.results.data.run ?? 'preferred'} run){app.results.at ? `, fetched ${app.results.at.slice(11, 16)}` : ''}.{/if}
@@ -1931,7 +1931,7 @@
               </label>
             {/if}
           </div>
-          <p class="faint small-text">Read from laicpmsdb each time; nothing is stored in the project.</p>
+          <p class="faint small-text">Read from UPbDB each time; nothing is stored in the project.</p>
         {/if}
       {:else if tab === 'refOverlay'}
         <p class="muted small-text">Lay a reference image over the mosaic (a photo of an annotated printout, a post-laser frame) and register it by clicking pairs of the same feature: first on the image, then on the mosaic. One pair moves it, two scale and rotate it, three or more fit an affine transform.</p>

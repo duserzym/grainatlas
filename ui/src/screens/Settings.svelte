@@ -4,7 +4,7 @@
   import { app } from '../lib/store.svelte';
   import ThemeSwitch from '../components/ThemeSwitch.svelte';
   import UpdatesPanel from '../components/UpdatesPanel.svelte';
-  import { normalizeServer } from '../lib/laicpmsdb';
+  import { normalizeServer } from '../lib/upbdb';
   import { openFromServer } from '../lib/remote';
   import { canSignInWithBrowser, cancelSignIn, signInWithBrowser } from '../lib/signin';
 
@@ -28,7 +28,7 @@
   let signInError = $state('');
   async function signIn() {
     saveServer();
-    if (!app.server) { signInError = 'Set the laicpmsdb server first.'; return; }
+    if (!app.server) { signInError = 'Set the UPbDB server first.'; return; }
     signingIn = true;
     signInError = '';
     signInText = 'Finish signing in in your browser…';
@@ -96,13 +96,13 @@
     <p class="faint small">Applies to outlines found or drawn from now on; grains already outlined keep theirs.</p>
   </div>
   <div class="glass panel">
-    <h2>laicpmsdb</h2>
+    <h2>UPbDB</h2>
     <label class="check"><input type="checkbox" bind:checked={app.link.syncOnSave} onchange={() => app.saveLink()} data-testid="sync-on-save" /> Sync to the database when saving</label>
     <label class="field">Server
       <input type="url" placeholder="http://localhost:8000" bind:value={serverText} onchange={saveServer} aria-invalid={serverBad} data-testid="server" />
     </label>
     <p class="faint small">
-      {#if app.serverOverride}This page was opened for {app.serverOverride}, which is used until it is reloaded without <code>?server=</code>.{:else if !app.link.server && app.server}grainatlas is served by {app.server} and uses it.{:else}The laicpmsdb service that receives atlas bundles and spots and gives results. Empty = none; grainatlas works the same without it.{/if}
+      {#if app.serverOverride}This page was opened for {app.serverOverride}, which is used until it is reloaded without <code>?server=</code>.{:else if !app.link.server && app.server}grainatlas is served by {app.server} and uses it.{:else}The UPbDB service that receives atlas bundles and spots and gives results. Empty = none; grainatlas works the same without it.{/if}
     </p>
     {#if hosted}
       <p class="faint small">In UPb Lab the shell's sign-in is used (no token needed here).</p>
@@ -121,7 +121,7 @@
         <p class="faint small">Opens the server's sign-in page in your browser (any method it offers). Or paste a token below.</p>
       {/if}
       <label class="field">Token
-        <input type="password" autocomplete="off" placeholder="bearer token from laicpmsdb" bind:value={app.link.token} onchange={() => app.saveLink()} data-testid="token" />
+        <input type="password" autocomplete="off" placeholder="bearer token from UPbDB" bind:value={app.link.token} onchange={() => app.saveLink()} data-testid="token" />
       </label>
       <label class="check"><input type="checkbox" bind:checked={app.link.rememberToken} onchange={() => app.saveLink()} /> remember the token on this computer (else until this tab closes)</label>
     {/if}
@@ -133,7 +133,7 @@
       </select>
     </label>
     <label class="field">SEM packages on the lab storage
-      <input type="text" placeholder="e.g. /laicpmsdb/sem or \\nas\sem" bind:value={app.link.nasRoot} onchange={() => app.saveLink()} />
+      <input type="text" placeholder="e.g. /upbdb/sem or \\nas\sem" bind:value={app.link.nasRoot} onchange={() => app.saveLink()} />
     </label>
     <div class="openrow">
       <label class="field">Open a published project

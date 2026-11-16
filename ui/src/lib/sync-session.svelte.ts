@@ -227,7 +227,7 @@ export class SyncSession {
         this.track(false);
         return;
       }
-      if (this.app.project) this.app.project.laicpmsdb.mount_id = status.mount_id;
+      if (this.app.project) this.app.project.upbdb.mount_id = status.mount_id;
       this.save({ server: this.app.remote?.server ?? this.app.server ?? this.draft?.server, mount: status.mount_id, link_conflict: false, synced: this.draft?.synced ?? false });
       const theirs = await api.elements(status.project_uuid);
       if (!this.isCurrent(identity)) return;
@@ -279,7 +279,7 @@ export class SyncSession {
       if (!this.isCurrent(identity)) return;
       await (await this.app.core).setLink(candidate.mount_id, {});
       if (!this.isCurrent(identity)) return;
-      this.app.project.laicpmsdb.mount_id = candidate.mount_id;
+      this.app.project.upbdb.mount_id = candidate.mount_id;
       this.save({ mount: candidate.mount_id, link_offered: true, link_candidates: [] });
       this.candidates = []; this.dialog = null;
     } catch (e) {
@@ -338,7 +338,7 @@ export class SyncSession {
     if (!mount || this.syncDisabledReason) return;
     try { await (await this.app.core).setLink(mount, {}); } catch (e) { this.failed(e); return; }
     this.save({ mount });
-    if (this.app.project) this.app.project.laicpmsdb.mount_id = mount;
+    if (this.app.project) this.app.project.upbdb.mount_id = mount;
     this.dialog = null;
     await this.sync(publishPixels);
   }

@@ -4,7 +4,7 @@ import { canWrite, presentation } from './presentation';
 //
 // A window holds several projects as tabs. Each tab is an `AppState` with its own core (a
 // native session in the desktop app, a wasm worker on the web); what belongs to the viewer
-// rather than a project (theme, panel layout, laicpmsdb link) is shared by all tabs. `app` is
+// rather than a project (theme, panel layout, UPbDB link) is shared by all tabs. `app` is
 // the active tab: components read it as before and follow a tab switch. Code that awaits takes
 // its tab once (`current()`) so a result lands in the tab that started the work.
 
@@ -16,7 +16,7 @@ import type { DeepLink } from './deeplink';
 import { DATE_CHOICES, type DateKind } from './results';
 import { persistProject, type StoredCopy } from './stored-copy';
 import { appStorage } from './app-storage';
-import { loadLink, resolveServer, saveLink, type LinkSettings } from './laicpmsdb';
+import { loadLink, resolveServer, saveLink, type LinkSettings } from './upbdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
@@ -135,9 +135,9 @@ class Shared {
   /** Remembered panel geometry (Settings → Reset layout puts it back). */
   layout = $state<LayoutPrefs>(loadLayout());
   dateChoice = $state<DateKind>(loadDateChoice());
-  /** laicpmsdb server, token and bundle settings of this computer (Settings screen). */
+  /** UPbDB server, token and bundle settings of this computer (Settings screen). */
   link = $state<LinkSettings>(loadLink());
-  /** `?server=` of this page load (deep links from laicpmsdb); wins over Settings. */
+  /** `?server=` of this page load (deep links from UPbDB); wins over Settings. */
   serverOverride = $state<string | null>(null);
   theme0 = loadTheme();
   themePref = $state<ThemePref>(this.theme0.pref);
@@ -410,10 +410,10 @@ class AppState {
   /** The mount whose results are shown: the one the server named for a published bundle
    * (`?mount=`), else the project's link. */
   get mountId(): string | null {
-    return this.remote?.mount ?? this.project?.laicpmsdb.mount_id ?? null;
+    return this.remote?.mount ?? this.project?.upbdb.mount_id ?? null;
   }
 
-  /** The laicpmsdb server in effect, or null. */
+  /** The UPbDB server in effect, or null. */
   get server(): string | null {
     return resolveServer(this.serverOverride, this.link.server);
   }

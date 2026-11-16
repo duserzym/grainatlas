@@ -1,7 +1,7 @@
 // Check results and label sources live in memory, outside the saved project.
 import { current, type AppState } from './store.svelte';
 import { authToken } from './atlas';
-import { clearMountAcquisitionLabels, mountAcquisitionLabels } from './laicpmsdb';
+import { clearMountAcquisitionLabels, mountAcquisitionLabels } from './upbdb';
 import { acceptedChecks, findingSignature, findingsSummary } from './check-presentation';
 
 const pending = new WeakSet<AppState>();

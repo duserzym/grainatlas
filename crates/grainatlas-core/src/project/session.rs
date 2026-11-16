@@ -1007,7 +1007,7 @@ impl Session {
 
     pub fn set_link(&mut self, mount_id: &str, samples: &str) -> Result<()> {
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
-        project.laicpmsdb.mount_id = if mount_id.trim().is_empty() { None } else { Some(mount_id.trim().parse().map_err(invalid)?) };
+        project.upbdb.mount_id = if mount_id.trim().is_empty() { None } else { Some(mount_id.trim().parse().map_err(invalid)?) };
         if !samples.trim().is_empty() {
             let m: BTreeMap<String, String> = serde_json::from_str(samples).map_err(invalid)?;
             for a in project.areas.iter_mut() {
@@ -1156,11 +1156,11 @@ impl Session {
         crate::laser::export(project, &spots, area_id, (!adapter.trim().is_empty()).then_some(adapter.trim()))
     }
 
-    /// Records a publish (`Published` JSON) in the project's laicpmsdb link.
+    /// Records a publish (`Published` JSON) in the project's UPbDB link.
     pub fn record_published(&mut self, published: &str) -> Result<()> {
         let rec: super::Published = serde_json::from_str(published).map_err(invalid)?;
         let project = self.project.as_mut().ok_or_else(|| Error::Invalid("no project".into()))?;
-        project.laicpmsdb.published.push(rec);
+        project.upbdb.published.push(rec);
         Ok(())
     }
 }

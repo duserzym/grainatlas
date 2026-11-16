@@ -1,6 +1,6 @@
 # Database sync client (B2–B4)
 
-The client follows laicpmsdb B1, including completeness updates `90555db` and `5f38c3b`, based on `3f63ee9` and `docs/atlas-
+The client follows UPbDB B1, including completeness updates `90555db` and `5f38c3b`, based on `3f63ee9` and `docs/atlas-
 sync.md`: `ui/src/lib/sync-api.ts` owns its URLs, authentication, wire types and
 mappings. The client regression tests use the small fixture and an in-process fake. A live
 scratch database exposed the legacy publish state covered below.
@@ -164,7 +164,7 @@ the draft intact; hosted returns `ok: false, code: 'failed'`. Other 422s carry
 
 ## Partial syncs, request ids and errors (contract 2026-11)
 
-These follow laicpmsdb `docs/sync-contract-2026-11.md`. Every new field is
+These follow UPbDB `docs/sync-contract-2026-11.md`. Every new field is
 optional, so the client behaves as before against a server that sends none.
 
 Every sync is sent with `partial: true`. A 200 reply with a non-empty
@@ -312,7 +312,7 @@ existing editable draft's base.
 
 ## Fake service and verification
 
-`ui/scripts/fake-laicpmsdb.mjs` seeds isolated namespaces from
+`ui/scripts/fake-upbdb.mjs` seeds isolated namespaces from
 `target/atlas-fixture`. It models mount revisions, current elements, change
 history, snapshot/delta sync, retirement, lineage spot reassignment, per-kind
 server ids, AtlasProjectOut/MountElementsOut/ChangeOut, numeric SyncOut fields,
@@ -447,7 +447,7 @@ need the requested browser/app checks, and live B1 behavior is not verified.
 - `ui/src/lib/grain-lineage.ts`
 - `ui/src/lib/hosted-actions.ts`
 - `ui/src/lib/hosted-sync.ts`
-- `ui/src/lib/laicpmsdb.ts`
+- `ui/src/lib/upbdb.ts`
 - `ui/src/lib/polygon-edit.ts`
 - `ui/src/lib/remote.ts`
 - `ui/src/lib/shellcmd.ts`
@@ -508,7 +508,7 @@ Files changed for B1:
 - `ui/src/components/DraftList.svelte`
 - `ui/src/components/SyncChip.svelte`
 - `ui/src/screens/Canvas.svelte`
-- `ui/scripts/fake-laicpmsdb.mjs`
+- `ui/scripts/fake-upbdb.mjs`
 - `docs/sync-client.md`
 - `ui/unit/drafts.test.ts`
 - `ui/unit/hosted-actions.test.ts`

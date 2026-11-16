@@ -17,7 +17,7 @@ pub fn run(path: &Path, out: &Path, mount_id: Option<&str>, quality: u8, exporte
     let input = std::fs::read_to_string(&file).with_context(|| file.display().to_string())?;
     let mut full: Value = serde_json::from_str(&input)?;
     if let Some(m) = mount_id {
-        full["laicpmsdb"]["mount_id"] = json!(m);
+        full["upbdb"]["mount_id"] = json!(m);
     }
     let input = full.to_string();
     let project = Project::from_json(&input)?;
@@ -48,5 +48,5 @@ pub fn run(path: &Path, out: &Path, mount_id: Option<&str>, quality: u8, exporte
     let zip = grainatlas_core::atlas::zip(&id, &files)?;
     super::write(out, &zip)?;
     Ok(json!({"project_id": id, "name": project.name, "out": out, "files": files.len(), "bytes": zip.len(),
-              "zip_sha256": grainatlas_core::util::sha256_hex(&zip), "mount_id": full["laicpmsdb"]["mount_id"], "areas": areas}))
+              "zip_sha256": grainatlas_core::util::sha256_hex(&zip), "mount_id": full["upbdb"]["mount_id"], "areas": areas}))
 }

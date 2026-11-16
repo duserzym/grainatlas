@@ -1,6 +1,6 @@
 import { appStorage } from './app-storage.ts';
 // Deep links: `?project=<id>&spot=<id>` in the page URL, and `?server=<base>&project=<id>&spot=<id>`
-// for a bundle published to laicpmsdb (opened read-only from `<base>/atlas/projects/<id>/`). UPb Lab maps
+// for a bundle published to UPbDB (opened read-only from `<base>/atlas/projects/<id>/`). UPb Lab maps
 // `grainatlas://project/<id>/spot/<id>` to `index.html?project=<id>&spot=<id>`
 // (its docs/deep-links.md). The browser keeps projects without pixels in
 // appStorage under `grainatlas.project.<package name>`; this file finds the
@@ -11,11 +11,11 @@ import type { Project } from './core/types';
 export interface DeepLink {
   project: string;
   spot: string | null;
-  /** `?server=<base>`: open the project's published bundle from that laicpmsdb server. */
+  /** `?server=<base>`: open the project's published bundle from that UPbDB server. */
   server?: string | null;
-  /** `?access=`: laicpmsdb's signed read-only token for that project's files and its mount's results. */
+  /** `?access=`: UPbDB's signed read-only token for that project's files and its mount's results. */
   access?: string | null;
-  /** `?mount=`: the mount the project is published on (laicpmsdb's viewer_url carries it). */
+  /** `?mount=`: the mount the project is published on (UPbDB's viewer_url carries it). */
   mount?: string | null;
 }
 

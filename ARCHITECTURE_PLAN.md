@@ -1,6 +1,6 @@
 # grainatlas: architecture plan and roadmap
 
-**Status:** plan, 2026-11-03. Companion to `laicpmsdb` (the LA-ICP-MS session
+**Status:** plan, 2026-11-03. Companion to `UPbDB` (the LA-ICP-MS session
 database) and UPbRPy (the reduction engine). This document is the
 specification for the first implementation; decisions recorded here are not
 to be re-opened in code without an ADR in `docs/decisions/`.
@@ -15,7 +15,7 @@ and printable grain maps. It is the imaging module of a three-part workflow:
 | Module | Owns | Repository |
 | --- | --- | --- |
 | grainatlas | images, grains, spots, print layouts | this repository |
-| laicpmsdb | samples, mounts, sessions, raw sweeps, reductions | `laicpmsdb` |
+| UPbDB | samples, mounts, sessions, raw sweeps, reductions | `UPbDB` |
 | UPbRPy Studio | data reduction | `UPbRPy` |
 
 The end state is one unified application with one tab per module, where a
@@ -47,7 +47,7 @@ matter of identifiers, not of re-architecture (section 7).
    grain segmentation, scale bars, spots and print layout. Attribution goes in
    `ATTRIBUTION.md`. photocraft requires Rust 1.95; the laptop has 1.94 and
    must run `rustup update`.
-4. **One UI build, same design language as laicpmsdb.** Svelte 5 + TypeScript
+4. **One UI build, same design language as UPbDB.** Svelte 5 + TypeScript
    + Vite with the same glass tokens (`:root` light and dark, `backdrop-filter`
    panels, opaque image surface). The infinite canvas is a custom 2D-canvas
    renderer over an image pyramid with an SVG overlay for spots and labels. No
@@ -56,7 +56,7 @@ matter of identifiers, not of re-architecture (section 7).
    a versioned `project.json`, content-addressed references to the source
    tiles, the stitched pyramid, masks, spots and layouts (section 5.4). Code
    lives on GitHub; images live on the NAS or the laptop, as in
-   `OPERATIONS_PROTOCOL.md` of laicpmsdb. The repository carries only one small
+   `OPERATIONS_PROTOCOL.md` of UPbDB. The repository carries only one small
    fixture area (6 tiles, 160 KB) for tests.
 6. **Deterministic and reproducible.** Every automatic step records its
    parameters in `project.json`; re-running a project from the same tiles gives
@@ -64,11 +64,11 @@ matter of identifiers, not of re-architecture (section 7).
    gain and offset, moved spots), never as baked pixels, so they survive a
    re-stitch.
 7. **Identifiers:** UUIDv7 for projects, areas, grains and spots, the same
-   scheme as laicpmsdb, so a spot id minted here can become a
+   scheme as UPbDB, so a spot id minted here can become a
    `physical_spot.id` there without translation.
 8. **Platforms:** macOS arm64 and Windows x86-64 desktop builds are
    first-class, Linux best-effort; any evergreen browser for the web build.
-9. **License:** MIT, matching laicpmsdb. photocraft's Apache-2.0 OR MIT dual
+9. **License:** MIT, matching UPbDB. photocraft's Apache-2.0 OR MIT dual
    license is compatible under MIT.
 
 ## 3. Evidence from the example data
@@ -145,7 +145,7 @@ Functional:
 11. Same interface two ways: a static web page and a desktop app from one UI
     build, with identical results from the same core.
 12. Link-ready: every spot and grain has a UUIDv7, and the project records the
-    laicpmsdb `mount` id when known; spot exports carry those ids.
+    UPbDB `mount` id when known; spot exports carry those ids.
 
 Non-functional: open source, MIT; offline; deterministic; no telemetry; a
 40-megapixel area must stay under 1.5 GB of memory in the browser; keyboard
@@ -199,7 +199,7 @@ stored in `project.json`.
 
 ```text
 <name>.grainatlas/
-  project.json          schema_version, uuid, created, package path and reader, laicpmsdb mount id,
+  project.json          schema_version, uuid, created, package path and reader, UPbDB mount id,
                         areas[] with tile list (filename, sha256, position, pixel size),
                         parameters for every step, per-tile manual overrides
   mosaic/<area>/        level-0 tiles 512x512 (lossless WebP or PNG), levels 1..n, mosaic.json (w, h, um per px, origin)
@@ -233,7 +233,7 @@ infinite canvas with toolbar, layers panel, floating metadata panel, grain
 list), Layout (paper, scale, page preview, export) and Settings (naming
 pattern, spot presets, theme).
 
-Design tokens are copied from `laicpmsdb/ui/src/app.css` so the two apps look
+Design tokens are copied from `upbdb/ui/src/app.css` so the two apps look
 like one. The image surface is opaque; glass is for panels and the toolbar
 only. Dark theme is the default for CL work.
 
@@ -347,18 +347,18 @@ one SVG per page rendered in the core and converted to PDF with `svg2pdf`
 (wasm-capable); the browser print dialog is the fallback. Page templates:
 Letter, Tabloid 11x17 (the lab's default), A4, A3, custom.
 
-## 7. Integration with laicpmsdb and the unified application
+## 7. Integration with UPbDB and the unified application
 
-- A project may carry `laicpmsdb.mount_id`; grains map to `grain` rows and
+- A project may carry `upbdb.mount_id`; grains map to `grain` rows and
   spots to `physical_spot` rows there. The link is one `POST
   /v1/mounts/{id}/spots` of the spot export when the user chooses to sync.
 - A spot carries its UUIDv7 from birth; the laser session labels are
-  generated from spot names, so `acquisition.label` in laicpmsdb equals the
+  generated from spot names, so `acquisition.label` in UPbDB equals the
   spot name and the join is exact.
 - Deep links: `grainatlas://project/<uuid>/spot/<uuid>` and
-  `laicpmsdb://acquisition/<uuid>`; each app registers its scheme in Tauri and
+  `upbdb://acquisition/<uuid>`; each app registers its scheme in Tauri and
   the web builds accept the same path as a route.
-- The unified shell is a later Tauri app whose tabs load the laicpmsdb web
+- The unified shell is a later Tauri app whose tabs load the UPbDB web
   build, the grainatlas web build and UPbRPy Studio; nothing in grainatlas may
   assume it is the only app in the window (no global CSS, no `window.name`).
 
@@ -387,13 +387,13 @@ What exists (2026-11-03, ADR-0005):
   the shell produces from `grainatlas://project/<uuid>/spot/<uuid>`. Projects
   are found by uuid in `grainatlas.recent`; the package is read again (the
   example by itself), then the spot is selected and centered.
-- Links out: the spot panel's "Open in laicpmsdb" (`laicpmsdb://acquisition/<id>`
-  when the spot has an acquisition id, else `laicpmsdb://search?label=<name>`,
+- Links out: the spot panel's "Open in UPbDB" (`upbdb://acquisition/<id>`
+  when the spot has an acquisition id, else `upbdb://search?label=<name>`,
   which the shell does not route yet); `grainatlas.spot.selected` events.
-- Spot sync: "Send spots to laicpmsdb" posts the `POST
+- Spot sync: "Send spots to UPbDB" posts the `POST
   /v1/mounts/{mount_id}/spots` body with the bridge `token()` (or a token
   pasted in Settings) when a server and a mount are set, and takes back the
-  acquisition ids laicpmsdb matched; otherwise it downloads the body.
+  acquisition ids UPbDB matched; otherwise it downloads the body.
 - Release: `make release-web` and `.github/workflows/release.yml` make
   `grainatlas-web-<version>.tar.gz` for the shell's `modules.lock.json`.
 - Not yet: the standalone desktop app's own `grainatlas://` handler
@@ -410,7 +410,7 @@ stages 2 and 3 of the lab workflow and gains three hand-offs:
   `.atlas` folder to hand over by file (standalone). The raw SEM package is
   never uploaded. **Open from server**: `?server=<base>&project=<id>` loads
   a published bundle read-only from `/atlas/projects/<id>/`, which is how
-  laicpmsdb's mount page and any user's click on a spot reach the images;
+  UPbDB's mount page and any user's click on a spot reach the images;
   re-publishing is append-only.
 - **Results overlay**: when a project is linked to a mount and a server is
   known, the spot panel and a results layer show the preferred date with
@@ -424,7 +424,7 @@ stages 2 and 3 of the lab workflow and gains three hand-offs:
   example file. Spot names are the labels the operator types into Qtegra.
 
 Workflow v1 as built (2026-11-03, phases 9 to 11; code in
-`crates/grainatlas-core/src/{atlas,laser}/`, `ui/src/lib/{atlas,remote,results,laicpmsdb}.ts`):
+`crates/grainatlas-core/src/{atlas,laser}/`, `ui/src/lib/{atlas,remote,results,UPbDB}.ts`):
 
 - **Bundle layout.** `atlas.json` first, then by path:
   `pyramid/<area>/<z>/<x>_<y>.webp` (256 px grey tiles, z = 0 full
@@ -433,7 +433,7 @@ Workflow v1 as built (2026-11-03, phases 9 to 11; code in
   number as text, `number`, `area`, `sample`, statistics), `spots.json`
   (the `POST /v1/mounts/{id}/spots` body, each spot also naming its `area`;
   with several samples `{ project_id, documents: [one body per sample] }`,
-  which laicpmsdb accepts),
+  which UPbDB accepts),
   `scalebars.json` (per grain `length_um` and an anchor; one bar per area),
   `project.json` (the full project with `grainatlas_ui`). `atlas.json`:
   `format`, `version`, `project_id`, `name`, `mount_id`, `opened_from`,
@@ -454,13 +454,13 @@ Workflow v1 as built (2026-11-03, phases 9 to 11; code in
   JSON files written with floats at 9 significant digits and integral
   values as integers (placement and grain statistics differ in the last
   bits between the platforms' maths).
-- **Endpoints** (`ui/src/lib/laicpmsdb.ts`, laicpmsdb `docs/workflow_api.md`
+- **Endpoints** (`ui/src/lib/upbdb.ts`, UPbDB `docs/workflow_api.md`
   as of its ff8c070): `GET /v1/mounts`; `POST /v1/mounts/{id}/spots`;
   `POST /v1/mounts/{id}/atlas`, multipart field `bundle` (201 new version,
   200 the same zip again; `version`, `sha256`, `url`, `warnings` and the
   `spots` upsert summary are read, matched acquisitions become the spots'
   acquisition ids); `GET /atlas/projects/<id>/<path>` with the bearer token
-  or `?access=` (taken from the page link; laicpmsdb's `viewer_url` is
+  or `?access=` (taken from the page link; UPbDB's `viewer_url` is
   `/atlas/?server=&project=&mount=&access=`); `GET /v1/mounts/{id}/results`
   with the bearer token, else `?access=` for the mount named by `?mount=`,
   one entry per spot and acquisition with `date` (`value`, `two_sigma`,
@@ -470,9 +470,9 @@ Workflow v1 as built (2026-11-03, phases 9 to 11; code in
   matched by `atlas_spot_id`, else by label, and skips spots without values
   (`ui/src/lib/results.ts` also reads the list form it was first written
   against). Bearer token from the bridge, else from Settings. `pnpm dev` and
-  `pnpm preview` mount a fake with the same shapes at `/fake-laicpmsdb`
-  (`ui/scripts/fake-laicpmsdb.mjs`) for the tests.
-- **Deviations from WORKFLOW.md v1.** (1) `spots.json` uses laicpmsdb's
+  `pnpm preview` mount a fake with the same shapes at `/fake-upbdb`
+  (`ui/scripts/fake-upbdb.mjs`) for the tests.
+- **Deviations from WORKFLOW.md v1.** (1) `spots.json` uses UPbDB's
   `documents` form for a project with several samples, and each spot carries
   an extra `area` key. (2)
   "q ≥ 90" is near-lossless (values rounded to 2 or 4 grey levels before
@@ -498,16 +498,16 @@ Workflow v1 as built (2026-11-03, phases 9 to 11; code in
 | 5 | spots and metadata panel | toolbar, spot presets, naming pattern, snapping, floating panel, CSV and GeoJSON export, undo and redo |
 | 6 | print layout | Tabloid and Letter pages with auto packing, PDF export, cut marks |
 | 7 | desktop | Tauri 2 build on macOS and Windows using the native core; file dialogs; drag and drop of a package folder |
-| 8 | link | mount id, spot sync to laicpmsdb, deep links; readers for a second instrument when example files arrive |
-| 9 | publish | atlas bundle export (`.atlas` folder, zip) with hashes; publish over the bridge token; open-from-server mode on `/atlas/projects/<id>/`; the fixture mount round-trips through a local laicpmsdb |
+| 8 | link | mount id, spot sync to UPbDB, deep links; readers for a second instrument when example files arrive |
+| 9 | publish | atlas bundle export (`.atlas` folder, zip) with hashes; publish over the bridge token; open-from-server mode on `/atlas/projects/<id>/`; the fixture mount round-trips through a local UPbDB |
 | 10 | results | results layer and spot-panel values from `GET /v1/mounts/{id}/results`, preferred run by default, link to the acquisition |
 | 11 | laser | stage registration from fiducials, generic spot-list CSV, one adapter per named laser software with an example file |
 
 Phases 9 to 11 are built (2026-11-03) as section 7 describes. The fixture
-bundle round-trips through a local laicpmsdb (`make dev`, its ff8c070):
+bundle round-trips through a local UPbDB (`make dev`, its ff8c070):
 publish 201, files served with the token and with `?access=`, spots upserted,
 the bundle opened by its hosted viewer at `/atlas/`, results read, also in
-that viewer with its `access` token alone (laicpmsdb 1bf6ad4). Open: the
+that viewer with its `access` token alone (UPbDB 1bf6ad4). Open: the
 adapter for the lab's laser software.
 
 ## 9. Verification
@@ -543,5 +543,5 @@ adapter for the lab's laser software.
   microscopic image acquisitions, Bioinformatics 2009 (the stage-prior plus
   phase-correlation plus global least-squares design used here).
 - storytold/photocraft, `crates/algo` (MIT OR Apache-2.0).
-- laicpmsdb `DATABASE_ARCHITECTURE_PLAN.md` sections 5.3 (mounts, grains,
+- UPbDB `DATABASE_ARCHITECTURE_PLAN.md` sections 5.3 (mounts, grains,
   physical spots) and 6.3 (design language).
