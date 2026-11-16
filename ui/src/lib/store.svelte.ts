@@ -566,6 +566,9 @@ class AppState {
 
   /** Restores UI-held parts of a saved project. */
   adopt(p: Project) {
+    // Bundles and files written before the UPbDB rename carry no `upbdb` link: start it
+    // empty (the sync check fills the mount from the server) instead of failing later.
+    p.upbdb ??= { mount_id: null };
     this.settings.naming_pattern = p.settings?.naming_pattern ?? this.settings.naming_pattern;
     this.settings.area_patterns = p.settings?.area_patterns ?? {};
     this.settings.n_per_sample = p.settings?.n_per_sample ?? false;

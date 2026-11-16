@@ -138,6 +138,9 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
     if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
     if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
     const project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json');
+    // Published bundles are immutable; ones from before the UPbDB rename have no `upbdb`
+    // link. The mount this viewer was opened for stands in until the sync check confirms it.
+    project.upbdb ??= { mount_id: mount ?? null };
     // check() overlays current identified database elements (or a pending draft)
     // on this bundle; the bundle still supplies pixels and display metadata.
     return { atlas, project };
