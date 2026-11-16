@@ -10,7 +10,7 @@ import { canWrite, presentation } from './presentation';
 
 import { SyncSession } from './sync-session.svelte';
 import { grainMapWithoutBlankArtifacts } from './sync';
-import type { ShellCommand } from './shellcmd';
+import type { ReviewGroups, ShellCommand } from './shellcmd';
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
 import type { DeepLink } from './deeplink';
 import { DATE_CHOICES, type DateKind } from './results';
@@ -162,7 +162,7 @@ interface Snapshot {
 }
 
 /** Display-only scope from the host. Editing and exports keep the original spots. */
-export const reviewSpots = $state<{ projects: Record<string, string[]>; colors: Record<string, Record<string, string>> }>({ projects: {}, colors: {} });
+export const reviewSpots = $state<{ projects: Record<string, string[]>; colors: Record<string, Record<string, string>>; groups: ReviewGroups }>({ projects: {}, colors: {}, groups: {} });
 
 class AppState {
   readonly sync: SyncSession;

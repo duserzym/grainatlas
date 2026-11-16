@@ -10,6 +10,21 @@ const isId = (x: unknown): x is string => typeof x === 'string' && ID.test(x);
 const isRecord = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
 
 export type ReviewColours = Record<string, Record<string, string>>;
+export interface ReviewGroup { name: string; color: string; spots: string[] }
+export type ReviewGroups = Record<string, ReviewGroup[]>;
+
+/** Bridge v5.2 is optional: reject malformed groups without losing valid neighbours. */
+export function reviewGroups(value: unknown): ReviewGroups {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([project, groups]) => isId(project) && Array.isArray(groups) && groups.length <= 256).slice(0, 64)
+    .map(([project, groups]) => [project, (groups as unknown[]).flatMap(group => {
+      if (!isRecord(group) || typeof group.name !== 'string' || group.name.length > 200 ||
+        typeof group.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(group.color) ||
+        !Array.isArray(group.spots) || group.spots.length > 10000 || ![...group.spots].every(isId)) return [];
+      return [{ name: group.name, color: group.color.toLowerCase(), spots: [...group.spots] }];
+    })]));
+}
 
 /** The linked bridge predates colors; keep valid entries even beside malformed ones. */
 export function reviewColours(value: unknown): ReviewColours {
@@ -99,6 +114,7 @@ export async function handleShellCommand(value: unknown) {
   if (isBridgeCommand(value) && value.type === 'review-spots') {
     reviewSpots.projects = value.projects;
     reviewSpots.colors = reviewColours('colors' in value ? value.colors : undefined);
+    reviewSpots.groups = reviewGroups('groups' in value ? value.groups : undefined);
     if (value.focus) await handleShellCommand({ ...value.focus, type: 'focus-spot' });
     return;
   }

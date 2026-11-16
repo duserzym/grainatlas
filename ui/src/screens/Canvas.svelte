@@ -26,6 +26,7 @@
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
   import MountInset from '../components/MountInset.svelte';
+  import { areaExtent, groupRegions, mountLayout } from '../lib/mount-inset';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
   import { DATE_CHOICES, dateLabel, dateOf, fmtValue, matchResults, metricsOf, otherDates, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
   import { ageColor, AGE_RAMP_CSS } from '../lib/colormap';
@@ -278,6 +279,12 @@
     return ids ? new Set(ids) : null;
   });
   const reviewColour = $derived(reviewColourLookup(reviewSpots.colors, app.project?.uuid));
+  const insetGroups = $derived.by(() => {
+    const project = app.project;
+    if (!hosted || !isViewer || !project || !Object.hasOwn(reviewSpots.groups, project.uuid)) return [];
+    const layout = mountLayout(project.areas, Object.fromEntries(project.areas.map(a => [a.id, areaExtent(a, insetMosaics[a.id])])));
+    return groupRegions(reviewSpots.groups[project.uuid], app.spots, project.areas, layout);
+  });
   const areaSpots = $derived(app.spots.filter((s) => s.area_id === areaId));
   const spots = $derived(areaSpots.filter((s) => !reviewVisible || reviewVisible.has(s.id)));
   const tableSpots = $derived(spotSort === 'name' ? [...spots].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
@@ -293,6 +300,8 @@
     if (project) {
       const { [project]: _hidden, ...rest } = reviewSpots.projects;
       reviewSpots.projects = rest;
+      const { [project]: _groups, ...groups } = reviewSpots.groups;
+      reviewSpots.groups = groups;
     }
   }
   const outlinedGrains = $derived(reviewVisible
@@ -1634,7 +1643,7 @@
         </select>
         {#if app.colourBy === 'date'}<select bind:value={app.dateChoice} aria-label="Date">{@render dateOptions()}</select>{/if}
       </div>
-      <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} selected={insetSpots} onarea={changeArea} />
+      <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
     {:else}
     <div class="glass toolbar" data-ui>
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>

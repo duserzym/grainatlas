@@ -332,6 +332,14 @@ cd ui && pnpm add ./lab-bridge-0.1.0.tgz
 
 See `docs/decisions/ADR-0005-hosted-module.md`.
 
+In UPb Lab Review's read-only viewer, the mount inset shows every area,
+the current area, the visible image region and selected spots. When UPb Lab
+sends sample `groups` in `review-spots` (bridge v5.2), it shows a padded
+region in each sample's colour around its spots in each area, with small
+dots and sample names where labels fit. The header counts samples. A later
+command without groups for this project restores the selected-spot view;
+the editor never shows sample regions.
+
 ### UPbDB and the laser
 
 All of this is optional; without a server grainatlas works as before.

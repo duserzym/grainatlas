@@ -5,7 +5,8 @@
 // u = stage_sign * stage_nm / 1000. The print sheets' mount map uses the same frame
 // (`area_boxes` in crates/grainatlas-core/src/layout/sheets.rs); this is its port.
 
-import type { AreaRecord } from './core/types';
+import type { AreaRecord, Spot } from './core/types';
+import type { ReviewGroup } from './shellcmd';
 import { toMosaic, toScreen, type View } from './canvas/view.ts';
 
 /** [x0, y0, x1, y1] in mount µm. */
@@ -102,6 +103,76 @@ export function mosaicToMount(a: StageArea, layout: MountLayout, x: number, y: n
     if (!best || d < best[0]) best = [d, p];
   });
   return best ? (best as [number, Pt])[1] : null;
+}
+
+export interface GroupRegion {
+  name: string;
+  color: string;
+  regions: { area: string; points: Pt[]; hull: Pt[] }[];
+  /** Polygon centroid of the largest padded region, in mount µm. */
+  anchor: Pt;
+  anchorArea: string;
+}
+
+/** Counter-clockwise convex hull, with duplicate and collinear interior points removed. */
+function convexHull(points: Pt[]): Pt[] {
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    .filter((p, i, all) => !i || p[0] !== all[i - 1][0] || p[1] !== all[i - 1][1]);
+  if (sorted.length < 3) return sorted;
+  const cross = (a: Pt, b: Pt, c: Pt) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const half = (ps: Pt[]) => {
+    const out: Pt[] = [];
+    for (const p of ps) {
+      while (out.length > 1 && cross(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop();
+      out.push(p);
+    }
+    return out;
+  };
+  return [...half(sorted).slice(0, -1), ...half(sorted.reverse()).slice(0, -1)];
+}
+
+/** Rounded offset of the hull: a 24-sided circle for one point, a capsule for two. */
+function paddedHull(points: Pt[], pad: number): Pt[] {
+  return convexHull(convexHull(points).flatMap(([x, y]) => Array.from({ length: 24 }, (_, i): Pt => {
+    const angle = i * Math.PI / 12;
+    return [x + pad * Math.cos(angle), y + pad * Math.sin(angle)];
+  })));
+}
+
+function polygonCentre(points: Pt[]): { area: number; centre: Pt } {
+  // Translate first so stage coordinates far from zero do not lose precision.
+  const [ox, oy] = points[0];
+  let twiceArea = 0, x = 0, y = 0;
+  points.forEach((p, i) => {
+    const q = points[(i + 1) % points.length];
+    const px = p[0] - ox, py = p[1] - oy, qx = q[0] - ox, qy = q[1] - oy;
+    const cross = px * qy - qx * py;
+    twiceArea += cross; x += (px + qx) * cross; y += (py + qy) * cross;
+  });
+  return { area: Math.abs(twiceArea) / 2, centre: [ox + x / (3 * twiceArea), oy + y / (3 * twiceArea)] };
+}
+
+/** One rounded region per occupied area; never bridge the gap between two areas. */
+export function groupRegions(groups: ReviewGroup[], spots: Pick<Spot, 'id' | 'area_id' | 'x_um' | 'y_um'>[], areas: StageArea[], layout: MountLayout): GroupRegion[] {
+  const byId = new Map(spots.map(s => [s.id.toLowerCase(), s]));
+  const byArea = new Map(areas.map(a => [a.id, a]));
+  const pad = Math.max(40, 0.04 * Math.max(layout.bounds[2] - layout.bounds[0], layout.bounds[3] - layout.bounds[1]));
+  return groups.flatMap(group => {
+    const points = new Map<string, Pt[]>();
+    for (const id of new Set(group.spots.map(id => id.toLowerCase()))) {
+      const s = byId.get(id);
+      if (!s || !Number.isFinite(s.x_um) || !Number.isFinite(s.y_um)) continue;
+      const a = byArea.get(s.area_id);
+      const p = a ? mosaicToMount(a, layout, s.x_um, s.y_um) : null;
+      if (!p || !p.every(Number.isFinite)) continue;
+      if (!points.has(s.area_id)) points.set(s.area_id, []);
+      points.get(s.area_id)!.push(p);
+    }
+    const regions = [...points].map(([area, points]) => ({ area, points, hull: paddedHull(points, pad) }));
+    if (!regions.length) return [];
+    const largest = regions.map(r => ({ ...polygonCentre(r.hull), id: r.area })).reduce((a, b) => b.area > a.area ? b : a);
+    return [{ name: group.name, color: group.color, regions, anchor: largest.centre, anchorArea: largest.id }];
+  });
 }
 
 /** Inset pixels per mount µm and offsets: inset = (u - bounds) * k + offset, centred, `pad` px inside. */

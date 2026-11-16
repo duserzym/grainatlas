@@ -1,6 +1,6 @@
 <script lang="ts">
   // Mount locator for the read-only viewer: every area of the mount at its stage position,
-  // the shown area highlighted, the selected spots and the visible part of the image.
+  // the shown area highlighted, Review's sample regions or selected spots, and the visible image.
   // Clicking an area shows it, like the Area menu. Size and collapsed state live in memory and
   // go to UPb Lab (bridge v5.1), which remembers them; the viewer writes nothing.
   import { onDestroy } from 'svelte';
@@ -12,7 +12,7 @@
   import { sendViewerInset } from '../lib/viewer-inset';
   import {
     applyFit, areaExtent, defaultInset, ENLARGED_W, fitTransform, mapAspect, maxWidth, MIN_W, mosaicToMount, mountLayout,
-    NORMAL_W, shownWidth, STEP, storedWidth, viewQuad, type Pt,
+    NORMAL_W, shownWidth, STEP, storedWidth, union, viewQuad, type Box, type GroupRegion, type Pt,
   } from '../lib/mount-inset';
 
   interface Props {
@@ -23,16 +23,20 @@
     lut: Uint8Array;
     view: View | undefined;
     selected: Spot[];
+    groups?: GroupRegion[];
     onarea: (id: string) => void;
   }
-  let { areas, current, mosaics, tiles, lut, view, selected, onarea }: Props = $props();
+  let { areas, current, mosaics, tiles, lut, view, selected, groups = [], onarea }: Props = $props();
 
   // ---- geometry -------------------------------------------------------------------------
   const extents = $derived(Object.fromEntries(areas.map(a => [a.id, areaExtent(a, mosaics[a.id])])) as Record<string, Pt>);
   const layout = $derived(mountLayout(areas, extents));
-  const aspect = $derived(mapAspect(layout.bounds));
+  // Fit padded regions too, so groups on the edge of an area keep their full outline.
+  const bounds = $derived(union([layout.bounds, ...groups.flatMap(g => g.regions.map(r => union(r.hull.map(([x, y]): Box => [x, y, x, y]))))]));
+  const aspect = $derived(mapAspect(bounds));
   const currentArea = $derived(areas.find(a => a.id === current) ?? null);
   const currentLabel = $derived(layout.areas.find(a => a.id === current)?.label ?? '');
+  const headerLabel = $derived(groups.length ? `${groups.length} ${groups.length === 1 ? 'sample' : 'samples'}` : currentLabel);
 
   // ---- size and room --------------------------------------------------------------------
   const HEAD = 26, NOTE = 16, PAD = 8;
@@ -145,8 +149,13 @@
   }
 
   // ---- drawing --------------------------------------------------------------------------
-  const fit = $derived(fitTransform(layout.bounds, width, mapH, 6));
-  const px = (p: Pt) => applyFit(fit, layout.bounds, p);
+  const fit = $derived(fitTransform(bounds, width, mapH, 6));
+  const px = (p: Pt) => applyFit(fit, bounds, p);
+  const samples = $derived(groups.map(g => ({
+    ...g, anchor: px(g.anchor),
+    regions: g.regions.map(r => ({ ...r, points: r.points.map(px), hull: r.hull.map(px) })),
+  })));
+  const polygon = (ps: Pt[]) => ps.map(p => p.map(v => v.toFixed(1)).join(',')).join(' ');
   const shapes = $derived(layout.areas.map(a => {
     const [x0, y0] = px([a.box[0], a.box[1]]), [x1, y1] = px([a.box[2], a.box[3]]);
     return { ...a, x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), on: a.id === current, active: a.id in mosaics };
@@ -156,19 +165,33 @@
     const n = Math.floor((w - 4) / 5.6);
     return n >= text.length ? text : n >= 3 ? `${text.slice(0, n - 1)}…` : '';
   };
-  /** Labels for the other areas, placed only where they do not collide with the current label or each other. */
+  /** Sample names get first choice after the current-area label; all labels share collision boxes. */
   const labels = $derived.by(() => {
-    type Box = [number, number, number, number];
     const hit = (a: Box, b: Box) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
     const placed: Box[] = [];
-    if (currentShape) {
+    if (currentShape && !groups.length) {
       const cx = currentShape.x + currentShape.w / 2, cy = currentShape.y >= 14 ? currentShape.y - 9 : currentShape.y + currentShape.h + 6;
       const half = currentLabel.length * 3.3 + 3;
-      placed.push([cx - half, cy - 7, cx + half, cy + 7], [currentShape.x, currentShape.y, currentShape.x + currentShape.w, currentShape.y + currentShape.h]);
+      placed.push([cx - half, cy - 7, cx + half, cy + 7]);
+      if (!groups.length) placed.push([currentShape.x, currentShape.y, currentShape.x + currentShape.w, currentShape.y + currentShape.h]);
     }
+    const sampleLabels = new Map<number, string>();
+    samples.forEach((g, i) => {
+      const [cx, cy] = g.anchor;
+      const region = g.regions.find(r => r.area === g.anchorArea);
+      if (!region || cy < 7 || cy > mapH - 7) return;
+      const xs = region.hull.map(p => p[0]), ys = region.hull.map(p => p[1]);
+      if (Math.max(...ys) - Math.min(...ys) < 14) return;
+      const room = 2 * Math.min(cx - Math.max(2, Math.min(...xs)), Math.min(width - 2, Math.max(...xs)) - cx);
+      const text = short(g.name, room), half = text.length * 2.8 + 2;
+      const box: Box = [cx - half, cy - 7, cx + half, cy + 7];
+      if (!text || placed.some(p => hit(p, box))) return;
+      placed.push(box); sampleLabels.set(i, text);
+    });
     const out = new Map<string, string>();
     for (const sh of shapes) {
-      if (sh.on || sh.w < 30 || sh.h < 12) continue;
+      // Sample regions cover the areas; their names replace the area labels.
+      if (sh.on || groups.length || sh.w < 30 || sh.h < 12) continue;
       const text = short(sh.label, sh.w);
       if (!text) continue;
       const cx = sh.x + sh.w / 2, cy = sh.y + sh.h / 2, half = text.length * 2.8 + 2;
@@ -176,10 +199,10 @@
       if (placed.some(p => hit(p, box))) continue;
       placed.push(box); out.set(sh.id, text);
     }
-    return out;
+    return { areas: out, samples: sampleLabels };
   });
   const recById = $derived(new Map(areas.map(a => [a.id, a])));
-  const dots = $derived(selected.flatMap(s => {
+  const dots = $derived(groups.length ? [] : selected.flatMap(s => {
     const rec = recById.get(s.area_id);
     const p = rec ? mosaicToMount(rec, layout, s.x_um, s.y_um) : null;
     return p ? [{ id: s.id, p: px(p) }] : [];
@@ -266,12 +289,13 @@
     <div class="body" style:width="{width}px" transition:open data-testid="mount-inset-body">
       <div class="head">
         <span class="title">Mount</span>
-        <span class="faint name" title={currentLabel}>{currentLabel}</span>
+        <span class="faint name" title={headerLabel}>{headerLabel}</span>
         <button class="icon" onclick={enlarge} title={enlarged ? 'Smaller' : 'Larger'} aria-label={enlarged ? 'Smaller mount map' : 'Larger mount map'}
           disabled={limit < NORMAL_W + STEP} data-testid="mount-inset-enlarge">{enlarged ? '−' : '+'}</button>
         <button class="icon" onclick={toggle} aria-expanded="true" aria-label="Hide mount map" title="Hide mount map" data-testid="mount-inset-close">×</button>
       </div>
-      <svg width={width} height={mapH} role="group" aria-label="Mount map" data-testid="mount-inset-map">
+      <svg width={width} height={mapH} role="group" aria-label="Mount map" aria-describedby={groups.length ? 'mount-inset-groups' : undefined} data-testid="mount-inset-map">
+        {#if groups.length}<desc id="mount-inset-groups">Sample groups: {groups.map(g => g.name).join(', ')}</desc>{/if}
         <defs><clipPath id="mount-inset-clip"><rect width={width} height={mapH} /></clipPath></defs>
         <rect class="surface" width={width} height={mapH} rx="4" />
         <g clip-path="url(#mount-inset-clip)">
@@ -288,14 +312,30 @@
                 </svg>
               {/if}
               <rect class="box" x={s.x} y={s.y} width={s.w} height={s.h} />
-              {#if labels.has(s.id)}
-                <text class="short" x={s.x + s.w / 2} y={s.y + s.h / 2}>{labels.get(s.id)}</text>
+              {#if labels.areas.has(s.id)}
+                <text class="short" x={s.x + s.w / 2} y={s.y + s.h / 2}>{labels.areas.get(s.id)}</text>
               {/if}
             </g>
           {/each}
+          {#each samples as g}
+            <g class="sample" style:--group-color={g.color} data-testid="mount-inset-group">
+              {#each g.regions as r}
+                <polygon class="region" points={polygon(r.hull)} data-area={r.area} />
+                {#each r.points as p}<circle class="group-dot" cx={p[0]} cy={p[1]} r="2" />{/each}
+              {/each}
+            </g>
+          {/each}
+          {#if samples.length && currentShape}
+            <rect class="current-outline" x={currentShape.x} y={currentShape.y} width={currentShape.w} height={currentShape.h} />
+          {/if}
           {#if quad}<polygon class="quad" points={quad} data-testid="mount-inset-view" />{/if}
           {#each dots as d (d.id)}<circle class="dot" cx={d.p[0]} cy={d.p[1]} r="3" data-testid="mount-inset-spot" />{/each}
-          {#if currentShape}
+          {#each samples as g, i}
+            {#if labels.samples.has(i)}
+              <text class="sample-label" x={g.anchor[0]} y={g.anchor[1]}>{labels.samples.get(i)}</text>
+            {/if}
+          {/each}
+          {#if currentShape && !samples.length}
             {@const above = currentShape.y >= 14}
             <text class="here" data-testid="mount-inset-current"
               x={Math.min(width - 4, Math.max(4, currentShape.x + currentShape.w / 2))}
@@ -332,6 +372,11 @@
   .area.on .box { stroke: var(--accent); stroke-opacity: 1; stroke-width: 2; }
   .short { fill: var(--ov-label); fill-opacity: 0.75; font-size: 9px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
   .here { fill: var(--ov-label); font-size: 10px; font-weight: 600; paint-order: stroke; stroke: var(--image-bg); stroke-width: 3px; pointer-events: none; }
+  .sample { pointer-events: none; }
+  .region { fill: var(--group-color); fill-opacity: 0.18; stroke: var(--group-color); stroke-width: 1.5; stroke-linejoin: round; }
+  .group-dot { fill: var(--group-color); stroke: var(--image-bg); stroke-width: 0.75; }
+  .sample-label { fill: var(--ov-label); font-size: 9px; font-weight: 600; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: var(--image-bg); stroke-width: 3px; pointer-events: none; }
+  .current-outline { fill: none; stroke: var(--accent); stroke-width: 2; pointer-events: none; }
   .quad { fill: none; stroke: var(--ov-number); stroke-width: 1.25; pointer-events: none; }
   .dot { fill: var(--ov-spot-selected); stroke: var(--image-bg); stroke-width: 1; pointer-events: none; }
   .note { font-size: 0.65rem; line-height: 14px; }
