@@ -11,12 +11,18 @@ audits every diff, runs the browser and app checks and makes the commits.
 
 1. **Never commit, tag, push, or create remotes, releases or secrets.** Leave
    the work in the working tree. `git status` and `git diff` are fine.
-2. **No real data in the repository; it is public.** The only image is
-   `docs/app-blank.png` (the app before anything opens). The sample-based
-   test suite and fixtures were removed when the repository went public
+2. **No sample data in the repository; it is public.** No SEM packages,
+   tiles, projects or test fixtures are committed. The sample-based test
+   suite and fixtures were removed when the repository went public
    (2026-11-15); a copy is kept outside git in
-   `~/Github/lab-builds/grainatlas-private/`. Never copy files from
-   `~/My Drive…` or other repositories, and never re-add sample images.
+   `~/Github/lab-builds/grainatlas-private/`. Real images appear only in
+   deliberately committed docs screenshots (`docs/images/*.webp`, plus
+   `docs/app-blank.png`), with every name and piece of metadata neutralised:
+   package, project, area and sample names, people, places, sessions, dates,
+   paths, emails, server names and instrument serials (`docs/screenshots.md`).
+   A source package may be copied only into an ignored `target/` folder to
+   make screenshots (`scripts/neutralise_package.py`), never anywhere else in
+   the repository, and is never committed.
 3. **CI stays quiet.** Workflows run only on `v*` tags and
    `workflow_dispatch`. Never add push or pull-request triggers.
 4. **Light theme by default; every screen fits 1440 x 900 and 1280 x 800**
