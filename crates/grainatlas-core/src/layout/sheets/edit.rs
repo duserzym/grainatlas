@@ -55,6 +55,9 @@ pub struct EditedPlan {
 pub fn strip_block(s: &SheetStrip) -> SheetBlock {
     SheetBlock { sheet: s.sheet + 1, rect_mm: [s.origin_mm[0] - if s.labelled { 0.0 } else { PIECE_GAP_MM / 2.0 }, s.origin_mm[1], s.origin_mm[0] + s.size_mm[0], s.origin_mm[1] + s.size_mm[1]] }
 }
+pub(super) fn note_height(s: &SheetStrip) -> f64 {
+    if s.neighbours.is_empty() { 0.0 } else { NOTE_MM }
+}
 pub(super) fn measure(s: &mut SheetStrip, k: f64) {
     let mut width: f64 = 0.0;
     let mut height: f64 = 0.0;
@@ -63,7 +66,7 @@ pub(super) fn measure(s: &mut SheetStrip, k: f64) {
         width = width.max(end);
         height = height.max((b.mosaic_rect_um[3] - b.mosaic_rect_um[1]) / k);
     }
-    s.size_mm = [width, LABEL_MM + height + NOTE_MM];
+    s.size_mm = [width, LABEL_MM + height + note_height(s)];
     block_extent(s, k);
 }
 pub(super) fn block_extent(s: &mut SheetStrip, k: f64) {
@@ -139,15 +142,28 @@ pub fn apply_edits(plan: &SheetPlan, edits: &[StripEdit], areas: &[SheetArea], g
     let mut applied = 0;
     let mut dropped = Vec::new();
     for (index, edit) in edits.iter().enumerate() {
+        // The first edit uses compact geometry even for first-free placement and
+        // Repack. A refused edit restores the byte-identical automatic Lines plan.
+        let automatic = plan.lines.is_some().then(|| plan.clone());
+        if automatic.is_some() {
+            plan.cut_stats.header_mm = compact::heights(&plan);
+            let count = plan.sheet_bodies.len(); bodies(&mut plan, count);
+            for s in &mut plan.strips { measure(s, plan.um_per_mm); }
+        }
         match apply_one(&mut plan, edit, areas, grains, &mut state, &mut summary) {
-            Err(reason) => dropped.push(DroppedEdit { index, reason }),
+            Err(reason) => {
+                if let Some(original) = automatic { plan = original; }
+                dropped.push(DroppedEdit { index, reason });
+            },
             Ok(()) => {
                 applied += 1;
                 clear_shared_gaps(&mut plan, &state.touched);
-                if plan.lines.take().is_some() { for s in &mut plan.strips { measure(s, plan.um_per_mm); } }
+                plan.lines = None;
                 plan.edit_summary = Some(summary.clone());
                 reconcile(&mut plan, grains, &mut state);
                 refresh_notes(&mut plan);
+                plan.cut_stats.header_mm = compact::heights(&plan);
+                let count = plan.sheet_bodies.len(); bodies(&mut plan, count);
             }
         }
     }

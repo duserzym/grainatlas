@@ -186,17 +186,34 @@ same. Paper still ranks last: packing uses space left empty by lines without
 trading away neighbours or making extra cuts to fill a hole.
 
 A **strip** is one block on paper (a run in the code): its label, one or more
-band images side by side, their `//` gap marks, and a 4.2 mm note allowance.
+band images side by side, their `//` gap marks, and a note line when needed.
 Its width covers the images, label and gap marks, including trailing marks;
-its height is the 4.6 mm label allowance plus the tallest image plus the note
-allowance. Every packed strip carries its sample and area label, including
+its height is the 4.6 mm label allowance plus the tallest image. A strip with
+a continuation note also reserves 4.2 mm below the images. Strips without a
+note reserve no note space. Lines mode keeps its 4.2 mm allowance on every line.
+Every packed strip carries its sample and area label, including
 continuation text, even when its run shared a label in lines mode. There are
 no dashed line separators in packed mode.
 
 The packer uses MaxRects with the bottom-left rule: choose the free rectangle
 with the lowest top-edge coordinate, then the leftmost. It leaves a 2.5 mm gap
 between blocks, with no rotation or scaling. Sheet 1 and later sheets keep
-their own body heights. Four orders are tried:
+their own body heights. Packed and edited placement use a 40 mm first header
+and a 25 mm later header. The first header keeps the acquisition grid, Print,
+Package, counts, sheet samples and areas, spot key and mount map. Values wrap
+within their columns; long titles, acquisition values or a larger spot key can grow
+the header enough to keep all its content inside. Later headers keep the title,
+sheet number, one print line, up to two lines of samples and areas, the spot
+key and a smaller mount map. Long print text ends with an ellipsis; a list that
+does not fit ends with "+ N more". Compact map labels are at least 1.8 mm high,
+abbreviated to their column width, and limited to samples on the sheet with
+"+ N more" for labels that do not fit. The map darkens areas on this sheet and
+outlines its bands. Labels do not grow compact headers with the sample count.
+Cutting still uses the original 50 mm and 36 mm headers, including their
+existing growth for map labels, and the 4.2 mm note allowance. Only placement
+uses the extra body space. `stats.header_mm` reports the first and later
+placement header heights; `sheet_bodies` records each drawn header and body.
+Sheets added in the editor use these same compact heights. Four orders are tried:
 
 1. Mount order, filling sheets in turn without returning to earlier sheets.
 2. Mount order with back-fill into earlier sheets.
@@ -260,7 +277,9 @@ grains and uses the existing cut code with its repeated strips. Both sides
 must own a grain. **Join** restores two direct siblings from a split.
 **Separate** makes one strip per band, each with its own label and a
 "continues on sheet N" note in place of the `//` mark. The note follows the
-neighbour's sheet when it moves.
+neighbour's sheet when it moves. Separate restores the 4.2 mm note allowance
+and grows the strip block. An overlap or body overflow caused by this growth
+is reported by the same checks as any other edit.
 
 **Re-pack the others** pins the strips already touched and packs the remaining
 shown strips around them. **Back to automatic** drops every edit after a
@@ -640,7 +659,8 @@ size, capture times), the sample legend, laser spot circles at print scale and
 the mount map: area boxes from stage coordinates in the SEM view, this sheet's
 samples dark with their grains as white dots and its bands outlined.
 Everything is black, white and grey. Corner marks sit in the sheet margins.
-Sheet 1 retains the full acquisition block in a 50 mm header. Subsequent sheets
+In lines mode, sheet 1 retains the full acquisition block in a 50 mm header.
+Subsequent sheets
 use a 36 mm header with title, sheet number, counts, scale and processing,
 "acquisition details on sheet 1", the samples on that sheet, the laser key
 and the mount map. Text sizes are unchanged. The map occupies a lower panel

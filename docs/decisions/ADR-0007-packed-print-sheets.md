@@ -215,7 +215,6 @@ Each step ends green and is committed and pushed before the next starts.
 - Cuts that know about packing, for example cutting a piece to fill a leftover
   rectangle instead of the line end. (The operator can do this by hand with
   split.)
-- A shorter header on sheets 2 and later (38 mm now; the prototype used 23 mm).
 - Rotating or scaling single strips (point 8).
 - Making `packed` the default. That decision waits until packed sheets have
   been used at the laser.
@@ -243,7 +242,20 @@ Measured on the two November mounts at the scales in the table: lines 4 and 5
 sheets (registrations identical to version 0.1.2), packed 3 and 5. The
 prototype's 2 and 4 come from its shorter headers (about 39 and 23 mm against
 50 and 36 mm) and from leaving out the 4.2 mm note line: the app's own strips
-re-packed with both changes give 2 and 4. The shorter header remains under
-"Not in this round". A hand edit in the app (a crop, a split separated into two
+re-packed with both changes give 2 and 4. The compact-header follow-up is
+recorded below. A hand edit in the app (a crop, a split separated into two
 strips, a piece moved to another sheet) gave a registration whose rectangles
 match the printed pages.
+
+## Follow-up (2026-11-17)
+
+Built compact headers for packed and edited plans: 40 mm on sheet 1 and
+25 mm on later sheets, with additional height when wrapped titles, acquisition
+values or the spot key need it. Sheet 1 keeps its acquisition content. Later sheets
+keep the title, sheet number, print line, samples and areas, spot key and mount
+map. Compact map labels are abbreviated and limited to the space available,
+with text at least 1.8 mm high. Packed and edited strips reserve the 4.2 mm
+note line only when they have a continuation note; Separate restores that
+space and the editor reports any resulting overlap. Cutting retains its
+original header and note limits. Lines output remains byte-identical. The
+synthetic golden mount uses 2 packed sheets before and after this follow-up.

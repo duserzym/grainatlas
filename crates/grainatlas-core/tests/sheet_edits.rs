@@ -199,6 +199,12 @@ fn deterministic_repack_pins_touched_strips_and_leaves_no_overlaps() {
 fn lines_drop_separators_keep_dividers_and_label_independent_strips() {
     let mut f=Fixture::new();f.params.context_um=20.0;f.params.packing=Packing::Lines;let p=f.plan();let i=p.strips.iter().position(|s|!s.labelled).unwrap();let s=&p.strips[i];let key=s.key.clone();
     let r=f.apply(&p,&[StripEdit::AddSheet {at:1}]);assert!(r.plan.lines.is_none());assert!(r.plan.strips.iter().zip(&p.strips).all(|(a,b)|a.origin_mm==b.origin_mm && a.bands==b.bands));
+    assert_eq!(r.plan.cut_stats.header_mm, [40.0, 25.0]);
+    for body in &r.plan.sheet_bodies {
+        assert_eq!(body.header_mm, if body.sheet == 1 { 40.0 } else { 25.0 });
+        assert_eq!(body.body_rect_mm[1], 9.0 + body.header_mm);
+    }
+    for (before, after) in p.strips.iter().zip(&r.plan.strips) { assert!((before.size_mm[1] - after.size_mm[1] - 4.2).abs() < 1e-7); }
     let block=sheets::edit::strip_block(&r.plan.strips[i]);assert_eq!(block.rect_mm[0],s.origin_mm[0]-2.5);
     let moved=f.apply(&p,&[StripEdit::Move {strip:key,sheet:s.sheet,origin_mm:Some(s.origin_mm)}]);assert!(moved.plan.strips[i].labelled);assert_eq!(moved.plan.strips[i].bands[0].offset_mm,s.bands[0].offset_mm);f.check(&moved.plan);
 }
@@ -327,4 +333,34 @@ fn thumbnail_move_uses_first_free_place_ignores_self_and_hidden_and_refuses_full
     let edit=StripEdit::Move {strip:a.key.clone(),sheet:0,origin_mm:None};let r=f.apply(&full,std::slice::from_ref(&edit));assert_eq!(r.applied,0);assert_eq!(r.plan,full);assert_eq!(r.dropped[0].reason,"no room on sheet 1");
     let mut json=serde_json::to_value(&edit).unwrap();assert!(json["origin_mm"].is_null());json.as_object_mut().unwrap().remove("origin_mm");assert_eq!(serde_json::from_value::<StripEdit>(json).unwrap(),edit);
     let mut oversize=p.clone();oversize.strips[0].label="A1 ".repeat(200);let r=f.apply(&oversize,&[edit]);assert_eq!(r.dropped[0].reason,"no room on sheet 1");assert_eq!(r.plan,oversize);
+}
+
+#[test]
+fn note_allowance_returns_on_separate_and_can_report_new_overlap() {
+    let f = Fixture::new();
+    let p = f.plan();
+    let (strip, band) = keys(&p);
+    let height = |s: &SheetStrip| s.bands.iter().map(|b| (b.mosaic_rect_um[3] - b.mosaic_rect_um[1]) / p.um_per_mm).fold(0.0_f64, f64::max);
+    assert_eq!(p.strips[0].size_mm[1], 4.6 + height(&p.strips[0]));
+    let split = f.apply(&p, &[split_edit(&band)]);
+    assert_eq!(split.plan.strips[0].size_mm[1], 4.6 + height(&split.plan.strips[0]));
+    let separated = f.apply(&p, &[split_edit(&band), StripEdit::Separate { strip }]);
+    assert!(separated.dropped.is_empty());
+    for s in &separated.plan.strips {
+        assert!(!s.neighbours.is_empty());
+        assert_eq!(s.size_mm[1], 4.6 + height(s) + 4.2);
+        let block = sheets::edit::strip_block(s);
+        assert!((block.rect_mm[3] - block.rect_mm[1] - s.size_mm[1]).abs() < 1e-7);
+    }
+    f.check(&separated.plan);
+    // The note grows the block rather than moving a neighbouring strip silently.
+    let mut stacked = split.plan.clone();
+    let mut other = p.strips[0].clone();
+    other.key.split = 99;
+    for b in &mut other.bands { b.grains.clear(); }
+    other.origin_mm[1] = stacked.strips[0].origin_mm[1] + stacked.strips[0].size_mm[1] + 2.5;
+    stacked.strips.push(other);
+    let grown = f.apply(&stacked, &[StripEdit::Separate { strip: stacked.strips[0].key.clone() }]);
+    assert!(grown.problems.iter().any(|p| p.kind == ProblemKind::Overlap));
+    f.check(&grown.plan);
 }

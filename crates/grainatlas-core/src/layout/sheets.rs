@@ -31,6 +31,7 @@ use crate::readers::PackageInfo;
 use crate::segment::Grain;
 
 pub mod packed;
+mod compact;
 pub mod edit;
 pub use edit::{StripEdit, PrintEdits, EditedPlan, DroppedEdit, Problem, ProblemKind, LeftOff, LeftOffSummary, EditSummary, apply_edits, replay};
 
@@ -463,7 +464,7 @@ pub struct SheetStats {
     pub strays: usize,
     /// Band image area / available body area, and mean occupied line width / body width.
     pub fill: SheetFill,
-    /// Full and compact header heights, in mm.
+    /// First and later placement header heights, in mm (compact in packed/edited plans).
     pub header_mm: [f64; 2],
     /// Mutually exclusive paper-area budget per sheet; empty epoxy is a subset of band area.
     pub height_budget: Vec<HeightBudget>,
@@ -639,6 +640,9 @@ struct CutSheets<'g> {
 // Sheet geometry (mm).
 const FULL_HEADER_MM: f64 = 50.0;
 const COMPACT_HEADER_MM: f64 = 36.0;
+/// Placement only. Cutting always uses the legacy header heights above.
+pub const PACKED_FIRST_HEADER_MM: f64 = 40.0;
+pub const PACKED_LATER_HEADER_MM: f64 = 25.0;
 /// Cheap orphan joins bridge at most another quarter of the context distance,
 /// and add at most 15% to the host rectangle. Neither bound scales with paper.
 const ORPHAN_GAP_FACTOR: f64 = 1.25;
@@ -1422,11 +1426,12 @@ fn place_packed(plan: &mut SheetPlan, taken: &[SheetBlock]) {
     let p = &plan.params;
     let [w, h] = plan.paper_mm;
     let m = p.margin_mm;
+    plan.cut_stats.header_mm = compact::heights(plan);
     let bodies = plan.cut_stats.header_mm.map(|header| [m, m + header + 1.0, w - m, h - m - FOOTER_MM]);
     for strip in &mut plan.strips {
         strip.shares_gap_with = None;
         strip.labelled = true;
-        edit::block_extent(strip, plan.um_per_mm);
+        edit::measure(strip, plan.um_per_mm);
     }
     let sizes: Vec<_> = plan.strips.iter().map(|s| s.size_mm).collect();
     let placed = packed::pack_rectangles(&sizes, bodies, taken);
@@ -1554,17 +1559,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     };
     // The header draws the key that fits this scale and says how the scale was chosen.
     let hp = SheetParams { spot_sizes_um: spots_shown.clone(), ..p.clone() };
-    let scale_note = match &auto {
-        Some(a) => {
-            let why = match a.limit.as_str() {
-                "target" => String::new(),
-                "small grains" => format!(", limited by small grains ({} µm)", fmt(a.p10_um, 0)),
-                other => format!(", limited by {other}"),
-            };
-            format!("auto: median grain {} µm prints {} mm{why}", fmt(a.median_um, 0), fmt(a.median_um / k, 1))
-        }
-        None => String::new(),
-    };
+    let scale_note = scale_note(auto.as_ref(), k);
     let mut svgs = Vec::new();
     let mut j = 0;
     let n = plan.sheet_bodies.len();
@@ -1604,8 +1599,8 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                 let block = strip.size_mm[0] * strip.size_mm[1];
                 blocks += block;
                 budget.band_mm2 += images;
-                budget.labels_notes_mm2 += strip.size_mm[0] * (LABEL_MM + NOTE_MM);
-                budget.other_line_mm2 += block - strip.size_mm[0] * (LABEL_MM + NOTE_MM) - images;
+                budget.labels_notes_mm2 += strip.size_mm[0] * (LABEL_MM + edit::note_height(strip));
+                budget.other_line_mm2 += block - strip.size_mm[0] * (LABEL_MM + edit::note_height(strip)) - images;
             }
             budget.blank_mm2 = body_w * body_h(pi) - blocks;
         }
@@ -1710,8 +1705,8 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
         };
         if plan.lines.is_some() { budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - bottom).max(0.0); }
         stats.height_budget.push(budget);
-        header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &shown, ownership, &stats, k, &scale_note, &spots_off, header_mm);
-        mount_map(&mut s, p, page, areas, &shown, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm);
+        header(&mut s, if plan.lines.is_none() { p } else { &hp }, meta, page, pi + 1, n, &here, areas, &shown, ownership, &stats, k, &scale_note, &spots_off, header_mm, plan.lines.is_none(), &band_rects);
+        mount_map(&mut s, p, page, areas, &shown, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm, if plan.lines.is_none() { Some(if pi == 0 { compact::map_top(p, meta, page, &stats) } else { 6.5 }) } else { None });
         // Footer and corner registration marks.
         let fy = h - m - 2.0;
         let reg_file = &reg.registration_file;
@@ -1888,43 +1883,21 @@ fn fmt(v: f64, d: usize) -> String {
     format!("{v:.d$}")
 }
 
-#[allow(clippy::too_many_arguments)]
-fn header(
-    s: &mut String,
-    p: &SheetParams,
-    meta: &SheetMeta,
-    page: super::Paper,
-    sheet: usize,
-    sheets: usize,
-    here: &[String],
-    areas: &[SheetArea],
-    printed: &[Vec<&Grain>],
-    ownership: &Ownership,
-    stats: &SheetStats,
-    k: f64,
-    scale_note: &str,
-    spots_off: &[f64],
-    header_mm: f64,
-) {
-    let m = p.margin_mm;
-    let map_w = map_width(page, areas, header_mm);
-    let text_r = page.w_mm - m - map_w - 6.0;
-    let title = if p.title.is_empty() { meta.package.clone() } else { p.title.clone() };
-    let _ = write!(s, r#"<text x="{m}" y="{:.2}" font-size="6" font-weight="bold" fill="{INK}">{}</text>"#, m + 6.0, esc(&title));
-    let _ = write!(s, r#"<text x="{:.2}" y="{:.2}" font-size="4.2" font-weight="bold" fill="{INK}" text-anchor="end">Sheet {sheet} / {sheets}</text>"#, page.w_mm - m, m + 5.6);
-    let _ = write!(
-        s,
-        r#"<text x="{:.2}" y="{:.2}" font-size="2.3" fill="{GREY}" text-anchor="end">{} grains · {} bands · {} duplicates left to their owner area{}{}{}</text>"#,
-        page.w_mm - m,
-        m + 10.0,
-        stats.grains,
-        stats.bands,
-        stats.duplicates,
-        if stats.strays > 0 { format!(" · {} strays left off", stats.strays) } else { String::new() },
-        if stats.isolated > 0 { format!(" · {} isolated", stats.isolated) } else { String::new() },
-        if p.printed.is_empty() { String::new() } else { format!(" · printed {}", esc(&p.printed)) }
-    );
-    // Key / value grid.
+fn scale_note(auto: Option<&AutoScale>, k: f64) -> String {
+    match auto {
+        Some(a) => {
+            let why = match a.limit.as_str() {
+                "target" => String::new(),
+                "small grains" => format!(", limited by small grains ({} µm)", fmt(a.p10_um, 0)),
+                other => format!(", limited by {other}"),
+            };
+            format!("auto: median grain {} µm prints {} mm{why}", fmt(a.median_um, 0), fmt(a.median_um / k, 1))
+        }
+        None => String::new(),
+    }
+}
+
+fn header_values(p: &SheetParams, meta: &SheetMeta, k: f64, scale_note: &str) -> (Vec<(&'static str, String)>, String) {
     let mut kv: Vec<(&str, String)> = Vec::new();
     let mut inst = meta.instrument.clone();
     if !meta.serial.is_empty() {
@@ -1971,7 +1944,7 @@ fn header(
     }
     proc.push(if p.enhance.strip { format!("background stripped to grey {} where safe", p.enhance.strip_grey) } else { "background kept".into() });
     let processing = proc.join(" · ");
-    if sheet == 1 { kv.push(("Print", processing.clone())); }
+    kv.push(("Print", processing.clone()));
     let mut pkg = meta.package.clone();
     if !meta.comment.is_empty() {
         pkg += &format!(" · comment: {}", meta.comment);
@@ -1979,7 +1952,54 @@ fn header(
     if !p.lab.is_empty() {
         pkg += &format!(" · {}", p.lab);
     }
-    if sheet == 1 { kv.push(("Package", pkg)); } else { kv.clear(); }
+    kv.push(("Package", pkg));
+    (kv, processing)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn header(
+    s: &mut String,
+    p: &SheetParams,
+    meta: &SheetMeta,
+    page: super::Paper,
+    sheet: usize,
+    sheets: usize,
+    here: &[String],
+    areas: &[SheetArea],
+    printed: &[Vec<&Grain>],
+    ownership: &Ownership,
+    stats: &SheetStats,
+    k: f64,
+    scale_note: &str,
+    spots_off: &[f64],
+    header_mm: f64,
+    compact: bool,
+    bands: &[(usize, [f64; 4])],
+) {
+    let m = p.margin_mm;
+    let map_w = map_width(page, areas, header_mm);
+    let text_r = page.w_mm - m - map_w - 6.0;
+    let (mut kv, processing) = header_values(p, meta, k, scale_note);
+    if sheet > 1 { kv.clear(); }
+    if compact {
+        compact::draw(s, p, meta, page, sheet, sheets, here, areas, printed, ownership, stats, k, header_mm, &kv, &processing, bands);
+        return;
+    }
+    let title = if p.title.is_empty() { meta.package.clone() } else { p.title.clone() };
+    let _ = write!(s, r#"<text x="{m}" y="{:.2}" font-size="6" font-weight="bold" fill="{INK}">{}</text>"#, m + 6.0, esc(&title));
+    let _ = write!(s, r#"<text x="{:.2}" y="{:.2}" font-size="4.2" font-weight="bold" fill="{INK}" text-anchor="end">Sheet {sheet} / {sheets}</text>"#, page.w_mm - m, m + 5.6);
+    let _ = write!(
+        s,
+        r#"<text x="{:.2}" y="{:.2}" font-size="2.3" fill="{GREY}" text-anchor="end">{} grains · {} bands · {} duplicates left to their owner area{}{}{}</text>"#,
+        page.w_mm - m,
+        m + 10.0,
+        stats.grains,
+        stats.bands,
+        stats.duplicates,
+        if stats.strays > 0 { format!(" · {} strays left off", stats.strays) } else { String::new() },
+        if stats.isolated > 0 { format!(" · {} isolated", stats.isolated) } else { String::new() },
+        if p.printed.is_empty() { String::new() } else { format!(" · printed {}", esc(&p.printed)) }
+    );
     let col_w = (text_r - m) / 2.0;
     for (i, (key, val)) in kv.iter().enumerate() {
         // Six short values in two columns, then Print and Package on lines of their own.
@@ -2094,14 +2114,19 @@ fn mount_map(
     sample_of: &dyn Fn(usize) -> String,
     view: &dyn Fn(usize, &Grain) -> Option<[f64; 2]>,
     header_mm: f64,
+    compact_top: Option<f64>,
 ) {
     let m = p.margin_mm;
-    let (bw, bh) = (map_width(page, areas, header_mm), header_mm - 13.5);
-    let (bx, by) = (page.w_mm - m - bw, m + 12.0);
+    let compact = compact_top.is_some();
+    let top = compact_top.unwrap_or(12.0);
+    let (bw, bh) = (if compact { compact::map_width(page) } else { map_width(page, areas, header_mm) }, if compact { header_mm - top - 1.5 } else { header_mm - 13.5 });
+    let (bx, by) = (page.w_mm - m - bw, m + top);
+    if compact { s.push_str(r#"<g data-header="map">"#); }
     let boxes = area_boxes(areas);
     let _ = write!(s, r#"<rect x="{bx:.2}" y="{by:.2}" width="{bw:.2}" height="{bh:.2}" rx="1.5" fill="none" stroke="{LIGHT}" stroke-width="0.3"/>"#);
     let all: Vec<[f64; 4]> = boxes.iter().flatten().copied().collect();
     if all.is_empty() {
+        if compact { s.push_str("</g>"); }
         return;
     }
     let (x0, y0) = (all.iter().map(|b| b[0]).fold(f64::INFINITY, f64::min), all.iter().map(|b| b[1]).fold(f64::INFINITY, f64::min));
@@ -2114,7 +2139,7 @@ fn mount_map(
     let ty = |v: f64| oy + (v - y0) * sc;
     for (ai, b) in boxes.iter().enumerate() {
         let Some(b) = b else { continue };
-        let on = here.contains(&sample_of(ai));
+        let on = if compact { bands.iter().any(|(j, _)| *j == ai) } else { here.contains(&sample_of(ai)) };
         let _ = write!(
             s,
             r#"<rect x="{:.3}" y="{:.3}" width="{:.3}" height="{:.3}" fill="{}" stroke="{}" stroke-width="0.15"/>"#,
@@ -2128,7 +2153,7 @@ fn mount_map(
     }
     // Grains as dots.
     for (ai, gs) in printed.iter().enumerate() {
-        let on = here.contains(&sample_of(ai));
+        let on = if compact { bands.iter().any(|(j, _)| *j == ai) } else { here.contains(&sample_of(ai)) };
         let mut d = String::new();
         for g in gs {
             if let Some(v) = view(ai, g) {
@@ -2174,10 +2199,18 @@ fn mount_map(
         let right = bs.iter().map(|b| b[2]).fold(f64::NEG_INFINITY, f64::max);
         let mid = bs.iter().map(|b| (b[1] + b[3]) / 2.0).sum::<f64>() / bs.len() as f64;
         let on = here.contains(&sn);
-        labels.push((sn, tx(right), ty(mid), on));
+        if !compact || on { labels.push((sn, tx(right), ty(mid), on)); }
     }
     labels.sort_by(|a, b| a.2.total_cmp(&b.2));
-    let gap = 2.7;
+    let gap = if compact { 2.4 } else { 2.7 };
+    if compact {
+        let capacity = ((bh - 7.0) / gap).floor().max(1.0) as usize;
+        if labels.len() > capacity {
+            let more = labels.len() - capacity + 1;
+            labels.truncate(capacity.saturating_sub(1));
+            labels.push((format!("+ {more} more"), tx(x1), by + bh - 6.0, true));
+        }
+    }
     let mut ys: Vec<f64> = labels.iter().map(|l| l.2.clamp(by + 2.3, by + bh - 6.0)).collect();
     for i in 1..ys.len() {
         ys[i] = ys[i].max(ys[i - 1] + gap);
@@ -2188,7 +2221,7 @@ fn mount_map(
     for i in (0..ys.len().saturating_sub(1)).rev() {
         ys[i] = ys[i].min(ys[i + 1] - gap);
     }
-    let col = tx(x1) + 3.0;
+    let col = if compact { bx + bw - MAP_LABEL_MM } else { tx(x1) + 3.0 };
     for ((sn, rx, ry, on), y) in labels.iter().zip(&ys) {
         let _ = write!(
             s,
@@ -2199,11 +2232,18 @@ fn mount_map(
             if *on { INK } else { LIGHT },
             col,
             y + 0.8,
-            if *on { 2.5 } else { 2.2 },
+            if compact { 1.8 } else if *on { 2.5 } else { 2.2 },
             if *on { r#"font-weight="bold" "# } else { "" },
             if *on { INK } else { GREY },
-            esc(sn)
+            esc(&if compact { compact::ellipsis(sn, MAP_LABEL_MM - 2.0, 1.8, *on) } else { sn.clone() })
         );
+    }
+    if compact {
+        // Bound the scale bar even for a mount smaller than 1 mm.
+        let length = (1000.0 * sc).min(12.0);
+        let note = format!("{} mm · SEM view", fmt(length / sc / 1000.0, 2));
+        let _ = write!(s, r#"<path d="M{:.2} {:.2} h{length:.3}" stroke="{GREY}" stroke-width="0.3"/><text x="{:.2}" y="{:.2}" font-size="1.8" fill="{GREY}">{}</text></g>"#, bx + 3.0, by + bh - 2.0, bx + 4.5 + length, by + bh - 1.5, esc(&compact::ellipsis(&note, bw - length - 6.0, 1.8, false)));
+        return;
     }
     // 1 mm bar and orientation note.
     let l = 1000.0 * sc;

@@ -2737,8 +2737,9 @@ fn audit_uses_the_sheet_body_before_its_legacy_envelope() {
             um_per_px: 1.0,
         },
     }];
-    r.registration.body_rect_mm[1] = 45.0;
-    r.registration.bands[0].sheet_rect_mm[1] = 50.0; // inside envelope, above sheet 1 body.
+    let top = r.registration.sheet_bodies[0].body_rect_mm[1];
+    r.registration.body_rect_mm[1] = top - 14.0;
+    r.registration.bands[0].sheet_rect_mm[1] = top - 9.0; // inside envelope, above sheet 1 body.
     assert_eq!(
         sheets::audit(&r.registration, &[vec![&g]], &areas).outside_body,
         1
@@ -2833,6 +2834,27 @@ fn compact_map_keeps_six_asymmetrically_spaced_labels_inside_its_box() {
         .unwrap();
     let top: f64 = map.attribute("y").unwrap().parse().unwrap();
     let height: f64 = map.attribute("height").unwrap().parse().unwrap();
+    if r.registration.layout == "packed" {
+        assert_compact_header_boxes(&r, p.margin_mm);
+        let labels: Vec<_> = map.parent().unwrap().children().filter(|n| n.has_tag_name("text") && n.attribute("font-weight") == Some("bold")).collect();
+        assert!(!labels.is_empty());
+        let here: std::collections::BTreeSet<_> = r.registration.bands.iter().filter(|b| b.sheet == 2).map(|b| b.sample.as_str()).collect();
+        let mut accounted = 0;
+        for label in labels {
+            let name = label.text().unwrap();
+            if name.starts_with("+ ") {
+                accounted += name.trim_start_matches("+ ").trim_end_matches(" more").parse::<usize>().unwrap();
+            } else {
+                assert!(here.contains(name));
+                accounted += 1;
+            }
+            assert_eq!(label.attribute("font-size"), Some("1.8"));
+            let y: f64 = label.attribute("y").unwrap().parse().unwrap();
+            assert!(y - 1.8 >= top && y + 0.4 <= top + height - 3.0);
+        }
+        assert_eq!(accounted, here.len(), "every on-sheet sample has a label or is counted as more");
+        return;
+    }
     for a in &recs {
         let label = doc
             .descendants()
@@ -3249,6 +3271,8 @@ fn assert_packed_blocks(r: &sheets::SheetResult) {
     for (i, block) in r.registration.strip_blocks.iter().enumerate() {
         let body = &r.registration.sheet_bodies[block.sheet - 1];
         assert!(holds(body.body_rect_mm, block.rect_mm));
+        let band_height = r.registration.bands.iter().filter(|b| b.sheet == block.sheet && (0..2).all(|d| block.rect_mm[d] <= b.sheet_rect_mm[d] + 1e-7 && block.rect_mm[d + 2] >= b.sheet_rect_mm[d + 2] - 1e-7)).map(|b| b.sheet_rect_mm[3] - b.sheet_rect_mm[1]).fold(0.0_f64, f64::max);
+        assert!((block.rect_mm[3] - block.rect_mm[1] - 4.6 - band_height).abs() < 1e-7);
         for other in r.registration.strip_blocks.iter().skip(i + 1).filter(|b| b.sheet == block.sheet) {
             assert!(rect_overlap(block.rect_mm, other.rect_mm).is_none(), "blocks include labels: {block:?}, {other:?}");
             let [a, b] = [block.rect_mm, other.rect_mm];
@@ -3264,6 +3288,9 @@ fn assert_packed_blocks(r: &sheets::SheetResult) {
         }
     }
     for (body, budget) in r.registration.sheet_bodies.iter().zip(&r.stats.height_budget) {
+        assert_eq!(body.header_mm, r.stats.header_mm[usize::from(body.sheet > 1)]);
+        let margin = body.body_rect_mm[0];
+        assert_eq!(body.body_rect_mm, [margin, margin + 1.0 + body.header_mm, r.registration.paper_mm[0] - margin, r.registration.paper_mm[1] - margin - 5.0]);
         let block_area: f64 = r.registration.strip_blocks.iter().filter(|b| b.sheet == body.sheet).map(|b| (b.rect_mm[2] - b.rect_mm[0]) * (b.rect_mm[3] - b.rect_mm[1])).sum();
         let body_area = (body.body_rect_mm[2] - body.body_rect_mm[0]) * (body.body_rect_mm[3] - body.body_rect_mm[1]);
         assert!((budget.blank_mm2 - (body_area - block_area)).abs() < 1e-7);
@@ -3284,6 +3311,9 @@ fn packed_preserves_the_cut_mapping_and_bytes_across_runs() {
     let packed = field_sheets(&p, &recs, &gs);
     same_cut(&lines, &packed);
     assert!(packed.stats.sheets <= lines.stats.sheets);
+    assert!(packed.stats.sheets <= 2, "the pre-compaction golden mount used 2 packed sheets");
+    assert_eq!(packed.stats.header_mm, [40.0, 25.0]);
+    assert_compact_header_boxes(&packed, p.margin_mm);
     assert_packed_blocks(&packed);
     let second = field_sheets(&p, &recs, &gs);
     assert_eq!(serde_json::to_string(&packed.registration).unwrap(), serde_json::to_string(&second.registration).unwrap());
@@ -3399,7 +3429,7 @@ fn packed_block_sizes_cover_labels_underlines_and_gap_marks() {
     assert_eq!(lines.targets, packed.targets);
     for (line, block) in lines.strips.iter().zip(&packed.strips) {
         assert_eq!(line.key, block.key);
-        assert_eq!(line.size_mm[1], block.size_mm[1]);
+        assert!((line.size_mm[1] - block.size_mm[1] - 4.2).abs() < 1e-7);
         assert_eq!(line.bands[0].mosaic_rect_um, block.bands[0].mosaic_rect_um);
         assert!(block.labelled);
         assert_eq!(line.bands[0].offset_mm, block.bands[0].offset_mm);
@@ -3466,5 +3496,87 @@ fn packed_oversized_images_and_labels_keep_their_scale_and_fail_bounds_audit() {
         for d in 0..2 {
             assert!(((b.sheet_rect_mm[d + 2] - b.sheet_rect_mm[d]) * p.um_per_mm - (b.mosaic_rect_um[d + 2] - b.mosaic_rect_um[d])).abs() < 1e-6);
         }
+    }
+}
+/// Read rendered SVG, including text estimates and the circles at print scale.
+fn assert_compact_header_boxes(r: &sheets::SheetResult, margin: f64) {
+    for (page, body) in r.pages.iter().zip(&r.registration.sheet_bodies) {
+        let header = [margin, margin, r.registration.paper_mm[0] - margin, margin + body.header_mm];
+        assert_eq!(body.body_rect_mm[1], header[3] + 1.0);
+        let doc = roxmltree::Document::parse(page).unwrap();
+        let mut text_boxes = Vec::new();
+        let mut circles = Vec::new();
+        let mut map = None;
+        for group in doc.descendants().filter(|n| n.has_tag_name("g") && n.attribute("data-header").is_some()) {
+            let in_map = group.attribute("data-header") == Some("map");
+            for node in group.children().filter(|n| n.is_element()) {
+                let value = |key| node.attribute(key).unwrap().parse::<f64>().unwrap();
+                let rect = match node.tag_name().name() {
+                    "text" => {
+                        let size = value("font-size");
+                        assert!(size >= 1.8);
+                        let width = node.text().unwrap_or("").chars().count() as f64 * size * if node.attribute("font-weight") == Some("bold") { 0.66 } else { 0.58 };
+                        let rect = [value("x"), value("y") - size, value("x") + width, value("y") + size * 0.22];
+                        text_boxes.push((rect, in_map, node.text().unwrap_or("")));
+                        rect
+                    }
+                    "circle" => {
+                        let (x, y, radius) = (value("cx"), value("cy"), value("r"));
+                        let rect = [x - radius, y - radius, x + radius, y + radius];
+                        circles.push(rect);
+                        rect
+                    }
+                    "rect" => {
+                        let rect = [value("x"), value("y"), value("x") + value("width"), value("y") + value("height")];
+                        if node.attribute("rx") == Some("1.5") { map = Some(rect); }
+                        rect
+                    }
+                    _ => continue,
+                };
+                // SVG coordinates round to at most 0.001 mm (map border to 0.01 mm).
+                assert!((0..2).all(|d| rect[d] >= header[d] - 0.011 && rect[d + 2] <= header[d + 2] + 0.011), "outside header: {rect:?}, {header:?}, {node:?}");
+            }
+        }
+        assert!(map.is_some());
+        for (i, (rect, in_map, text)) in text_boxes.iter().enumerate() {
+            for (other, _, other_text) in &text_boxes[i + 1..] {
+                assert!(rect_overlap(*rect, *other).is_none(), "header text overlaps: {text:?} {rect:?}, {other_text:?} {other:?}");
+            }
+            if !in_map { assert!(rect_overlap(*rect, map.unwrap()).is_none(), "text overlaps map: {text:?}"); }
+            for circle in &circles { assert!(rect_overlap(*rect, *circle).is_none(), "text overlaps key: {text:?}"); }
+        }
+        for circle in circles { assert!(rect_overlap(circle, map.unwrap()).is_none()); }
+    }
+}
+
+#[test]
+fn compact_headers_bound_many_long_labels_and_preserve_acquisition_values() {
+    let mut recs = Vec::new();
+    let mut gs = BTreeMap::new();
+    for i in 0..24 {
+        let rec = area(&format!("A{i}"), &format!("Synthetic sample {i} with a long label"), -(i as f64) * 1_000_000.0, 400, 300);
+        gs.insert(rec.id.clone(), vec![grain(100.0, 100.0, 60.0)]);
+        recs.push(rec);
+    }
+    for paper in ["letter", "tabloid"] {
+        let params = SheetParams { packing: Packing::Packed, paper: paper.into(), title: "Synthetic mount title with enough words to need abbreviation".into(), ..fast_sheets() };
+        let areas: Vec<_> = recs.iter().map(|rec| SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: 400, h: 300, px: &[], lut: [128; 256], um_per_px: 1.0 } }).collect();
+        let meta = SheetMeta { instrument: "Synthetic instrument".into(), serial: "0000".into(), detector: "Synthetic detector".into(), kv: Some(15.0), emission_ua: Some(42.0), wd_mm: Some(10.0), scan: "Synthetic scan with detailed settings preserved across the compact grid column".into(), magnification: "100".into(), tile_px: Some([400, 300]), package: "Synthetic package".into(), comment: "Acquisition text stays complete even when it needs another line".into(), ..Default::default() };
+        let own = ownership::assign(&recs, &gs, &OwnershipParams::default());
+        let mut plan = sheets::plan_sheets(&params, &areas, &gs, &own, &meta);
+        let edited = sheets::apply_edits(&plan, &[sheets::StripEdit::AddSheet { at: plan.sheet_bodies.len() }], &areas, &gs);
+        assert!(edited.problems.is_empty());
+        plan = edited.plan;
+        let result = sheets::render_plan_with_images(&plan, &areas, &gs, &own, &|_, _| (Vec::new(), "kept".into()));
+        assert_compact_header_boxes(&result, params.margin_mm);
+        assert!(result.pages[0].contains("more"));
+        let doc = roxmltree::Document::parse(&result.pages[0]).unwrap();
+        let text = doc.descendants().filter(|n| n.has_tag_name("text")).filter_map(|n| n.text()).collect::<Vec<_>>().join(" ");
+        for value in ["Synthetic instrument", "S/N 0000", "Synthetic detector", "15 kV", "emission 42.0 µA", "WD 10.0 mm", "Synthetic scan", "PRINT", "PACKAGE", "Synthetic package", &meta.comment, &params.title, &meta.scan] {
+            assert!(text.contains(value), "missing {value:?} from {text}");
+        }
+        assert_eq!(plan.sheet_bodies.last().unwrap().header_mm, sheets::PACKED_LATER_HEADER_MM);
+        assert!(plan.sheet_bodies[0].header_mm <= 42.0);
+        if paper == "letter" { assert!(plan.sheet_bodies[0].header_mm > 40.0, "wrapped scan value grows the first header"); }
     }
 }
