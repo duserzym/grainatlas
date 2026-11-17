@@ -40,6 +40,73 @@ fn keys(plan: &SheetPlan) -> (StripKey, StripKey) { (plan.strips[0].key.clone(),
 fn split_edit(band: &StripKey) -> StripEdit { StripEdit::Split { band:band.clone(), axis:Axis::X, at_um:640.0 } }
 
 #[test]
+fn project_print_edits_round_trip_preserves_registered_data_and_unknown_keys() {
+    use grainatlas_core::project::Project;
+    let (_,mut project,_)=support::synthetic();
+    project.extra.insert("future_key".into(),json!({"ids":["A1","zr-1"],"value":42,"nested":{"keep":true}}));
+    let legacy=project.to_json();let reopened=Project::from_json(&legacy).unwrap();
+    assert!(reopened.print_sheets.is_none());assert!(!serde_json::to_value(&reopened).unwrap().as_object().unwrap().contains_key("print_sheets"));assert_eq!(reopened.to_json(),legacy);
+    let f=Fixture::new();let plan=f.plan();let (strip,band)=keys(&plan);
+    let stored=PrintEdits {params:plan.params.clone(),um_per_mm:plan.um_per_mm,edits:vec![StripEdit::Label {strip:strip.clone(),text:"zr-1".into()},split_edit(&band),StripEdit::Hide {strip}]};
+    // Simulate the previously untyped extra key as it appears in an existing project.json.
+    let mut old:serde_json::Value=serde_json::from_str(&legacy).unwrap();old["print_sheets"]=serde_json::to_value(&stored).unwrap();
+    let typed=Project::from_json(&old.to_string()).unwrap();assert_eq!(typed.print_sheets,Some(stored.into()));assert!(!typed.extra.contains_key("print_sheets"));
+    let mut without_print=typed.clone();without_print.print_sheets=None;
+    assert_eq!(without_print.to_json(),legacy,"every other key, including grains, spots, labels, ids, grainatlas_ui and upbdb survives");
+    let saved=typed.to_json();assert_eq!(Project::from_json(&saved).unwrap().to_json().as_bytes(),saved.as_bytes());
+}
+
+#[test]
+fn unreadable_project_print_edits_preserve_raw_json_and_registered_data() {
+    use grainatlas_core::project::{Project, StoredPrintEdits};
+    let (mut session,mut project,_)=support::synthetic();
+    project.extra.insert("future_key".into(),json!({"ids":["A1","zr-1"],"nested":{"keep":true}}));
+    let baseline=project.to_json();let before:serde_json::Value=serde_json::from_str(&baseline).unwrap();
+    let atlas=session.atlas_files(&baseline,"").unwrap();let published_before:serde_json::Value=serde_json::from_slice(&atlas.iter().find(|(name,_)|name=="project.json").unwrap().1).unwrap();
+    let raw=json!({"params":{"packing":"packed"},"um_per_mm":8.0,"edits":[{"op":"repack"},{"op":"future_edit","strip":{"area":"A1","grains_hash":"a1","split":0},"value":[42.12345678912345,{"keep":true}]}],"future_key":"zr-1"});
+    for raw in [raw,json!({"params":{},"edits":[{"op":"move","sheet":"bad"}]}),json!({"params":42,"edits":[]}),json!(null),json!(false),json!([42]),json!("zr-1")] {
+        let mut input=before.clone();input["print_sheets"]=raw.clone();let input=serde_json::to_string_pretty(&input).unwrap();
+        let loaded=Project::from_json(&input).unwrap();assert_eq!(loaded.print_sheets,Some(StoredPrintEdits::Raw(raw.clone())));
+        assert_eq!(serde_json::from_str::<Project>(&input).unwrap(),loaded);
+        let saved=loaded.to_json();let mut value:serde_json::Value=serde_json::from_str(&saved).unwrap();
+        assert_eq!(value["print_sheets"].to_string().as_bytes(),raw.to_string().as_bytes(),"raw JSON value survives byte-for-byte");
+        value.as_object_mut().unwrap().remove("print_sheets");assert_eq!(value,before,"all other project keys survive");
+        assert_eq!(Project::from_json(&saved).unwrap().to_json().as_bytes(),saved.as_bytes());
+        session.load_project(&saved).unwrap();assert_eq!(session.project.as_ref().unwrap(),&loaded);
+        let files=session.project_files(&saved).unwrap();let folder=&files.iter().find(|(name,_)|name=="project.json").unwrap().1;
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(folder).unwrap()["print_sheets"],raw);
+        let atlas=session.atlas_files(&saved,"").unwrap();let mut published:serde_json::Value=serde_json::from_slice(&atlas.iter().find(|(name,_)|name=="project.json").unwrap().1).unwrap();
+        assert_eq!(published["print_sheets"].to_string().as_bytes(),raw.to_string().as_bytes());
+        published.as_object_mut().unwrap().remove("print_sheets");assert_eq!(published,published_before);
+    }
+}
+
+#[test]
+fn reopened_project_replays_the_same_registration_and_survives_all_save_records() {
+    use grainatlas_core::project::session::Session;
+    let (mut session,mut project,pixels)=support::synthetic();
+    let gs=project.extra["grainatlas_ui"]["grains"].to_string();
+    let params=SheetParams {packing:Packing::Packed,um_per_mm:8.0,enhance:Default::default(),..Default::default()};let params_json=serde_json::to_string(&params).unwrap();
+    let automatic:serde_json::Value=serde_json::from_str(&session.print_sheets(&params_json,&gs,"{}").unwrap()).unwrap();
+    let plan:SheetPlan=serde_json::from_value(automatic["plan"].clone()).unwrap();
+    project.print_sheets=Some(PrintEdits {params:plan.params.clone(),um_per_mm:plan.um_per_mm,edits:vec![StripEdit::AddSheet {at:1},StripEdit::Move {strip:plan.strips[0].key.clone(),sheet:1,origin_mm:Some([20.0,90.0])}]}.into());
+    let edits=serde_json::to_string(project.print_sheets.as_ref().unwrap()).unwrap();
+    let before:serde_json::Value=serde_json::from_str(&session.print_plan_render(&automatic["plan"].to_string(),&edits,&gs,"{}").unwrap()).unwrap();assert!(before.get("dropped").is_none_or(|d|d.as_array().unwrap().is_empty()));assert_eq!(before["registration"]["bands"][0]["sheet"],2);
+    let saved=project.to_json();
+    let files=session.project_files(&saved).unwrap();let folder=&files.iter().find(|(name,_)| name=="project.json").unwrap().1;
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(folder).unwrap(),serde_json::from_str::<serde_json::Value>(&saved).unwrap());
+    let atlas=session.atlas_files(&saved,"").unwrap();let published=&atlas.iter().find(|(name,_)| name=="project.json").unwrap().1;
+    let mut expected=serde_json::to_value(&project.print_sheets).unwrap();grainatlas_core::atlas::canonical(&mut expected);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(published).unwrap()["print_sheets"],expected);
+    let mut reopened=Session::new("mount A");reopened.load_project(&saved).unwrap();reopened.load_bundle_area("a",support::W,support::H,pixels).unwrap();
+    assert_eq!(reopened.project.as_ref().unwrap().to_json().as_bytes(),saved.as_bytes());
+    let automatic:serde_json::Value=serde_json::from_str(&reopened.print_sheets(&params_json,&gs,"{}").unwrap()).unwrap();
+    let stored=serde_json::to_string(reopened.project.as_ref().unwrap().print_sheets.as_ref().unwrap()).unwrap();
+    let after:serde_json::Value=serde_json::from_str(&reopened.print_plan_render(&automatic["plan"].to_string(),&stored,&gs,"{}").unwrap()).unwrap();
+    assert!(after.get("dropped").is_none_or(|d|d.as_array().unwrap().is_empty()));assert_eq!(before["registration"].to_string().as_bytes(),after["registration"].to_string().as_bytes());assert_eq!(before["pages"],after["pages"]);
+}
+
+#[test]
 fn moving_changes_only_sheet_and_paper_translation() {
     let f=Fixture::new(); let p=f.plan(); let (strip,_)=keys(&p); let before=f.render(&p);
     let result=f.apply(&p,&[StripEdit::AddSheet {at:1},StripEdit::Move {strip,sheet:1,origin_mm:Some([30.0,90.0])}]);

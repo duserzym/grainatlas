@@ -40,9 +40,26 @@ pub struct Project {
     /// Laser stage registration per area and the spot-list adapter (phase 11).
     #[serde(default, skip_serializing_if = "crate::laser::LaserRegistration::is_empty")]
     pub laser: crate::laser::LaserRegistration,
+    #[serde(default, deserialize_with = "stored_print_edits", skip_serializing_if = "Option::is_none")]
+    pub print_sheets: Option<StoredPrintEdits>,
     /// Keys this version does not know are kept verbatim.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Unreadable strip edits must never prevent registered data from loading or saving.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum StoredPrintEdits {
+    Typed(Box<crate::layout::sheets::PrintEdits>),
+    Raw(serde_json::Value),
+}
+impl From<crate::layout::sheets::PrintEdits> for StoredPrintEdits {
+    fn from(edits: crate::layout::sheets::PrintEdits) -> Self { Self::Typed(Box::new(edits)) }
+}
+// Preserve an explicit JSON null too; only an absent key means no stored edits.
+fn stored_print_edits<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<StoredPrintEdits>, D::Error> {
+    StoredPrintEdits::deserialize(d).map(Some)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -155,6 +172,7 @@ impl Project {
             areas: info.areas.iter().map(AreaRecord::from_meta).collect(),
             settings: Settings::default(),
             laser: Default::default(),
+            print_sheets: None,
             extra: BTreeMap::new(),
         }
     }

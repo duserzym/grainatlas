@@ -22,7 +22,7 @@ export function projectChanges(project: Project) {
   const ui = project.grainatlas_ui as {
     grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>;
   } | undefined;
-  return { grains: ui?.grains ?? {}, spots: ui?.spots ?? [], labels: ui?.labels ?? [], tone: ui?.tone ?? {} };
+  return { grains: ui?.grains ?? {}, spots: ui?.spots ?? [], labels: ui?.labels ?? [], tone: ui?.tone ?? {}, print_sheets: project.print_sheets };
 }
 
 // Object key order in JSON is not a content change.
@@ -107,6 +107,10 @@ export function answerStoredCopy(app: AppState, restore: boolean, storage?: Copy
     app.spots = changes.spots;
     app.labels = changes.labels;
     app.tone = changes.tone;
+    if (app.project) {
+      if (changes.print_sheets !== undefined) app.project.print_sheets = changes.print_sheets;
+      else delete app.project.print_sheets;
+    }
     app.selection = [];
     app.notice = `Restored changes from ${storedCopyDate(pending.saved_at)}. Save the project to keep them in the folder; ⌘Z undoes.`;
   } else {

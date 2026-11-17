@@ -1,4 +1,4 @@
-import type { Grain, SheetBand, SheetPlan, SheetRect, SheetStrip, StripEdit, StripKey } from './core/types.ts';
+import type { Grain, PrintEdits, Project, SheetBand, SheetPlan, SheetRect, SheetStrip, StripEdit, StripKey } from './core/types.ts';
 
 export const LABEL_MM = 4.6;
 export const GAP_MM = 2.5;
@@ -88,12 +88,75 @@ export function grainChanges(before: SheetRect, after: SheetRect, grains: Grain[
   return { leaving: grains.filter(g => contains(before, g.bbox_um) && !contains(after, g.bbox_um)), entering: grains.filter(g => !contains(before, g.bbox_um) && contains(after, g.bbox_um)) };
 }
 
-/** In-memory only. Step 7 can serialise the active edits from this one place. */
+const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const number = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+const index = (v: unknown) => number(v) && Number.isSafeInteger(v) && (v as number) >= 0;
+const tuple = (v: unknown, n: number) => Array.isArray(v) && v.length === n && v.every(number);
+const stripKey = (v: unknown) => object(v) && typeof v.area === 'string' && typeof v.grains_hash === 'string' && index(v.split) && (v.split as number) <= 0xffffffff;
+function readableEdit(v: unknown): boolean {
+  if (!object(v)) return false;
+  switch (v.op) {
+    case 'move': return stripKey(v.strip) && index(v.sheet) && (v.origin_mm == null || tuple(v.origin_mm, 2));
+    case 'add_sheet': return index(v.at);
+    case 'remove_sheet': return index(v.sheet);
+    case 'move_sheet': return index(v.from) && index(v.to);
+    case 'crop': return stripKey(v.band) && tuple(v.mosaic_rect_um, 4);
+    case 'split': return stripKey(v.band) && (v.axis === 'x' || v.axis === 'y') && number(v.at_um);
+    case 'join': return stripKey(v.band_a) && stripKey(v.band_b);
+    case 'separate': case 'hide': case 'show': return stripKey(v.strip);
+    case 'label': return stripKey(v.strip) && typeof v.text === 'string';
+    case 'repack': return true;
+    default: return false;
+  }
+}
+
+/** Guard raw project JSON before using it for controls or replay. Never change the stored value. */
+export function readPrintEdits(v: unknown): PrintEdits | null {
+  if (!object(v) || !object(v.params) || !Array.isArray(v.edits) || !v.edits.every(readableEdit)) return null;
+  if (v.um_per_mm !== undefined && !number(v.um_per_mm)) return null;
+  const p = v.params;
+  const fields = (o: Record<string, unknown>, names: string[], valid: (v: unknown) => boolean) => names.every(k => o[k] === undefined || valid(o[k]));
+  if (!fields(p, ['paper', 'title', 'lab', 'project', 'registration_file', 'printed'], v => typeof v === 'string')
+    || !fields(p, ['landscape'], v => typeof v === 'boolean')
+    || !fields(p, ['margin_mm', 'target_grain_mm', 'pad_um', 'gap_break_um', 'context_um', 'overlap_um', 'max_repeated_fraction', 'min_grain_um', 'max_grain_um'], number)
+    || !fields(p, ['min_group', 'min_cluster_grains', 'min_cut_grains'], index)
+    || !fields(p, ['packing'], v => v === 'lines' || v === 'packed')
+    || !fields(p, ['um_per_mm'], v => number(v) || typeof v === 'string' && (/^(auto)?$/i.test(v.trim()) || /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(v.trim()) && number(Number(v))))
+    || !fields(p, ['spot_sizes_um'], v => Array.isArray(v) && v.every(number))) return null;
+  if (p.enhance !== undefined && (!object(p.enhance)
+    || !fields(p.enhance, ['denoise', 'sharpen', 'strip'], v => typeof v === 'boolean')
+    || !fields(p.enhance, ['denoise_h', 'sharpen_radius', 'sharpen_amount', 'strip_margin_um'], number)
+    || !fields(p.enhance, ['strip_grey'], v => index(v) && (v as number) <= 255))) return null;
+  return { ...v, um_per_mm: v.um_per_mm ?? 0 } as unknown as PrintEdits;
+}
+
+/** Store only on the open project; the usual Save writes the record on both hosts. */
+export function storePrintEdits(app: { project: Project | null; readOnly: boolean; dirty: boolean }, plan: SheetPlan, edits: StripEdit[]) {
+  if (!app.project || app.readOnly) return;
+  if (edits.length) app.project.print_sheets = structuredClone({ params: plan.params, um_per_mm: plan.um_per_mm, edits });
+  else delete app.project.print_sheets;
+  app.dirty = true;
+}
+
+/** Core recomputes refresh the record; print edits are held by the UI until Save. */
+export function keepPrintEdits(record: Project, current: Project | null): Project {
+  if (current?.uuid === record.uuid) {
+    if (current.print_sheets !== undefined) record.print_sheets = current.print_sheets;
+    else delete record.print_sheets;
+  }
+  return record;
+}
+
+/** One active edit list for preview, undo/redo and project saves. */
 export class StripHistory {
   edits: StripEdit[] = [];
   future: StripEdit[][] = [];
   past: StripEdit[][] = [];
   get count() { return this.edits.length; }
+  load(edits: StripEdit[]) {
+    if (JSON.stringify(this.edits) === JSON.stringify(edits)) return;
+    this.edits = structuredClone(edits); this.past = []; this.future = [];
+  }
   push(edit: StripEdit) { this.past.push(this.edits); this.edits = [...this.edits, edit]; this.future = []; }
   undo() { const next = this.past.pop(); if (next) { this.future.push(this.edits); this.edits = next; } }
   redo() { const next = this.future.pop(); if (next) { this.past.push(this.edits); this.edits = next; } }

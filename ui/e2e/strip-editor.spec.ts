@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { firstFreePlace, LABEL_MM } from '../src/lib/strip-edit';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +21,8 @@ test.afterEach(async ({ page }) => {
 });
 
 // Serve only the invented bundle and database reads needed to enter Edit and print.
-async function mockServer(page: Page) {
+interface SavedFixture { saved?: string; syncOnSave?: boolean }
+async function mockServer(page: Page, fixture: SavedFixture = {}) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
@@ -31,15 +33,15 @@ async function mockServer(page: Page) {
     spots: ui.spots.map((s: any) => ({ ...s, project_uuid: projectId, kind: 'spot', acquisition_ids: [] })),
     labels: ui.labels.map((l: any) => ({ ...l, project_uuid: projectId })),
   };
-  await page.addInitScript(({ server }) => {
+  await page.addInitScript(({ server, syncOnSave }) => {
     const w = window as any;
     w.__LAB_SHELL__ = { module: 'grainatlas' };
     w.__TAURI_INTERNALS__ = { invoke: async (cmd: string) => {
       if (cmd === 'bridge_token') return 'synthetic-token';
       return null;
     } };
-    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: true, quality: 100, nasRoot: '' }));
-  }, { server });
+    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave, quality: 100, nasRoot: '' }));
+  }, { server, syncOnSave: fixture.syncOnSave ?? true });
   await page.route(`${server}/**`, async route => {
     const request = route.request(), pathname = new URL(request.url()).pathname;
     const headers = { 'access-control-allow-origin': '*' };
@@ -51,6 +53,9 @@ async function mockServer(page: Page) {
       if (pathname.startsWith(`/atlas/projects/${projectId}/`)) {
         const relative = pathname.slice(`/atlas/projects/${projectId}/`.length);
         if (!['atlas.json', ...atlas.files.map((f: any) => f.path)].includes(relative)) throw new Error(`Unexpected bundle path ${relative}`);
+        // Reopen the downloaded project record with the same invented image bundle.
+        if (relative === 'project.json' && fixture.saved) return route.fulfill({ headers, body: fixture.saved, contentType: 'application/json' });
+        if (relative === 'atlas.json' && fixture.saved) return json({ ...atlas, files: atlas.files.map((f: any) => f.path === 'project.json' ? { ...f, size: Buffer.byteLength(fixture.saved!), sha256: createHash('sha256').update(fixture.saved!).digest('hex') } : f) });
         return route.fulfill({ headers, body: await readFile(path.join(generated, relative)), contentType: relative.endsWith('.webp') ? 'image/webp' : 'application/json' });
       }
       if (pathname === `/v1/atlas/projects/${projectId}`) return json({ project_uuid: projectId, mount_id: mountId, mount_label: 'mount A', name: project.name,
@@ -97,8 +102,8 @@ function problems(page: Page) {
   });
 }
 
-async function openEditor(page: Page, packing = 'lines') {
-  const unexpected = await mockServer(page);
+async function openEditor(page: Page, packing = 'lines', fixture: SavedFixture = {}) {
+  const unexpected = await mockServer(page, fixture);
   await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
   await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
   await page.getByTestId('edit-copy').click();
@@ -166,6 +171,101 @@ async function selectFirst(page: Page) {
 function sameBand(reg: any, before: any) {
   return reg.bands.find((b: any) => JSON.stringify(b.mosaic_rect_um) === JSON.stringify(before.mosaic_rect_um));
 }
+
+async function saveProject(page: Page) {
+  await renderFinished(page);
+  const downloaded = page.waitForEvent('download');
+  await page.getByTestId('save-project').click();
+  // The generated project can have advisory checks; keep the usual save path.
+  const checks = page.getByTestId('checks-continue');
+  const confirm = await Promise.race([downloaded.then(() => false), checks.waitFor({ state: 'visible' }).then(() => true).catch(() => false)]);
+  if (confirm) await checks.click();
+  const file = await (await downloaded).path();
+  if (!file) throw new Error('Project download has no local path');
+  return readFile(file, 'utf8');
+}
+
+async function recoveryPrintEdits(page: Page) {
+  return page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open('grainatlas', 1);
+      open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error);
+    });
+    try {
+      const values = await new Promise<string[]>((resolve, reject) => {
+        const get = db.transaction('items').objectStore('items').getAll();
+        get.onsuccess = () => resolve(get.result); get.onerror = () => reject(get.error);
+      });
+      return values.map(v => JSON.parse(v)).map(v => (v?.project ?? v)?.print_sheets).filter(Boolean);
+    } finally { db.close(); }
+  });
+}
+
+test('a downloaded project reopens with its strip move and generating parameters', async ({ page }) => {
+  const fixture: SavedFixture = { syncOnSave: false };
+  const unexpected = await openEditor(page, 'packed', fixture);
+  const original = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
+  const before = await registration(page), band = before.bands[0];
+  const thumb = page.getByTestId('page-thumb').nth(1);
+  await thumb.hover();
+  const { r, p } = await firstStrip(page), t = await thumb.boundingBox();
+  if (!t) throw new Error('Missing page thumbnail');
+  await page.mouse.move(r.x + 8 * p.px, r.y + 2 * p.px); await page.mouse.down();
+  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 12 }); await page.mouse.up();
+  const edited = await registration(page);
+  expect(sameBand(edited, band).sheet).toBe(2);
+  await expect.poll(() => recoveryPrintEdits(page)).toEqual([expect.objectContaining({ edits: [expect.objectContaining({ op: 'move', sheet: 1 })] })]);
+  fixture.saved = await saveProject(page);
+  const saved = JSON.parse(fixture.saved);
+  expect(saved.print_sheets).toMatchObject({ params: { packing: 'packed', um_per_mm: 4 }, um_per_mm: 4, edits: [{ op: 'move', sheet: 1 }] });
+  for (const field of ['grains', 'spots', 'labels']) expect(saved.grainatlas_ui[field]).toMatchObject(original.grainatlas_ui[field]);
+  expect(saved.grainatlas_ui.grains.a).toHaveLength(original.grainatlas_ui.grains.a.length);
+  expect(saved.upbdb).toEqual(original.upbdb);
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  await page.getByTestId('edit-copy').click();
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Layout', exact: true }).click();
+  await expect(page.getByTestId('sheet-scale')).toHaveValue('4');
+  await expect(page.getByTestId('sheet-packing')).toHaveValue('packed');
+  await page.getByTestId('sheets').click();
+  await renderFinished(page);
+  const reopened = await registration(page);
+  for (const field of ['bands', 'strip_blocks', 'edits', 'left_off', 'layout']) expect(reopened[field]).toEqual(edited[field]);
+  await expect(page.getByTestId('dropped-edits')).toHaveCount(0);
+  // A preview and an ordinary save retain edits which cannot match changed parameters.
+  await page.getByTestId('sheet-scale').fill('5'); await remakeSheets(page);
+  await expect(page.getByTestId('dropped-edits')).toContainText('1 edit from the saved project could not be applied');
+  await expect(page.getByTestId('dropped-edits')).toContainText('parameters changed');
+  expect(JSON.parse(await saveProject(page)).print_sheets).toEqual(saved.print_sheets);
+  // Returning to the saved scale can still replay the original list before any edit.
+  await page.getByTestId('sheet-scale').fill('4'); await remakeSheets(page);
+  expect((await registration(page)).bands).toEqual(edited.bands);
+  await page.getByTestId('sheet-scale').fill('5'); await remakeSheets(page);
+  await page.getByTestId('edit-strips').check();
+  await page.getByRole('button', { name: 'Back to automatic', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Back to automatic' })).toContainText('Drop all 1 edits');
+  await page.getByRole('dialog', { name: 'Back to automatic' }).getByRole('button', { name: 'Drop edits' }).click();
+  const automatic = JSON.parse(await saveProject(page));
+  expect(automatic).not.toHaveProperty('print_sheets');
+  expect(automatic.grainatlas_ui.grains).toEqual(saved.grainatlas_ui.grains);
+  expect(unexpected).toEqual([]);
+});
+
+test('unreadable strip edits show a notice and survive saving until a new edit', async ({ page }) => {
+  const original = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
+  const raw = { params: { packing: 'packed' }, um_per_mm: 4, edits: [{ op: 'future_edit', value: ['zr-1', 42] }] };
+  const fixture: SavedFixture = { saved: JSON.stringify({ ...original, print_sheets: raw }), syncOnSave: false };
+  const unexpected = await openEditor(page, 'packed', fixture);
+  await expect(page.getByTestId('unreadable-print-edits')).toContainText('Stored strip edits could not be read');
+  const saved = JSON.parse(await saveProject(page));
+  expect(saved.print_sheets).toEqual(raw);
+  expect(saved.upbdb).toEqual(original.upbdb);
+  for (const field of ['grains', 'spots', 'labels']) expect(saved.grainatlas_ui[field]).toMatchObject(original.grainatlas_ui[field]);
+  await drag(page, 10, 0);
+  await expect(page.getByTestId('unreadable-print-edits')).toHaveCount(0);
+  expect(JSON.parse(await saveProject(page)).print_sheets.edits).toEqual([expect.objectContaining({ op: 'move' })]);
+  expect(unexpected).toEqual([]);
+});
 
 test('drag changes only paper position; arrow keys nudge exactly and remaking replays edits', async ({ page }) => {
   await openEditor(page, 'packed');

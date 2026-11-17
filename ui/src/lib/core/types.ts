@@ -255,6 +255,8 @@ export interface Project {
   laser?: { areas: Record<string, AreaRegistration> };
   areas: AreaRecord[];
   settings: Settings;
+  /** May contain edits from a newer version or hand-edited JSON; preserve until edited. */
+  print_sheets?: unknown;
   [k: string]: unknown;
 }
 

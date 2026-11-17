@@ -13,6 +13,7 @@ import { isHosted, notify, type OpenedFiles } from '@lab/bridge';
 import { download, fromShell } from './files';
 import { packageNameFor, parseDeepLink, readRecent, sameId, savedProject } from './deeplink';
 import { clearStoredCopy, newerStoredCopy, storedCopyDate } from './stored-copy';
+import { keepPrintEdits } from './strip-edit';
 
 /** Where something newly opened goes: the active tab when nothing is open there, else a new tab
  * (opening never replaces the project of a tab). */
@@ -469,7 +470,7 @@ export async function stitch(areaId: string, app: AppState = current()) {
   }
   app.liveBusy = { ...app.liveBusy, [areaId]: false };
   // The project first: it records the parameters this stitch used (App.svelte compares them).
-  app.project = JSON.parse(await core.projectJson());
+  app.project = keepPrintEdits(JSON.parse(await core.projectJson()), app.project);
   app.stitched = { ...app.stitched, [areaId]: r };
   app.preview = { ...app.preview, [areaId]: null };
   app.pixelsVersion++;
@@ -500,7 +501,7 @@ export async function restoreAreas(app: AppState = current()) {
     app.pixelsVersion++;
   }
   if (todo.length) {
-    app.project = JSON.parse(await core.projectJson());
+    app.project = keepPrintEdits(JSON.parse(await core.projectJson()), app.project);
     if (app.screen === 'area' && Object.keys(app.stitched).length) app.screen = 'canvas';
   }
 }
@@ -617,7 +618,7 @@ async function settle(app: AppState, areaId: string) {
       const r = published ? { ...app.stitched[areaId], mosaic: await core.retone(areaId, params.tone) } : await core.recompute(areaId, params);
       l.settled = Math.max(l.settled, seq);
       // A published image's re-tone leaves the core's record as it was: keep the adopted project.
-      if (!published) app.project = JSON.parse(await core.projectJson());
+      if (!published) app.project = keepPrintEdits(JSON.parse(await core.projectJson()), app.project);
       app.stitched = { ...app.stitched, [areaId]: r };
       app.pixelsVersion++;
       app.persist();

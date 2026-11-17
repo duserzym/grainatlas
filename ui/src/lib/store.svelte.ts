@@ -161,6 +161,7 @@ interface Snapshot {
   labels: Label[];
   grains: Record<string, Grain[]>;
   tone: Record<string, ToneParams>;
+  print_sheets?: unknown;
 }
 
 /** Display-only scope from the host. Editing and exports keep the original spots. */
@@ -480,7 +481,7 @@ class AppState {
 
   // ---- undo / redo over spots, labels and grains ----------------------------
   private snap(): Snapshot {
-    return { spots: $state.snapshot(this.spots) as Spot[], labels: $state.snapshot(this.labels) as Label[], grains: $state.snapshot(this.grains) as Record<string, Grain[]>, tone: $state.snapshot(this.tone) as Record<string, ToneParams> };
+    return { spots: $state.snapshot(this.spots) as Spot[], labels: $state.snapshot(this.labels) as Label[], grains: $state.snapshot(this.grains) as Record<string, Grain[]>, tone: $state.snapshot(this.tone) as Record<string, ToneParams>, print_sheets: $state.snapshot(this.project?.print_sheets) };
   }
   /** Call before every edit. */
   checkpoint() {
@@ -497,6 +498,10 @@ class AppState {
     this.labels = s.labels;
     this.grains = s.grains;
     this.tone = s.tone;
+    if (this.project) {
+      if (s.print_sheets !== undefined) this.project.print_sheets = s.print_sheets;
+      else delete this.project.print_sheets;
+    }
     this.selection = this.selection.filter((id) => this.spots.some((x) => x.id === id) || this.labels.some((x) => x.id === id));
   }
   undo() {

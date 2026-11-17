@@ -5,9 +5,9 @@
   import { bandImageKey, nudgeOrigin, sameKey, splitPairs, StripHistory } from '../lib/strip-edit';
   import StripControls from './StripControls.svelte';
   import StripPage from './StripPage.svelte';
-  let { base, result, urls, controls, history, page = $bindable(0), enabled, onresult, onpending }: {
+  let { base, result, urls, controls, history, storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange }: {
     base: SheetPlan; result: SheetResult; urls: string[]; controls: HTMLElement; history: StripHistory; page?: number; enabled: boolean;
-    onresult: (r: SheetResult) => void; onpending: (v: boolean) => void;
+    storedDropped?: number; onresult: (r: SheetResult) => void; onpending: (v: boolean) => void; onchange: () => void;
   } = $props();
   let selection = $state<StripKey | null>(null);
   let revision = $state(0);
@@ -21,7 +21,7 @@
   let nextPage: number | null = null;
   const cache = new Map<string, Promise<string>>();
   const selected = $derived(result.plan.strips.find(s => selection && sameKey(s.key, selection)));
-  const count = $derived.by(() => { void revision; return history.count; });
+  const count = $derived.by(() => { void revision; return history.count + storedDropped; });
   const canUndo = $derived.by(() => { void revision; return history.past.length > 0; });
   const canRedo = $derived.by(() => { void revision; return history.future.length > 0; });
   const pairs = $derived.by(() => { void revision; return splitPairs(base, history.edits, (result.dropped ?? []).map(d => d.index)); });
@@ -66,11 +66,11 @@
     const s = result.plan.strips.find(s => key && sameKey(s.key, key));
     if (s) page = s.sheet;
   }
-  function edit(e: StripEdit, destination?: number) { history.push($state.snapshot(e) as StripEdit); nextPage = destination ?? null; changed(); }
-  function undo() { nextPage = null; history.undo(); changed(); }
-  function redo() { nextPage = null; history.redo(); changed(); }
-  function automatic() { history.automatic(); selection = null; splitting = false; changed(); }
-  function changed() { revision++; requested++; onpending(true); void render(); }
+  function edit(e: StripEdit, destination?: number) { if (app.readOnly) return; history.push($state.snapshot(e) as StripEdit); nextPage = destination ?? null; changed(); }
+  function undo() { if (app.readOnly) return; nextPage = null; history.undo(); changed(); }
+  function redo() { if (app.readOnly) return; nextPage = null; history.redo(); changed(); }
+  function automatic() { if (app.readOnly) return; history.automatic(); selection = null; splitting = false; changed(); }
+  function changed() { onchange(); revision++; requested++; onpending(true); void render(); }
   /** Serialise worker calls, coalesce new input and never replace the page with a stale result. */
   async function render() {
     if (running) return;

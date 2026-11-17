@@ -1,5 +1,6 @@
 import { neutralTone, storedBundleTones } from './bundle-tone';
 import { canWrite } from './presentation';
+import { keepPrintEdits } from './strip-edit';
 // Atlas bundles (upblab/docs/WORKFLOW.md section 3.1): save as a `<project_id>.atlas/`
 // folder or a zip, publish to UPbDB. The core writes the bytes (identical in the browser
 // and the desktop app); this file only moves them.
@@ -161,7 +162,7 @@ export async function publish(app: AppState = current(), projectUuid = app.sync.
     app.pixelsVersion++;
   }
   await core.recordPublished(rec);
-  app.project = JSON.parse(await core.projectJson());
+  app.project = keepPrintEdits(JSON.parse(await core.projectJson()), app.project);
   if (app.bundle && app.project?.grainatlas_ui) delete (app.project.grainatlas_ui as { bundle_tone?: unknown }).bundle_tone;
   app.persist();
   app.lastPublish = { ...rec, response: res };

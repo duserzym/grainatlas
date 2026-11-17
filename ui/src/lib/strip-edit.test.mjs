@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { bandImageKey, bandRect, bodyOrigin, cropRect, firstFreePlace, grainChanges, keyId, nudgeOrigin, snapGap, snapOrigin, splitPairs, stripBlock, StripHistory, targetGrains } from './strip-edit.ts';
+import { bandImageKey, bandRect, bodyOrigin, cropRect, firstFreePlace, grainChanges, keepPrintEdits, keyId, nudgeOrigin, readPrintEdits, snapGap, snapOrigin, splitPairs, storePrintEdits, stripBlock, StripHistory, targetGrains } from './strip-edit.ts';
+import { answerStoredCopy, newerStoredCopy, persistProject } from './stored-copy.ts';
 
 const key = (id, split = 0) => ({ area: 'a1', grains_hash: id, split });
 const band = (id = 'b1') => ({ key: key(id), offset_mm: 3, grains: ['g1'], mosaic_rect_um: [0, 0, 100, 80] });
@@ -57,6 +58,7 @@ test('only plan targets snap crops; leaving and entering include context targets
 test('history branches, confirmation count, automatic and undo share one edit list', () => {
   const h = new StripHistory(), move = { op: 'move', strip: key('s1'), sheet: 0, origin_mm: [20, 60] };
   h.push(move); h.push({ op: 'hide', strip: key('s1') });
+  h.load(structuredClone(h.edits)); assert.equal(h.past.length, 2);
   assert.equal(h.count, 2);
   h.undo(); assert.equal(h.count, 1);
   h.redo(); assert.equal(h.count, 2);
@@ -93,4 +95,96 @@ test('band preview cache keys include the source rectangle and the stable band k
   assert.equal(bandImageKey(b), bandImageKey({ ...b }));
   assert.notEqual(bandImageKey(b), bandImageKey({ ...b, mosaic_rect_um: [0, 0, 90, 80] }));
   assert.notEqual(bandImageKey(b), bandImageKey({ ...b, key: key('b1', 1) }));
+});
+
+test('strip edits dirty the project, snapshot the generating parameters and follow undo, redo and automatic', () => {
+  const p = { ...plan(), params: { packing: 'packed', um_per_mm: 'auto' }, um_per_mm: 8 };
+  const project = { uuid: 'p1', grainatlas_ui: { grains: { a1: [grain('g1', [0, 0, 20, 20])] }, spots: [{ id: 's1' }], labels: [{ id: 'l1' }] }, upbdb: { mount_id: 'm1' }, extra_key: [42] };
+  const app = { project: structuredClone(project), readOnly: false, dirty: false };
+  const h = new StripHistory(), move = { op: 'move', strip: key('s1'), sheet: 1, origin_mm: [20, 60] };
+  h.push(move); storePrintEdits(app, p, h.edits);
+  assert.equal(app.dirty, true);
+  assert.deepEqual(app.project.print_sheets, { params: p.params, um_per_mm: 8, edits: [move] });
+  p.params.packing = 'lines'; move.origin_mm[0] = 99;
+  assert.equal(app.project.print_sheets.params.packing, 'packed');
+  assert.equal(app.project.print_sheets.edits[0].origin_mm[0], 20);
+  h.undo(); storePrintEdits(app, p, h.edits); assert.equal(Object.hasOwn(app.project, 'print_sheets'), false);
+  h.redo(); storePrintEdits(app, p, h.edits); assert.equal(app.project.print_sheets.edits.length, 1);
+  h.automatic(); storePrintEdits(app, p, h.edits); assert.deepEqual(app.project, project);
+});
+
+test('read-only projects never change and replay leaves stored edits intact until the next edit', () => {
+  const p = { ...plan(), params: { packing: 'packed', um_per_mm: 4 }, um_per_mm: 4 };
+  const stored = { params: p.params, um_per_mm: 4, edits: [{ op: 'hide', strip: key('missing') }, { op: 'label', strip: key('s1'), text: 'zr-1' }] };
+  const app = { project: { uuid: 'p1', print_sheets: structuredClone(stored) }, dirty: false, readOnly: true };
+  storePrintEdits(app, p, []); assert.equal(app.dirty, false); assert.deepEqual(app.project.print_sheets, stored);
+  storePrintEdits(app, p, [{ op: 'repack' }]); assert.deepEqual(app.project.print_sheets, stored);
+  const h = new StripHistory(); h.load(stored.edits); h.rebase([0]);
+  assert.deepEqual(app.project.print_sheets, stored); assert.equal(app.dirty, false);
+  app.readOnly = false; h.push({ op: 'repack' }); storePrintEdits(app, p, h.edits);
+  assert.equal(app.dirty, true); assert.deepEqual(app.project.print_sheets.edits, [stored.edits[1], { op: 'repack' }]);
+  assert.deepEqual(h.past, [[stored.edits[1]]]);
+});
+
+test('core refreshes keep UI-held strip edits, including a cleared list, only for the same project', () => {
+  const current = { uuid: 'p1', print_sheets: { params: { packing: 'packed' }, um_per_mm: 8, edits: [{ op: 'repack' }] } };
+  assert.deepEqual(keepPrintEdits({ uuid: 'p1', name: 'mount A' }, current), { ...current, name: 'mount A' });
+  assert.deepEqual(keepPrintEdits(current, { uuid: 'p1' }), { uuid: 'p1' });
+  assert.deepEqual(keepPrintEdits({ uuid: 'p2' }, current), { uuid: 'p2' });
+});
+
+test('project recovery restores strip-only edits and keeps grains, spots and labels intact', () => {
+  const project = { uuid: 'p1', package: { name: 'mount A' }, areas: [], print_sheets: { params: { packing: 'packed' }, um_per_mm: 8, edits: [{ op: 'repack' }] }, grainatlas_ui: { grains: { a1: [grain('g1', [0, 0, 20, 20])] }, spots: [{ id: 's1' }], labels: [{ id: 'l1', text: 'zr-1' }] } };
+  const before = structuredClone(project);
+  for (const path of [null, 'mount A.gaproj']) {
+    const writes = new Map(), storage = { getItem: k => writes.get(k) ?? null, setItem: (k, v) => writes.set(k, v) };
+    assert.equal(persistProject(project, path, '2026-01-01T00:00:00Z', storage), true);
+    const copy = JSON.parse([...writes.values()][0]);
+    assert.deepEqual(path ? copy.project : copy, project);
+    assert.deepEqual(project, before);
+    const file = structuredClone(project); delete file.print_sheets;
+    const pending = newerStoredCopy(file, path ?? 'mount A.gaproj', Date.parse('2025-12-31T00:00:00Z'), storage);
+    assert.ok(pending, 'an edit-only change is offered for recovery'); pending.ready = true;
+    let checkpoint = 0, persisted = 0;
+    const app = { project: file, storedCopy: pending, checkpoint() { checkpoint++; }, persist() { persisted++; } };
+    answerStoredCopy(app, true, storage);
+    assert.equal(checkpoint, 1); assert.equal(persisted, 1); assert.equal(app.storedCopy, null);
+    assert.deepEqual(app.project.print_sheets, project.print_sheets);
+    const history = new StripHistory(); history.load(readPrintEdits(app.project.print_sheets).edits);
+    assert.deepEqual(history.edits, project.print_sheets.edits, 'recovered edits are ready for replay');
+    assert.deepEqual(app.spots, project.grainatlas_ui.spots);
+    assert.deepEqual(app.grains, project.grainatlas_ui.grains);
+    assert.deepEqual(app.labels, project.grainatlas_ui.labels);
+    assert.deepEqual(project, before);
+  }
+});
+
+test('recovery restores clearing strip edits and preserves unreadable raw edits', () => {
+  for (const raw of [undefined, null, false, { params: {}, edits: [{ op: 'future_edit', value: ['zr-1', 42] }] }]) {
+    const file = { uuid: 'p1', package: { name: 'mount A' }, areas: [], print_sheets: { params: {}, edits: [{ op: 'repack' }] } };
+    const recovery = { ...file, print_sheets: raw };
+    const writes = new Map(), storage = { getItem: k => writes.get(k) ?? null, setItem: (k, v) => writes.set(k, v) };
+    persistProject(recovery, 'mount A.gaproj', '2026-01-01T00:00:00Z', storage);
+    const pending = newerStoredCopy(file, 'mount A.gaproj', 0, storage); assert.ok(pending); pending.ready = true;
+    const app = { project: file, storedCopy: pending, checkpoint() {}, persist() {} };
+    answerStoredCopy(app, true, storage);
+    assert.deepEqual(app.project.print_sheets, raw);
+    assert.deepEqual(keepPrintEdits({ uuid: 'p1' }, app.project).print_sheets, raw);
+  }
+});
+
+test('unreadable strip edits stay untouched until a new edit replaces them', () => {
+  const valid = { params: { packing: 'packed' }, um_per_mm: 8, edits: [{ op: 'label', strip: key('s1'), text: 'zr-1' }] };
+  assert.deepEqual(readPrintEdits(valid), valid);
+  assert.deepEqual(readPrintEdits({ params: {}, edits: [{ op: 'repack' }] }), { params: {}, um_per_mm: 0, edits: [{ op: 'repack' }] });
+  const bad = [null, false, 'zr-1', [], {}, { ...valid, edits: [{ op: 'future_edit', value: 42 }] }, { ...valid, edits: [{ op: 'move' }] }, { ...valid, edits: {} }, { ...valid, params: { packing: 'future' } }, { ...valid, params: { enhance: null } }, { ...valid, params: { spot_sizes_um: 'bad' } }, { ...valid, params: { um_per_mm: '0x10' } }];
+  for (const raw of bad) {
+    const before = structuredClone(raw), app = { project: { uuid: 'p1', print_sheets: raw }, readOnly: false, dirty: false };
+    assert.equal(readPrintEdits(raw), null);
+    assert.deepEqual(keepPrintEdits({ uuid: 'p1' }, app.project).print_sheets, before);
+    assert.deepEqual(JSON.parse(JSON.stringify(app.project)).print_sheets, before); assert.equal(app.dirty, false);
+    const p = { ...plan(), params: { packing: 'packed' }, um_per_mm: 8 };
+    storePrintEdits(app, p, [{ op: 'repack' }]);
+    assert.deepEqual(readPrintEdits(app.project.print_sheets).edits, [{ op: 'repack' }]); assert.equal(app.dirty, true);
+  }
 });

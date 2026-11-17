@@ -1,4 +1,5 @@
 import { bundlePixels } from './bundle-tone';
+import { keepPrintEdits } from './strip-edit';
 import type { AppState } from './store.svelte.ts';
 import type { AreaParams, Grain, SegmentParams } from './core/types.ts';
 import { relinkSpots, linkUnlinkedSpots } from './spots.ts';
@@ -67,7 +68,7 @@ export async function findGrainsInAreas(app: AppState) {
           ? await core.recompute(id, params, progress)
           : await core.stitch(id, params, progress);
         app.params = { ...app.params, [id]: params };
-        app.project = JSON.parse(await core.projectJson());
+        app.project = keepPrintEdits(JSON.parse(await core.projectJson()), app.project);
         app.stitched = { ...app.stitched, [id]: rendered };
         app.preview = { ...app.preview, [id]: null };
         app.pixelsVersion++;

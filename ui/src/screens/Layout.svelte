@@ -6,9 +6,9 @@
   import { app } from '../lib/store.svelte';
   import { download } from '../lib/files';
   import { wholePrintOptions } from '../lib/whole-print';
-  import type { Grain, LayoutParams, LayoutResult, SheetParams, SheetPlan, SheetResult, WholeParams, WholeResult, Spot, Label, ToneParams } from '../lib/core/types';
+  import type { DroppedEdit, Grain, LayoutParams, LayoutResult, SheetParams, SheetPlan, SheetResult, WholeParams, WholeResult, Spot, Label, ToneParams } from '../lib/core/types';
   import StripEditor from '../components/StripEditor.svelte';
-  import { StripHistory } from '../lib/strip-edit';
+  import { readPrintEdits, storePrintEdits, StripHistory } from '../lib/strip-edit';
   import { onDestroy } from 'svelte';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
 
@@ -42,6 +42,8 @@
   let grid = $state(true);
   let wholeArea = $state(app.areaId ?? '');
   let whole = $state<WholeResult | null>(null);
+  const savedPrint = readPrintEdits(structuredClone($state.snapshot(app.project?.print_sheets)));
+  const unreadablePrint = $derived(app.project?.print_sheets !== undefined && !readPrintEdits(app.project.print_sheets));
   let sheet = $state<SheetParams>({
     paper: 'tabloid',
     landscape: true,
@@ -63,8 +65,9 @@
     project: '',
     registration_file: '',
     printed: '',
+    ...savedPrint?.params,
   });
-  let spotText = $state('15, 20, 25, 30, 35, 50');
+  let spotText = $state((savedPrint?.params.spot_sizes_um ?? [15, 20, 25, 30, 35, 50]).join(', '));
   let sheets = $state<SheetResult | null>(null);
   let result = $state<LayoutResult | null>(null);
   let pageIdx = $state(0);
@@ -73,6 +76,8 @@
   let automaticPlan = $state<SheetPlan | null>(null);
   let editMode = $state(false);
   let pending = $state(false);
+  let savedDrops = $state<DroppedEdit[]>([]);
+  const droppedEdits = $derived(savedDrops.length ? savedDrops : sheets?.dropped ?? []);
   let editorControls = $state<HTMLElement>();
   const exportBlocked = $derived(pending || !!sheets?.problems?.length);
   const exportReason = $derived(pending ? 'Wait for the strip preview' : exportBlocked ? 'Fix strip problems before export' : '');
@@ -81,6 +86,12 @@
     sheets = r;
     replacePages(r.pages);
     result = { pages: r.pages, um_per_mm: r.registration.um_per_mm, items: r.stats.bands, paper_mm: r.registration.paper_mm };
+  }
+  function storeHistory() {
+    if (!automaticPlan || app.readOnly) return;
+    storePrintEdits(app, $state.snapshot(automaticPlan) as SheetPlan, $state.snapshot(history.edits));
+    app.persist();
+    savedDrops = [];
   }
   function replacePages(pages: string[]) {
     const old = urls;
@@ -111,6 +122,9 @@
     p.printed = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
     const tones = $state.snapshot(app.tone) as Record<string, ToneParams>;
     const previousPlan = automaticPlan;
+    const stored = app.project?.print_sheets !== undefined
+      ? readPrintEdits($state.snapshot(app.project.print_sheets))
+      : history.count && previousPlan ? { params: $state.snapshot(previousPlan.params), um_per_mm: previousPlan.um_per_mm, edits: $state.snapshot(history.edits) } : null;
     const r = sheetMode === 'whole'
       ? await app.run('Laying out whole area', () => core.printWhole(wholePrintOptions(p, { areaId: wholeArea, orientation, scale: wholeScale, grid }), tones))
       : await app.run('Laying out print sheets', () => core.printSheets(p, $state.snapshot(app.grains) as Record<string, Grain[]>, tones));
@@ -118,13 +132,16 @@
     if ('ownership' in r) {
       app.ownership = r.ownership;
       whole = null;
-      const replayed = history.count && previousPlan
-        ? await app.run('Replaying strip edits', () => core.printPlanRender($state.snapshot(r.plan) as SheetPlan, { params: $state.snapshot(previousPlan.params) as SheetParams, um_per_mm: previousPlan.um_per_mm, edits: $state.snapshot(history.edits) }, $state.snapshot(app.grains) as Record<string, Grain[]>, tones))
+      const replayed = stored?.edits.length
+        ? await app.run('Replaying strip edits', () => core.printPlanRender($state.snapshot(r.plan) as SheetPlan, stored, $state.snapshot(app.grains) as Record<string, Grain[]>, tones))
         : r;
+      if (!replayed) return;
+      history.load(stored?.edits ?? []);
       if (replayed?.dropped?.length) history.rebase(replayed.dropped.map(d => d.index));
+      savedDrops = replayed.dropped ?? [];
       automaticPlan = r.plan;
       pending = false;
-      showSheets(replayed ?? r);
+      showSheets({ ...replayed, dropped: [] });
     } else {
       whole = r;
       sheets = null;
@@ -194,10 +211,11 @@
   <aside class="glass side" class:concealed={app.layout.printCollapsed}>
     <button class="icon fold" title="Fold print controls" aria-label="Fold print controls" onclick={() => { app.layout.printCollapsed = true; app.saveLayout(); }}>«</button>
     {#if sheets && style === 'sheets' && sheetMode === 'grains'}
-      <label class="check"><input type="checkbox" bind:checked={editMode} data-testid="edit-strips" /> Edit strips</label>
+      <label class="check"><input type="checkbox" bind:checked={editMode} disabled={app.readOnly} data-testid="edit-strips" /> Edit strips</label>
     {/if}
     <div bind:this={editorControls}></div>
     <h2>Print layout</h2>
+    {#if unreadablePrint}<p class="faint small" data-testid="unreadable-print-edits">Stored strip edits could not be read. They will be kept when saving. A new strip edit replaces them.</p>{/if}
     <div class="seg" role="radiogroup" aria-label="Style">
       <label class="check"><input type="radio" bind:group={style} value="sheets" data-testid="style-sheets" /> Print sheets</label>
       <label class="check"><input type="radio" bind:group={style} value="layout" data-testid="style-layout" /> Grains or areas</label>
@@ -275,7 +293,7 @@
         {@const st = sheets.stats}
         {@const packed = sheets.registration.layout === 'packed' || sheets.registration.layout === 'edited'}
         <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {sheets.registration.layout === 'edited' ? 'edited' : packed ? 'packed' : 'in lines'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>{sheets.registration.auto_scale ? ` (auto: median grain ${Math.round(sheets.registration.auto_scale.median_um)} µm prints ${(sheets.registration.auto_scale.median_um / sheets.registration.um_per_mm).toFixed(1)} mm)` : ''}{sheets.registration.spot_sizes_left_off_um?.length ? `, spot key without ${sheets.registration.spot_sizes_left_off_um.join(', ')} µm` : ''}; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{st.strays ? `, ${st.strays} strays left off` : ''}{st.isolated ? `, ${st.isolated} grains with fewer than two neighbours in their band` : ''}{st.cuts ? `, ${st.cuts} cuts with repeated strips` : ''}{st.forced_cuts ? `, ${st.forced_cuts} forced cuts` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}{st.grains_unmarked ? `, ${st.grains_unmarked} grains visible but not marked` : ''}{st.bands_outside_body ? `, ${st.bands_outside_body} bands outside the sheet body` : ''}{st.bands_overlapping ? `, ${st.bands_overlapping} bands overlap` : ''}. {sheets.left_off_summary.cropped} grains left off by crop, {sheets.left_off_summary.hidden} in hidden strips.</p>
-        {#if sheets.dropped?.length}<div class="faint small" data-testid="dropped-edits">{sheets.dropped.length} edits dropped.{#each sheets.dropped as dropped}<p>Edit {dropped.index + 1}: {dropped.reason}</p>{/each}</div>{/if}
+        {#if droppedEdits.length}<div class="faint small" data-testid="dropped-edits">{#if savedDrops.length}{savedDrops.length} edit{savedDrops.length === 1 ? '' : 's'} from the saved project could not be applied. Keep the stored edits by making no changes; the next strip edit replaces the stored list.{:else}{droppedEdits.length} edit{droppedEdits.length === 1 ? '' : 's'} could not be applied.{/if}{#each droppedEdits as dropped}<p>Edit {dropped.index + 1}: {dropped.reason}</p>{/each}</div>{/if}
         <p class="faint small">Header {st.header_mm[0]} mm on sheet 1, {st.header_mm[1]} mm after; band fill {(st.fill.band_area * 100).toFixed(1)}%{packed ? '' : `, line width ${(st.fill.line_width * 100).toFixed(1)}%`}, repeated {(st.fill.repeated * 100).toFixed(1)}% (worst band {(st.worst_repeated_fraction * 100).toFixed(1)}%), empty rows inside bands {(st.fill.empty_epoxy * 100).toFixed(1)}%; {#if packed}blank on this sheet {((st.height_budget[pageIdx]?.blank_mm2 ?? 0) / 100).toFixed(1)} cm²{:else}blank below this sheet's last line {st.height_budget[pageIdx]?.blank_below_mm.toFixed(1) ?? '0'} mm{/if}.</p>
       {/if}
       {#if sheets || whole}
@@ -346,7 +364,7 @@
   <section class="preview" data-testid="layout-view">
     {#if sheets && automaticPlan && editorControls && style === 'sheets' && sheetMode === 'grains'}
       {#key automaticPlan}
-        <StripEditor base={automaticPlan} result={sheets} {urls} controls={editorControls} {history} bind:page={pageIdx} enabled={editMode} onresult={showSheets} onpending={v => pending = v} />
+        <StripEditor base={automaticPlan} result={sheets} {urls} controls={editorControls} {history} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
       {/key}
     {/if}
     {#if result && urls[pageIdx] && !(editMode && sheets && style === 'sheets' && sheetMode === 'grains')}

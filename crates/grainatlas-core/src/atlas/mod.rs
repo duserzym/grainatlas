@@ -293,7 +293,10 @@ pub fn build(project: &Project, areas: &[AreaPixels], package: &PackageDigest, o
     {
         ui.remove("bundle_tone");
     }
-    files.push(("project.json".into(), pretty(&saved)?));
+    canonical(&mut saved);
+    // Unknown strip edits are opaque project data, including their numeric precision.
+    if let Some(crate::project::StoredPrintEdits::Raw(raw)) = &project.print_sheets { saved["print_sheets"] = raw.clone(); }
+    files.push(("project.json".into(), serde_json::to_vec_pretty(&saved).map_err(|e| Error::Invalid(e.to_string()))?));
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let listed: Vec<serde_json::Value> = files.iter().map(|(p, b)| json!({ "path": p, "size": b.len(), "sha256": crate::util::sha256_hex(b) })).collect();
