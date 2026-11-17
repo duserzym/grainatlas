@@ -106,5 +106,10 @@ fn raw_bundle_ignores_overlay_and_keeps_legacy_bytes() {
     // Golden from the pre-change atlas builder, with this invented project and fixed ids.
     // atlas.json hashes every other file, so this checks the complete legacy bundle bytes.
     let atlas = &before.iter().find(|(p,_)| p=="atlas.json").unwrap().1;
-    assert_eq!(grainatlas_core::util::sha256_hex(atlas), "6ee95ef7649b3592135041413854cdb5718dd20bcbeb3d11f7836c83caf0dbb2");
+    // Normalise only the serialized crate version to the golden's 0.1.1, preserving all other bytes.
+    let atlas = std::str::from_utf8(atlas).unwrap();
+    let version = format!("\"grainatlas_version\": \"{}\"", env!("CARGO_PKG_VERSION"));
+    assert_eq!(atlas.matches(&version).count(), 1);
+    let atlas = atlas.replace(&version, "\"grainatlas_version\": \"0.1.1\"");
+    assert_eq!(grainatlas_core::util::sha256_hex(atlas.as_bytes()), "6ee95ef7649b3592135041413854cdb5718dd20bcbeb3d11f7836c83caf0dbb2");
 }
