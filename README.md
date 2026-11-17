@@ -78,6 +78,7 @@ Drag spots to move them or their rings to resize them, then export CSV or GeoJSO
 
 **Make print sheets** keeps neighbouring grains together at one scale, with
 an instrument header, mount map and spot sizes; export PDF and registration sidecars.
+Pack sheets onto fewer pages and edit the strips by hand before printing.
 **Save project** (⌘S) writes a `.gaproj` beside the package, or saves back to
 the project file or `.grainatlas` folder it came from.
 

@@ -174,6 +174,143 @@ before a lower limit is given up. Tested in `crates/grainatlas-core/tests/sheets
 on synthetic size distributions of the 2026 mounts (zircon XS, S, L, XL and
 apatite).
 
+## Layout rule: packing
+
+The `packing` parameter chooses placement after the bands have been cut.
+`"lines"` places strips in mount order, filling a line before starting the next
+line or sheet. `"packed"` places whole strips in the free rectangles of the
+sheet body. Packing never changes the cut: properties 1 to 11 of
+[context first](#layout-rule-context-first) hold for every automatic arrangement
+of the same cut. Bands, repeated strips, context, owners and strays stay the
+same. Paper still ranks last: packing uses space left empty by lines without
+trading away neighbours or making extra cuts to fill a hole.
+
+A **strip** is one block on paper (a run in the code): its label, one or more
+band images side by side, their `//` gap marks, and a 4.2 mm note allowance.
+Its width covers the images, label and gap marks, including trailing marks;
+its height is the 4.6 mm label allowance plus the tallest image plus the note
+allowance. Every packed strip carries its sample and area label, including
+continuation text, even when its run shared a label in lines mode. There are
+no dashed line separators in packed mode.
+
+The packer uses MaxRects with the bottom-left rule: choose the free rectangle
+with the lowest top-edge coordinate, then the leftmost. It leaves a 2.5 mm gap
+between blocks, with no rotation or scaling. Sheet 1 and later sheets keep
+their own body heights. Four orders are tried:
+
+1. Mount order, filling sheets in turn without returning to earlier sheets.
+2. Mount order with back-fill into earlier sheets.
+3. Tallest strip first, with back-fill.
+4. Widest strip first, with back-fill.
+
+The fewest sheets wins; ties keep the earlier order. Equal heights or widths
+keep mount order. Placement is deterministic for the same input. The packer
+can also reserve occupied rectangles, as used by **Re-pack the others**.
+
+Lines remains the default, including when older parameter JSON has no packing
+parameter; other values are rejected. In Layout, Arrangement offers **In lines,
+mount order** and **Packed, fewer sheets**. The `sheets` and `stitch` commands
+accept `--packing lines|packed`. Making packed the default waits until it has
+been used at the laser.
+
+For grain-sheet registration, absent or empty `layout` means lines; packed
+writes `"packed"` and an edited plan writes `"edited"`. Each band's
+`sheet_rect_mm` follows its placement without changing the mosaic-to-paper
+mapping. The optional `strip_blocks` list records packed and edited blocks
+with a 1-based `sheet` and `rect_mm`, covering labels, images, gap marks and
+notes. Explicit blocks also contribute to `bands_outside_body`, so an
+oversized label is reported even when its image fits. The audit counts
+intersecting image pairs and intersecting block pairs as `bands_overlapping`,
+with an epsilon of 1e-7 mm; a pair may contribute to both counts. A block
+covering a header also contributes. All audit counts must be 0. Legacy lines
+registrations reconstruct same-area line groups from standard labels and
+band order; their internal gap marks and dividers share horizontal space at
+different heights. Zero overlap counts are omitted from stats JSON to preserve
+lines output; missing counts default to 0.
+
+In packed and edited plans, each sheet's stats budget uses `blank_mm2` for
+body area minus strip blocks; `blank_below_mm` and `blank_right_mm2` stay 0.
+Labels and notes use each block's width, and `other_line_mm2` is the space
+inside blocks that is neither labels/notes nor images. Missing blank area
+defaults to 0; zero is omitted so lines JSON stays unchanged. The header,
+mount map and per-sheet counts follow the strips placed on each sheet.
+
+## Editing strips
+
+After **Make print sheets**, turn on **Edit strips** in the preview. Drag a
+strip within the page. Moves snap to body edges and to a 2.5 mm gap from other
+strips; hold Alt to turn snapping off. Arrow keys nudge the selected strip by
+0.5 mm, or 5 mm with Shift. Drop a strip on another page's thumbnail to put it
+in the first free place there, top edge first, then leftmost; if it cannot fit,
+the move is refused. Pages can be added, empty pages removed, and pages moved
+earlier or later. The header cannot take strips.
+
+Drag a band's four crop handles to shrink or grow its mosaic rectangle, up to
+the area image bounds. An edge snaps to the nearest position that crosses no
+printed grain's box, so a crop never cuts a printed grain. Grains that would
+leave turn red during the drag. The preview clips the old image or shows grey
+where the crop grows; the band image is rendered again when the drag ends.
+Repeated strips are recomputed from the new rectangles.
+
+Change a strip's label, hide it, or select a hidden strip to show it again.
+**Split** places a vertical or horizontal line that snaps to a gap between
+grains and uses the existing cut code with its repeated strips. Both sides
+must own a grain. **Join** restores two direct siblings from a split.
+**Separate** makes one strip per band, each with its own label and a
+"continues on sheet N" note in place of the `//` mark. The note follows the
+neighbour's sheet when it moves.
+
+**Re-pack the others** pins the strips already touched and packs the remaining
+shown strips around them. **Back to automatic** drops every edit after a
+confirmation that gives the edit count. Undo and redo apply to the whole edit
+list, using the buttons or Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z.
+
+There is no rotation or scaling of single strips. Every band uses the same
+`um_per_mm`, the mapping has no rotation, and the scale bar and spot key apply
+to the whole sheet. Crop edges and split lines may not cross printed grains.
+
+After each edit, a shown band keeps its existing owners wherever it still
+holds their whole boxes. A grain that loses its owner can be adopted by
+another shown band of the same area that holds it whole. Otherwise it is
+listed in registration under `left_off`, with reason `"cropped"` or
+`"hidden"` and the same grain fields as a stray. The stats count both reasons;
+these omissions are not errors. A growing crop never takes a grain from an
+existing whole owner: it shows and registers that grain as context. Automatic
+strays remain separate, so every target is accounted for without a second owner.
+
+The core checks the edited plan before rendering. Overlapping images or strip
+blocks, a strip outside the body or covering the header, a target without a
+whole owner unless listed as left off, and a target owned twice are problems.
+**Export PDF**, **Export SVG**, **Print…** and **Registration** stay disabled
+until the problems are fixed and the preview has finished rendering.
+**Fix before export** lists the problems, with **Show strip** buttons. The
+registration also carries an `edits` summary of the applied operations.
+
+Edits are kept with the project in `project.json` under `print_sheets`: the
+sheet parameters, resolved scale, and ordered edits naming stable strip or
+band keys. A key contains the area id and a hash of the sorted owned grain
+ids, with a counter for bands made by a split. The usual **Save project** saves
+the list; it is not a separate file. Making sheets again replays it on the
+new automatic plan. If cutting or placement parameters or the resolved scale
+differ, replay drops the edits and says why. Display and header changes do
+not invalidate them. An edit whose strip no longer exists is dropped with its
+reason. Replay reports dropped edits without rewriting the stored list; the
+next strip edit stores the surviving list with the new edit. An unreadable
+stored list is kept verbatim when loading and saving, with a notice; a new
+strip edit replaces it.
+
+For command-line replay, `grainatlas sheets --edits FILE` reads a JSON object
+with the same parameters, resolved scale and edit list. It reports dropped
+edits and refuses export while problems remain. Both the desktop and browser
+hosts use `print_plan_render` to apply edits to the automatic plan and render
+pages, registration, stats, audit and problems, and `print_band_image` to
+request a band's image for the editor.
+
+A lines-mode plan can also be edited. Its dashed line separators disappear
+after the first applied edit. Unlabelled runs keep their short divider until
+moved; moving one gives it its own sample and area label. Packing the other
+runs also gives them their own labels.
+
 ## Cross-area grain ownership (`crate::ownership`)
 
 In a zigzag package neighbouring areas overlap (100 to 850 µm on that run), so
@@ -408,9 +545,9 @@ ownership and context. It also counts `bands_outside_body`, using the recorded
 `sheet_bodies[].body_rect_mm` in sheet coordinates, including repeated strips and pixel
 rounding (all audit counts must be 0). An individual grain that cannot fit at the
 requested fixed scale remains whole and triggers this audit; change scale or
-paper before printing such a result. Samples are ordered top of the
-mount first; areas retain their sample's order. Bands of different areas and
-samples may share a line, each with its label.
+paper before printing such a result. Cutting starts with samples at the top of
+the mount; areas retain their sample's order. In lines mode, bands of different
+areas and samples may share a line, each with its label.
 
 The layout follows [context first](#layout-rule-context-first): printed grains
 form 2-D clusters through box gaps of at most `context_um` (0 uses the larger
@@ -429,7 +566,7 @@ the current sheet. A cut cluster may also take a height cut near that remaining
 line end, only when both panels pass the owner-count and repeated-area limits
 (5, 6). Otherwise it moves whole to the next sheet. A
 whole cluster which fits an empty body spends a new sheet instead of being cut
-to fill a partly used one. Areas and pieces retain their reading order. Empty stretches between clusters become
+to fill a partly used one. Lines mode keeps areas and pieces in reading order. Empty stretches between clusters become
 breaks marked "//" with their length. Bands of the same area on one line share one sample/area
 label, with no grain numbers.
 
@@ -476,13 +613,9 @@ Stats record the full and compact `header_mm` heights and `height_budget` for
 every sheet. Area fields are in mm²: `header_mm2`, `footer_margins_mm2` (also
 includes the 1 mm header clearance), `labels_notes_mm2`, `band_mm2`,
 `blank_right_mm2` (to the right of the last image on each line), and
-`other_line_mm2` (gaps and space below shorter images). Together with
-`blank_below_mm` times body width, these partition the paper area. The last
-line includes its 4.2 mm notes allowance. Packed budgets use `blank_mm2` for body
-area minus strip blocks; `blank_below_mm` and `blank_right_mm2` stay 0. Labels
-and notes use each block's width, and `other_line_mm2` is the space inside blocks
-that is neither labels/notes nor images. Missing `blank_mm2` defaults to 0;
-zero is omitted so lines JSON stays unchanged. `empty_epoxy_mm2` is a subset of band
+`other_line_mm2` (gaps and space below shorter images). In lines mode, together
+with `blank_below_mm` times body width, these partition the paper area. The last
+line includes its 4.2 mm notes allowance. `empty_epoxy_mm2` is a subset of band
 area: full-width rows farther than `pad_um` (default 22 µm) from every visible
 printed grain box in that band. It excludes strays and artifacts, and includes
 owned and repeated context targets. This row measure identifies tall empty
@@ -515,23 +648,7 @@ sample labels, either header can grow to `19.1 + 2.7 × labels` mm, capped at
 and the letter-size Sandbox render, use 50 mm and 36 mm. No margins, footer
 height or print scale change.
 
-The `packing` parameter is `"lines"` (the default for older parameter JSON) or
-`"packed"`; other values are rejected. The `sheets` and `stitch` commands accept
-`--packing lines|packed`. Packing changes strip placement only. Every packed
-strip has its sample and area label, including continuation text, even when
-its run shared a label in lines mode. Grain-sheet registrations with absent
-or empty `layout` mean lines; packed writes
-`layout: "packed"`. The optional `strip_blocks` addition to the registration
-schema records packed strips with a 1-based `sheet` and `rect_mm`, covering
-labels, images, trailing gap marks and notes. The audit counts intersecting
-image pairs and intersecting block pairs
-as `bands_overlapping`, with an epsilon of 1e-7 mm. A pair may contribute to
-both counts. Legacy lines registrations reconstruct same-area line groups from
-standard labels and band order; their internal gap marks and dividers share horizontal
-space at different heights. Zero overlaps are omitted from stats JSON to preserve
-lines output; missing values default to 0. Explicit strip blocks also contribute
-to `bands_outside_body`, so an oversized label is reported even when its image
-fits the body.
+See [Layout rule: packing](#layout-rule-packing) for packed placement, block registration and budgets.
 
 The registration sidecar (`<package>_print_registration.json`) is the
 `print_sheet` frame, separate from the laser stage registration. Its
@@ -570,7 +687,7 @@ writes `exports/<package>_grain_sheets_tabloid.pdf`,
 `exports/<package>_print_registration.json` and `exports/ownership.json`.
 In the app: Layout → Print sheets.
 
-`grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale auto|8] [--params sheet_params.json] [--packing lines|packed] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.
+`grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale auto|8] [--params sheet_params.json] [--packing lines|packed] [--edits FILE] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.
 
 ## Whole area on one sheet (`layout::whole`)
 
