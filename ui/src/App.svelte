@@ -88,6 +88,19 @@
     const timer = setTimeout(() => { if (tab.notice === notice && !tab.noticeAction) tab.notice = null; }, 6000);
     return () => clearTimeout(timer);
   });
+  function publishNoticeBottom(notices: HTMLDivElement) {
+    const main = notices.closest('main')!;
+    function update() {
+      main.style.setProperty('--notice-bottom', `${notices.offsetTop + notices.offsetHeight}px`);
+    }
+    const resize = new ResizeObserver(update);
+    resize.observe(notices);
+    update();
+    return { destroy() {
+      resize.disconnect();
+      main.style.removeProperty('--notice-bottom');
+    } };
+  }
   function closeHeaderOutside(event: PointerEvent) {
     if (!(event.target instanceof Element)) return;
     if (!overflowButton?.contains(event.target) && !overflowPanel?.contains(event.target)) overflowOpen = false;
@@ -513,7 +526,7 @@
 
   <main>
     {#if !isViewer && (app.notice || app.error || (app.storageWarning && hiddenStorageWarning !== app.storageWarning))}
-      <div class="notices">
+      <div class="notices" use:publishNoticeBottom>
         {#if app.storageWarning}
           {#if hiddenStorageWarning !== app.storageWarning}
             <div class="glass toast" role="alert" data-testid="storage-warning"><span>{app.storageWarning}</span><button onclick={() => saveProject(app)}>Save project</button><button onclick={() => (hiddenStorageWarning = app.storageWarning)} data-testid="storage-warning-hide">Hide</button></div>

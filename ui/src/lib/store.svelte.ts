@@ -103,6 +103,7 @@ export interface LayoutPrefs {
   panel: { x: number; y: number };
   /** The Canvas side panel folded to a strip. */
   sideCollapsed: boolean;
+  printCollapsed?: boolean;
   infoCollapsed: boolean;
   menuCollapsed: boolean;
   layersOpen: boolean;

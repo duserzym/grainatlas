@@ -3,10 +3,10 @@
   // with the same gestures and feel as the mosaic views (./gestures.ts). No
   // rotation; the content is fitted on mount and whenever `fitKey` changes.
   import { onMount, type Snippet } from 'svelte';
-  import { attachGestures } from './gestures';
+  import { attachGestures, type GestureOptions } from './gestures';
   import { type View, fit, matrix, zoomAt } from './view';
 
-  let { w, h, fitKey = '', label = 'Preview', children }: { w: number; h: number; fitKey?: string; label?: string; children: Snippet } = $props();
+  let { w, h, fitKey = '', label = 'Preview', children, gestures = {} }: { w: number; h: number; fitKey?: string; label?: string; children: Snippet; gestures?: Partial<Pick<GestureOptions, 'onpress' | 'ondrag' | 'onrelease' | 'ondblclick' | 'canNudge'>> } = $props();
 
   let host: HTMLDivElement;
   let size = $state({ w: 800, h: 600 });
@@ -33,7 +33,9 @@
       else view = { ...view, w: size.w, h: size.h };
     });
     ro.observe(host);
-    const detach = attachGestures({ host, getView: () => view, setView: (v) => (view = v), fit: fitAll, rotate: false });
+    const detach = attachGestures({ host, getView: () => view, setView: (v) => (view = v), fit: fitAll, rotate: false,
+      onpress: p => gestures.onpress?.(p) ?? false, ondrag: p => gestures.ondrag?.(p), onrelease: p => gestures.onrelease?.(p),
+      ondblclick: p => gestures.ondblclick?.(p), canNudge: () => gestures.canNudge?.() ?? true });
     return () => {
       ro.disconnect();
       detach();
