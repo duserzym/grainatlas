@@ -3,6 +3,7 @@
   // close (asks first when the tab has unsaved changes), drag to reorder, + for a new tab.
   import { tabs, type AppState } from '../lib/store.svelte';
   import { saveProject } from '../lib/actions';
+  import { flushWrites } from '../lib/deferred-writes';
 
   let { shortcuts = false }: { shortcuts?: boolean } = $props();
 
@@ -13,6 +14,7 @@
 
   /** Closes a tab; with unsaved changes the dialog asks first. */
   export function requestClose(t: AppState) {
+    flushWrites();
     if ((t.dirty || t.sync.unsynced) && !t.readOnly) {
       tabs.select(t.id);
       asking = t;

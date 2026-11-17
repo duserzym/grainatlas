@@ -147,20 +147,32 @@ function equalElement(kind: Kind, before: Element | undefined, after: Element | 
   if (kind === 'spots' && !('comment' in candidate)) candidate.comment = (before as SyncSpot).comment;
   return equal(before, candidate);
 }
+/** Diff only one immutable collection, preserving legacy identities and protections. */
+export function diffElementKind<K extends Kind>(kind: K, base: ReadElements[K], mine: ReadElements[K]): Changes[K] {
+  const beforeInput = { ...emptyElements(), [kind]: base } as ReadElements;
+  const afterInput = { ...emptyElements(), [kind]: mine } as ReadElements;
+  const a = storedElements(mapLegacyGrains(beforeInput, afterInput))[kind];
+  const b = storedElements(afterInput)[kind];
+  const before = new Map<string, Element>(a.map(e => [e.id, e]));
+  const after = new Set(b.map(e => e.id));
+  const upsert = b.filter(e => !equalElement(kind, before.get(e.id), e));
+  let removed = a.filter(e => !after.has(e.id)).map(e => e.id);
+  if (kind === 'spots') removed = removed.filter(id => !(base as ReadElements['spots']).some(s => s.id === id && s.acquisition_ids?.length));
+  return (kind === 'grains' ? { upsert, retire: removed, delete: [] } : { upsert, delete: removed }) as Changes[K];
+}
 export function diffElements(base: ReadElements, mine: ReadElements): Changes {
-  const beforeElements = storedElements(mapLegacyGrains(base, mine)), afterElements = storedElements(mine);
-  function diff<K extends Kind>(kind: K): { upsert: Elements[K]; delete: string[] } {
-    const a = beforeElements[kind], b = afterElements[kind];
-    const before = new Map(a.map(e => [e.id, e]));
-    const after = new Map(b.map(e => [e.id, e]));
-    return { upsert: b.filter(e => !equalElement(kind, before.get(e.id), e)) as Elements[K], delete: a.filter(e => !after.has(e.id)).map(e => e.id) };
-  }
-  const grains = diff('grains');
-  const spots = diff('spots');
-  // Measurement links are protected even when an old draft predates the UI guard.
-  spots.delete = spots.delete.filter(id => !base.spots.some(s => s.id === id && s.acquisition_ids?.length));
-  // Every grain removal retires the server grain, even without split/merge lineage.
-  return { spots, grains: { upsert: grains.upsert, retire: grains.delete, delete: [] }, labels: diff('labels') };
+  return { spots: diffElementKind('spots', base.spots, mine.spots), grains: diffElementKind('grains', base.grains, mine.grains), labels: diffElementKind('labels', base.labels, mine.labels) };
+}
+/** Reuse a kind's result when immutable inputs survive another kind's edit. */
+export function elementDiffer() {
+  const cache: Partial<{ [K in Kind]: { base: ReadElements[K]; mine: ReadElements[K]; result: Changes[K] } }> = {};
+  return <K extends Kind>(kind: K, base: ReadElements[K], mine: ReadElements[K]): Changes[K] => {
+    const previous = cache[kind];
+    if (previous?.base === base && previous.mine === mine) return previous.result as Changes[K];
+    const result = diffElementKind(kind, base, mine);
+    Object.assign(cache, { [kind]: { base, mine, result } });
+    return result;
+  };
 }
 /** The elements endpoint can include unowned context. Only this project's
  * identified rows can be removed; legacy id-null rows wait for adoption. */
@@ -215,7 +227,10 @@ export function syncChanges(mode: 'snapshot' | 'delta', base: ReadElements, mine
 /** Missing own rows that were never shown are database additions, not removals. */
 export function databaseAdditions(server: ReadElements, seen: ReadElements, mine: Elements, uuid: string): Elements {
   const active = storedElements(projectElements(server, uuid));
-  return Object.fromEntries(KINDS.map(k => [k, active[k].filter(e => !seen[k].some(s => s.id === e.id) && !mine[k].some(m => m.id === e.id))])) as unknown as Elements;
+  return Object.fromEntries(KINDS.map(k => {
+    const known = new Set([...seen[k], ...mine[k]].map(e => e.id));
+    return [k, active[k].filter(e => !known.has(e.id))];
+  })) as unknown as Elements;
 }
 export function keepAdditions(mine: Elements, additions: Elements): Elements {
   return Object.fromEntries(KINDS.map(k => [k, [...mine[k], ...additions[k].filter(e => !mine[k].some(m => m.id === e.id))]])) as unknown as Elements;

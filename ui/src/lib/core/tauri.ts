@@ -1,3 +1,4 @@
+import { flushWrites } from '../deferred-writes';
 import { canWrite } from '../presentation';
 // Core implementation over Tauri commands: the native core (all cores via
 // rayon) with packages read from disk by path. Mirrors the wasm worker API.
@@ -21,6 +22,9 @@ function bytes(buf: ArrayBuffer | Uint8Array | number[]): Uint8Array {
 /** Commands that do not touch a session take no tab. */
 const STATELESS = new Set(['default_params', 'tone_lut', 'renumber', 'register', 'pdf', 'laser_fit', 'laser_adapters', 'reset_window']);
 
+// Installed with the first core, before the shell enables its quit guard.
+// Flush synchronously on the quit event, including the path with no dialog.
+let quitFlush: Promise<() => void> | undefined;
 /** The tab whose package folder a save dialog starts in (the active one). */
 let saveTab = 0;
 export function setSaveTab(tab: number) {
@@ -33,6 +37,7 @@ export class TauriCore implements Core {
   private unlisten: Promise<() => void>;
 
   constructor(readonly tab: number) {
+    quitFlush ??= listen('grainatlas://quit-requested', flushWrites);
     // Progress of every tab arrives on one event; each core takes its own.
     this.unlisten = listen<Progress & { tab: number }>('grainatlas://progress', (e) => {
       if (e.payload.tab === this.tab) this.onProgress?.(e.payload);

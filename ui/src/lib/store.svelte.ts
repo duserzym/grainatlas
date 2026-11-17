@@ -17,6 +17,7 @@ import type { DeepLink } from './deeplink';
 import { DATE_CHOICES, type DateKind } from './results';
 import { persistProject, type StoredCopy } from './stored-copy';
 import { appStorage } from './app-storage';
+import { deferredWrites, flushWrites } from './deferred-writes';
 import { loadLink, resolveServer, saveLink, type LinkSettings } from './upbdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
@@ -207,9 +208,11 @@ class AppState {
   rendering = $state(0);
   /** Pyramid level the image view draws now (previews are not finer than this). */
   drawLevel = $state(0);
+  // Area binds tone fields directly; retain this small mutable record in snapshots.
   tone = $state<Record<string, ToneParams>>({});
   params = $state<Record<string, AreaParams>>({});
-  grains = $state<Record<string, Grain[]>>({});
+  /** Immutable collections: replace the record/list and edited rows; undo shares them. */
+  grains = $state.raw<Record<string, Grain[]>>({});
   /** Which area owns each detected grain (overlapping areas see one grain twice); null with grains in fewer than two areas. */
   ownership = $state<Ownership | null>(null);
   private ownershipTimer: ReturnType<typeof setTimeout> | null = null;
@@ -221,12 +224,12 @@ class AppState {
   checksRequested = $state(false);
   checksRan = $state(false);
   checkPrompt = $state<{ summary: string; answer: (proceed: boolean) => void } | null>(null);
-  spots = $state<Spot[]>([]);
+  spots = $state.raw<Spot[]>([]);
   overlays = $state<Record<string, Overlay>>({});
   /** This session's next run number; null = one above the project's (or sample's) highest. */
   nextN = $state<number | null>(null);
   lastPlaced = $state<{ id: string; n: number } | null>(null);
-  labels = $state<Label[]>([]);
+  labels = $state.raw<Label[]>([]);
   private selected = $state<string[]>([]);
   /** A command's provenance survives until the selection changes. */
   shellSelection = $state<{ project: string; spot: string } | null>(null);
@@ -483,7 +486,7 @@ class AppState {
 
   // ---- undo / redo over spots, labels and grains ----------------------------
   private snap(): Snapshot {
-    return { spots: $state.snapshot(this.spots) as Spot[], labels: $state.snapshot(this.labels) as Label[], grains: $state.snapshot(this.grains) as Record<string, Grain[]>, tone: $state.snapshot(this.tone) as Record<string, ToneParams>, print_sheets: $state.snapshot(this.project?.print_sheets) };
+    return { spots: this.spots, labels: this.labels, grains: this.grains, tone: $state.snapshot(this.tone) as Record<string, ToneParams>, print_sheets: $state.snapshot(this.project?.print_sheets) };
   }
   /** Call before every edit. */
   checkpoint() {
@@ -494,7 +497,7 @@ class AppState {
     this.canRedo = false;
     this.persist();
   }
-  clearHistory() { this.undoStack = []; this.redoStack = []; this.canUndo = false; this.canRedo = false; this.discardUndo = null; }
+  clearHistory() { flushWrites(); this.undoStack = []; this.redoStack = []; this.canUndo = false; this.canRedo = false; this.discardUndo = null; }
   private restore(s: Snapshot) {
     this.spots = s.spots;
     this.labels = s.labels;
@@ -544,10 +547,15 @@ class AppState {
     }, 400);
   }
 
-  /** The project as saved: core record plus UI-held grains, spots, labels and settings. */
+  /** Plain saved project. Grains, spots and labels share immutable UI references;
+   * consumers must replace rows rather than mutate them (as with undo snapshots). */
   fullProject(): Project | null {
     if (!this.project) return null;
-    const p = $state.snapshot(this.project) as Project;
+    // The adopted UI record can contain the original mount geometry. It is replaced
+    // below, so never walk it while snapshotting the small mutable core record.
+    const record = { ...this.project };
+    if ('grainatlas_ui' in record) record.grainatlas_ui = null;
+    const p = $state.snapshot(record) as Project;
     // Segmentation controls are UI-held until the next run; save edits immediately too.
     for (const a of p.areas) {
       const segment = this.params[a.id]?.segment;
@@ -555,8 +563,12 @@ class AppState {
     }
     p.settings = $state.snapshot(this.settings) as Settings;
     const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
-    p['grainatlas_ui'] = { grains: grainMapWithoutBlankArtifacts($state.snapshot(this.grains) as Record<string, Grain[]>), spots: $state.snapshot(this.spots), labels: $state.snapshot(this.labels), tone: $state.snapshot(this.tone), overlays };
-    saveBundleTones(p, $state.snapshot(this.bundle), $state.snapshot(this.params), $state.snapshot(this.tone), $state.snapshot(this.project));
+    p['grainatlas_ui'] = { grains: grainMapWithoutBlankArtifacts(this.grains), spots: this.spots, labels: this.labels, tone: $state.snapshot(this.tone), overlays };
+    const adopted = $state.snapshot({ grainatlas_ui: {
+      tone: (this.project.grainatlas_ui as { tone?: unknown } | undefined)?.tone,
+      bundle_tone: (this.project.grainatlas_ui as { bundle_tone?: unknown } | undefined)?.bundle_tone,
+    } }) as unknown as Project;
+    saveBundleTones(p, $state.snapshot(this.bundle), $state.snapshot(this.params), $state.snapshot(this.tone), adopted);
     return p;
   }
 
@@ -566,7 +578,7 @@ class AppState {
     this.dirty = true;
     const uuid = this.project?.uuid;
     const path = this.projectPath?.path ?? null;
-    queueMicrotask(() => {
+    deferredWrites.enqueue(this, () => {
       // An open or save may have happened since this write was queued.
       if (this.readOnly || this.loadingProject || this.storedCopy || !this.dirty || this.project?.uuid !== uuid || (this.projectPath?.path ?? null) !== path) return;
       const p = this.fullProject();
@@ -576,6 +588,8 @@ class AppState {
       }
     });
   }
+
+  flushPersistence() { flushWrites(); }
 
   /** Restores UI-held parts of a saved project. */
   adopt(p: Project) {
@@ -592,7 +606,7 @@ class AppState {
     this.checkLabelsError = null;
     this.mountLabelsCount = null;
     this.checksRan = false;
-    const ui = p['grainatlas_ui'] as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
+    const ui = $state.snapshot(p['grainatlas_ui']) as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
     if (ui?.overlays) this.overlays = ui.overlays;
     if (ui?.grains) this.grains = grainMapWithoutBlankArtifacts(ui.grains);
     if (ui?.spots) this.spots = ui.spots;
@@ -620,6 +634,7 @@ class Tabs {
 
   /** A new, empty tab after the active one (or at the end), made active. */
   add(): AppState {
+    flushWrites();
     const t = new AppState(this.next++);
     const i = this.list.findIndex((x) => x.id === this.activeId);
     const list = [...this.list];
@@ -630,11 +645,13 @@ class Tabs {
   }
 
   select(id: number) {
+    flushWrites();
     if (this.list.some((t) => t.id === id)) this.activeId = id;
   }
 
   /** Cmd+1..8 select that tab, Cmd+9 the last (as in browsers). */
   selectIndex(i: number) {
+    flushWrites();
     const t = i >= 8 ? this.list[this.list.length - 1] : this.list[i];
     if (t) this.activeId = t.id;
   }
@@ -651,6 +668,7 @@ class Tabs {
   /** Drops a tab and its core (the caller asked about unsaved changes). The last tab is replaced
    * by an empty one: the window always has a tab. */
   remove(id: number) {
+    flushWrites();
     const i = this.list.findIndex((t) => t.id === id);
     if (i < 0) return;
     const [t] = this.list.slice(i, i + 1);

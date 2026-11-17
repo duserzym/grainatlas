@@ -1,14 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { appStorage } from '../lib/app-storage';
+  import { flushWrites } from '../lib/deferred-writes';
 
-  let { titles, answer }: {
+  let { titles, answer: onanswer }: {
     titles: string[];
     answer: (choice: 'save' | 'discard' | 'cancel') => void;
   } = $props();
   let dialog: HTMLDialogElement;
   let cancel: HTMLButtonElement;
 
+  async function answer(choice: 'save' | 'discard' | 'cancel') {
+    if (choice !== 'cancel') await appStorage.flushed();
+    onanswer(choice);
+  }
+
   onMount(() => {
+    flushWrites();
     dialog.showModal();
     cancel.focus();
     // Opened from the window's close button, the focus may not be in the page yet: keys then

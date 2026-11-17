@@ -1,4 +1,5 @@
-import { bundlePixels } from './bundle-tone';
+import { bundlePixels, saveBundleTones } from './bundle-tone';
+import { deferredWrites, flushWrites } from './deferred-writes';
 import { canWrite } from './presentation';
 import { hostedSync } from './hosted-sync';
 import type { AtlasSyncConfirmation } from '@lab/bridge';
@@ -10,7 +11,7 @@ import { notifyUpbLab } from './upblab-notice';
 import { draftElements, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
 import { appStorage } from './app-storage';
-import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
+import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 interface HeldSync { identity: string; mine: Elements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
@@ -59,9 +60,17 @@ export class SyncSession {
   label(kind: Kind, id: string): string { return elementLabel(kind, id, this.elements, this.draft?.base, this.serverElements); }
   private cachedLastSeen = $derived.by<ReadElements>(() => Object.fromEntries(KINDS.map(k => [k, [...(this.draft?.base ?? this.draft?.base_seen ?? emptyElements())[k], ...(this.draft?.database_added ?? emptyElements())[k]]])) as unknown as ReadElements);
   private get lastSeen(): ReadElements { return this.cachedLastSeen; }
-  private cachedDatabaseMore = $derived.by(() => databaseAdditions(this.serverElements ?? emptyElements(), this.lastSeen, this.elements, this.status?.project_uuid ?? this.app.project?.uuid ?? ''));
+  private additions<K extends Kind>(kind: K, mine: Elements[K]): Elements[K] {
+    const narrow = (rows: ReadElements[K]) => ({ ...this.emptyBase, [kind]: rows }) as ReadElements;
+    return databaseAdditions(narrow(this.serverElements?.[kind] ?? []), narrow(this.lastSeen[kind]), { ...this.emptyBase, [kind]: mine }, this.status?.project_uuid ?? this.app.project?.uuid ?? '')[kind];
+  }
+  private moreSpots = $derived.by(() => this.additions('spots', this.app.spots));
+  private moreGrains = $derived.by(() => this.additions('grains', this.cachedGrains));
+  private moreLabels = $derived.by(() => this.additions('labels', this.app.labels));
+  private cachedDatabaseMore = $derived.by(() => ({ spots: this.moreSpots, grains: this.moreGrains, labels: this.moreLabels }));
   get databaseMore(): Elements { return this.cachedDatabaseMore; }
   private cachedDatabaseUnresolved = $derived.by(() => {
+    if (!KINDS.some(k => this.omissions[k].length)) return this.databaseMore;
     const own = storedElements(projectElements(this.serverElements ?? emptyElements(), this.status?.project_uuid ?? this.app.project?.uuid ?? ''));
     return keepAdditions(this.databaseMore, Object.fromEntries(KINDS.map(k => [k, own[k].filter(e => this.omissions[k].includes(e.id))])) as unknown as Elements);
   });
@@ -110,7 +119,7 @@ export class SyncSession {
   private viewRevision = $state<number | null>(null);
   private pendingSync = false;
   private idleWaiters: (() => void)[] = [];
-  async settled() { while (this.busy) await new Promise<void>(resolve => this.idleWaiters.push(resolve)); }
+  async settled() { flushWrites(); while (this.busy) await new Promise<void>(resolve => this.idleWaiters.push(resolve)); }
   private finished() { this.busy = false; for (const resolve of this.idleWaiters.splice(0)) resolve(); }
   private serverHashes = $state.raw<ProjectStatus['hashes'] | null>(null);
   private elementsRevision = $state<number | null>(null);
@@ -118,7 +127,8 @@ export class SyncSession {
   private get ready() { return !!this.app.project && !this.app.loadingProject && !this.app.storedCopy; }
   private isCurrent(identity: string) { return this.ready && this.identity === identity; }
   constructor(app: AppState) { this.app = app; }
-  private cachedElements = $derived.by<Elements>(() => ({ spots: this.app.spots, labels: this.app.labels, grains: Object.entries(this.app.grains).flatMap(([area_id, grains]) => grains.map(g => ({ ...g, area_id, sample: g.sample !== undefined ? g.sample : this.app.project?.areas.find(a => a.id === area_id)?.sample ?? null }))) }));
+  private cachedGrains = $derived.by<Elements['grains']>(() => Object.entries(this.app.grains).flatMap(([area_id, grains]) => grains.map(g => ({ ...g, area_id, sample: g.sample !== undefined ? g.sample : this.app.project?.areas.find(a => a.id === area_id)?.sample ?? null }))));
+  private cachedElements = $derived.by<Elements>(() => ({ spots: this.app.spots, labels: this.app.labels, grains: this.cachedGrains }));
   get elements(): Elements { return this.cachedElements; }
   get firstSync(): boolean {
     const server = this.serverElements ?? this.draft?.base;
@@ -127,10 +137,16 @@ export class SyncSession {
     return !!server && this.snapshotNeeded;
   }
   get baseRevision() { return this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null; }
-  private cachedLocalChanges = $derived.by(() => {
-    const base = this.firstSync ? emptyElements() : (this.app.readOnly || this.app.draftHere != null ? this.serverElements : this.draft?.base ?? this.draft?.base_seen ?? this.serverElements) ?? this.viewBase ?? emptyElements();
-    return diffElements(base, this.syncElements(this.elements));
-  });
+  private localBase = $derived.by(() => this.firstSync ? this.emptyBase : (this.app.readOnly || this.app.draftHere != null ? this.serverElements : this.draft?.base ?? this.draft?.base_seen ?? this.serverElements) ?? this.viewBase ?? this.emptyBase);
+  private emptyBase = emptyElements();
+  private diffKind = elementDiffer();
+  // Lineage depends only on grains and database identities, never on spot edits.
+  private knownGrainKey = $derived.by(() => [...this.knownGrains()].sort().join('|'));
+  private localGrains = $derived.by(() => withKnownLineage({ ...this.emptyBase, grains: this.cachedGrains }, new Set(this.knownGrainKey.split('|'))).grains);
+  private spotChanges = $derived.by(() => this.diffKind('spots', this.localBase.spots, this.app.spots));
+  private grainChanges = $derived.by(() => this.diffKind('grains', this.localBase.grains, this.localGrains));
+  private labelChanges = $derived.by(() => this.diffKind('labels', this.localBase.labels, this.app.labels));
+  private cachedLocalChanges = $derived.by(() => ({ spots: this.spotChanges, grains: this.grainChanges, labels: this.labelChanges }));
   get localChanges() { return this.cachedLocalChanges; }
   private cachedDatabaseChanges = $derived.by(() => {
     const base = this.draft?.base ?? this.viewBase;
@@ -142,15 +158,19 @@ export class SyncSession {
   get canSyncOnSave(): boolean {
     return this.ready && !this.app.readOnly && this.app.link.syncOnSave && this.registered === true && this.reachable === true && this.status?.can_edit === true;
   }
-  get pixelsChanged(): boolean {
-    if ((!this.app.pkg && !bundlePixels(this.app)) || !Object.keys(this.app.stitched).length || !this.app.project) return false;
-    return this.currentPixels() !== this.draft?.pixels_base;
-  }
-  private currentPixels(): string {
-    const p = this.app.fullProject()!;
+  private pixelKey = $derived.by(() => {
+    if ((!this.app.pkg && !bundlePixels(this.app)) || !Object.keys(this.app.stitched).length || !this.app.project) return null;
+    // Snapshot only pixel inputs. In particular, never visit grainatlas_ui geometry.
+    const adopted = $state.snapshot({ grainatlas_ui: {
+      tone: (this.app.project.grainatlas_ui as { tone?: unknown } | undefined)?.tone,
+      bundle_tone: (this.app.project.grainatlas_ui as { bundle_tone?: unknown } | undefined)?.bundle_tone,
+    } }) as unknown as import('./core/types').Project;
+    const p = $state.snapshot({ areas: this.app.project.areas, grainatlas_ui: { tone: this.app.tone } }) as unknown as import('./core/types').Project;
+    saveBundleTones(p, $state.snapshot(this.app.bundle), $state.snapshot(this.app.params), $state.snapshot(this.app.tone), adopted);
     if (!this.app.bundle) p.areas = p.areas.map(a => ({ ...a, params: this.app.params[a.id] ?? a.params, mosaic: this.app.stitched[a.id]?.mosaic ?? a.mosaic }));
     return pixelSignature(p);
-  }
+  });
+  get pixelsChanged(): boolean { return this.pixelKey !== null && this.pixelKey !== this.draft?.pixels_base; }
   get state() {
     if (this.intentFailure) return 'local-changes';
     if (!this.app.readOnly && KINDS.some(k => this.databaseMore[k].length)) return 'both-changed';
@@ -178,21 +198,35 @@ export class SyncSession {
   }
   private save(patch: Partial<Draft>) {
     if (!this.draft || this.app.loadingProject || this.app.storedCopy) return;
-    this.draft = { ...this.draft, ...clone(patch) };
-    if (canWrite() && !this.suppressDraft) appStorage.track(this.app, 'draft', () => writeDraft(this.draft!));
+    // Pending is assembled from immutable per-kind collections. Keep its reference;
+    // other patches (server responses and request metadata) retain copy isolation.
+    const copied = clone('pending' in patch ? { ...patch, pending: null } : patch);
+    if ('pending' in patch) copied.pending = patch.pending;
+    this.draft = { ...this.draft, ...copied };
+    if (canWrite() && !this.suppressDraft) {
+      const draft = this.draft;
+      deferredWrites.enqueue(this, () => {
+        if (!this.suppressDraft && this.draft === draft) appStorage.track(this.app, 'draft', () => writeDraft(draft));
+      });
+    }
   }
+  private pendingSpots = $derived.by(() => pendingElements({ ...this.emptyBase, spots: this.app.spots }).spots);
+  private pendingGrains = $derived.by(() => pendingElements({ ...this.emptyBase, grains: this.cachedGrains }).grains);
+  private pendingLabels = $derived.by(() => pendingElements({ ...this.emptyBase, labels: this.app.labels }).labels);
+  private pendingElements = $derived.by(() => ({ spots: this.pendingSpots, grains: this.pendingGrains, labels: this.pendingLabels }));
   track(edited = true) {
     const p = this.app.project;
     if (!p || this.app.readOnly || this.app.loadingProject || this.app.storedCopy) return;
     if (!this.draft || this.draft.uuid !== p.uuid) this.draft = ensureDraft(p, this.app.server);
     const key = this.app.projectPath ? `grainatlas.copy.${p.uuid}|${this.app.projectPath.path}` : `grainatlas.project.${p.package.name}`;
     const changes = this.draft.base ? this.counts : null;
-    const pending = !!this.intentFailure || !this.draft.base || hasChanges(changes) ? pendingElements(this.elements) : null;
+    const pending = !!this.intentFailure || !this.draft.base || hasChanges(changes) ? this.pendingElements : null;
     const now = new Date().toISOString();
     this.save({ changes, pending, pending_at: pending ? now : null, pixels_changed: this.pixelsChanged, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
   }
   /** Every opening path calls this before returning. Later polling never replaces the base. */
   async check(): Promise<void> {
+    flushWrites();
     if (this.busy) { await this.settled(); return this.check(); }
     const p = this.app.project;
     const identity = this.identity;
@@ -305,6 +339,7 @@ export class SyncSession {
     if (this.draft) this.draft = { ...this.draft, pending: null, pending_at: null, changes: { spots: 0, grains: 0, labels: 0 }, pixels_changed: false };
   }
   async editBase() {
+    flushWrites();
     if (!canWrite()) return;
     this.suppressDraft = false;
     const revision = this.viewRevision, hashes = this.viewHashes, viewed = this.viewBase;
@@ -324,6 +359,7 @@ export class SyncSession {
     if (project && mount) hostedSync.synced({ project, mount, revision, atlasVersion: this.status?.atlas_version ?? null, changed: { ...counts, pixels }, at: new Date().toISOString() });
   }
   async action() {
+    flushWrites();
     if (!canWrite()) return;
     if (this.busy || this.syncDisabledReason) return;
     if (this.confirmation) { this.showConfirmation(); return; }
@@ -335,6 +371,7 @@ export class SyncSession {
     await this.sync();
   }
   async register(mount: string, publishPixels = false) {
+    flushWrites();
     if (!canWrite()) return;
     if (!mount || this.syncDisabledReason) return;
     try { await (await this.app.core).setLink(mount, {}); } catch (e) { this.failed(e); return; }
@@ -351,6 +388,7 @@ export class SyncSession {
     this.app.selection = []; this.app.persist();
   }
   async update() {
+    flushWrites();
     if (this.busy || !this.status) return;
     // Recheck local edits at invocation, so a newly made edit is never overwritten.
     if (hasChanges(this.counts)) { await this.prepareReview(); return; }
@@ -386,6 +424,7 @@ export class SyncSession {
     this.dialog = 'review';
   }
   async prepareReview() {
+    flushWrites();
     if (this.busy || !this.status) return;
     this.busy = true;
     const identity = this.identity;
@@ -402,6 +441,7 @@ export class SyncSession {
     catch (e) { this.failed(e); } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   async apply(choices: Record<string, Resolution>, publishPixels = false) {
+    flushWrites();
     if (!canWrite()) return;
     const review = this.review;
     if (!review) return;
@@ -446,6 +486,7 @@ export class SyncSession {
   }
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
   async sync(publishPixels = false, shellCommand = false, approved?: HeldSync, reviewedBase?: ReadElements) {
+    flushWrites();
     if (!canWrite()) return;
     if (this.busy) await this.settled();
     if (this.busy || !this.ready || !this.app.project || this.app.readOnly || this.syncDisabledReason) return;
@@ -543,13 +584,13 @@ export class SyncSession {
           const sent: SyncBody = { ...body, ...(approved ? { confirm_bulk: true } : {}) };
           // One id per attempt; a retry of the same request after a lost reply reuses it (contract 2026-11, section 3).
           let request = requestIdFor(draft.pending_request, canonicalJson(syncWireBody(sent)));
-          this.save({ pending_request: request });
+          this.save({ pending_request: request }); flushWrites();
           try {
             try { reply = await api.sync(draft.mount!, sent, request.id); }
             catch (e) {
               if (!(e instanceof SyncApiError) || e.code !== 'request_id_reused') throw e;
               request = requestIdFor(null, request.key);
-              this.save({ pending_request: request });
+              this.save({ pending_request: request }); flushWrites();
               reply = await api.sync(draft.mount!, sent, request.id);
             }
           } catch (e) {
@@ -673,6 +714,7 @@ export class SyncSession {
     } catch (e) { if (this.identity === identity) { this.pendingSync = !(e instanceof SyncApiError) || e.status >= 500; this.failed(e); this.track(false); } } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   async afterSave() {
+    flushWrites();
     if (!canWrite()) return;
     if (!this.ready) return;
     this.track();

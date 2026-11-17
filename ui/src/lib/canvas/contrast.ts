@@ -42,3 +42,22 @@ export function ringLuminance(canvas: HTMLCanvasElement, sx: number, sy: number,
   }
   return count ? sum / count : null;
 }
+
+/** Cache displayed-ring samples, including the hysteresis colour. Geometry is
+ * in screen pixels; a new image draw invalidates samples without losing colours. */
+export class RingContrasts {
+  private samples = new Map<string, { x: number; y: number; r: number; scene: number; colour: Contrast }>();
+  update(rings: { id: string; x: number; y: number; r: number }[], scene: number, sample: (x: number, y: number, r: number) => number | null): Record<string, Contrast> {
+    const next = new Map<string, { x: number; y: number; r: number; scene: number; colour: Contrast }>();
+    const colours: Record<string, Contrast> = {};
+    for (const ring of rings) {
+      const previous = this.samples.get(ring.id);
+      const same = previous && previous.x === ring.x && previous.y === ring.y && previous.r === ring.r && previous.scene === scene;
+      const colour = same ? previous.colour : spotContrast(sample(ring.x, ring.y, ring.r), previous?.colour);
+      next.set(ring.id, { ...ring, scene, colour });
+      colours[ring.id] = colour;
+    }
+    this.samples = next;
+    return colours;
+  }
+}

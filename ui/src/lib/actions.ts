@@ -1,3 +1,4 @@
+import { flushWrites } from './deferred-writes';
 import { canWrite } from './presentation';
 import { chooseOpenTab, existingProject, holdsWork, pathGroups, sourceKey } from './open-target';
 // Actions shared by the screens: open, stitch, tone, project save/load.
@@ -52,6 +53,7 @@ const PROJECT_PATH = /\.(grainatlas\/?|gaproj)$/i;
 
 /** Web: a package folder, an area folder or loose images, handed over as files. */
 export async function openFiles(name: string, files: PackageFile[], app: AppState = current()) {
+  flushWrites();
   const pending = shared.pendingProjects.find(p => p.project.package.name === name);
   const uuid = pending?.project.uuid ?? savedProject(name)?.uuid;
   const existing = (uuid ? existingProject(tabs.list, uuid) : undefined) ?? tabs.list.find(t => t.pkg?.name === name);
@@ -154,6 +156,7 @@ export async function answerOffer(open: boolean) {
 
 /** Desktop: one folder (package, area folder, `.grainatlas` project) or a set of files, by path. */
 export async function openPaths(paths: string[], app: AppState = current()): Promise<AppState> {
+  flushWrites();
   const key = sourceKey(paths);
   const existing = tabs.list.find(t => t.packageSource && 'paths' in t.packageSource && sourceKey(t.packageSource.paths) === key);
   if (existing && existing !== app) return selectExisting(existing);
@@ -227,6 +230,7 @@ export function scaleText(spec: LooseSpec) {
 
 /** Opens the pending images with the scale (and optional grid) the user gave. */
 export async function openLoose(spec: LooseSpec, app: AppState = current()) {
+  flushWrites();
   const core = await app.core;
   app.pendingLoose = null;
   try {
@@ -374,6 +378,7 @@ async function resolveDeepLink(app: AppState) {
  * otherwise a new tab that reopens the same pixels, so no open project is replaced.
  */
 export async function loadProjectFile(file: File, app: AppState = current(), initial = false) {
+  flushWrites();
   const p = JSON.parse(await file.text()) as Project;
   if (!initial) {
     const existing = existingProject(tabs.list, p.uuid);
@@ -692,6 +697,7 @@ function applyParams(app: AppState, areaId: string, p: AreaParams) {
  * project file next to it. The web build downloads the project file.
  */
 export async function saveProject(app: AppState = current()) {
+  flushWrites();
   if (!canWrite()) return;
   for (const id of Object.keys(app.live)) await liveIdle(id, app);
   const p = app.fullProject();
@@ -717,6 +723,7 @@ export async function saveProject(app: AppState = current()) {
 
 /** Saves the lightweight project file (`.gaproj`): `ask` = Save As (a dialog on the desktop). */
 export async function saveProjectFile(app: AppState = current(), ask = true) {
+  flushWrites();
   if (!canWrite()) return;
   for (const id of Object.keys(app.live)) await liveIdle(id, app);
   if (!(await beforeCheckedAction(app, 'save'))) return;

@@ -14,7 +14,7 @@
   import { pick, selectAll, addMany, clickHow, type PickHow, type Sel } from '../lib/selection';
   import { CLICK_SLOP } from '../lib/canvas/gestures';
   import SpotBatchDialog from '../components/SpotBatchDialog.svelte';
-  import { spotContrast, type Contrast } from '../lib/canvas/contrast';
+  import { RingContrasts, type Contrast } from '../lib/canvas/contrast';
   import type { Core } from '../lib/core/core';
   import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
@@ -286,6 +286,11 @@
     const layout = mountLayout(project.areas, Object.fromEntries(project.areas.map(a => [a.id, areaExtent(a, insetMosaics[a.id])])));
     return groupRegions(reviewSpots.groups[project.uuid], app.spots, project.areas, layout);
   });
+  const grainSpotCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const s of app.spots) if (s.grain_id) counts.set(s.grain_id, (counts.get(s.grain_id) ?? 0) + 1);
+    return counts;
+  });
   const areaSpots = $derived(app.spots.filter((s) => s.area_id === areaId));
   const spots = $derived(areaSpots.filter((s) => !reviewVisible || reviewVisible.has(s.id)));
   const tableSpots = $derived(spotSort === 'name' ? [...spots].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
@@ -459,23 +464,26 @@
   }
   const activeIds = $derived(gesture?.ids ?? []);
   const autoColour = $derived(app.settings.spot_cursor_colour === 'auto');
-  let contrasts = $state<Record<string, Contrast>>({});
+  let contrasts = $state.raw<Record<string, Contrast>>({});
+  const ringContrasts = new RingContrasts();
+  let contrastScene = 0;
   let contrastFrame = 0;
   // Store the latest geometry; rapid pointer events collapse into one frame.
   const contrastRings = $derived([
     ...(!isViewer && app.tool === 'spot' && cursorUm && !snapHint ? [{ id: 'ghost', x: cursorUm[0], y: cursorUm[1], r: app.diameter / 2 }] : []),
     ...spots.filter((s) => activeIds.includes(s.id)).map((s) => ({ id: s.id, x: s.x_um, y: s.y_um, r: s.diameter_um / 2 })),
   ]);
-  function scheduleContrast() {
+  function scheduleContrast(newPixels = false) {
+    if (newPixels) contrastScene++;
     if (!contrastFrame) contrastFrame = requestAnimationFrame(() => {
       contrastFrame = 0;
       if (!autoColour || !view || !viewer) return;
-      const next: Record<string, Contrast> = {};
-      for (const ring of contrastRings) {
-        const [sx, sy] = toScreen(view, ring.x / umPerPx, ring.y / umPerPx);
-        next[ring.id] = spotContrast(viewer.luminanceAt(sx, sy, ring.r / k), contrasts[ring.id]);
-      }
-      contrasts = next;
+      const rings = contrastRings.map(ring => {
+        const [x, y] = toScreen(view!, ring.x / umPerPx, ring.y / umPerPx);
+        return { id: ring.id, x, y, r: ring.r / k };
+      });
+      const next = ringContrasts.update(rings, contrastScene, (x, y, r) => viewer!.luminanceAt(x, y, r));
+      if (Object.keys(next).length !== Object.keys(contrasts).length || Object.keys(next).some(id => next[id] !== contrasts[id])) contrasts = next;
     });
   }
   $effect(() => {
@@ -1463,7 +1471,7 @@
     {#key areaId}
       {@const viewerArea = areaId}
       <Viewer bind:this={viewer} bind:view={() => view, (next) => setAreaView(viewerArea, next)} core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
-        preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={scheduleContrast} canNudge={() => isViewer || !selSpots.length}
+        preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={() => scheduleContrast(true)} canNudge={() => isViewer || !selSpots.length}
         onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
           <g transform="scale({1 / umPerPx})" data-testid="canvas-um-space">
@@ -2016,7 +2024,7 @@
             <tbody>
               {#each tableGrains as g (g.id)}
                 <tr data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
-                  <td>{grainNumber(g)}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{app.spots.filter((s) => s.grain_id === g.id).length || ''}</td>
+                  <td>{grainNumber(g)}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{grainSpotCounts.get(g.id) || ''}</td>
                   <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
               {:else}

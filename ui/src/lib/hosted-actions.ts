@@ -1,3 +1,4 @@
+import { flushWrites } from './deferred-writes';
 import { canWrite } from './presentation';
 import { chooseOpenTab, existingProject } from './open-target';
 import type { AtlasMode, AtlasResultCode, CommandResult } from '@lab/bridge';
@@ -29,6 +30,7 @@ function failure(app: AppState): Partial<CommandResult> {
   return fail(/401|403/.test(error) ? 'unauthorized' : app.sync.reachable === false ? 'offline' : 'failed', error);
 }
 export async function setMode(app: AppState, mode: AtlasMode, own = false) {
+  flushWrites();
   if (!canWrite()) return;
   await app.sync.settled();
   if (mode === 'edit') {
@@ -61,6 +63,7 @@ function view(app: AppState) {
   app.tool = 'select';
 }
 export async function leaveEdit(app: AppState, decision: 'sync' | 'keep-draft' | 'discard', shellCommand = true): Promise<Partial<CommandResult>> {
+  flushWrites();
   await app.sync.settled();
   if (app.readOnly) return result(app);
   if (decision === 'sync') {

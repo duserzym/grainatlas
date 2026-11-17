@@ -1,3 +1,4 @@
+import { flushWrites } from './deferred-writes.ts';
 import { desktopFileCommands, FileStorage, type FileCommands } from './file-storage.ts';
 import { canWrite, presentation } from './presentation.ts';
 import { reportStorageWrite } from './storage-failure.ts';
@@ -82,7 +83,7 @@ export class AppStorage {
   }
   ready(): Promise<void> { return this.loading ??= this.load(); }
   /** Wait for writes already queued (also useful before a deliberate reload). */
-  async flushed(): Promise<void> { await this.queue; }
+  async flushed(): Promise<void> { flushWrites(); await this.queue; }
   private async load(): Promise<void> {
     // Request once per app startup, including when IndexedDB is unavailable.
     this.permission ??= (async () => {
@@ -216,11 +217,13 @@ export class AppStorage {
     return carried;
   }
   getItem(key: string): string | null {
+    flushWrites();
     if (!isAppStorageKey(key)) return this.legacy().getItem(key);
     if (this.fallback.has(key) || !this.loading) return this.legacy().getItem(key);
     return this.values.get(key) ?? null;
   }
   keys(): string[] {
+    flushWrites();
     const keys = new Set([...this.values.keys(), ...this.fallback]);
     try {
       const storage = this.legacy();
@@ -234,12 +237,14 @@ export class AppStorage {
   get length(): number { return this.keys().length; }
   key(index: number): string | null { return this.keys()[index] ?? null; }
   setItem(key: string, value: string): void {
+    flushWrites();
     if (!canWrite()) return;
     if (!isAppStorageKey(key)) { this.legacy().setItem(key, value); return; }
     this.values.set(key, value);
     this.enqueue(key, value, this.loading ? this.journal(key, value) : null);
   }
   removeItem(key: string): void {
+    flushWrites();
     if (!canWrite()) return;
     if (!isAppStorageKey(key)) { this.legacy().removeItem(key); return; }
     this.values.delete(key);
@@ -294,6 +299,7 @@ export class AppStorage {
   }
   /** Run `write` and collect the IndexedDB jobs it queues. */
   private collect(write: () => boolean): { result: boolean; queued: boolean; durable: Promise<boolean> } {
+    flushWrites();
     const previous = this.collecting;
     const jobs: Promise<boolean>[] = [];
     this.collecting = jobs;

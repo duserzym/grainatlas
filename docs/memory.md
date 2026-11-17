@@ -293,3 +293,17 @@ pyramid during loading. The status line offers Stop and Retry, and Canvas stays
 usable. Tone, print sheets and publishing loaded pixels become available only
 after every area has finished. The loader sends the current grains to the core
 at the end so Canvas edits made during the download are retained.
+
+## Edits on a large mount
+
+Spots, labels and grains are immutable collections (`$state.raw`): an edit
+replaces the changed list and rows, undo steps and the saved project share the
+unchanged rows instead of deep-copying 1000+ grain outlines per click, and the
+sync diff runs per kind (a spot edit does not compare grains). The project copy
+and the sync draft are written after the click's frame is painted, at most once
+per burst of edits (80 ms after the frame, 200 ms at the latest), and flushed
+at once before any storage read, save, sync, open, tab switch or close, page
+hide and quit. On a synthetic mount with 1274 grains (`ui/e2e/perf-placement.spec.ts`)
+a spot click went from 274 ms to 17 ms (median, pointer down to painted frame)
+and undo from 284 ms to 15 ms; on a copy of a real 13-area mount with 1268
+grains, from 304 ms to 29 ms.
