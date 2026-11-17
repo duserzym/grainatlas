@@ -1,5 +1,6 @@
 <script lang="ts">
   import { existingProject } from '../lib/open-target';
+  import { draftSyncStatus } from '../lib/sync-status';
   import { appStorage } from '../lib/app-storage';
   import { storageFullMessage } from '../lib/storage-failure';
   import { onMount } from 'svelte';
@@ -94,7 +95,7 @@
     <h2>Changes not yet in the database</h2>
     {#each drafts as draft (draft.uuid)}
       <div class="draft" data-testid="draft-row">
-        <div><strong>{draft.name}</strong><p class="faint small">{draft.changes === null ? 'Changes may not be in the database: check' : describeChanges(draft.changes) || 'No element changes'}{draft.pixels_changed ? ' · New images not published' : ''} · {new Date(draft.updated_at).toLocaleString()}</p></div>
+        <div><strong>{draft.name}</strong><p class="faint small">{draft.changes === null ? 'Changes may not be in the database: check' : describeChanges(draft.changes) || 'No element changes'}{draftSyncStatus(draft).pixels ? ' · New images not published' : ''} · {new Date(draft.updated_at).toLocaleString()}</p></div>
         <button disabled={busy !== null} onclick={() => draft.changes === null ? check(draft) : sync(draft)}>{draft.changes === null ? 'Check' : 'Sync'}</button>
         <button disabled={busy !== null} onclick={() => discard(draft)}>Discard</button>
       </div>

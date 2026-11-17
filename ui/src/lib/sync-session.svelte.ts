@@ -10,6 +10,7 @@ import { canonicalJson } from './sync-hash';
 import { notifyUpbLab } from './upblab-notice';
 import { draftElements, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
+import { draftSyncStatus } from './sync-status';
 import { appStorage } from './app-storage';
 import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
@@ -170,13 +171,15 @@ export class SyncSession {
     if (!this.app.bundle) p.areas = p.areas.map(a => ({ ...a, params: this.app.params[a.id] ?? a.params, mosaic: this.app.stitched[a.id]?.mosaic ?? a.mosaic }));
     return pixelSignature(p);
   });
-  get pixelsChanged(): boolean { return this.pixelKey !== null && this.pixelKey !== this.draft?.pixels_base; }
+  private storedSyncStatus = $state.raw({ pixels: false, unlinked: false });
+  private cachedSyncStatus = $derived.by(() => this.draft ? draftSyncStatus(this.draft, undefined, { changes: this.counts, pixelsKey: this.pixelKey, stored: this.storedSyncStatus }) : null);
+  get pixelsChanged(): boolean { return this.cachedSyncStatus?.pixels ?? false; }
   get state() {
     if (this.intentFailure) return 'local-changes';
     if (!this.app.readOnly && KINDS.some(k => this.databaseMore[k].length)) return 'both-changed';
     const hashes = this.app.readOnly ? this.viewHashes : this.draft?.base_hashes;
     const serverChanged = hashes && this.serverHashes ? (['spots', 'grains', 'labels'] as const).some(k => hashes[k] !== this.serverHashes![k]) : undefined;
-    return syncState({ firstSync: this.firstSync, serverChanged, registered: this.registered, reachable: this.reachable, baseRevision: this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null, serverRevision: this.elementsRevision ?? this.status?.revision ?? null, localChanges: this.counts, pixelsChanged: this.pixelsChanged }); }
+    return syncState({ firstSync: this.firstSync, serverChanged, registered: this.registered, reachable: this.reachable, baseRevision: this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null, serverRevision: this.elementsRevision ?? this.status?.revision ?? null, localChanges: this.cachedSyncStatus?.elements ?? hasChanges(this.counts), pixelsChanged: this.pixelsChanged }); }
   get text(): string {
     if (this.confirmation) return 'Needs confirmation';
     if (this.draft?.link_conflict) return 'This project is linked to another mount';
@@ -188,7 +191,7 @@ export class SyncSession {
     return chipText(this.state, this.counts, this.status?.atlas_version ?? null, this.status?.revision ?? null, this.pixelsChanged, this.firstSync); // sync warnings show in the notice bar and the details drawer, not the pill
   }
   get unsynced(): boolean {
-    return !!this.app.project && !this.app.readOnly && (!!this.intentFailure || KINDS.some(k => this.databaseMore[k].length) || !this.draft?.synced || !this.draft?.base || hasChanges(this.counts) || this.pixelsChanged);
+    return !!this.app.project && !this.app.readOnly && (!!this.intentFailure || KINDS.some(k => this.databaseMore[k].length) || !this.draft?.synced || !this.draft?.base || !!this.cachedSyncStatus?.pending);
   }
   private get identity(): string { return JSON.stringify([this.app.project?.uuid, this.app.projectPath?.path ?? null, this.app.remote?.projectId ?? null]); }
   private async api() {
@@ -203,6 +206,10 @@ export class SyncSession {
     const copied = clone('pending' in patch ? { ...patch, pending: null } : patch);
     if ('pending' in patch) copied.pending = patch.pending;
     this.draft = { ...this.draft, ...copied };
+    if ('pixels_base' in patch || 'mount' in patch || 'link_candidates' in patch) {
+      const status = draftSyncStatus(this.draft, undefined, { changes: this.counts, pixelsKey: this.pixelKey });
+      this.storedSyncStatus = { pixels: status.pixels, unlinked: status.unlinked };
+    }
     if (canWrite() && !this.suppressDraft) {
       const draft = this.draft;
       deferredWrites.enqueue(this, () => {
@@ -222,7 +229,11 @@ export class SyncSession {
     const changes = this.draft.base ? this.counts : null;
     const pending = !!this.intentFailure || !this.draft.base || hasChanges(changes) ? this.pendingElements : null;
     const now = new Date().toISOString();
-    this.save({ changes, pending, pending_at: pending ? now : null, pixels_changed: this.pixelsChanged, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
+    // Storage readers flush queued writes. Resolve legacy copies here, outside
+    // rendered getters, to keep status reads from serialising a project per edit.
+    const status = draftSyncStatus(this.draft, undefined, { changes: this.counts, pixelsKey: this.pixelKey });
+    this.storedSyncStatus = { pixels: status.pixels, unlinked: status.unlinked };
+    this.save({ changes, pending, pending_at: pending ? now : null, ...(this.pixelKey !== null ? { pixels_key: this.pixelKey } : {}), pixels_changed: status.pixels, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
   }
   /** Every opening path calls this before returning. Later polling never replaces the base. */
   async check(): Promise<void> {
@@ -236,6 +247,8 @@ export class SyncSession {
       const previous = listDrafts(this.app.remote?.server ?? this.app.server).find(d => d.uuid === p.uuid) ?? readDraft(p.uuid);
       const fresh = !previous;
       this.draft = previous ?? ensureDraft(p, this.app.remote?.server ?? this.app.server);
+      const stored = draftSyncStatus(this.draft);
+      this.storedSyncStatus = { pixels: stored.pixels, unlinked: stored.unlinked };
       if (fresh && !this.app.readOnly) this.save({ base_seen: clone(this.elements) });
       appStorage.track(this.app, 'draft', () => writeDraft(this.draft!)); // ready open adopts even when the subsequent lookup is offline
       this.registered = undefined; this.status = null; this.reachable = null; this.review = null; this.dialog = null; this.syncedAt = this.draft.synced_at ?? null; this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverHashes = null; this.elementsRevision = null; this.serverSpots = []; this.serverElements = null; this.snapshotNeeded = false; this.notice = ''; this.intentFailure = this.draft.incomplete?.reason ?? ''; this.omissions = this.draft.incomplete?.omissions ?? { spots: [], grains: [], labels: [] }; this.candidates = this.draft.link_candidates ?? []; this.heldBack = this.draft.held_back ?? [];
@@ -343,7 +356,7 @@ export class SyncSession {
     if (!canWrite()) return;
     this.suppressDraft = false;
     const revision = this.viewRevision, hashes = this.viewHashes, viewed = this.viewBase;
-    const hadDraft = !!this.draft && (this.draft.pending != null || (this.draft.pending === undefined && this.draft.changes === null) || hasChanges(this.draft.changes) || this.draft.pixels_changed);
+    const hadDraft = !!this.draft && (this.draft.pending != null || (this.draft.pending === undefined && this.draft.changes === null) || draftSyncStatus(this.draft).pending);
     await this.check();
     // A clean View opened at a newer revision becomes the next edit base. Keep a real
     // pending/legacy draft's older base; edits made during lookup remain above viewed.

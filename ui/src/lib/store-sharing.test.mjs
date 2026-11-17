@@ -30,6 +30,12 @@ const { grainMapWithoutBlankArtifacts } = await import('./sync.ts');
 const { pixelSignature } = await import('./sync-pixels.ts');
 const { flushWrites } = await import('./deferred-writes.ts');
 const { appStorage } = await import('./app-storage.ts');
+const { SyncSession } = await import('./sync-session.svelte.ts');
+const { draftSyncStatus, pixelsPending } = await import('./sync-status.ts');
+const { hasPendingChanges, listDrafts } = await import('./drafts.ts');
+const { canonicalJson } = await import('./sync-hash.ts');
+const { HostedSync } = await import('./hosted-sync.ts');
+test.after(() => hooks.deregister());
 
 const app = current();
 const source = {
@@ -132,5 +138,152 @@ test('pixel bookkeeping matches fullProject with and without bundle tone, ignori
   app.sync.draft = { ...app.sync.draft, pixels_base: pixelSignature(local) };
   assert.equal(app.sync.pixelsChanged, false);
   app.flushPersistence();
-  hooks.deregister();
+});
+
+test('Open list, unloaded session and tracked draft agree on the same status fixtures', () => {
+  const p = structuredClone(source);
+  p.upbdb.mount_id = 'mount';
+  p.grainatlas_ui = { grains: {}, spots: [], labels: [], tone: {} };
+  const key = pixelSignature(p);
+  const oldKey = canonicalJson(JSON.parse(key).map(a => ({ ...a, stitch: { changed: true }, photometric: { gain: 2 }, blend: { changed: true } })));
+  const legacyF32Key = canonicalJson(JSON.parse(oldKey).map(a => ({ ...a,
+    tone: { ...a.tone, grain_norm: { ...a.tone.grain_norm, strength: 0.800000012 } } })));
+  const changed = structuredClone(p); changed.areas[0].mosaic.sha256 = 'new-pixels';
+  const toned = structuredClone(p); toned.grainatlas_ui.tone.area = { ...neutralTone(), gamma: 2 };
+  const edited = structuredClone(p); edited.grainatlas_ui.labels = [{ id: 'label', area_id: 'area', x_um: 1, y_um: 1, text: 'Synthetic edit' }];
+  const copyKey = 'grainatlas.project.Synthetic';
+  const base = { spots: [], grains: [], labels: [] };
+  const clean = { uuid: p.uuid, name: p.name, server: null, mount: 'mount', base_revision: 2, base,
+    updated_at: '2026-01-01T00:00:00Z', changes: { spots: 0, grains: 0, labels: 0 }, pending: null,
+    synced: true, pixels_base: oldKey, pixels_changed: true, source_keys: [copyKey] };
+  const fixtures = [
+    { name: 'stale legacy flag', copy: p, pixels: false, pending: false },
+    { name: 'legacy f32 base matches decimal copy', copy: p, patch: { pixels_base: legacyF32Key }, pixels: false, pending: false },
+    { name: 'legacy false flag with changed copy', copy: changed, patch: { pixels_changed: false }, pixels: false, pending: false },
+    { name: 'legacy undefined flag with changed copy', copy: changed, patch: { pixels_changed: undefined }, pixels: false, pending: false },
+    { name: 'changed mosaic', copy: changed, pixels: true, pending: true },
+    { name: 'changed display tone', copy: toned, pixels: true, pending: true },
+    { name: 'legacy false flag with first mosaic', copy: p, patch: { pixels_base: '[]', pixels_changed: false }, pixels: false, pending: false },
+    { name: 'recorded first mosaic after an empty published project', copy: p, patch: { pixels_base: '[]', pixels_key: key, pixels_changed: false }, pixels: true, pending: true },
+    { name: 'element edit', copy: edited, local: edited, patch: { changes: { spots: 0, grains: 0, labels: 1 }, pending: { ...base, labels: edited.grainatlas_ui.labels } }, pixels: false, pending: true },
+    { name: 'pending snapshot without counts', copy: edited, local: edited, patch: { pending: { ...base, labels: edited.grainatlas_ui.labels } }, pixels: false, pending: true },
+    { name: 'legacy elements in copy', copy: edited, local: edited, patch: { pending: undefined }, pixels: false, pending: true },
+    { name: 'saved key beats older clean copy', copy: p, patch: { pixels_key: pixelSignature(changed) }, pixels: true, pending: true },
+    { name: 'saved clean key beats changed copy', copy: changed, patch: { pixels_key: key }, pixels: false, pending: false },
+    { name: 'unknown base', copy: changed, patch: { pixels_base: null }, pixels: false, pending: false },
+    { name: 'damaged base', copy: changed, patch: { pixels_base: 'broken' }, pixels: false, pending: false },
+    { name: 'unpublished legacy images', copy: p, patch: { pixels_base: undefined }, pixels: true, pending: true },
+    { name: 'unpublished without image changes', copy: p, patch: { pixels_base: undefined, pixels_changed: false }, pixels: false, pending: false },
+    { name: 'legacy flag without copy', patch: { source_keys: [] }, pixels: true, pending: true },
+    { name: 'legacy clean without copy', patch: { source_keys: [], pixels_changed: false }, pixels: false, pending: false },
+    { name: 'unlinked copy', copy: p, patch: { mount: null, pixels_changed: false }, pixels: false, pending: true },
+    { name: 'unlinked candidate', patch: { mount: null, source_keys: [], pixels_changed: false, link_candidates: [{}] }, pixels: false, pending: true },
+  ];
+  for (const f of fixtures) {
+    flushWrites(); storage.clear(); saved.length = 0;
+    const draft = { ...clean, ...f.patch };
+    if (f.copy) storage.set(copyKey, JSON.stringify(f.copy));
+    storage.set('grainatlas.draft.synthetic', JSON.stringify(draft));
+    storage.set('grainatlas.drafts', JSON.stringify([draft.uuid]));
+    app.project = structuredClone(f.local ?? p); app.adopt(app.project);
+    app.pkg = null; app.bundle = null; app.remote = null; app.stitched = {};
+    const session = new SyncSession(app);
+    session.draft = draft; session.registered = true; session.reachable = true;
+    session.status = { revision: 2, atlas_version: 1 };
+    const status = draftSyncStatus(draft);
+    assert.equal(status.pixels, f.pixels, f.name);
+    assert.equal(status.pending, f.pending, f.name);
+    assert.equal(hasPendingChanges(draft), f.pending, f.name);
+    assert.equal(listDrafts().filter(d => hasPendingChanges(d)).length, f.pending ? 1 : 0, f.name);
+    const events = [];
+    new HostedSync(event => events.push(event)).drafts([draft]);
+    assert.equal(events[0].drafts.length, f.pending ? 1 : 0, f.name);
+    if (f.pending) assert.equal(events[0].drafts[0].changes.pixels, f.pixels, f.name);
+    const before = [...storage];
+    session.track(false);
+    assert.equal(session.pixelsChanged, f.pixels, f.name);
+    assert.equal(session.unsynced, f.pending, f.name);
+    assert.equal(session.text.includes('New images not published'), f.pixels, f.name);
+    if (!f.pending) assert.equal(session.text, 'In sync · v1 r2', f.name);
+    assert.equal(session.draft.pixels_changed, f.pixels, f.name);
+    assert.deepEqual([...storage], before, 'tracking defers persistence until after paint');
+    flushWrites();
+    assert.equal(JSON.parse(storage.get('grainatlas.draft.synthetic')).pixels_changed, f.pixels, f.name);
+    if (f.copy) assert.equal(storage.get(copyKey), JSON.stringify(f.copy), 'healing retains the project copy');
+  }
+});
+
+test('live pixels override recorded keys and copies, and track the current key after paint', async () => {
+  flushWrites(); storage.clear(); saved.length = 0;
+  app.project = structuredClone(source); app.adopt(app.project);
+  app.pkg = { name: 'Synthetic' }; app.bundle = null; app.remote = null;
+  app.stitched = { area: { mosaic: structuredClone(source.areas[0].mosaic) } };
+  const key = pixelSignature(app.fullProject());
+  const session = new SyncSession(app);
+  session.draft = { uuid: source.uuid, name: source.name, mount: 'mount', base: session.elements, synced: true,
+    changes: { spots: 0, grains: 0, labels: 0 }, pending: null, pixels_base: key, pixels_key: '[]', pixels_changed: true };
+  assert.equal(session.pixelsChanged, false, 'live clean key wins over saved changed key');
+  // UI processing controls alone must not recreate the stale flag after sync.
+  app.params.area.stitch = { changed: true }; app.params.area.photometric = { changed: true }; app.params.area.blend = { changed: true };
+  assert.equal(session.pixelsChanged, false);
+  app.stitched.area.mosaic.sha256 = 'new-pixels';
+  assert.equal(session.pixelsChanged, true, 'a real correction changes the mosaic hash');
+  session.registered = true; session.reachable = true;
+  await session.action();
+  assert.equal(session.dialog, 'pixels', 'real image changes still open the pixels dialog');
+  saved.length = 0;
+  session.track(false);
+  assert.equal(saved.length, 0);
+  assert.equal(session.draft.pixels_key, pixelSignature({ ...app.fullProject(), areas: app.project.areas.map(a => ({ ...a, mosaic: app.stitched[a.id].mosaic })) }));
+  assert.equal(session.draft.pixels_changed, true);
+  flushWrites();
+  assert.equal(JSON.parse(storage.get('grainatlas.draft.synthetic')).pixels_key, session.draft.pixels_key);
+  app.pkg = null; app.stitched = {};
+  assert.equal(session.pixelsChanged, true, 'recorded key survives unloading');
+  assert.equal(hasPendingChanges(session.draft), true);
+  assert.equal(pixelsPending({ ...session.draft, pixels_base: null }), false);
+});
+
+test('unloaded session status reads do not flush a pending project serialisation', () => {
+  flushWrites(); storage.clear(); saved.length = 0;
+  app.project = structuredClone(source); app.adopt(app.project);
+  app.pkg = null; app.bundle = null; app.remote = null; app.stitched = {};
+  const p = app.fullProject();
+  storage.set('grainatlas.project.Synthetic', JSON.stringify(p));
+  const session = new SyncSession(app);
+  session.draft = { uuid: source.uuid, name: source.name, mount: 'mount', base: session.elements, synced: true,
+    changes: { spots: 0, grains: 0, labels: 0 }, pending: null, pixels_base: pixelSignature(p), pixels_changed: true,
+    source_keys: ['grainatlas.project.Synthetic'] };
+  session.track(false); flushWrites(); saved.length = 0;
+  app.labels = [{ id: 'label', area_id: 'area', x_um: 1, y_um: 1, text: 'Synthetic' }];
+  app.persist();
+  assert.equal(session.pixelsChanged, false);
+  assert.equal(session.unsynced, true);
+  assert.equal(session.text.includes('New images not published'), false);
+  assert.equal(saved.length, 0, 'status reads leave project and draft writes coalesced after paint');
+  flushWrites();
+  assert.deepEqual(saved, ['project', 'draft']);
+});
+
+test('opening a view resolves saved pixel status even though view mode does not track', async () => {
+  flushWrites(); storage.clear(); saved.length = 0;
+  app.project = structuredClone(source); app.adopt(app.project);
+  app.pkg = null; app.bundle = null; app.remote = null; app.stitched = {}; app.viewMode = true;
+  const p = app.fullProject(), changed = structuredClone(p);
+  changed.areas[0].mosaic.sha256 = 'new-pixels';
+  const draft = { uuid: source.uuid, name: source.name, mount: 'mount', base: { spots: [], grains: [], labels: [] }, synced: true,
+    changes: { spots: 0, grains: 0, labels: 0 }, pending: null, pixels_base: pixelSignature(p), pixels_key: pixelSignature(changed), pixels_changed: false };
+  storage.set('grainatlas.draft.synthetic', JSON.stringify(draft));
+  storage.set('grainatlas.drafts', JSON.stringify([draft.uuid]));
+  const session = new SyncSession(app);
+  session.api = async () => ({ lookup: async () => null, candidates: async () => [] });
+  try {
+    await session.check();
+    assert.equal(session.pixelsChanged, true);
+    assert.equal(hasPendingChanges(session.draft), true);
+    assert.equal(session.text.includes('New images not published'), true);
+    assert.equal(session.unsynced, false, 'view mode still suppresses the quit warning');
+    session.save({ pixels_base: null });
+    assert.equal(session.pixelsChanged, false, 'a newly learned unknown base refreshes the view');
+  } finally { app.viewMode = false; flushWrites(); }
 });

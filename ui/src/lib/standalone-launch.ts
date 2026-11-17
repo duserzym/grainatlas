@@ -15,7 +15,7 @@ export async function exchangeLaunch(request: StandaloneLaunch, configured: stri
 export async function openStandaloneLaunch(request: StandaloneLaunch) {
   const { current, tabs } = await import('./store.svelte');
   const { openFromServer, editCopy } = await import('./remote');
-  const { listDrafts } = await import('./drafts');
+  const { hasPendingChanges, listDrafts } = await import('./drafts');
   const { chooseOpenTab, existingProject } = await import('./open-target');
   // The project's own tab, else the empty active tab, else a new one: never another project's tab.
   const app = chooseOpenTab(tabs.list, current(), () => tabs.add(), request.project);
@@ -39,7 +39,7 @@ export async function openStandaloneLaunch(request: StandaloneLaunch) {
       app.draftHere = app.sync.draft?.base_revision ?? 'unknown';
       await app.sync.check(); await focus(); return;
     }
-    const draft = listDrafts(accepted.server).find(d => d.uuid === request.project && (d.pending || d.changes === null || d.pixels_changed));
+    const draft = listDrafts(accepted.server).find(d => d.uuid === request.project && (d.changes === null || hasPendingChanges(d)));
     if (!(await openFromServer(accepted.server, request.project, null, null, null, app))) return;
     if (draft) { await editCopy(app); app.draftHere = app.sync.draft?.base_revision ?? draft.base_revision ?? 'unknown'; }
     await focus();

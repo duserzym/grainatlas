@@ -1,7 +1,8 @@
 import { canWrite } from './presentation.ts';
 import { appStorage } from './app-storage.ts';
 import type { Project } from './core/types.ts';
-import { diffElements, elementsOf, emptyElements, hasChanges, withoutBlankArtifacts, type Counts, type Elements, type ReadElements } from './sync.ts';
+import { diffElements, elementsOf, emptyElements, withoutBlankArtifacts, type Counts, type Elements, type ReadElements } from './sync.ts';
+import { draftSyncStatus } from './sync-status.ts';
 export const DRAFT_PREFIX = 'grainatlas.draft.';
 export const DRAFT_INDEX = 'grainatlas.drafts';
 const DISCARDED = 'grainatlas.discarded-drafts';
@@ -21,7 +22,7 @@ export interface Draft {
   linked_uuid?: string; link_offered?: boolean; link_conflict?: boolean; link_candidates?: import('./sync-api').Candidate[];
   /** Opaque hashes returned by the server, never computed by the browser. */
   base_hashes?: Record<keyof Counts, string> | null; synced?: boolean; synced_at?: string;
-  source_keys?: string[]; pixels_base?: string | null; pixels_changed?: boolean;
+  source_keys?: string[]; pixels_base?: string | null; pixels_key?: string; pixels_changed?: boolean;
   /** Items the last partial sync held back (contract 2026-11); they stay in the pending changes. */
   held_back?: import('./sync').HeldItem[];
   /** The sync request awaiting a reply: a retry of the same body reuses its id. */
@@ -124,10 +125,7 @@ export function draftElements(draft: Draft, storage?: DraftStorage): Elements | 
 }
 /** Pending-list eligibility is read-only; unlinked copies remain available for linking. */
 export function hasPendingChanges(draft: Draft, storage?: DraftStorage): boolean {
-  if (draft.pixels_changed || hasChanges(draft.changes)) return true;
-  const elements = draftElements(draft, storage);
-  if (elements && (elements.spots.length || elements.grains.length || elements.labels.length)) return true;
-  return !draft.mount && (!!draft.link_candidates?.length || !!storedDraftProject(draft, storage));
+  return draftSyncStatus(draft, storage).pending;
 }
 /** Only call after the separate, explicit stored-copy deletion confirmation. */
 export function deleteDraftCopies(draft: Draft, storage?: DraftStorage): void {

@@ -2,7 +2,8 @@
 import { ATLAS_EVENTS, atlasStatus, atlasDrafts, atlasSynced, commandResult, isBridgeCommand, isHosted, notify,
   type AtlasStatusEvent, type AtlasSyncedEvent, type BridgeCommand, type BridgeEvent, type CommandResult } from '@lab/bridge';
 import { SyncApiError } from './sync-api.ts';
-import { hasPendingChanges, type Draft } from './drafts.ts';
+import type { Draft } from './drafts.ts';
+import { draftSyncStatus } from './sync-status.ts';
 export type AtlasCommand = Exclude<BridgeCommand, { type: 'focus-spot' | 'focus-grain' | 'review-spots' | 'set-presentation' }>;
 export class HostedSync {
   private lastStatus = '';
@@ -17,7 +18,10 @@ export class HostedSync {
     if (force || key !== this.lastStatus) { this.lastStatus = key; this.send(event); }
   }
   drafts(drafts: Draft[], force = false) {
-    const event = atlasDrafts({ type: ATLAS_EVENTS.drafts, drafts: drafts.filter(d => hasPendingChanges(d)).map(d => ({ project: d.uuid, name: d.name, mount: d.mount, baseRevision: d.base_revision, updatedAt: d.updated_at, changes: { ...(d.changes ?? { spots: 0, grains: 0, labels: 0 }), pixels: !!d.pixels_changed } })) });
+    const event = atlasDrafts({ type: ATLAS_EVENTS.drafts, drafts: drafts.flatMap(d => {
+      const status = draftSyncStatus(d);
+      return status.pending ? [{ project: d.uuid, name: d.name, mount: d.mount, baseRevision: d.base_revision, updatedAt: d.updated_at, changes: { ...(d.changes ?? { spots: 0, grains: 0, labels: 0 }), pixels: status.pixels } }] : [];
+    }) });
     if (!event) throw new Error('Invalid atlas drafts');
     const key = JSON.stringify(event);
     if (force || key !== this.lastDrafts) { this.lastDrafts = key; this.send(event); }
