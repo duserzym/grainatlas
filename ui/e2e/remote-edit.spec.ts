@@ -57,7 +57,7 @@ function readStoredZip(zip: Buffer): Map<string, Buffer> {
   return files;
 }
 
-async function mockServer(page: Page, onLevelZero = () => {}, unregistered = false) {
+async function mockServer(page: Page, onLevelZero = () => {}, unregistered = false, beforeLevelZero: () => Promise<void> = async () => {}) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
@@ -109,16 +109,23 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
     if (unregistered && pathname === `/v1/atlas/projects/${projectId}`) return json({ detail: 'Project not registered.' }, 404);
     if (pathname.startsWith(`/atlas/projects/${projectId}/`)) {
       const relative = pathname.slice(`/atlas/projects/${projectId}/`.length);
-      if (relative.includes('/0/')) onLevelZero();
-      bundleRequests.push({ path: relative, version: atlasVersion });
-      const uploaded = uploads.at(-1);
+      if (relative.includes('/0/')) { onLevelZero(); await beforeLevelZero(); }
+      const requestedVersion = Number(url.searchParams.get('version') ?? atlasVersion);
+      // Image files carry the bundle version (immutable caching); atlas.json and the sync check's
+      // project.json ask for the latest bundle.
+      if (relative.endsWith('.webp')) expect(url.searchParams.has('version')).toBe(true);
+      expect(requestedVersion).toBeGreaterThan(0);
+      expect(requestedVersion).toBeLessThanOrEqual(atlasVersion);
+      bundleRequests.push({ path: relative, version: requestedVersion });
+      const fileHeaders = { 'access-control-allow-origin': '*', 'access-control-expose-headers': 'X-Atlas-Version', 'X-Atlas-Version': String(requestedVersion) };
+      const uploaded = requestedVersion > 1 ? uploads[requestedVersion - 2] : undefined;
       if (uploaded) {
         const body = uploaded.get(relative);
         if (!body) throw new Error(`Unexpected uploaded bundle path ${relative}`);
-        return route.fulfill({ headers: { 'access-control-allow-origin': '*' }, body, contentType: relative.endsWith('.webp') ? 'image/webp' : 'application/json' });
+        return route.fulfill({ headers: fileHeaders, body, contentType: relative.endsWith('.webp') ? 'image/webp' : 'application/json' });
       }
       if (!['atlas.json', ...atlas.files.map((f: any) => f.path)].includes(relative)) throw new Error(`Unexpected bundle path ${relative}`);
-      return route.fulfill({ headers: { 'access-control-allow-origin': '*' }, body: await readFile(path.join(generated, relative)), contentType: relative.endsWith('.webp') ? 'image/webp' : 'application/json' });
+      return route.fulfill({ headers: fileHeaders, body: await readFile(path.join(generated, relative)), contentType: relative.endsWith('.webp') ? 'image/webp' : 'application/json' });
     }
     if (pathname === `/v1/atlas/projects/${projectId}`) return json({ project_uuid: projectId, mount_id: mountId, mount_label: 'Synthetic mount', name: project.name,
       package_name: project.package.name, atlas_version: atlasVersion, atlas_bundle_id: `bundle-${atlasVersion}`, revision, counts: { spots: 3, grains: 2, labels: 1, grains_retired: 0, grains_without_atlas_id: 0 },
@@ -206,7 +213,7 @@ test('registration creates and selects a mount when the mount list is empty', as
 
 test('published images support tone, sheets, save, sync and returning to view', async ({ page }) => {
   let levelZeroRequests = 0;
-  const { project, atlas, syncBodies, unexpected } = await mockServer(page, () => levelZeroRequests++);
+  const { project, atlas, syncBodies, unexpected, bundleRequests } = await mockServer(page, () => levelZeroRequests++);
   const ui = project.grainatlas_ui;
   await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
   const nav = page.getByRole('navigation', { name: 'Screens' });
@@ -214,15 +221,22 @@ test('published images support tone, sheets, save, sync and returning to view', 
   const layout = nav.getByRole('button', { name: 'Layout', exact: true });
   await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
   await expect(area).toBeDisabled(); await expect(layout).toBeDisabled();
-  // Canvas may fetch z=0 for drawing; entering Edit alone must not fetch all images.
+  // This small synthetic area fits on Canvas at z=0. Wait for its visible requests
+  // before measuring Edit; background loading still must wait for Area or Layout.
+  await expect.poll(() => levelZeroRequests).toBe(atlas.files.filter((f: any) => f.path.includes('/0/')).length);
   const initial = levelZeroRequests;
   await page.getByTestId('edit-copy').click();
   await expect(area).toBeEnabled(); await expect(layout).toBeEnabled();
   await expect(page.getByTestId('edit-copy')).toHaveText('View');
+  expect(levelZeroRequests).toBe(initial);
+  await expect(page.getByTestId('pixels-loading')).toHaveCount(0);
   await area.click();
   await expect(page.getByTestId('busy')).toHaveCount(0);
+  await expect(page.getByTestId('low-pct')).toBeEnabled();
+  await expect(page.getByTestId('pixels-loading')).toHaveCount(0);
   await expect(page.getByText('Published image from the database. Stitching and shading correction need the raw package.')).toBeVisible();
-  expect(levelZeroRequests).toBeGreaterThan(initial);
+  expect(bundleRequests.filter(r => r.path.includes('/0/')).map(r => r.path).sort()).toEqual(
+    atlas.files.map((f: any) => f.path).filter((name: string) => name.includes('/0/')).sort());
   const histogram = page.locator('svg.hist path').first();
   await expect(histogram).toHaveAttribute('d', /^M0 90 L/);
   const before = await histogram.getAttribute('d');
@@ -283,6 +297,7 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
   await page.getByTestId('edit-copy').click();
   await area.click();
+  await expect(low).toBeEnabled();
   await expect(low).toHaveValue('0');
   await expect(histogram).toHaveAttribute('d', /^M0 90 L/);
   const originalHistogram = await histogram.getAttribute('d');
@@ -321,6 +336,7 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   // v2 means lookup has refreshed after the uploaded project acknowledged pixels.
   await expect(chip).toContainText('In sync · v2');
   await expect(chip).not.toContainText('New images not published');
+  await expect(low).toBeEnabled();
   await expect(low).toHaveValue('0');
   await expect(page.getByTestId('busy')).toHaveCount(0);
   await expect(histogram).toHaveAttribute('d', /^M0 90 L/);
@@ -339,9 +355,11 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
   await page.getByTestId('edit-copy').click();
   await area.click();
+  await expect(low).toBeEnabled();
   await expect(low).toHaveValue('0');
   await expect(page.getByTestId('area-view')).toHaveAttribute('data-live', 'idle');
-  // Every z=0 tile was served from the uploaded bundle; the decoded image matches the bake.
+  // Every z=0 tile was served from the uploaded bundle (the bake changed their hashes, so the
+  // cache cannot answer for them); the decoded image matches the bake.
   await expect.poll(() => tiles.every(tile => bundleRequests.slice(beforeReload).some(r => r.path === tile && r.version === 2))).toBe(true);
   await expect(histogram).toHaveAttribute('d', publishedHistogram!);
   expect(bundleRequests.slice(beforeReload)).toEqual(expect.arrayContaining([
@@ -350,5 +368,64 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   await expect(chip).toContainText('In sync · v2');
   await expect(chip).not.toContainText('New images not published');
   expect(uploads).toHaveLength(1);
+  expect(unexpected).toEqual([]);
+});
+
+
+test('published pixels load without a modal, can stop and retry, and survive a reload in cache', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let levelZeroRequests = 0;
+  const { atlas, unexpected } = await mockServer(page, () => levelZeroRequests++, false, () => gate);
+  const link = `/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`;
+  await page.goto(link);
+  const nav = page.getByRole('navigation', { name: 'Screens' });
+  const area = nav.getByRole('button', { name: 'Area', exact: true });
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  // Leave the Canvas's visible requests held; Edit must not request the rest.
+  await expect(page.getByTestId('busy')).toHaveCount(0);
+  await expect.poll(() => levelZeroRequests).toBe(atlas.files.filter((f: any) => f.path.includes('/0/')).length);
+  const beforeEdit = levelZeroRequests;
+  await page.getByTestId('edit-copy').click();
+  await expect(page.getByTestId('edit-copy')).toHaveText('View');
+  expect(levelZeroRequests).toBe(beforeEdit);
+  await expect(page.getByTestId('pixels-loading')).toHaveCount(0);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__pixelsBusyShown = false;
+    new MutationObserver(records => {
+      if (document.querySelector('[data-testid=busy]') || records.some(record => [...record.addedNodes].some(node =>
+        node instanceof Element && (node.matches('[data-testid=busy]') || node.querySelector('[data-testid=busy]'))))) w.__pixelsBusyShown = true;
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  await area.click();
+  const status = page.getByTestId('pixels-loading');
+  await expect(status).toContainText('Loading full-resolution images:');
+  await expect(page.getByTestId('area-view')).toBeVisible();
+  await expect(page.getByTestId('low-pct')).toBeDisabled();
+  await expect(page.getByTestId('busy')).toHaveCount(0);
+  // Both screens keep navigation available while the image load is in flight.
+  await nav.getByRole('button', { name: 'Canvas', exact: true }).click();
+  await expect(page.locator('.canvas canvas').first()).toBeVisible();
+  await expect(page.getByTestId('tool-spot')).toBeEnabled();
+  await nav.getByRole('button', { name: 'Layout', exact: true }).click();
+  await expect(status).toBeVisible();
+  await area.click();
+  await status.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(status).toContainText('Stopped.');
+  await expect(status.getByRole('button', { name: 'Retry', exact: true })).toBeEnabled();
+  release();
+  await status.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByTestId('low-pct')).toBeEnabled();
+  await expect(status).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__pixelsBusyShown)).toBe(false);
+  const beforeReload = levelZeroRequests;
+  await page.goto(link);
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  await page.getByTestId('edit-copy').click();
+  await area.click();
+  await expect(page.getByTestId('low-pct')).toBeEnabled();
+  await expect(status).toHaveCount(0);
+  expect(levelZeroRequests - beforeReload).toBe(0);
   expect(unexpected).toEqual([]);
 });

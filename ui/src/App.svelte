@@ -19,6 +19,7 @@
   import Layout from './screens/Layout.svelte';
   import Settings from './screens/Settings.svelte';
   import Busy from './components/Busy.svelte';
+  import PixelsLoading from './components/PixelsLoading.svelte';
   import ScaleDialog from './components/ScaleDialog.svelte';
   import SyncChip from './components/SyncChip.svelte';
   import SyncDetails from './components/SyncDetails.svelte';
@@ -126,7 +127,11 @@
   $effect(() => {
     if (app.remote && !app.readOnly && !app.bundle && (app.screen === 'area' || app.screen === 'layout')) {
       const state = current();
-      untrack(() => { void loadPublishedPixels(state); });
+      untrack(() => { if (!state.pixelsLoad) void loadPublishedPixels(state); });
+    }
+    if (!app.remote || app.readOnly) {
+      const state = current();
+      untrack(() => { state.cancelPixelsLoad?.(); state.pixelsLoad = null; });
     }
     if (app.remote && app.readOnly && (app.screen === 'area' || app.screen === 'layout')) app.screen = 'canvas';
   });
@@ -544,12 +549,13 @@
         {/if}
       </div>
     {/if}
-    <div class="screen">
+    <div class="screen" class:pixels-loading={!!app.remote && !app.readOnly && !!app.pixelsLoad && (app.screen === 'area' || app.screen === 'layout')}>
+    {#if app.remote && !app.readOnly && app.pixelsLoad && (app.screen === 'area' || app.screen === 'layout')}<PixelsLoading />{/if}
     {#if isViewer}
       {#if hasMosaic}<Canvas />{:else}<p class="faint small">{app.error || app.notice || 'Waiting for a project.'}</p>{/if}
     {:else if app.screen === 'open'}
       <Open />
-    {:else if app.screen === 'area' && (!app.remote || app.bundle)}
+    {:else if app.screen === 'area'}
       <Area />
     {:else if app.screen === 'canvas'}
       <Canvas />
@@ -689,6 +695,7 @@
     overflow:hidden;
   }
   .screen { position:relative; min-height:0; min-width:0; overflow:hidden; }
+  .screen.pixels-loading { display:grid; grid-template-rows:auto minmax(0,1fr); }
   .notices {
     position:absolute;
     z-index:30;

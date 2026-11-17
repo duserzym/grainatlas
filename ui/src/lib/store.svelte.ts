@@ -284,6 +284,8 @@ class AppState {
   remote = $state<import('./remote').Remote | null>(null);
   bundle = $state<BundleSources | null>(null);
   remoteTiles: import('./remote').RemoteTiles | null = null;
+  pixelsLoad = $state<{ done: number; total: number; error: string | null } | null>(null);
+  cancelPixelsLoad = $state<(() => void) | null>(null);
   /** True while a bundle from a server is shown read-only (before "Edit a copy"). */
   get readOnly(): boolean {
     return presentation.current === 'viewer' || this.viewMode || !!this.remote?.readOnly;

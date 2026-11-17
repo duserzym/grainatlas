@@ -269,3 +269,27 @@ RSS and 11.95 GB peak footprint to 10.5 s, 4.11 GB and 4.11 GB, with the same
 mosaic SHA-256. In the desktop app (`--profile test`) the stitch and the
 histogram now run off the main thread and the histogram needs no rebuild; before,
 the main thread spent about 10 s in two `histogram` rebuilds after the stitch.
+
+## Published image cache
+
+Published image files use a separate persistent IndexedDB database named
+`grainatlas-image-cache`, in the browser or desktop webview profile. SHA-256
+content hashes from atlas.json identify the compressed bytes; a download is
+stored only after its hash matches. This cache has a 1 GB cap and evicts the
+least recently used files down to 800 MB when it exceeds that cap. Settings →
+Appearance and layout shows the size and offers Clear image cache. This does
+not clear projects or drafts. Storage failures fall back to network loading.
+Versioned file URLs also use normal HTTP caching.
+
+Opening Area or Layout for an editable server project loads full-resolution
+images in the background, starting with the selected area. At most 16 tile
+requests are in flight and at most 64 compressed tiles are held ahead of the
+assembler (across areas); up to 8 tiles decode in parallel, and there is one
+assembled full-resolution area image in JavaScript at a time. On a synthetic
+mount of 2129 tiles (`examples/large_bundle.rs`, `ui/e2e/perf-area.spec.ts`) the
+Area image appears in 0.2 s instead of after a 7 to 44 s modal, and a second
+open needs no downloads and is editable in about 3.5 s. Area draws the published
+pyramid during loading. The status line offers Stop and Retry, and Canvas stays
+usable. Tone, print sheets and publishing loaded pixels become available only
+after every area has finished. The loader sends the current grains to the core
+at the end so Canvas edits made during the download are retained.

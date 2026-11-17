@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { appStorage } from '../lib/app-storage';
+  import { imageCache } from '../lib/tile-cache';
   import { app } from '../lib/store.svelte';
   import ThemeSwitch from '../components/ThemeSwitch.svelte';
   import UpdatesPanel from '../components/UpdatesPanel.svelte';
@@ -10,6 +11,20 @@
 
   let openId = $state('');
   let storageText = $state('');
+  let cacheText = $state('Image cache: checking…');
+  let clearingCache = $state(false);
+  async function cacheSize() {
+    const size = await imageCache.size();
+    cacheText = size === null ? 'Image cache unavailable.' : `Image cache: ${(size / 1_000_000).toFixed(1)} MB of 1 GB.`;
+  }
+  async function clearCache() {
+    clearingCache = true;
+    const cleared = await imageCache.clear();
+    await cacheSize();
+    if (!cleared) cacheText = 'Image cache could not be cleared.';
+    clearingCache = false;
+  }
+  onMount(() => { void cacheSize(); });
   onMount(() => { void appStorage.usageText().then(text => { storageText = text; }); });
 
   const hosted = app.hosted;
@@ -147,6 +162,10 @@
   <div class="glass panel">
     <h2>Appearance and layout</h2>
     <p class="faint small" data-testid="app-storage-size" style="overflow-wrap: anywhere">{storageText}</p>
+    <div class="openrow">
+      <span class="faint small grow" data-testid="image-cache-size">{cacheText}</span>
+      <button onclick={clearCache} disabled={clearingCache}>Clear image cache</button>
+    </div>
     <div class="field">Theme <ThemeSwitch labels /></div>
     <div class="openrow">
       <p class="faint small grow">Panel positions and folded panels are remembered on this computer{app.hosted ? '' : ', and the desktop app remembers its window'}. Reset puts everything back where it starts.</p>

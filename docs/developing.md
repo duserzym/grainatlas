@@ -213,9 +213,22 @@ All of this is optional; without a server grainatlas works as before.
   or Settings → "Open a published project", reads
   `<base>/atlas/projects/<id>/` and shows the bundle read-only (tiles straight
   from the server, nothing stitched). **Edit a copy** makes it a local
-  project with the same id. Area and Layout then load the published images
-  (full-resolution tiles) into the core: the tone can be adjusted on top of
-  the published image and print sheets made again from the current grains.
+  project with the same id. Opening Area or Layout starts loading the
+  full-resolution images in the background, with the current area first.
+  Area shows the published pyramid immediately, and area switching and Canvas
+  editing stay available. The status line offers Stop and Retry. Tone and print
+  sheets become editable after every area finishes; sync never publishes a
+  partially loaded image bundle. Entering Edit alone does not start this load.
+  Downloaded image files are checked against atlas.json's SHA-256 hashes and
+  cached by content in the separate IndexedDB database `grainatlas-image-cache`
+  in this browser or desktop webview profile. The cache persists between
+  sessions, has a 1 GB cap, and evicts the least recently used files down to
+  800 MB when full. Settings → Appearance and layout shows its size and offers
+  **Clear image cache**. Clearing it leaves project and draft storage intact.
+  If storage is unavailable, files still load from the network. Versioned file
+  URLs also allow the browser's normal HTTP cache to reuse unchanged files.
+  The tone can then be adjusted on top of the published image and print sheets
+  made again from the current grains.
   Stitching and shading correction still need the raw package; opening it
   later picks the project up. A tone change is saved as
   `grainatlas_ui.bundle_tone` and published as a new atlas version; the raw
