@@ -125,9 +125,9 @@ impl TM4000Package {
                 }
                 // The navigation image's frame: the area's drawn rectangle (CenterX/Y,
                 // AreaWidth/Height) is in its display pixels (`ownership::drawn_area_nm`).
-                for k in ["ImageInfoPixelSize", "ImageInfoWidth", "ImageDispInfoWidth", "ImageInfoTopLeftStagePositionX", "ImageInfoTopLeftStagePositionY", "ImageInfoBottomRightStagePositionX", "ImageInfoBottomRightStagePositionY"] {
-                    if let Some(v) = meta.get(&format!("zag.{k}")) {
-                        ameta.insert(format!("zag.{k}"), v.clone());
+                for key in crate::ownership::NAVIGATION_KEYS {
+                    if let Some(v) = meta.get(key) {
+                        ameta.entry(key.to_string()).or_insert_with(|| v.clone());
                     }
                 }
             }

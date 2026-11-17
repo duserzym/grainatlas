@@ -16,3 +16,10 @@ export function ownerLegend(grains: readonly Pick<Grain, 'id' | 'artifact'>[], o
   const ids = [...areas.map((a) => a.id), ...[...counts.keys()].filter((id) => !areas.some((a) => a.id === id))];
   return ids.filter((id) => counts.has(id)).map((area) => ({ area, count: counts.get(area)!, colour: ownerColourToken(area, areas) }));
 }
+
+/** Resolve a spot's sample and report a duplicate held by a different sample. */
+export function spotSample(grainSample: string | null | undefined, areaSample: string, owner: Pick<GrainOwner, 'duplicate_of'> | null | undefined, ownerGrainSample: string | null | undefined, ownerAreaSample: string): { sample: string; conflict: string | null } {
+  const sample = grainSample || areaSample;
+  const heldBy = ownerGrainSample || ownerAreaSample;
+  return { sample, conflict: owner?.duplicate_of && heldBy !== sample ? heldBy : null };
+}

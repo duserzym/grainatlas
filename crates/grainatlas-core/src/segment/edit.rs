@@ -247,6 +247,7 @@ fn apply(w: &WorkImage, stroke: &Local, base: Option<&Grain>, op: Op, simplify_p
         g.id = b.id;
         g.number = b.number;
         g.label = b.label.clone();
+        g.sample = b.sample.clone();
         g.kept = b.kept;
     } else {
         g.number = 0;
@@ -322,11 +323,13 @@ mod tests {
     fn new_add_and_cut() {
         let (_, w) = scene();
         let rect = |x0: f64, y0: f64, x1: f64, y1: f64| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-        let g = outline_grain(&w, &rect(40.0, 40.0, 70.0, 80.0), None, Op::New, 0.8).unwrap();
+        let mut g = outline_grain(&w, &rect(40.0, 40.0, 70.0, 80.0), None, Op::New, 0.8).unwrap();
+        g.sample = Some("S1".into());
         assert!(g.drawn && g.manual && (g.area_um2 - 1200.0).abs() < 80.0, "{}", g.area_um2);
         // Add the other half, overlapping a little: one grain, same id.
         let a = outline_grain(&w, &rect(65.0, 40.0, 100.0, 80.0), Some(&g), Op::Add, 0.8).unwrap();
         assert_eq!(a.id, g.id);
+        assert_eq!(a.sample, g.sample);
         assert!((a.area_um2 - 2400.0).abs() < 120.0, "{}", a.area_um2);
         // A stroke beside the grain, not touching it, is joined too.
         let j = outline_grain(&w, &rect(73.0, 50.0, 90.0, 70.0), Some(&g), Op::Add, 0.8).unwrap();
@@ -334,6 +337,7 @@ mod tests {
         // Cut the right half off again.
         let c = outline_grain(&w, &rect(70.0, 30.0, 110.0, 90.0), Some(&a), Op::Cut, 0.8).unwrap();
         assert_eq!(c.id, g.id);
+        assert_eq!(c.sample, g.sample);
         assert!((c.area_um2 - 1200.0).abs() < 80.0, "{}", c.area_um2);
         // Cutting everything leaves nothing; cutting with no grain does nothing.
         assert!(outline_grain(&w, &rect(30.0, 30.0, 110.0, 90.0), Some(&a), Op::Cut, 0.8).is_none());

@@ -10,7 +10,7 @@ export const CHECK_TITLES: Record<string, string> = {
   n_gap: 'Gaps in n',
   n_reused: 'n used in several samples',
   overlap: 'Overlapping spots',
-  sample_mismatch: "Sample differs from the area's",
+  sample_mismatch: "Sample differs from its grain's or area's",
   pattern_mismatch: 'Names off the pattern',
   no_label: 'Spots without an acquisition label',
   no_spot: 'Labels without a spot',
@@ -43,7 +43,7 @@ export function findingsSummary(findings: Finding[]): string {
       case 'n_gap': return `${rows.length} ${rows.length === 1 ? 'sample' : 'samples'} with gaps in n`;
       case 'n_reused': return spotPhrase('sharing n across samples');
       case 'overlap': return areaPhrase('with overlapping spots');
-      case 'sample_mismatch': return spotPhrase("with a sample different from its area's", "with samples different from their areas'");
+      case 'sample_mismatch': return spotPhrase("with a sample different from its grain's or area's", "with samples different from their grains' or areas'");
       case 'no_label': return areaPhrase('with spots without acquisition labels');
       case 'no_spot': return `${rows.length} ${rows.length === 1 ? 'group' : 'groups'} of labels without a spot`;
       case 'near_miss': return `${rows.length} suggested ${rows.length === 1 ? 'rename' : 'renames'}`;

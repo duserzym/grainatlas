@@ -242,6 +242,8 @@ pub struct Grain {
     /// Stable display label, including split suffixes; old projects use the number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<String>,
     pub polygon_um: Vec<[f64; 2]>,
     pub bbox_um: [f64; 4],
     pub centroid_um: [f64; 2],
@@ -494,6 +496,7 @@ pub fn number(grains: &mut [Grain], previous: &[Grain], tolerance: f64) {
             g.id = q.id;
             g.number = q.number;
             g.label = q.label.clone();
+            g.sample = q.sample.clone();
             g.manual = q.manual;
             g.added = q.added;
             // The user's decisions carry over: kept as a grain, or marked as an artifact.
@@ -683,6 +686,7 @@ pub(crate) fn split_grain_for_signal(w: &WorkImage, g: &Grain, line: [f64; 4], s
         let part: Vec<bool> = part.iter().enumerate().map(|(i, &v)| v && shape::inside_polygon_px(g, w.um_per_px, origin, i % bw, i / bw)).collect();
         if let Some(mut ng) = shape::grain_from_mask(&part, bw, bh, origin, w, simplify_px, true) {
             ng.number = 0;
+            ng.sample = g.sample.clone();
             // One cut detaches a bubble: a round part far darker than the epoxy is flagged.
             if signal == Signal::Cl && filter::looks_like_bubble(&ng, g, w) {
                 ng.artifact = Some(Artifact::Bubble);
@@ -722,6 +726,7 @@ pub fn merge_grains(w: &WorkImage, gs: &[Grain], simplify_px: f64) -> Option<Gra
     m = morph::fill_holes(&m, bw, bh);
     let mut g = shape::grain_from_mask(&m, bw, bh, origin, w, simplify_px, true)?;
     g.id = first.id;
+    g.sample = first.sample.clone();
     g.number = gs.iter().map(|q| q.number).min().unwrap_or(0);
     Some(g)
 }
@@ -734,6 +739,7 @@ pub fn refine_grain(w: &WorkImage, g: &Grain, simplify_px: f64) -> Option<Grain>
     ng.id = g.id;
     ng.number = g.number;
     ng.label = g.label.clone();
+    ng.sample = g.sample.clone();
     Some(ng)
 }
 

@@ -116,10 +116,15 @@ export function groupedGrains(grains: ReadGrain[], previous: Record<string, Grai
 }
 export function uiSpots(spots: SyncSpot[], grains: ReadGrain[], previous: Spot[] = [], samples: Record<string, string> = {}): Spot[] {
   const old = new Map(previous.map(s => [s.id, s]));
-  return spots.filter(s => s.id != null).map(s => ({
-    sample: samples[s.area_id] ?? '', n: 1, created: '', created_by: '', ...old.get(s.id), ...s,
-    grain_number: grains.find(g => g.id === s.grain_id)?.number ?? null,
-  }));
+  const byGrain = new Map(grains.filter(g => g.id != null).map(g => [g.id, g]));
+  return spots.filter(s => s.id != null).map(s => {
+    const grain = s.grain_id ? byGrain.get(s.grain_id) : undefined;
+    return {
+      n: 1, created: '', created_by: '', ...old.get(s.id), ...s,
+      sample: grain?.sample || (old.get(s.id)?.sample ?? samples[s.area_id] ?? ''),
+      grain_number: grain?.number ?? null,
+    };
+  });
 }
 /** JSON float spelling is irrelevant; tolerate database geometry rounding. */
 const equal = (a: unknown, b: unknown): boolean => {

@@ -4,6 +4,7 @@ import { errorSentence } from './sync-api.ts';
 // Studio shell. Not hosted, the bridge's open() resolves false.
 
 import type { Grain, Spot } from './core/types';
+import type { SyncSpot } from './sync';
 
 /** The UPbDB link for a spot: its acquisition when known, else a search by label (= spot name). */
 export function spotLink(s: Pick<Spot, 'name' | 'acquisition_id'>): string {
@@ -251,8 +252,19 @@ export function mountSpotDocuments(project: import('./core/types').Project, spot
   return { documents, skipped };
 }
 
-// Instrument labels belong to acquisitions, independently of physical spot links.
-const acquisitionLabels = new Map<string, Promise<string[]>>();
+export interface MountAcquisition { id: string; label: string }
+
+/** Only links from the given project spots replace raw instrument labels. */
+export function labelsForChecks(acquisitions: readonly MountAcquisition[], spots: readonly Pick<SyncSpot, 'name' | 'acquisition_ids'>[]): string[] {
+  const linked = new Set(spots.flatMap(s => s.acquisition_ids ?? []));
+  return [...new Set([
+    ...acquisitions.filter(a => !linked.has(a.id)).map(a => a.label),
+    ...spots.filter(s => s.acquisition_ids?.length).map(s => s.name),
+  ])].sort();
+}
+
+// Both acquisition records and the legacy label list share one request cache.
+const acquisitionLabels = new Map<string, Promise<MountAcquisition[]>>();
 const labelsKey = (base: string, mountId: string) => JSON.stringify([base.replace(/\/+$/, ''), mountId.toLowerCase()]);
 
 export function clearMountAcquisitionLabels(base: string, mountId: string) {
@@ -260,27 +272,32 @@ export function clearMountAcquisitionLabels(base: string, mountId: string) {
 }
 
 /** Visible sessions that measured this mount, with at most four session requests in flight. */
-export function mountAcquisitionLabels(base: string, token: string | null, mountId: string): Promise<string[]> {
+export function mountAcquisitions(base: string, token: string | null, mountId: string): Promise<MountAcquisition[]> {
   base = base.replace(/\/+$/, '');
   const key = labelsKey(base, mountId);
   const cached = acquisitionLabels.get(key);
   if (cached) return cached;
   const request = (async () => {
     const sessions = await call<{ id: string }[]>(base, '/v1/sessions', token, { method: 'GET' }, 'Listing acquisition sessions');
-    const labels: string[] = [];
+    const records: MountAcquisition[] = [];
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(4, sessions.length) }, async () => {
       while (next < sessions.length) {
         const session = sessions[next++];
         const mounts = await call<MountOut[]>(base, `/v1/mounts?session=${encodeURIComponent(session.id)}`, token, { method: 'GET' }, 'Listing session mounts');
         if (!mounts.some((m) => m.id.toLowerCase() === mountId.toLowerCase())) continue;
-        const acquisitions = await call<{ instrument_label: string; reference_material_name: string }[]>(base, `/v1/sessions/${encodeURIComponent(session.id)}/acquisitions`, token, { method: 'GET' }, 'Loading acquisition labels');
-        labels.push(...acquisitions.filter((a) => !a.reference_material_name?.trim()).map((a) => a.instrument_label).filter((l) => l?.trim()));
+        const acquisitions = await call<{ id: string; instrument_label: string; reference_material_name: string }[]>(base, `/v1/sessions/${encodeURIComponent(session.id)}/acquisitions`, token, { method: 'GET' }, 'Loading acquisition labels');
+        records.push(...acquisitions.filter((a) => !a.reference_material_name?.trim() && a.instrument_label?.trim()).map((a) => ({ id: a.id, label: a.instrument_label })));
       }
     }));
-    return [...new Set(labels)].sort();
+    return records;
   })();
   acquisitionLabels.set(key, request);
   void request.catch(() => { if (acquisitionLabels.get(key) === request) acquisitionLabels.delete(key); });
   return request;
+}
+
+/** Instrument labels for callers that do not need acquisition links. */
+export async function mountAcquisitionLabels(base: string, token: string | null, mountId: string): Promise<string[]> {
+  return [...new Set((await mountAcquisitions(base, token, mountId)).map(a => a.label))].sort();
 }

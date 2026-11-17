@@ -141,6 +141,7 @@ pub fn grain_from_mask(mask: &[bool], bw: usize, bh: usize, origin: (usize, usiz
         id: crate::project::new_id(),
         number: 0,
         label: None,
+        sample: None,
         polygon_um,
         bbox_um: [x0 - 0.5 * k, y0 - 0.5 * k, x1 + 0.5 * k, y1 + 0.5 * k],
         centroid_um: [cx * k, cy * k],

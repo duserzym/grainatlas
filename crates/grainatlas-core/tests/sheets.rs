@@ -66,6 +66,7 @@ fn grain(x: f64, y: f64, side: f64) -> Grain {
         id: grainatlas_core::project::new_id(),
         number: 0,
         label: None,
+        sample: None,
         polygon_um: vec![
             [x - h, y - h],
             [x + h, y - h],
@@ -2112,6 +2113,41 @@ fn draw(a: &mut AreaRecord, cx: f64, cy: f64, w: f64, h: f64) {
     ] {
         a.area_meta.insert(format!("zag.{k}"), v.to_string());
     }
+}
+
+#[test]
+fn project_restores_navigation_for_drawn_ownership() {
+    let (mut areas, grains) = two_areas();
+    let id = grains["001_S1"][1].id;
+    let params = OwnershipParams::default();
+    assert_eq!(ownership::assign(&areas, &grains, &params).of("001_S1", &id).unwrap().owner_area, "002_S1_2");
+    draw(&mut areas[0], 250.0, 0.0, 500.0, 600.0);
+    draw(&mut areas[1], 900.0, 0.0, 100.0, 100.0);
+    let mut meta = BTreeMap::new();
+    for key in ownership::NAVIGATION_KEYS {
+        meta.insert(key.to_string(), areas[0].area_meta.remove(key).unwrap());
+        areas[1].area_meta.remove(key);
+    }
+    // An existing area value wins, even when the package has a different value.
+    areas[1].area_meta.insert("zag.ImageInfoWidth".into(), "2560".into());
+    let mut other = area("A1", "S2", 0.0, 100, 100);
+    other.area_meta.insert("zag.CenterY".into(), "0".into());
+    areas.push(other.clone());
+    let json = serde_json::json!({
+        "schema_version": 1, "uuid": grainatlas_core::project::new_id(), "name": "S1", "created": "",
+        "package": {"path": "", "reader": "tm4000", "name": "S1", "meta": meta}, "areas": areas,
+    }).to_string();
+    let project = grainatlas_core::project::Project::from_json(&json).unwrap();
+    assert!(ownership::drawn_area_nm(&project.areas[0]).is_some());
+    assert!(ownership::drawn_area_nm(&project.areas[1]).is_some());
+    for key in ownership::NAVIGATION_KEYS {
+        assert_eq!(project.areas[0].area_meta[key], project.package.meta[key]);
+    }
+    assert_eq!(project.areas[1].area_meta["zag.ImageInfoWidth"], "2560");
+    assert_eq!(project.areas[2].area_meta, other.area_meta);
+    let owned = ownership::assign(&project.areas, &grains, &params);
+    assert_eq!(owned.of("001_S1", &id).unwrap().owner_area, "001_S1");
+    assert!(!owned.of("001_S1", &id).unwrap().outside_drawn);
 }
 
 #[test]

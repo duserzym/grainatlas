@@ -278,17 +278,18 @@ pub fn check_project(
             out.push(f);
         }
         if let Some(area) = project.areas.iter().find(|a| a.id == s.area_id) {
-            let sample = if area.sample.is_empty() {
-                &area.name
-            } else {
-                &area.sample
-            };
-            if &s.sample != sample {
+            let grain_sample = stored
+                .or_else(|| hits.first().copied().flatten())
+                .and_then(|g| g.sample.as_deref())
+                .filter(|s| !s.is_empty());
+            let sample = grain_sample.unwrap_or(if area.sample.is_empty() { &area.name } else { &area.sample });
+            let source = if grain_sample.is_some() { "grain" } else { "area" };
+            if s.sample != sample {
                 out.push(finding(
                     "sample_mismatch",
                     &[s],
                     format!(
-                        "{}: sample {:?}, area sample {:?}",
+                        "{}: sample {:?}, {source} sample {:?}",
                         s.name, s.sample, sample
                     ),
                 ));
@@ -586,6 +587,39 @@ mod tests {
         }
         grains.get_mut("a").unwrap()[0].artifact = Some(crate::segment::Artifact::Manual);
         assert!(codes(&p, &grains, &[clean]).contains(&"off_grain".into()));
+    }
+
+    #[test]
+    fn spot_sample_follows_stored_grain_then_centre_then_area() {
+        let p = project();
+        let mut grains = gs();
+        grains.get_mut("a").unwrap()[0].sample = Some("S1".into());
+        let s = spot(100, "a", "S1", 1, 50., 50.);
+        assert!(codes(&p, &grains, std::slice::from_ref(&s)).is_empty());
+        let wrong = spot(100, "a", "S2", 1, 50., 50.);
+        let findings = check_project(&p, &grains, &[wrong], None);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].code, "sample_mismatch");
+        assert!(findings[0].message.contains("sample \"S2\", grain sample \"S1\""));
+        let mismatch = |s: &Spot, gs: &BTreeMap<String, Vec<Grain>>| {
+            check_project(&p, gs, std::slice::from_ref(s), None).into_iter().any(|f| f.code == "sample_mismatch")
+        };
+        // With no stored grain, use the centre hit, even if no grain id was saved.
+        let mut no_id = s.clone();
+        no_id.grain_id = None;
+        assert!(!mismatch(&no_id, &grains));
+        // A stored grain takes priority over a different grain under the centre.
+        let mut stored = grain(3, 2);
+        stored.sample = Some("S2".into());
+        stored.polygon_um.iter_mut().for_each(|p| p[0] += 200.);
+        grains.get_mut("a").unwrap().push(stored);
+        let mut different = s.clone();
+        different.grain_id = Some(Uuid::from_u128(3));
+        assert!(mismatch(&different, &grains));
+        // An empty stored sample falls back to the area, rather than another detection.
+        grains.get_mut("a").unwrap()[1].sample = Some(String::new());
+        let f = check_project(&p, &grains, &[different], None);
+        assert!(f.iter().any(|f| f.code == "sample_mismatch" && f.message.contains("area sample")));
     }
 
     #[test]

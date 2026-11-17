@@ -1,7 +1,7 @@
 // Check results and label sources live in memory, outside the saved project.
 import { current, type AppState } from './store.svelte';
 import { authToken } from './atlas';
-import { clearMountAcquisitionLabels, mountAcquisitionLabels } from './upbdb';
+import { clearMountAcquisitionLabels, labelsForChecks, mountAcquisitions } from './upbdb';
 import { acceptedChecks, findingSignature, findingsSummary } from './check-presentation';
 
 const pending = new WeakSet<AppState>();
@@ -16,9 +16,10 @@ export async function runChecks(app: AppState = current(), refreshLabels = false
     const server = app.server, mount = app.mountId;
     try {
       if (refreshLabels) clearMountAcquisitionLabels(server, mount);
-      labels = await mountAcquisitionLabels(server, await authToken(app), mount);
+      const acquisitions = await mountAcquisitions(server, await authToken(app), mount);
       if (app.project?.uuid !== projectId || app.server !== server || app.mountId !== mount) return [];
-      app.mountLabelsCount = labels.length;
+      app.mountLabelsCount = new Set(acquisitions.map(a => a.label)).size;
+      labels = labelsForChecks(acquisitions, app.spots);
     } catch (e) {
       if (app.project?.uuid !== projectId || app.server !== server || app.mountId !== mount) return [];
       app.checkLabelsError = `Could not load acquisition labels: ${e instanceof Error ? e.message : e}`;

@@ -150,6 +150,7 @@ pub fn pad_outlines(w: &WorkImage, grains: &[Grain], outline: OutlinePad, simpli
         ng.id = g.id;
         ng.number = g.number;
         ng.label = g.label.clone();
+        ng.sample = g.sample.clone();
         ng.manual = g.manual;
         ng.artifact = g.artifact;
         ng.kept = g.kept;

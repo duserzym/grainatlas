@@ -972,6 +972,7 @@ pub fn merge_footprints(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParam
         q.mean_intensity = mean_inside(&w.img, &q, k);
         if let Some(&keep) = ms.iter().max_by(|&&a, &&b| grains[a].area_um2.total_cmp(&grains[b].area_um2)) {
             q.id = grains[keep].id;
+            q.sample = grains[keep].sample.clone();
             q.manual = grains[keep].manual;
         }
         for &i in ms {
@@ -1123,6 +1124,7 @@ pub fn detach_bubbles(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams,
         let keep: Vec<bool> = rl.iter().map(|&v| v as usize == best).collect();
         if let Some(mut q) = shape::grain_from_mask(&keep, bw, bh, o, w, p.simplify_px, false) {
             q.id = g.id;
+            q.sample = g.sample.clone();
             q.manual = g.manual;
             q.mean_intensity = mean_inside(&w.img, &q, k);
             *g = q;
@@ -1202,6 +1204,7 @@ pub fn split_bridged(grains: &mut Vec<Grain>, w: &WorkImage, p: &SegmentParams, 
         pieces[0].id = g.id;
         pieces[0].manual = g.manual;
         for q in pieces.iter_mut() {
+            q.sample = g.sample.clone();
             q.mean_intensity = mean_inside(&w.img, q, k);
         }
         out.extend(pieces);

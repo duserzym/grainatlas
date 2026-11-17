@@ -182,9 +182,20 @@ impl Project {
     }
 
     pub fn from_json(s: &str) -> crate::Result<Project> {
-        let p: Project = serde_json::from_str(s).map_err(|e| crate::Error::Invalid(format!("project.json: {e}")))?;
+        let mut p: Project = serde_json::from_str(s).map_err(|e| crate::Error::Invalid(format!("project.json: {e}")))?;
         if p.schema_version > SCHEMA_VERSION {
             return Err(crate::Error::Unsupported(format!("project schema {} is newer than this grainatlas ({SCHEMA_VERSION})", p.schema_version)));
+        }
+        for area in &mut p.areas {
+            if area.area_meta.contains_key("zag.CenterX") {
+                for key in crate::ownership::NAVIGATION_KEYS {
+                    if !area.area_meta.contains_key(key)
+                        && let Some(value) = p.package.meta.get(key)
+                    {
+                        area.area_meta.insert(key.to_string(), value.clone());
+                    }
+                }
+            }
         }
         Ok(p)
     }

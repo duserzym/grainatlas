@@ -40,7 +40,7 @@
   import { acquisitionPage } from '../lib/upbdb';
   import { findAllGrains, stitch } from '../lib/actions';
   import { autoSignalLabel, grainStatus } from '../lib/grain-status';
-  import { ownerColourToken, ownerLegend } from '../lib/grain-owners';
+  import { ownerColourToken, ownerLegend, spotSample } from '../lib/grain-owners';
 
   import { presentation } from '../lib/presentation';
   import { sendSpotAction } from '../lib/spot-action';
@@ -700,12 +700,13 @@
   function makeSpot(x: number, y: number, kind: SpotKind = 'spot', x2: number | null = null, y2: number | null = null): Spot {
     const g = grainAt(grains, x, y);
     const own = g && owners.get(g.id);
-    if (g && own?.duplicate_of) {
-      const state = current();
+    const state = current();
+    const ownerGrain = own?.duplicate_of ? state.grains[own.owner_area]?.find((q) => q.id === own.duplicate_of) : undefined;
+    const choice = spotSample(g?.sample, sample, own, ownerGrain?.sample, own ? areaLabel(own.owner_area) : '');
+    if (g && own?.duplicate_of && choice.conflict !== null) {
       const ownerId = own.owner_area, grainId = own.duplicate_of;
-      const ownerGrain = state.grains[ownerId]?.find((q) => q.id === grainId);
-      const ownerSample = areaLabel(ownerId);
-      state.notice = `Grain ${grainNumber(g)} here is held by ${ownerSample} (its grain ${ownerGrain ? grainNumber(ownerGrain) : '?'}). This spot is named for ${sample}; if the grain belongs to ${ownerSample}, place the spot there.`;
+      const ownerSample = choice.conflict;
+      state.notice = `Grain ${grainNumber(g)} here is held by ${ownerSample} (its grain ${ownerGrain ? grainNumber(ownerGrain) : '?'}). This spot is named for ${choice.sample}; if the grain belongs to ${ownerSample}, place the spot there.`;
       state.noticeAction = { label: `Go to ${ownerSample}`, run: async () => {
         if (!state.stitched[ownerId] && !(await stitch(ownerId, state))) return;
         state.focusSpot = null;
@@ -718,8 +719,8 @@
     return {
       id: newId(),
       area_id: areaId!,
-      name: formatName(patternFor(areaId!), sample, g?.number ?? null, n),
-      sample,
+      name: formatName(patternFor(areaId!), choice.sample, g?.number ?? null, n),
+      sample: choice.sample,
       grain_id: g?.id ?? null,
       grain_number: g?.number ?? null,
       n,

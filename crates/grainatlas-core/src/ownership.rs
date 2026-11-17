@@ -1,7 +1,7 @@
 //! Cross-area grain ownership within one mount.
 //!
-//! In a zigzag package neighbouring areas overlap (100 to 850 um on the Boise
-//! TM4000 runs), so one grain is detected in several areas. Every detection is
+//! In a zigzag package neighbouring areas overlap (100 to 850 um on TM4000 runs, more than a
+//! grain row on some mounts), so one grain is detected in several areas. Every detection is
 //! mapped mosaic → stage (as [`AreaRecord::stage_of`]) and from the stage into
 //! every other area; detections of the same grain are linked. The grain is owned
 //! by the area whose operator-drawn rectangle ([`drawn_area_nm`], the smallest one
@@ -12,8 +12,11 @@
 //! mosaic; a grain cut by an area's edge then always loses to one that is whole.
 //! The others are duplicates of the owner's grain.
 //!
-//! Areas whose names differ only by a `_N` suffix (`KH2-30.7` and
-//! `KH2-30.7_2`) are one sample.
+//! The rectangles need the navigation-frame keys ([`NAVIGATION_KEYS`]) in each area's
+//! metadata; projects made before the reader copied them get them from the package
+//! metadata when loaded (`Project::from_json`).
+//!
+//! Areas whose names differ only by a `_N` suffix (`S1` and `S1_2`) are one sample.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +25,17 @@ use uuid::Uuid;
 
 use crate::project::AreaRecord;
 use crate::segment::Grain;
+
+/// Package navigation-frame keys needed to map operator-drawn rectangles to the stage.
+pub const NAVIGATION_KEYS: [&str; 7] = [
+    "zag.ImageInfoPixelSize",
+    "zag.ImageInfoWidth",
+    "zag.ImageDispInfoWidth",
+    "zag.ImageInfoTopLeftStagePositionX",
+    "zag.ImageInfoTopLeftStagePositionY",
+    "zag.ImageInfoBottomRightStagePositionX",
+    "zag.ImageInfoBottomRightStagePositionY",
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -126,7 +140,7 @@ impl Ownership {
     }
 }
 
-/// `KH2-30.7_2` → `KH2-30.7`; names without a numeric `_N` suffix are returned as they are.
+/// `S1_2` → `S1`; names without a numeric `_N` suffix are returned as they are.
 pub fn strip_suffix(name: &str) -> &str {
     match name.rsplit_once('_') {
         Some((base, n)) if !base.is_empty() && !n.is_empty() && n.len() <= 2 && n.bytes().all(|b| b.is_ascii_digit()) => base,
