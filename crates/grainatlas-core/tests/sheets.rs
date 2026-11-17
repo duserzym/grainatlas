@@ -3043,3 +3043,100 @@ fn stage_boxes_match_the_inset_fixture() {
         }
     }
 }
+
+fn golden_mount() -> (SheetParams, Vec<AreaRecord>, BTreeMap<String, Vec<Grain>>) {
+    let mut recs = vec![area("A1", "zr-1", 0.0, 3200, 1000), area("A2", "zr-2", -10_000_000.0, 300, 3200), area("A3", "zr-3", -20_000_000.0, 1400, 400)];
+    let mut gs = BTreeMap::from([
+        ("A1".into(), (0..20).map(|i| grain(100.0 + 150.0 * i as f64, 100.0, 60.0)).chain([grain(200.0, 800.0, 60.0)]).collect::<Vec<_>>()),
+        ("A2".into(), (0..20).map(|i| grain(100.0, 100.0 + 150.0 * i as f64, 60.0)).collect()),
+        ("A3".into(), [100.0, 200.0, 300.0, 1000.0, 1100.0, 1200.0].into_iter().map(|x| grain(x, 200.0, 60.0)).collect()),
+    ]);
+    let mut id = 1;
+    for (ai, rec) in recs.iter_mut().enumerate() {
+        rec.uuid = uuid::Uuid::from_u128(100 + ai as u128);
+        for (i, g) in gs.get_mut(&rec.id).unwrap().iter_mut().enumerate() {
+            g.id = uuid::Uuid::from_u128(id);
+            g.number = i as u32 + 1;
+            id += 1;
+        }
+    }
+    let p = SheetParams { paper: "letter".into(), context_um: 140.0, min_cluster_grains: 3, printed: "2000-01-01".into(), ..fast_sheets() };
+    (p, recs, gs)
+}
+
+#[test]
+fn sheets_golden_registration_and_svg() {
+    use sha2::{Digest, Sha256};
+    let (p, recs, gs) = golden_mount();
+    let first = field_sheets(&p, &recs, &gs);
+    let second = field_sheets(&p, &recs, &gs);
+    let registration = serde_json::to_string(&first.registration).unwrap();
+    let hashes: Vec<String> = first.pages.iter().map(|s| format!("{:x}", Sha256::digest(s.as_bytes()))).collect();
+    assert_eq!(registration, serde_json::to_string(&second.registration).unwrap());
+    assert_eq!(first.pages, second.pages);
+    assert_eq!(first.stats, second.stats);
+    assert!(first.pages.len() >= 2);
+    assert_eq!(first.registration.strays.len(), 1);
+    assert!(first.registration.bands.iter().any(|b| b.cut_sources.iter().any(|s| s == "width")));
+    assert!(first.registration.bands.iter().any(|b| b.cut_sources.iter().any(|s| s.starts_with("height_"))));
+    assert!(first.registration.bands.iter().any(|b| !b.repeated_um.is_empty()));
+    assert!(first.pages.iter().any(|s| s.contains(">//</text>")));
+    assert_eq!(serde_json::to_string(&first.stats).unwrap(), r#"{"sheets":4,"bands":8,"grains":46,"duplicates":0,"filtered":0,"artifacts":0,"stripped":0,"strip_refused":0,"isolated":0,"cuts":4,"forced_cuts":0,"worst_repeated_fraction":0.13810101010100945,"clusters":4,"strays":1,"fill":{"band_area":0.07053367605171118,"line_width":0.32539230574538097,"repeated":0.07718453476844639,"empty_epoxy":0.14133975357598075},"header_mm":[50.0,36.0],"height_budget":[{"sheet":1,"header_mm2":13169.999999999998,"footer_margins_mm2":9249.200000000003,"labels_notes_mm2":6953.76,"band_mm2":6210.75,"empty_epoxy_mm2":344.5,"blank_below_mm":2.842170943040401e-14,"blank_right_mm2":24738.75,"other_line_mm2":0.0},{"sheet":2,"header_mm2":9482.4,"footer_margins_mm2":9249.200000000003,"labels_notes_mm2":2317.92,"band_mm2":1859.0,"empty_epoxy_mm2":529.75,"blank_below_mm":6.100000000000023,"blank_right_mm2":35807.2,"other_line_mm2":0.0},{"sheet":3,"header_mm2":9482.4,"footer_margins_mm2":9249.200000000003,"labels_notes_mm2":2317.92,"band_mm2":1612.0,"empty_epoxy_mm2":523.25,"blank_below_mm":25.100000000000023,"blank_right_mm2":31049.6,"other_line_mm2":0.0},{"sheet":4,"header_mm2":9482.4,"footer_margins_mm2":9249.200000000003,"labels_notes_mm2":2317.92,"band_mm2":1792.375,"empty_epoxy_mm2":224.25,"blank_below_mm":87.22500000000001,"blank_right_mm2":7647.9974999999995,"other_line_mm2":6857.502499999999}],"bands_outside_body":0,"grains_cut":0,"grains_twice":0,"grains_unmarked":0}"#);
+    // Recorded before splitting the layout stages; compare bytes, including field order.
+    assert_eq!(registration, r#"{"project_uuid":null,"project_path":"","frame":"print_sheet","note":"paper sheet <-> grainatlas mosaic; not the laser stage registration","package":"","project":"","paper":"letter landscape 279.4 x 215.9 mm","paper_mm":[279.4,215.9],"um_per_mm":8.0,"scale":"fixed","sheet_origin":"sheet top-left corner, mm, y down","mapping":"mosaic_um = mosaic_rect_um[0:2] + (sheet_mm - sheet_rect_mm[0:2]) * um_per_mm","registration_file":"_print_registration.json","body_rect_mm":[8.0,45.0,271.4,202.9],"sheet_bodies":[{"sheet":1,"header_mm":50.0,"body_rect_mm":[8.0,59.0,271.4,202.9]},{"sheet":2,"header_mm":36.0,"body_rect_mm":[8.0,45.0,271.4,202.9]},{"sheet":3,"header_mm":36.0,"body_rect_mm":[8.0,45.0,271.4,202.9]},{"sheet":4,"header_mm":36.0,"body_rect_mm":[8.0,45.0,271.4,202.9]}],"strays":[{"area":"A1","id":"00000000-0000-0000-0000-000000000015","number":21,"eq_diameter_um":67.70275002573075,"centroid_um":[200.0,800.0],"bbox_um":[170.0,770.0,230.0,830.0]}],"bands":[{"sheet":1,"sample":"zr-1","area":"A1","row":1,"grains":[{"id":"00000000-0000-0000-0000-00000000000d","number":13},{"id":"00000000-0000-0000-0000-00000000000c","number":12},{"id":"00000000-0000-0000-0000-00000000000b","number":11},{"id":"00000000-0000-0000-0000-00000000000a","number":10},{"id":"00000000-0000-0000-0000-000000000009","number":9},{"id":"00000000-0000-0000-0000-000000000008","number":8},{"id":"00000000-0000-0000-0000-000000000007","number":7},{"id":"00000000-0000-0000-0000-000000000006","number":6},{"id":"00000000-0000-0000-0000-000000000005","number":5},{"id":"00000000-0000-0000-0000-000000000004","number":4},{"id":"00000000-0000-0000-0000-000000000003","number":3},{"id":"00000000-0000-0000-0000-000000000002","number":2},{"id":"00000000-0000-0000-0000-000000000001","number":1}],"context":[{"id":"00000000-0000-0000-0000-00000000000e","number":14}],"repeated_um":[[1982.2399999999998,48.0,2050.0,152.0]],"cut_sources":["width"],"sheet_rect_mm":[8.0,63.6,258.25,76.6],"mosaic_rect_um":[48.0,48.0,2050.0,152.0],"background":"kept"},{"sheet":1,"sample":"zr-1","area":"A1","row":1,"grains":[{"id":"00000000-0000-0000-0000-000000000014","number":20},{"id":"00000000-0000-0000-0000-000000000013","number":19},{"id":"00000000-0000-0000-0000-000000000012","number":18},{"id":"00000000-0000-0000-0000-000000000011","number":17},{"id":"00000000-0000-0000-0000-000000000010","number":16},{"id":"00000000-0000-0000-0000-00000000000f","number":15},{"id":"00000000-0000-0000-0000-00000000000e","number":14}],"context":[{"id":"00000000-0000-0000-0000-00000000000d","number":13}],"repeated_um":[[1914.0,48.0,1982.2399999999998,152.0]],"cut_sources":["width"],"sheet_rect_mm":[8.0,85.39999999999999,144.0,98.39999999999999],"mosaic_rect_um":[1914.0,48.0,3002.0,152.0],"background":"kept"},{"sheet":1,"sample":"zr-2","area":"A2","row":1,"grains":[{"id":"00000000-0000-0000-0000-00000000001a","number":5},{"id":"00000000-0000-0000-0000-000000000019","number":4},{"id":"00000000-0000-0000-0000-000000000018","number":3},{"id":"00000000-0000-0000-0000-000000000017","number":2},{"id":"00000000-0000-0000-0000-000000000016","number":1}],"context":[],"repeated_um":[[48.0,712.2972499742692,152.0,780.0]],"cut_sources":["height_sheet"],"sheet_rect_mm":[8.0,107.19999999999999,21.0,198.7],"mosaic_rect_um":[48.0,48.0,152.0,780.0],"background":"kept"},{"sheet":2,"sample":"zr-2","area":"A2","row":1,"grains":[{"id":"00000000-0000-0000-0000-000000000020","number":11},{"id":"00000000-0000-0000-0000-00000000001f","number":10},{"id":"00000000-0000-0000-0000-00000000001e","number":9},{"id":"00000000-0000-0000-0000-00000000001d","number":8},{"id":"00000000-0000-0000-0000-00000000001c","number":7},{"id":"00000000-0000-0000-0000-00000000001b","number":6}],"context":[{"id":"00000000-0000-0000-0000-00000000001a","number":5},{"id":"00000000-0000-0000-0000-000000000021","number":12}],"repeated_um":[[48.0,644.0,152.0,712.2972499742692],[48.0,1720.0,152.0,1788.0]],"cut_sources":["height_sheet","height_line"],"sheet_rect_mm":[8.0,49.6,21.0,192.6],"mosaic_rect_um":[48.0,644.0,152.0,1788.0],"background":"kept"},{"sheet":3,"sample":"zr-2","area":"A2","row":1,"grains":[{"id":"00000000-0000-0000-0000-000000000026","number":17},{"id":"00000000-0000-0000-0000-000000000025","number":16},{"id":"00000000-0000-0000-0000-000000000024","number":15},{"id":"00000000-0000-0000-0000-000000000023","number":14},{"id":"00000000-0000-0000-0000-000000000022","number":13},{"id":"00000000-0000-0000-0000-000000000021","number":12}],"context":[{"id":"00000000-0000-0000-0000-000000000027","number":18}],"repeated_um":[[48.0,1652.0,152.0,1720.0],[48.0,2575.3599999999997,152.0,2644.0]],"cut_sources":["height_sheet","height_line","height_line"],"sheet_rect_mm":[8.0,49.6,21.0,173.6],"mosaic_rect_um":[48.0,1652.0,152.0,2644.0],"background":"kept"},{"sheet":4,"sample":"zr-2","area":"A2","row":1,"grains":[{"id":"00000000-0000-0000-0000-000000000029","number":20},{"id":"00000000-0000-0000-0000-000000000028","number":19},{"id":"00000000-0000-0000-0000-000000000027","number":18}],"context":[{"id":"00000000-0000-0000-0000-000000000026","number":17}],"repeated_um":[[48.0,2507.0,152.0,2575.3599999999997]],"cut_sources":["height_sheet","height_line","height_line"],"sheet_rect_mm":[8.0,49.6,21.0,111.475],"mosaic_rect_um":[48.0,2507.0,152.0,3002.0],"background":"kept"},{"sheet":4,"sample":"zr-3","area":"A3","row":1,"grains":[{"id":"00000000-0000-0000-0000-00000000002c","number":3},{"id":"00000000-0000-0000-0000-00000000002a","number":1},{"id":"00000000-0000-0000-0000-00000000002b","number":2}],"context":[],"repeated_um":[],"cut_sources":[],"sheet_rect_mm":[59.897999999999996,49.6,97.898,62.6],"mosaic_rect_um":[48.0,148.0,352.0,252.0],"background":"kept"},{"sheet":4,"sample":"zr-3","area":"A3","row":2,"grains":[{"id":"00000000-0000-0000-0000-00000000002f","number":6},{"id":"00000000-0000-0000-0000-00000000002d","number":4},{"id":"00000000-0000-0000-0000-00000000002e","number":5}],"context":[],"repeated_um":[],"cut_sources":[],"sheet_rect_mm":[109.79599999999999,49.6,147.796,62.6],"mosaic_rect_um":[948.0,148.0,1252.0,252.0],"background":"kept"}]}"#);
+    assert_eq!(hashes, ["4709fa5fafd2d0a0609bbc180feac08612a5f710561c4646b13a1ff3ee870feb", "27dc76bfa4814f2157fa113075b0ac97eadff8e0064a827d07ad585b765f0e48", "c567203ae53d3dd78bd9b66de11fe22fd0a687ad401bf034b92b787872455da4", "08123164e01db35a5d2f8430ca0f68f8375807b7018762a112643f838c0f9389"]);
+}
+
+#[test]
+fn sheet_plan_round_trips_and_renders_at_strip_origins() {
+    let (p, recs, gs) = golden_mount();
+    let pixels: Vec<Vec<u8>> = recs.iter().enumerate().map(|(ai, r)| {
+        let m = r.placement.as_ref().unwrap();
+        (0..m.width * m.height).map(|i| (i % 173 + ai * 30) as u8).collect()
+    }).collect();
+    let areas: Vec<_> = recs.iter().zip(&pixels).map(|(rec, px)| {
+        let m = rec.placement.as_ref().unwrap();
+        SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px, lut: std::array::from_fn(|i| i as u8), um_per_px: 1.0 } }
+    }).collect();
+    let own = ownership::assign(&recs, &gs, &OwnershipParams::default());
+    let plan = sheets::plan_sheets(&p, &areas, &gs, &own, &SheetMeta::default());
+    let encoded = serde_json::to_string(&plan).unwrap();
+    let mut decoded: sheets::SheetPlan = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(plan, decoded);
+    let original = sheets::sheets(&p, &areas, &gs, &own, &SheetMeta::default());
+    assert_eq!(original, sheets::render_plan(&decoded, &areas, &gs, &own));
+    let reversed = gs.iter().map(|(area, gs)| (area.clone(), gs.iter().rev().cloned().collect())).collect();
+    let reordered = sheets::plan_sheets(&p, &areas, &reversed, &own, &SheetMeta::default());
+    let keys = |p: &sheets::SheetPlan| p.strips.iter().map(|r| r.key.clone()).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(keys(&plan), keys(&reordered));
+    assert_eq!(keys(&plan).len(), plan.strips.len());
+    assert!(plan.strips.iter().flat_map(|r| &r.bands).all(|b| b.key.split == 0));
+
+    // This exercises the rendering boundary, without adding an edit operation or packer.
+    decoded.lines = None;
+    decoded.strips[0].sheet = 3;
+    decoded.strips[0].origin_mm = [8.0, 140.0];
+    let moved = sheets::render_plan(&decoded, &areas, &gs, &own);
+    let id = original.registration.bands[0].grains[0].id;
+    let band = moved.registration.bands.iter().find(|b| b.grains.iter().any(|g| g.id == id)).unwrap();
+    assert_eq!(band.sheet, 4);
+    assert_eq!(band.sheet_rect_mm, [8.0, 144.6, 258.25, 157.6]);
+    assert_eq!(band.mosaic_rect_um, original.registration.bands[0].mosaic_rect_um);
+    assert_eq!(band.grains, original.registration.bands[0].grains);
+    assert_eq!(band.context, original.registration.bands[0].context);
+    assert_eq!(band.repeated_um, original.registration.bands[0].repeated_um);
+    assert_eq!((moved.stats.grains_cut, moved.stats.grains_twice, moved.stats.grains_unmarked, moved.stats.bands_outside_body), (0, 0, 0, 0));
+    assert!(moved.pages.iter().all(|s| !s.contains("stroke-dasharray=\"0.6 1.2\"")));
+    let images = |r: &sheets::SheetResult| {
+        let mut images = BTreeMap::new();
+        for (pi, svg) in r.pages.iter().enumerate() {
+            let doc = roxmltree::Document::parse(svg).unwrap();
+            let pngs = doc.descendants().filter(|n| n.has_tag_name("image"));
+            for (b, image) in r.registration.bands.iter().filter(|b| b.sheet == pi + 1).zip(pngs) {
+                images.insert(b.grains[0].id, image.attribute(("http://www.w3.org/1999/xlink", "href")).unwrap().to_string());
+            }
+        }
+        images
+    };
+    assert_eq!(images(&original), images(&moved));
+}

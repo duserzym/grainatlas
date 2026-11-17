@@ -478,6 +478,102 @@ pub struct SheetResult {
     pub stats: SheetStats,
 }
 
+/// Pixel-free cut and placement result. Coordinates are sheet mm, top-left, y down.
+/// Render with the same source areas and grains via [`render_plan`]. Placement can move
+/// whole strips without changing their bands; optional lines hold only legacy line data.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SheetPlan {
+    pub params: SheetParams,
+    pub meta: SheetMeta,
+    pub paper_mm: [f64; 2],
+    pub um_per_mm: f64,
+    pub auto_scale: Option<AutoScale>,
+    pub sheet_bodies: Vec<SheetBody>,
+    pub strips: Vec<SheetStrip>,
+    /// None for arrangements without lines. Indices refer to `strips`.
+    pub lines: Option<Vec<SheetLine>>,
+    /// Retained target ids, in source area/grain order; excludes strays and filters.
+    pub targets: BTreeMap<String, Vec<uuid::Uuid>>,
+    pub strays: Vec<StrayGrain>,
+    /// Counts from filtering and cutting; rendering derives placement/image counts anew.
+    pub cut_stats: SheetStats,
+}
+
+/// Stable replay identity, independent of page, position and grain iteration order.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StripKey {
+    pub area: String,
+    /// SHA-256 of sorted owned grain UUID bytes.
+    pub grains_hash: String,
+    /// Automatic strips start at 0; later manual splits allocate child counters.
+    pub split: u32,
+}
+
+/// One movable run: label, translated mosaic bands, gap marks and note allowance.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SheetStrip {
+    pub key: StripKey,
+    /// Zero-based sheet index; registrations remain 1-based.
+    pub sheet: usize,
+    /// Top-left of the label, in sheet mm.
+    pub origin_mm: [f64; 2],
+    pub size_mm: [f64; 2],
+    pub sample: String,
+    pub area: String,
+    pub row: usize,
+    pub cont: bool,
+    pub labelled: bool,
+    /// Area/continuation text, separate from the sample name.
+    pub label: String,
+    pub bands: Vec<SheetBand>,
+}
+
+/// A band's source geometry and ownership, enough to recompute repeated context.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SheetBand {
+    pub key: StripKey,
+    /// Horizontal offset from the strip origin; images start LABEL_MM below it.
+    pub offset_mm: f64,
+    pub grains: Vec<uuid::Uuid>,
+    pub mosaic_rect_um: [f64; 4],
+    /// Partition before extending across cuts; internal edges define repeated strips.
+    pub core_um: [f64; 4],
+    /// Axis (0 = x, 1 = y) and mosaic cut coordinate, in inherited order.
+    pub cuts: Vec<(usize, f64)>,
+    pub cut_sources: Vec<String>,
+    pub gap_after_um: Option<f64>,
+}
+
+/// Lines-only separators and paper budgets, independent of strip origins.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SheetLine {
+    pub sheet: usize,
+    pub origin_mm: [f64; 2],
+    pub band_height_mm: f64,
+    /// Rightmost image edge relative to the body left edge.
+    pub right_mm: f64,
+    pub strips: Vec<usize>,
+}
+
+fn strip_key(area: &str, ids: impl Iterator<Item = uuid::Uuid>) -> StripKey {
+    use sha2::{Digest, Sha256};
+    let mut ids: Vec<_> = ids.collect();
+    ids.sort();
+    let mut hash = Sha256::new();
+    for id in ids { hash.update(id.as_bytes()); }
+    StripKey { area: area.into(), grains_hash: format!("{:x}", hash.finalize()), split: 0 }
+}
+
+struct CutSheets<'g> {
+    pages: Vec<Vec<Vec<Run<'g>>>>,
+    printed: Vec<Vec<&'g Grain>>,
+    stats: SheetStats,
+    strays: Vec<StrayGrain>,
+    auto: Option<AutoScale>,
+    k: f64,
+    page: super::Paper,
+}
+
 // Sheet geometry (mm).
 const FULL_HEADER_MM: f64 = 50.0;
 const COMPACT_HEADER_MM: f64 = 36.0;
@@ -999,6 +1095,17 @@ fn area_short(rec: &AreaRecord) -> String {
 /// Lays out the print sheets of a mount. `grains` holds every detection per area id;
 /// `ownership` says which are printed.
 pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership, meta: &SheetMeta) -> SheetResult {
+    let plan = plan_sheets(p, areas, grains, ownership, meta);
+    render_plan(&plan, areas, grains, ownership)
+}
+
+/// Cut with the existing line/page limits, then assign the legacy line positions.
+pub fn plan_sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership, meta: &SheetMeta) -> SheetPlan {
+    place_lines(p, areas, meta, cut_sheets(p, areas, grains, ownership))
+}
+
+/// Cutting deliberately retains the line-filling loop: later cuts depend on its spare space.
+fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<String, Vec<Grain>>, ownership: &Ownership) -> CutSheets<'g> {
     let base = paper(&p.paper).unwrap_or(super::Paper { w_mm: 279.4, h_mm: 431.8 });
     let page = if p.landscape { super::Paper { w_mm: base.w_mm.max(base.h_mm), h_mm: base.w_mm.min(base.h_mm) } } else { base };
     let m = p.margin_mm;
@@ -1034,7 +1141,6 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     let auto = (!(p.um_per_mm > 0.0 && p.um_per_mm.is_finite()))
         .then(|| auto_scale(&printed.iter().flatten().map(|g| g.eq_diameter_um).collect::<Vec<_>>(), &p.spot_sizes_um, target));
     let k = auto.as_ref().map_or(p.um_per_mm, |a| a.um_per_mm).max(0.5);
-    let (spots_shown, spots_off) = key_spots(&p.spot_sizes_um, k);
 
     let band_h = body_h(1) - LABEL_MM - NOTE_MM;
     let mut strays = Vec::new();
@@ -1201,10 +1307,75 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     if !pg.is_empty() {
         pages.push(pg);
     }
-    stats.isolated = pages
+    CutSheets { pages, printed, stats, strays, auto, k, page }
+}
+
+/// Convert line-relative cut coordinates to independently placed strips.
+fn place_lines(p: &SheetParams, areas: &[SheetArea], meta: &SheetMeta, cut: CutSheets) -> SheetPlan {
+    let CutSheets { pages, printed, stats, strays, auto, k, page } = cut;
+    let m = p.margin_mm;
+    let mut strips = Vec::new();
+    let mut lines = Vec::new();
+    let mut bodies = Vec::new();
+    for (pi, pg) in pages.into_iter().enumerate() {
+        let header_mm = stats.header_mm[usize::from(pi > 0)];
+        bodies.push(SheetBody { sheet: pi + 1, header_mm, body_rect_mm: [m, m + header_mm + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM] });
+        let mut y = m + header_mm + 1.0;
+        for ln in pg {
+            let bh = ln.iter().flat_map(|r| &r.pieces).map(|q| q.h(k)).fold(0.0, f64::max);
+            let right = ln.iter().map(|r| r.end).fold(0.0, f64::max);
+            let mut indices = Vec::new();
+            for run in ln {
+                let area = &areas[run.area].rec.id;
+                let key = strip_key(area, run.pieces.iter().flat_map(|q| q.grains.iter().map(|g| g.id)));
+                let height = LABEL_MM + run.pieces.iter().map(|q| q.h(k)).fold(0.0, f64::max) + NOTE_MM;
+                let label = if run.cont { format!("area {} · continued", area_short(areas[run.area].rec)) } else { format!("area {}", area_short(areas[run.area].rec)) };
+                let bands = run.pieces.into_iter().map(|q| SheetBand {
+                    key: strip_key(area, q.grains.iter().map(|g| g.id)), offset_mm: q.x - run.x,
+                    grains: q.grains.iter().map(|g| g.id).collect(), mosaic_rect_um: q.rect, core_um: q.core,
+                    cuts: q.cuts, cut_sources: q.cut_sources, gap_after_um: q.gap_after_um,
+                }).collect();
+                indices.push(strips.len());
+                strips.push(SheetStrip { key, sheet: pi, origin_mm: [m + run.x, y], size_mm: [run.end - run.x, height], sample: run.sample, area: area.clone(), row: run.row, cont: run.cont, labelled: run.labelled, label, bands });
+            }
+            lines.push(SheetLine { sheet: pi, origin_mm: [m, y], band_height_mm: bh, right_mm: right, strips: indices });
+            y = y + LABEL_MM + bh + NOTE_MM;
+        }
+    }
+    let targets = areas.iter().zip(printed).map(|(a, gs)| (a.rec.id.clone(), gs.iter().map(|g| g.id).collect())).collect();
+    SheetPlan { params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats }
+}
+
+/// Render a plan without cutting or placing again. Source areas and target UUIDs must
+/// match those used by [`plan_sheets`]; edited-plan validation is a separate later stage.
+pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership) -> SheetResult {
+    let (p, meta, k) = (&plan.params, &plan.meta, plan.um_per_mm);
+    let page = super::Paper { w_mm: plan.paper_mm[0], h_mm: plan.paper_mm[1] };
+    let m = p.margin_mm;
+    let body_w = page.w_mm - 2.0 * m;
+    let headers = plan.cut_stats.header_mm;
+    let body_h = |pi: usize| page.h_mm - 2.0 * m - plan.sheet_bodies[pi].header_mm - 1.0 - FOOTER_MM;
+    let auto = plan.auto_scale.clone();
+    let (spots_shown, spots_off) = key_spots(&p.spot_sizes_um, k);
+    let mut stats = plan.cut_stats.clone();
+    let printed: Vec<Vec<&Grain>> = areas.iter().map(|a| plan.targets[&a.rec.id].iter().map(|id| grains[&a.rec.id].iter().find(|g| g.id == *id).expect("plan target in source grains")).collect()).collect();
+    let runs: Vec<Run> = plan.strips.iter().map(|r| {
+        let ai = areas.iter().position(|a| a.rec.id == r.area).expect("plan area in source areas");
+        let pieces = r.bands.iter().map(|q| Piece {
+            grains: q.grains.iter().map(|id| printed[ai].iter().copied().find(|g| g.id == *id).expect("band owner in plan targets")).collect(),
+            x: q.offset_mm, rect: q.mosaic_rect_um, core: q.core_um, cuts: q.cuts.clone(), cut_sources: q.cut_sources.clone(), gap_after_um: q.gap_after_um,
+        }).collect();
+        Run { sample: r.sample.clone(), area: ai, row: r.row, cont: r.cont, labelled: r.labelled, x: 0.0, end: r.size_mm[0], pieces }
+    }).collect();
+    let geo: Vec<Option<crate::ownership::AreaGeometry>> = areas.iter().map(|a| crate::ownership::AreaGeometry::new(a.rec)).collect();
+    let view = |ai: usize, g: &Grain| -> Option<[f64; 2]> {
+        let s = geo[ai].as_ref()?.to_stage(g.centroid_um);
+        let sg = areas[ai].rec.stage_sign;
+        Some([sg[0] * s[0] / 1000.0, sg[1] * s[1] / 1000.0])
+    };
+    let sample_of = |ai: usize| ownership.sample_of(&areas[ai].rec.id).unwrap_or(areas[ai].img.sample).to_string();
+    stats.isolated = runs
         .iter()
-        .flatten()
-        .flatten()
         .map(|r| {
             r.pieces
                 .iter()
@@ -1223,24 +1394,22 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         })
         .sum();
     // Band images (in parallel).
-    let jobs: Vec<(usize, usize, usize, usize)> = pages
-        .iter()
-        .enumerate()
-        .flat_map(|(pi, pg)| pg.iter().enumerate().flat_map(move |(li, ln)| ln.iter().enumerate().flat_map(move |(ri, r)| (0..r.pieces.len()).map(move |qi| (pi, li, ri, qi)))))
-        .collect();
+    let jobs: Vec<(usize, usize)> = runs.iter().enumerate().flat_map(|(ri, r)| (0..r.pieces.len()).map(move |qi| (ri, qi))).collect();
+    let mut image_offsets = vec![0];
+    for run in &runs { image_offsets.push(image_offsets.last().unwrap() + run.pieces.len()); }
     let imgs: Vec<(Vec<u8>, String)> = crate::util::par_map(jobs.len(), |j| {
-        let (pi, li, ri, qi) = jobs[j];
-        let run = &pages[pi][li][ri];
+        let (ri, qi) = jobs[j];
+        let run = &runs[ri];
         let a = &areas[run.area];
         band_png(&a.img, run.pieces[qi].rect, grains.get(&a.rec.id).map_or(&[][..], |v| v.as_slice()), &p.enhance)
     });
     stats.bands = imgs.len();
     stats.stripped = imgs.iter().filter(|i| i.1 == "stripped").count();
     stats.strip_refused = imgs.iter().filter(|i| i.1.starts_with("kept:")).count();
-    stats.sheets = pages.len();
-    let line_count = pages.iter().map(Vec::len).sum::<usize>();
-    let image_area: f64 = pages.iter().flatten().flatten().flat_map(|r| &r.pieces).map(|q| q.w(k) * q.h(k)).sum();
-    let line_width: f64 = pages.iter().flatten().flatten().flat_map(|r| &r.pieces).map(|q| q.w(k)).sum();
+    stats.sheets = plan.sheet_bodies.len();
+    let line_count = plan.lines.as_ref().map_or(0, Vec::len);
+    let image_area: f64 = runs.iter().flat_map(|r| &r.pieces).map(|q| q.w(k) * q.h(k)).sum();
+    let line_width: f64 = runs.iter().flat_map(|r| &r.pieces).map(|q| q.w(k)).sum();
     if stats.sheets > 0 {
         stats.fill.band_area = image_area / ((0..stats.sheets).map(body_h).sum::<f64>() * body_w);
     }
@@ -1268,8 +1437,8 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         mapping: "mosaic_um = mosaic_rect_um[0:2] + (sheet_mm - sheet_rect_mm[0:2]) * um_per_mm".into(),
         registration_file: if p.registration_file.is_empty() { format!("{}_print_registration.json", meta.package) } else { p.registration_file.clone() },
         body_rect_mm: [m, m + headers[usize::from(stats.sheets > 1)] + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM],
-        sheet_bodies: (0..stats.sheets).map(|pi| SheetBody { sheet: pi + 1, header_mm: headers[usize::from(pi > 0)], body_rect_mm: [m, m + headers[usize::from(pi > 0)] + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM] }).collect(),
-        strays,
+        sheet_bodies: plan.sheet_bodies.clone(),
+        strays: plan.strays.clone(),
         bands: Vec::new(),
     };
     // The header draws the key that fits this scale and says how the scale was chosen.
@@ -1287,10 +1456,11 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     };
     let mut svgs = Vec::new();
     let mut j = 0;
-    let n = pages.len();
-    for (pi, pg) in pages.iter().enumerate() {
+    let n = plan.sheet_bodies.len();
+    for pi in 0..n {
+        let pg: Vec<_> = plan.strips.iter().enumerate().filter(|(_, r)| r.sheet == pi).collect();
         let mut here: Vec<String> = Vec::new();
-        for r in pg.iter().flatten() {
+        for &(_, r) in &pg {
             if !here.contains(&r.sample) {
                 here.push(r.sample.clone());
             }
@@ -1303,105 +1473,113 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
         );
         // Bands on this sheet, for the map.
         let mut band_rects: Vec<(usize, [f64; 4])> = Vec::new();
-        let header_mm = headers[usize::from(pi > 0)];
-        let mut y = m + header_mm + 1.0;
+        let header_mm = plan.sheet_bodies[pi].header_mm;
         let mut budget = HeightBudget { sheet: pi + 1, header_mm2: header_mm * body_w, footer_margins_mm2: w * h - body_w * (h - 2.0 * m) + (FOOTER_MM + 1.0) * body_w, ..Default::default() };
-        for ln in pg {
-            let bh = ln.iter().flat_map(|r| &r.pieces).map(|q| q.h(k)).fold(0.0, f64::max);
-            let itop = y + LABEL_MM;
-            budget.labels_notes_mm2 += (LABEL_MM + NOTE_MM) * body_w;
-            let right = ln.iter().map(|r| r.end).fold(0.0, f64::max);
-            let band_area: f64 = ln.iter().flat_map(|r| &r.pieces).map(|q| q.w(k) * q.h(k)).sum();
-            budget.band_mm2 += band_area;
-            budget.blank_right_mm2 += (body_w - right).max(0.0) * bh;
-            budget.other_line_mm2 += right * bh - band_area;
-            for run in ln {
-                let a = &areas[run.area];
-                for q in &run.pieces {
-                    budget.empty_epoxy_mm2 += empty_rows_um(q.rect, &printed[run.area], p.pad_um) / k * q.w(k);
-                }
-                let (rx0, rx1) = (m + run.x, m + if run.labelled { run.end.max(run.x + 20.0) } else { run.end });
-                let ly = y + LABEL_MM - 1.5;
-                if run.labelled {
-                    let _ = write!(s, r#"<rect x="{rx0:.2}" y="{:.2}" width="2.6" height="2.6" rx="0.4" fill="{INK}"/>"#, ly - 2.4);
-                    let _ = write!(s, r#"<text x="{:.2}" y="{ly:.2}" font-size="3.2" font-weight="bold" fill="{INK}">{}</text>"#, rx0 + 3.6, esc(&run.sample));
-                    let note = if run.cont { format!("area {} · continued", area_short(a.rec)) } else { format!("area {}", area_short(a.rec)) };
-                    let _ = write!(s, r#"<text x="{:.2}" y="{ly:.2}" font-size="2.5" fill="{GREY}">{}</text>"#, rx0 + 3.6 + text_w(&run.sample, 3.2, true) + 2.4, esc(&note));
-                } else {
-                    // Next row of the same area: a short divider.
-                    let dx = rx0 - PIECE_GAP_MM / 2.0;
-                    let _ = write!(s, r#"<path d="M{dx:.2} {:.2} V{:.2}" stroke="{INK}" stroke-width="0.35"/>"#, ly - 2.0, ly + 1.1);
-                }
-                let _ = write!(s, r#"<path d="M{:.2} {:.2} H{rx1:.2}" stroke="{INK}" stroke-width="0.35"/>"#, if run.labelled { rx0 } else { rx0 - PIECE_GAP_MM / 2.0 }, ly + 1.1);
-                for q in &run.pieces {
-                    let (png, bg) = &imgs[j];
-                    j += 1;
-                    let (px, pw, ph) = (m + q.x, q.w(k), q.h(k));
-                    let iy = itop;
-                    let _ = write!(s, r#"<image x="{px:.3}" y="{iy:.3}" width="{pw:.3}" height="{ph:.3}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png));
-                    let repeated = q.repeated(&printed[run.area], p.pad_um);
-                    draw_repeated(&mut s, q, &repeated, [px, iy], k, p.pad_um, j);
-                    let owned_w = (q.core[2].min(q.rect[2]) - q.core[0].max(q.rect[0])) / k;
-                    if owned_w > 13.0 {
-                        let bar = if owned_w > 28.0 { 100.0 } else { 50.0 };
-                        let (bx1, by) = (px + (q.core[2].min(q.rect[2]) - q.rect[0]) / k - 2.2, iy + (q.core[3].min(q.rect[3]) - q.rect[1]) / k - 2.0);
-                        let bl = bar / k;
-                        let _ = write!(
-                            s,
-                            r#"<g stroke-linecap="butt"><path d="M{:.3} {by:.3} H{bx1:.3} M{:.3} {:.3} v2 M{bx1:.3} {:.3} v2" stroke="black" stroke-width="0.9"/><path d="M{:.3} {by:.3} H{bx1:.3} M{:.3} {:.3} v2 M{bx1:.3} {:.3} v2" stroke="white" stroke-width="0.45"/><text x="{:.3}" y="{:.3}" font-size="1.9" font-weight="bold" fill="white" stroke="black" stroke-width="0.35" paint-order="stroke" text-anchor="middle">{} µm</text></g>"#,
-                            bx1 - bl,
-                            bx1 - bl,
-                            by - 1.0,
-                            by - 1.0,
-                            bx1 - bl,
-                            bx1 - bl,
-                            by - 1.0,
-                            by - 1.0,
-                            bx1 - bl / 2.0,
-                            by - 1.3,
-                            bar
-                        );
-                    }
-                    // Corner ticks at the band's edges.
-                    for (cx, cy, dx, dy) in [(px, iy, -1.0, -1.0), (px + pw, iy, 1.0, -1.0), (px, iy + ph, -1.0, 1.0), (px + pw, iy + ph, 1.0, 1.0)] {
-                        let _ = write!(s, r#"<path d="M{cx:.3} {cy:.3} h{:.2} M{cx:.3} {cy:.3} v{:.2}" stroke="{GREY}" stroke-width="0.15"/>"#, dx * 1.6, dy * 1.6);
-                    }
-                    if let Some(gap) = q.gap_after_um {
-                        let gx = px + pw + PIECE_GAP_MM / 2.0;
-                        let _ = write!(
-                            s,
-                            r#"<text x="{gx:.2}" y="{:.2}" font-size="2.4" fill="{GREY}" text-anchor="middle">//</text><text x="{gx:.2}" y="{:.2}" font-size="1.7" fill="{GREY}" text-anchor="middle">{:.1} mm</text>"#,
-                            iy + ph / 2.0,
-                            iy + ph / 2.0 + 2.6,
-                            gap / 1000.0
-                        );
-                    }
-                    band_rects.push((run.area, q.rect));
-                    let context = printed[run.area]
-                        .iter()
-                        .filter(|g| !q.grains.iter().any(|own| own.id == g.id) && repeated.iter().any(|r| intersects(*r, g.bbox_um)))
-                        .map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() })
-                        .collect();
-                    reg.bands.push(BandRecord {
-                        sheet: pi + 1,
-                        sample: run.sample.clone(),
-                        area: a.rec.id.clone(),
-                        row: run.row,
-                        grains: q.grains.iter().map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() }).collect(),
-                        sheet_rect_mm: [px, iy, px + pw, iy + ph],
-                        mosaic_rect_um: q.rect,
-                        repeated_um: repeated,
-                        cut_sources: q.cut_sources.clone(),
-                        context,
-                        background: bg.clone(),
-                    });
-                }
+        if let Some(lines) = &plan.lines {
+            for ln in lines.iter().filter(|ln| ln.sheet == pi) {
+                let bh = ln.band_height_mm;
+                let band_area: f64 = ln.strips.iter().flat_map(|&ri| &runs[ri].pieces).map(|q| q.w(k) * q.h(k)).sum();
+                budget.labels_notes_mm2 += (LABEL_MM + NOTE_MM) * body_w;
+                budget.band_mm2 += band_area;
+                budget.blank_right_mm2 += (body_w - ln.right_mm).max(0.0) * bh;
+                budget.other_line_mm2 += ln.right_mm * bh - band_area;
             }
-            let ny = itop + bh + NOTE_MM - 0.8;
-            let _ = write!(s, r##"<path d="M{m} {ny:.2} H{:.2}" stroke="#e3e3e3" stroke-width="0.2" stroke-dasharray="0.6 1.2"/>"##, w - m);
-            y = itop + bh + NOTE_MM;
         }
-        budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - y).max(0.0);
+        for &(ri, strip) in &pg {
+            let run = &runs[ri];
+            let y = strip.origin_mm[1];
+            let itop = y + LABEL_MM;
+            let a = &areas[run.area];
+            for q in &run.pieces {
+                budget.empty_epoxy_mm2 += empty_rows_um(q.rect, &printed[run.area], p.pad_um) / k * q.w(k);
+            }
+            let (rx0, rx1) = (strip.origin_mm[0], strip.origin_mm[0] + if run.labelled { run.end.max(20.0) } else { run.end });
+            let ly = y + LABEL_MM - 1.5;
+            if run.labelled {
+                let _ = write!(s, r#"<rect x="{rx0:.2}" y="{:.2}" width="2.6" height="2.6" rx="0.4" fill="{INK}"/>"#, ly - 2.4);
+                let _ = write!(s, r#"<text x="{:.2}" y="{ly:.2}" font-size="3.2" font-weight="bold" fill="{INK}">{}</text>"#, rx0 + 3.6, esc(&run.sample));
+                let note = &strip.label;
+                let _ = write!(s, r#"<text x="{:.2}" y="{ly:.2}" font-size="2.5" fill="{GREY}">{}</text>"#, rx0 + 3.6 + text_w(&run.sample, 3.2, true) + 2.4, esc(note));
+            } else {
+                // Next row of the same area: a short divider.
+                let dx = rx0 - PIECE_GAP_MM / 2.0;
+                let _ = write!(s, r#"<path d="M{dx:.2} {:.2} V{:.2}" stroke="{INK}" stroke-width="0.35"/>"#, ly - 2.0, ly + 1.1);
+            }
+            let _ = write!(s, r#"<path d="M{:.2} {:.2} H{rx1:.2}" stroke="{INK}" stroke-width="0.35"/>"#, if run.labelled { rx0 } else { rx0 - PIECE_GAP_MM / 2.0 }, ly + 1.1);
+            for (qi, q) in run.pieces.iter().enumerate() {
+                let (png, bg) = &imgs[image_offsets[ri] + qi];
+                j += 1;
+                let (px, pw, ph) = (strip.origin_mm[0] + q.x, q.w(k), q.h(k));
+                let iy = itop;
+                let _ = write!(s, r#"<image x="{px:.3}" y="{iy:.3}" width="{pw:.3}" height="{ph:.3}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png));
+                let repeated = q.repeated(&printed[run.area], p.pad_um);
+                draw_repeated(&mut s, q, &repeated, [px, iy], k, p.pad_um, j);
+                let owned_w = (q.core[2].min(q.rect[2]) - q.core[0].max(q.rect[0])) / k;
+                if owned_w > 13.0 {
+                    let bar = if owned_w > 28.0 { 100.0 } else { 50.0 };
+                    let (bx1, by) = (px + (q.core[2].min(q.rect[2]) - q.rect[0]) / k - 2.2, iy + (q.core[3].min(q.rect[3]) - q.rect[1]) / k - 2.0);
+                    let bl = bar / k;
+                    let _ = write!(
+                        s,
+                        r#"<g stroke-linecap="butt"><path d="M{:.3} {by:.3} H{bx1:.3} M{:.3} {:.3} v2 M{bx1:.3} {:.3} v2" stroke="black" stroke-width="0.9"/><path d="M{:.3} {by:.3} H{bx1:.3} M{:.3} {:.3} v2 M{bx1:.3} {:.3} v2" stroke="white" stroke-width="0.45"/><text x="{:.3}" y="{:.3}" font-size="1.9" font-weight="bold" fill="white" stroke="black" stroke-width="0.35" paint-order="stroke" text-anchor="middle">{} µm</text></g>"#,
+                        bx1 - bl,
+                        bx1 - bl,
+                        by - 1.0,
+                        by - 1.0,
+                        bx1 - bl,
+                        bx1 - bl,
+                        by - 1.0,
+                        by - 1.0,
+                        bx1 - bl / 2.0,
+                        by - 1.3,
+                        bar
+                    );
+                }
+                // Corner ticks at the band's edges.
+                for (cx, cy, dx, dy) in [(px, iy, -1.0, -1.0), (px + pw, iy, 1.0, -1.0), (px, iy + ph, -1.0, 1.0), (px + pw, iy + ph, 1.0, 1.0)] {
+                    let _ = write!(s, r#"<path d="M{cx:.3} {cy:.3} h{:.2} M{cx:.3} {cy:.3} v{:.2}" stroke="{GREY}" stroke-width="0.15"/>"#, dx * 1.6, dy * 1.6);
+                }
+                if let Some(gap) = q.gap_after_um {
+                    let gx = px + pw + PIECE_GAP_MM / 2.0;
+                    let _ = write!(
+                        s,
+                        r#"<text x="{gx:.2}" y="{:.2}" font-size="2.4" fill="{GREY}" text-anchor="middle">//</text><text x="{gx:.2}" y="{:.2}" font-size="1.7" fill="{GREY}" text-anchor="middle">{:.1} mm</text>"#,
+                        iy + ph / 2.0,
+                        iy + ph / 2.0 + 2.6,
+                        gap / 1000.0
+                    );
+                }
+                band_rects.push((run.area, q.rect));
+                let context = printed[run.area]
+                    .iter()
+                    .filter(|g| !q.grains.iter().any(|own| own.id == g.id) && repeated.iter().any(|r| intersects(*r, g.bbox_um)))
+                    .map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() })
+                    .collect();
+                reg.bands.push(BandRecord {
+                    sheet: pi + 1,
+                    sample: run.sample.clone(),
+                    area: a.rec.id.clone(),
+                    row: run.row,
+                    grains: q.grains.iter().map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() }).collect(),
+                    sheet_rect_mm: [px, iy, px + pw, iy + ph],
+                    mosaic_rect_um: q.rect,
+                    repeated_um: repeated,
+                    cut_sources: q.cut_sources.clone(),
+                    context,
+                    background: bg.clone(),
+                });
+            }
+            if let Some(ln) = plan.lines.as_ref().and_then(|lines| lines.iter().find(|ln| ln.sheet == pi && ln.strips.last() == Some(&ri))) {
+                let ny = ln.origin_mm[1] + LABEL_MM + ln.band_height_mm + NOTE_MM - 0.8;
+                let _ = write!(s, r##"<path d="M{m} {ny:.2} H{:.2}" stroke="#e3e3e3" stroke-width="0.2" stroke-dasharray="0.6 1.2"/>"##, w - m);
+            }
+        }
+        let bottom = if let Some(lines) = &plan.lines {
+            lines.iter().filter(|ln| ln.sheet == pi).map(|ln| ln.origin_mm[1] + LABEL_MM + ln.band_height_mm + NOTE_MM).fold(m + header_mm + 1.0, f64::max)
+        } else {
+            pg.iter().map(|(_, r)| r.origin_mm[1] + r.size_mm[1]).fold(m + header_mm + 1.0, f64::max)
+        };
+        budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - bottom).max(0.0);
         stats.height_budget.push(budget);
         header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &printed, ownership, &stats, k, &scale_note, &spots_off, header_mm);
         mount_map(&mut s, p, page, areas, &printed, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm);
