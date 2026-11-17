@@ -1,0 +1,223 @@
+{
+ "note": "Invented areas (no real data) for the mount inset parity test: area_boxes in crates/grainatlas-core/src/layout/sheets.rs and stageBox in ui/src/lib/mount-inset.ts must both give expected_boxes.",
+ "areas": [
+  {
+   "uuid": "00000000-0000-7000-8000-00000000a001",
+   "id": "a1",
+   "name": "Line 1",
+   "sample": "ZR-A",
+   "pixel_size_nm": 1000.0,
+   "stage_sign": [
+    -1,
+    -1
+   ],
+   "tiles": [
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      0,
+      0
+     ],
+     "stage_nm": [
+      20000000,
+      10000000
+     ],
+     "pixel_size_nm": 1000.0,
+     "w": 100,
+     "h": 80
+    },
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      100,
+      0
+     ],
+     "stage_nm": [
+      19900000,
+      10000000
+     ],
+     "pixel_size_nm": 1000.0,
+     "w": 100,
+     "h": 80
+    },
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      0,
+      80
+     ],
+     "stage_nm": [
+      20000000,
+      9920000
+     ],
+     "pixel_size_nm": 1000.0,
+     "w": 100,
+     "h": 80
+    }
+   ],
+   "placement": null,
+   "photometric": null,
+   "mosaic": null
+  },
+  {
+   "uuid": "00000000-0000-7000-8000-00000000a002",
+   "id": "a2",
+   "name": "Line 2",
+   "sample": "ZR-B",
+   "pixel_size_nm": 500.0,
+   "stage_sign": [
+    1,
+    1
+   ],
+   "tiles": [
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      0,
+      0
+     ],
+     "stage_nm": [
+      5000000,
+      3000000
+     ],
+     "pixel_size_nm": 500.0,
+     "w": 200,
+     "h": 160
+    },
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      100,
+      0
+     ],
+     "stage_nm": [
+      5100000,
+      3000000
+     ],
+     "pixel_size_nm": 500.0,
+     "w": 200,
+     "h": 160
+    }
+   ],
+   "placement": null,
+   "photometric": null,
+   "mosaic": null
+  },
+  {
+   "uuid": "00000000-0000-7000-8000-00000000a003",
+   "id": "a3",
+   "name": "Line 3",
+   "sample": "ZR-C",
+   "pixel_size_nm": 1000.0,
+   "stage_sign": [
+    1,
+    -1
+   ],
+   "tiles": [
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      0,
+      0
+     ],
+     "stage_nm": [
+      7000000,
+      -2000000
+     ],
+     "pixel_size_nm": 1250.0,
+     "w": 120,
+     "h": 90
+    }
+   ],
+   "placement": null,
+   "photometric": null,
+   "mosaic": null
+  },
+  {
+   "uuid": "00000000-0000-7000-8000-00000000a004",
+   "id": "a4",
+   "name": "Line 4",
+   "sample": "ZR-D",
+   "pixel_size_nm": 1000.0,
+   "stage_sign": [
+    1,
+    1
+   ],
+   "tiles": [
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      0,
+      0
+     ],
+     "stage_nm": [
+      1000000,
+      1000000
+     ],
+     "pixel_size_nm": 1000.0,
+     "w": 100,
+     "h": 80
+    },
+    {
+     "file": "t.jpg",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "pos_um": [
+      100,
+      0
+     ],
+     "stage_nm": null,
+     "pixel_size_nm": 1000.0,
+     "w": 100,
+     "h": 80
+    }
+   ],
+   "placement": null,
+   "photometric": null,
+   "mosaic": null
+  },
+  {
+   "uuid": "00000000-0000-7000-8000-00000000a005",
+   "id": "a5",
+   "name": "Empty",
+   "sample": "",
+   "pixel_size_nm": 1000.0,
+   "stage_sign": [
+    1,
+    1
+   ],
+   "tiles": [],
+   "placement": null,
+   "photometric": null,
+   "mosaic": null
+  }
+ ],
+ "expected_boxes": [
+  [
+   -20050.0,
+   -10040.0,
+   -19850.0,
+   -9880.0
+  ],
+  [
+   4950.0,
+   2960.0,
+   5150.0,
+   3040.0
+  ],
+  [
+   6925.0,
+   1943.75,
+   7075.0,
+   2056.25
+  ],
+  null,
+  null
+ ]
+}
