@@ -160,6 +160,21 @@ export class StripHistory {
   push(edit: StripEdit) { this.past.push(this.edits); this.edits = [...this.edits, edit]; this.future = []; }
   undo() { const next = this.past.pop(); if (next) { this.future.push(this.edits); this.edits = next; } }
   redo() { const next = this.future.pop(); if (next) { this.past.push(this.edits); this.edits = next; } }
+  /** Remove refused operations by identity, even if more input arrived during rendering. */
+  reject(rendered: StripEdit[], dropped: number[]) {
+    const refused = new Set(dropped.map(i => rendered[i]).filter(e => e !== undefined));
+    if (!refused.size) return;
+    const clean = (edits: StripEdit[]) => edits.filter(e => !refused.has(e));
+    const same = (a: StripEdit[], b: StripEdit[]) => a.length === b.length && a.every((e, i) => e === b[i]);
+    this.edits = clean(this.edits);
+    // Each stack ends at the state nearest the current list. Drop no-op undo/redo steps.
+    const prune = (stack: StripEdit[][]) => {
+      const states = stack.map(clean);
+      return states.filter((state, i) => !same(state, states[i + 1] ?? this.edits));
+    };
+    this.past = prune(this.past);
+    this.future = prune(this.future);
+  }
   rebase(dropped: number[]) { this.edits = this.edits.filter((_, i) => !dropped.includes(i)); this.past = []; this.future = []; }
   automatic() { this.past.push(this.edits); this.edits = []; this.future = []; }
 }

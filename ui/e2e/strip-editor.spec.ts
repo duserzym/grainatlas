@@ -355,6 +355,56 @@ test('overlap blocks all exports; undo and redo restore validation', async ({ pa
   await expect(page.getByTestId('export-registration')).toBeDisabled();
 });
 
+test('a refused thumbnail drop is reported and removed from history and saved edits after rendering', async ({ page }) => {
+  const unexpected = await openEditor(page, 'packed', { syncOnSave: false });
+  const before = await registration(page);
+  const block = before.strip_blocks.find((b: any) => b.sheet === 2).rect_mm;
+  expect(firstFreePlace(before.sheet_bodies[0].body_rect_mm,
+    [block[2] - block[0], block[3] - block[1]],
+    before.strip_blocks.filter((b: any) => b.sheet === 1).map((b: any) => b.rect_mm))).toBeNull();
+  await page.getByTestId('page-thumb').nth(1).click();
+  async function refusedDrop() {
+    const thumb = page.getByTestId('page-thumb').first();
+    await thumb.hover();
+    const { r, p } = await firstStrip(page), t = await thumb.boundingBox();
+    if (!t) throw new Error('Missing page thumbnail');
+    await page.mouse.move(r.x + 8 * p.px, r.y + 2 * p.px); await page.mouse.down();
+    await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 12 }); await page.mouse.up();
+    await renderFinished(page);
+    await expect(page.getByTestId('dropped-edits')).toContainText('no room on sheet 1');
+    await expect(page.getByTestId('page-thumb').nth(1)).toHaveAttribute('aria-current', 'page');
+  }
+  await refusedDrop();
+  expect((await registration(page)).bands).toEqual(before.bands);
+  await expect(page.getByRole('button', { name: 'Back to automatic', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+  expect(JSON.parse(await saveProject(page))).not.toHaveProperty('print_sheets');
+  await expect.poll(() => recoveryPrintEdits(page)).toEqual([]);
+
+  const label = page.getByRole('textbox', { name: 'Strip label' });
+  await label.fill('zr-edited'); await label.press('Tab');
+  await renderFinished(page);
+  await refusedDrop();
+  await page.getByRole('button', { name: 'Back to automatic', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Back to automatic' });
+  await expect(dialog).toContainText('Drop all 1 edits');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  const saved = JSON.parse(await saveProject(page));
+  expect(saved.print_sheets.edits).toEqual([expect.objectContaining({ op: 'label', text: 'zr-edited' })]);
+  await expect.poll(() => recoveryPrintEdits(page)).toEqual([expect.objectContaining({ edits: saved.print_sheets.edits })]);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await renderFinished(page);
+  expect((await registration(page)).bands).toEqual(before.bands);
+  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await renderFinished(page);
+  await remakeSheets(page);
+  await expect(page.getByTestId('dropped-edits')).toHaveCount(0);
+  expect(JSON.parse(await saveProject(page)).print_sheets.edits).toEqual(saved.print_sheets.edits);
+  expect(unexpected).toEqual([]);
+});
+
 test('split and join restore the original mosaic and Back to automatic defaults to Cancel', async ({ page }) => {
   await openEditor(page);
   const before = await registration(page);

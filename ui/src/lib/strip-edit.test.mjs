@@ -70,6 +70,68 @@ test('history branches, confirmation count, automatic and undo share one edit li
   assert.equal(h.past.length, 0);
 });
 
+test('a refused thumbnail move is absent from the count, saves, undo and redo', () => {
+  const h = new StripHistory();
+  const label = { op: 'label', strip: key('s1'), text: 'zr-1' };
+  const refused = { op: 'move', strip: key('s1'), sheet: 1, origin_mm: null };
+  const p = { ...plan(), params: { packing: 'packed' }, um_per_mm: 4 };
+  const app = { project: { uuid: 'p1' }, readOnly: false, dirty: false };
+  h.push(label); h.push(refused);
+  h.reject(h.edits, [1]);
+  assert.equal(h.count, 1);
+  assert.deepEqual(h.edits, [label]);
+  assert.deepEqual(h.past, [[]]);
+  storePrintEdits(app, p, h.edits);
+  assert.deepEqual(app.project.print_sheets.edits, [label]);
+  h.undo(); assert.deepEqual(h.edits, []);
+  h.redo(); assert.deepEqual(h.edits, [label]);
+  h.redo(); assert.deepEqual(h.edits, [label]);
+
+  h.automatic(); h.push(refused); h.reject(h.edits, [0]);
+  assert.equal(h.count, 0);
+  storePrintEdits(app, p, h.edits);
+  assert.equal(Object.hasOwn(app.project, 'print_sheets'), false);
+  h.undo(); assert.deepEqual(h.edits, [label]);
+  h.redo(); assert.deepEqual(h.edits, []);
+});
+
+test('coalesced refusals remove only the reported edits and keep useful history steps', () => {
+  const h = new StripHistory();
+  const split = { op: 'split', band: key('b1'), axis: 'x', at_um: 40 };
+  const refusedSplit = { ...split }; // Equal values do not identify the refused operation.
+  const refusedMove = { op: 'move', strip: key('s1'), sheet: 1, origin_mm: null };
+  // An applied edit with validation problems still belongs in history.
+  const overlappingMove = { op: 'move', strip: key('s1'), sheet: 0, origin_mm: [0, 0] };
+  for (const edit of [split, refusedSplit, refusedMove, overlappingMove]) h.push(edit);
+  h.reject(h.edits, [2, 1]);
+  assert.deepEqual(h.edits, [split, overlappingMove]);
+  assert.deepEqual(splitPairs(plan(), h.edits), [[key('b1', 1), key('b1', 2)]]);
+  assert.deepEqual(h.past, [[], [split]]);
+  h.undo(); assert.deepEqual(h.edits, [split]);
+  h.undo(); assert.deepEqual(h.edits, []);
+  h.redo(); h.redo(); assert.deepEqual(h.edits, [split, overlappingMove]);
+});
+
+test('stale render refusals follow edit identity through newer input and undo/redo', () => {
+  const label = { op: 'label', strip: key('s1'), text: 'zr-1' };
+  const refused = { op: 'move', strip: key('s1'), sheet: 1, origin_mm: null };
+  const hide = { op: 'hide', strip: key('s1') };
+  for (const undoWhileRendering of [false, true]) {
+    const h = new StripHistory();
+    h.push(label); h.push(refused);
+    const rendered = h.edits;
+    if (undoWhileRendering) h.undo(); else h.push(hide);
+    h.reject(rendered, [1]);
+    assert.deepEqual(h.edits, undoWhileRendering ? [label] : [label, hide]);
+    assert.deepEqual(h.future, []);
+    h.undo();
+    assert.deepEqual(h.edits, undoWhileRendering ? [] : [label]);
+    h.redo();
+    assert.deepEqual(h.edits, undoWhileRendering ? [label] : [label, hide]);
+    assert.equal(rendered[1], refused, 'the submitted snapshot stays intact');
+  }
+});
+
 test('join pairs follow split counters and ignore refused edits', () => {
   const base = plan([strip('s1', { bands: [band('b1')] })]);
   const edits = [{ op: 'split', band: key('b1'), axis: 'x', at_um: 40 }, { op: 'split', band: key('b1', 1), axis: 'y', at_um: 30 }];

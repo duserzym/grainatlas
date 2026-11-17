@@ -24,7 +24,7 @@
   const count = $derived.by(() => { void revision; return history.count + storedDropped; });
   const canUndo = $derived.by(() => { void revision; return history.past.length > 0; });
   const canRedo = $derived.by(() => { void revision; return history.future.length > 0; });
-  const pairs = $derived.by(() => { void revision; return splitPairs(base, history.edits, (result.dropped ?? []).map(d => d.index)); });
+  const pairs = $derived.by(() => { void revision; return splitPairs(base, history.edits); });
   const bounds = $derived.by(() => {
     const rects: Record<string, SheetRect> = {};
     for (const [area, summary] of Object.entries(app.stitched)) {
@@ -79,11 +79,19 @@
       const core = await app.core;
       while (!disposed) {
         const version = requested;
-        const edits = $state.snapshot(history.edits) as StripEdit[];
+        const rendered = history.edits;
+        const edits = $state.snapshot(rendered) as StripEdit[];
         const r = await app.run('Rendering strips', () => core.printPlanRender($state.snapshot(base) as SheetPlan, edits, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.tone) as Record<string, ToneParams>));
         if (disposed) return;
+        if (r?.dropped?.length) {
+          history.reject(rendered, r.dropped.map(d => d.index));
+          // Remove known refusals from Save and recovery, even when this result is stale.
+          onchange();
+          revision++;
+        }
         if (version !== requested) continue;
         if (r) {
+          if (r.dropped?.some(d => d.index === rendered.length - 1)) nextPage = null;
           onresult(r);
           if (nextPage !== null) { page = Math.max(0, Math.min(nextPage, r.pages.length - 1)); nextPage = null; }
           onpending(false);

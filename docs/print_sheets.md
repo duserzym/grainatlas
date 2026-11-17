@@ -242,8 +242,10 @@ strip within the page. Moves snap to body edges and to a 2.5 mm gap from other
 strips; hold Alt to turn snapping off. Arrow keys nudge the selected strip by
 0.5 mm, or 5 mm with Shift. Drop a strip on another page's thumbnail to put it
 in the first free place there, top edge first, then leftmost; if it cannot fit,
-the move is refused. Pages can be added, empty pages removed, and pages moved
-earlier or later. The header cannot take strips.
+the move is refused. Refused edits show a reason but do not count as edits,
+enter undo or redo history, or get saved with the project. Pages can be added,
+empty pages removed, and pages moved earlier or later. The header cannot take
+strips.
 
 Drag a band's four crop handles to shrink or grow its mosaic rectangle, up to
 the area image bounds. An edge snaps to the nearest position that crosses no
