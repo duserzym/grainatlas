@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, type Snippet } from 'svelte';
   import type { SheetResult, SheetStrip, StripEdit, StripKey } from '../lib/core/types';
   import { sameKey } from '../lib/strip-edit';
-  let { target, result, selected, select, edit, undo, redo, automatic, count, canUndo, canRedo, split, setSplit, axis, setAxis, pairs, page }: {
+  let { target, droppedNotice, result, selected, select, edit, undo, redo, automatic, count, canUndo, canRedo, split, setSplit, axis, setAxis, pairs, page }: {
     target: HTMLElement; result: SheetResult; selected: SheetStrip | undefined; select: (key: StripKey) => void;
+    droppedNotice: Snippet<[boolean]>;
     edit: (e: StripEdit, page?: number) => void; undo: () => void; redo: () => void; automatic: () => void; count: number; canUndo: boolean; canRedo: boolean;
     split: boolean; setSplit: (v: boolean) => void; axis: 'x' | 'y'; setAxis: (v: 'x' | 'y') => void;
     pairs: [StripKey, StripKey][]; page: number;
@@ -15,11 +16,12 @@
   onMount(() => { target.append(panel); return () => panel.remove(); });
 </script>
 
-<div bind:this={panel} class="controls" data-ui>
+<div bind:this={panel} class="controls" role="region" aria-label="Strip controls" data-ui>
   <h3>Strips</h3>
   <div class="two">
     <button onclick={undo} disabled={!canUndo}>Undo</button><button onclick={redo} disabled={!canRedo}>Redo</button>
   </div>
+  {@render droppedNotice(true)}
   {#if selected}
     <label class="field">Label <input aria-label="Strip label" value={selected.label} onchange={e => edit({ op: 'label', strip: selected.key, text: e.currentTarget.value })} /></label>
     <div class="two">

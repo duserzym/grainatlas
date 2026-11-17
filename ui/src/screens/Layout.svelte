@@ -204,6 +204,21 @@
   }
 </script>
 
+{#snippet droppedNotice(editing: boolean)}
+  {#if droppedEdits.length}
+    <div class="faint small" data-testid="dropped-edits" role="status">
+      {#if savedDrops.length}
+        {savedDrops.length} edit{savedDrops.length === 1 ? '' : 's'} from the saved project could not be applied. Keep the stored edits by making no changes; the next strip edit replaces the stored list.
+      {:else if !editing}
+        {droppedEdits.length} edit{droppedEdits.length === 1 ? '' : 's'} could not be applied.
+      {/if}
+      {#each droppedEdits as dropped}
+        <p>{editing && !savedDrops.length ? 'Not applied' : `Edit ${dropped.index + 1}`}: {dropped.reason}</p>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
 <div class="layout" class:folded={app.layout.printCollapsed}>
   {#if app.layout.printCollapsed}
     <aside class="glass folded-side"><button class="icon" title="Show print controls" aria-label="Show print controls" onclick={() => { app.layout.printCollapsed = false; app.saveLayout(); }}>»</button></aside>
@@ -293,7 +308,7 @@
         {@const st = sheets.stats}
         {@const packed = sheets.registration.layout === 'packed' || sheets.registration.layout === 'edited'}
         <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {sheets.registration.layout === 'edited' ? 'edited' : packed ? 'packed' : 'in lines'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>{sheets.registration.auto_scale ? ` (auto: median grain ${Math.round(sheets.registration.auto_scale.median_um)} µm prints ${(sheets.registration.auto_scale.median_um / sheets.registration.um_per_mm).toFixed(1)} mm)` : ''}{sheets.registration.spot_sizes_left_off_um?.length ? `, spot key without ${sheets.registration.spot_sizes_left_off_um.join(', ')} µm` : ''}; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{st.strays ? `, ${st.strays} strays left off` : ''}{st.isolated ? `, ${st.isolated} grains with fewer than two neighbours in their band` : ''}{st.cuts ? `, ${st.cuts} cuts with repeated strips` : ''}{st.forced_cuts ? `, ${st.forced_cuts} forced cuts` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}{st.grains_unmarked ? `, ${st.grains_unmarked} grains visible but not marked` : ''}{st.bands_outside_body ? `, ${st.bands_outside_body} bands outside the sheet body` : ''}{st.bands_overlapping ? `, ${st.bands_overlapping} bands overlap` : ''}. {sheets.left_off_summary.cropped} grains left off by crop, {sheets.left_off_summary.hidden} in hidden strips.</p>
-        {#if droppedEdits.length}<div class="faint small" data-testid="dropped-edits">{#if savedDrops.length}{savedDrops.length} edit{savedDrops.length === 1 ? '' : 's'} from the saved project could not be applied. Keep the stored edits by making no changes; the next strip edit replaces the stored list.{:else}{droppedEdits.length} edit{droppedEdits.length === 1 ? '' : 's'} could not be applied.{/if}{#each droppedEdits as dropped}<p>Edit {dropped.index + 1}: {dropped.reason}</p>{/each}</div>{/if}
+        {#if !editMode || app.readOnly}{@render droppedNotice(false)}{/if}
         <p class="faint small">Header {st.header_mm[0]} mm on sheet 1, {st.header_mm[1]} mm after; band fill {(st.fill.band_area * 100).toFixed(1)}%{packed ? '' : `, line width ${(st.fill.line_width * 100).toFixed(1)}%`}, repeated {(st.fill.repeated * 100).toFixed(1)}% (worst band {(st.worst_repeated_fraction * 100).toFixed(1)}%), empty rows inside bands {(st.fill.empty_epoxy * 100).toFixed(1)}%; {#if packed}blank on this sheet {((st.height_budget[pageIdx]?.blank_mm2 ?? 0) / 100).toFixed(1)} cm²{:else}blank below this sheet's last line {st.height_budget[pageIdx]?.blank_below_mm.toFixed(1) ?? '0'} mm{/if}.</p>
       {/if}
       {#if sheets || whole}
@@ -364,7 +379,7 @@
   <section class="preview" data-testid="layout-view">
     {#if sheets && automaticPlan && editorControls && style === 'sheets' && sheetMode === 'grains'}
       {#key automaticPlan}
-        <StripEditor base={automaticPlan} result={sheets} {urls} controls={editorControls} {history} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
+        <StripEditor base={automaticPlan} result={sheets} {urls} controls={editorControls} {droppedNotice} {history} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
       {/key}
     {/if}
     {#if result && urls[pageIdx] && !(editMode && sheets && style === 'sheets' && sheetMode === 'grains')}

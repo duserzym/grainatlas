@@ -242,6 +242,9 @@ test('a downloaded project reopens with its strip move and generating parameters
   expect((await registration(page)).bands).toEqual(edited.bands);
   await page.getByTestId('sheet-scale').fill('5'); await remakeSheets(page);
   await page.getByTestId('edit-strips').check();
+  await expect(page.getByTestId('dropped-edits')).toHaveCount(1);
+  await expect(page.getByRole('region', { name: 'Strip controls', exact: true }).getByTestId('dropped-edits')).toContainText('1 edit from the saved project could not be applied');
+  await expect(page.getByTestId('dropped-edits')).toContainText('parameters changed');
   await page.getByRole('button', { name: 'Back to automatic', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Back to automatic' })).toContainText('Drop all 1 edits');
   await page.getByRole('dialog', { name: 'Back to automatic' }).getByRole('button', { name: 'Drop edits' }).click();
@@ -355,6 +358,28 @@ test('overlap blocks all exports; undo and redo restore validation', async ({ pa
   await expect(page.getByTestId('export-registration')).toBeDisabled();
 });
 
+async function refusedThumbnailDrop(page: Page) {
+  const controls = page.getByRole('region', { name: 'Strip controls', exact: true });
+  const panel = page.locator('aside').filter({ has: controls });
+  // Start where the operator edits, then do not scroll the panel to reveal the notice.
+  await panel.evaluate(el => { el.scrollTop = 0; });
+  const thumb = page.getByTestId('page-thumb').first();
+  await thumb.hover();
+  const { r, p } = await firstStrip(page), t = await thumb.boundingBox();
+  if (!t) throw new Error('Missing page thumbnail');
+  await page.mouse.move(r.x + 8 * p.px, r.y + 2 * p.px); await page.mouse.down();
+  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 12 }); await page.mouse.up();
+  await renderFinished(page);
+  await expect(page.getByTestId('dropped-edits')).toHaveCount(1);
+  const notice = controls.getByTestId('dropped-edits');
+  await expect(notice).toHaveAttribute('role', 'status');
+  await expect(notice).toContainText('Not applied: no room on sheet 1');
+  await expect(notice).toBeVisible();
+  await expect(notice).toBeInViewport({ ratio: 1 });
+  expect(await panel.evaluate(el => el.scrollTop)).toBe(0);
+  await expect(page.getByTestId('page-thumb').nth(1)).toHaveAttribute('aria-current', 'page');
+}
+
 test('a refused thumbnail drop is reported and removed from history and saved edits after rendering', async ({ page }) => {
   const unexpected = await openEditor(page, 'packed', { syncOnSave: false });
   const before = await registration(page);
@@ -363,18 +388,7 @@ test('a refused thumbnail drop is reported and removed from history and saved ed
     [block[2] - block[0], block[3] - block[1]],
     before.strip_blocks.filter((b: any) => b.sheet === 1).map((b: any) => b.rect_mm))).toBeNull();
   await page.getByTestId('page-thumb').nth(1).click();
-  async function refusedDrop() {
-    const thumb = page.getByTestId('page-thumb').first();
-    await thumb.hover();
-    const { r, p } = await firstStrip(page), t = await thumb.boundingBox();
-    if (!t) throw new Error('Missing page thumbnail');
-    await page.mouse.move(r.x + 8 * p.px, r.y + 2 * p.px); await page.mouse.down();
-    await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 12 }); await page.mouse.up();
-    await renderFinished(page);
-    await expect(page.getByTestId('dropped-edits')).toContainText('no room on sheet 1');
-    await expect(page.getByTestId('page-thumb').nth(1)).toHaveAttribute('aria-current', 'page');
-  }
-  await refusedDrop();
+  await refusedThumbnailDrop(page);
   expect((await registration(page)).bands).toEqual(before.bands);
   await expect(page.getByRole('button', { name: 'Back to automatic', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
@@ -385,7 +399,8 @@ test('a refused thumbnail drop is reported and removed from history and saved ed
   const label = page.getByRole('textbox', { name: 'Strip label' });
   await label.fill('zr-edited'); await label.press('Tab');
   await renderFinished(page);
-  await refusedDrop();
+  await expect(page.getByTestId('dropped-edits')).toHaveCount(0);
+  await refusedThumbnailDrop(page);
   await page.getByRole('button', { name: 'Back to automatic', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Back to automatic' });
   await expect(dialog).toContainText('Drop all 1 edits');
@@ -435,6 +450,21 @@ test('split and join restore the original mosaic and Back to automatic defaults 
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
+  test(`refused thumbnail drop stays in the strip controls at ${viewport.width} x ${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const unexpected = await openEditor(page, 'packed');
+    await page.getByTestId('page-thumb').nth(1).click();
+    await refusedThumbnailDrop(page);
+    await page.getByTestId('edit-strips').uncheck();
+    await expect(page.getByRole('region', { name: 'Strip controls', exact: true })).toHaveCount(0);
+    await expect(page.getByTestId('dropped-edits')).toHaveCount(1);
+    await expect(page.getByTestId('dropped-edits')).toContainText('1 edit could not be applied');
+    await page.getByTestId('edit-strips').check();
+    await expect(page.getByTestId('dropped-edits')).toHaveCount(1);
+    await expect(page.getByRole('region', { name: 'Strip controls', exact: true }).getByTestId('dropped-edits')).toContainText('Not applied: no room on sheet 1');
+    expect(unexpected).toEqual([]);
+  });
+
   test(`strip editor with selection and problems fits ${viewport.width} x ${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const unexpected = await openEditor(page, 'packed');

@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, type Snippet } from 'svelte';
   import { app } from '../lib/store.svelte';
   import type { Grain, SheetPlan, SheetRect, SheetResult, StripEdit, StripKey, ToneParams } from '../lib/core/types';
   import { bandImageKey, nudgeOrigin, sameKey, splitPairs, StripHistory } from '../lib/strip-edit';
   import StripControls from './StripControls.svelte';
   import StripPage from './StripPage.svelte';
-  let { base, result, urls, controls, history, storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange }: {
+  let { base, result, urls, controls, droppedNotice, history, storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange }: {
     base: SheetPlan; result: SheetResult; urls: string[]; controls: HTMLElement; history: StripHistory; page?: number; enabled: boolean;
+    droppedNotice: Snippet<[boolean]>;
     storedDropped?: number; onresult: (r: SheetResult) => void; onpending: (v: boolean) => void; onchange: () => void;
   } = $props();
   let selection = $state<StripKey | null>(null);
@@ -127,6 +128,6 @@
 </script>
 
 {#if enabled}
-  <StripControls target={controls} {result} {selected} {select} {edit} {undo} {redo} {automatic} {count} {canUndo} {canRedo} split={splitting} setSplit={v => splitting = v} {axis} setAxis={v => axis = v} {pairs} {page} />
+  <StripControls target={controls} {droppedNotice} {result} {selected} {select} {edit} {undo} {redo} {automatic} {count} {canUndo} {canRedo} split={splitting} setSplit={v => splitting = v} {axis} setAxis={v => axis = v} {pairs} {page} />
   <StripPage bind:this={view} plan={result.plan} {urls} bind:page selected={selection} {select} {edit} {images} grains={app.grains} {bounds} split={splitting} {axis} cancelSplit={() => splitting = false} />
 {/if}
