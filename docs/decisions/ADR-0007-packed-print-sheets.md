@@ -1,6 +1,7 @@
 # ADR-0007: Packed print sheets and a strip editor
 
-Date: 2026-11-17. Status: proposed (plan, not built). Revised the same day to
+Date: 2026-11-17. Status: accepted, built (2026-11-17; see "As built" at the
+end). Revised the same day to
 add the strip editor (part B), at the operator's request: "add flexibility to
 have users to edit, crop, and rearrange the position of the zircon strips
 before printing".
@@ -218,3 +219,31 @@ Each step ends green and is committed and pushed before the next starts.
 - Rotating or scaling single strips (point 8).
 - Making `packed` the default. That decision waits until packed sheets have
   been used at the laser.
+
+## As built
+
+Built in steps 1 to 8 as ordered above (commits cb2467e to 8331bef). Decisions
+taken while building, within this plan:
+
+- Lines output stays byte-identical, so a lines registration keeps `layout`
+  empty (omitted); packed writes `"packed"`, an edited plan `"edited"`. Packed
+  and edited registrations also list `strip_blocks`.
+- Every strip in a packed or edited plan carries its sample and area label. A
+  lines-mode run that shared the label of the run before it would otherwise
+  print unnamed on another sheet.
+- Ownership after edits: a band keeps the owners still wholly inside it; a grain
+  that loses its band is adopted by another shown band of its area that holds it
+  whole, otherwise it is listed in `left_off` (cropped or hidden). Split
+  children stay side by side in their strip; Separate makes one strip each.
+- `print_sheets` in project.json also stores the resolved scale, so a changed
+  auto scale drops the stored edits. A stored list this version cannot read is
+  kept verbatim.
+
+Measured on the two November mounts at the scales in the table: lines 4 and 5
+sheets (registrations identical to version 0.1.2), packed 3 and 5. The
+prototype's 2 and 4 come from its shorter headers (about 39 and 23 mm against
+50 and 36 mm) and from leaving out the 4.2 mm note line: the app's own strips
+re-packed with both changes give 2 and 4. The shorter header remains under
+"Not in this round". A hand edit in the app (a crop, a split separated into two
+strips, a piece moved to another sheet) gave a registration whose rectangles
+match the printed pages.
