@@ -56,6 +56,9 @@ enum Cmd {
         /// SheetParams or WholeParams JSON; missing fields use defaults.
         #[arg(long)]
         params: Option<PathBuf>,
+        /// Replay a PrintEdits JSON file.
+        #[arg(long)]
+        edits: Option<PathBuf>,
         /// tabloid (default), letter, a4 or a3.
         #[arg(long)]
         paper: Option<String>,
@@ -290,6 +293,7 @@ fn main() -> Result<()> {
             project,
             out,
             params,
+            edits,
             layout,
             area,
             orientation,
@@ -304,6 +308,7 @@ fn main() -> Result<()> {
             lab,
         } => {
             if layout == "whole" {
+                if edits.is_some() { bail!("--edits requires grain sheets"); }
                 let mut p: grainatlas_core::layout::whole::WholeParams = match params {
                     Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
                     None => Default::default(),
@@ -340,7 +345,10 @@ fn main() -> Result<()> {
             }
             let mut p: SheetParams = match params {
                 Some(path) => serde_json::from_str(&std::fs::read_to_string(&path)?)?,
-                None => SheetParams::default(),
+                None => match &edits {
+                    Some(path) => serde_json::from_slice::<sheets::PrintEdits>(&std::fs::read(path)?)?.params,
+                    None => SheetParams::default(),
+                },
             };
             if let Some(paper) = paper {
                 p.paper = paper;
@@ -357,7 +365,7 @@ fn main() -> Result<()> {
             if let Some(lab) = lab {
                 p.lab = lab;
             }
-            render_sheets(&project, &out, p, svg)?;
+            render_sheets(&project, &out, p, svg, edits.as_deref())?;
         }
         Cmd::Batch(options) => {
             let (report, failed) = legacy::batch(options)?;
@@ -1022,7 +1030,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
 }
 
 /// Only reads the saved project; exports always go outside its folder.
-fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Result<()> {
+fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits: Option<&Path>) -> Result<()> {
     let folder = folder.canonicalize()?;
     let out = resolved_path(out)?;
     if out.starts_with(&folder) {
@@ -1117,7 +1125,14 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
             },
         })
         .collect();
-    let mut r = sheets::sheets(&p, &areas, &grains, &own, &meta);
+    let plan = sheets::plan_sheets(&p, &areas, &grains, &own, &meta);
+    let edited = if let Some(file) = edits {
+        let stored: sheets::PrintEdits = serde_json::from_slice(&std::fs::read(file).with_context(|| file.display().to_string())?)?;
+        sheets::replay(&plan, &stored, &areas, &grains)
+    } else { sheets::apply_edits(&plan, &[], &areas, &grains) };
+    for dropped in &edited.dropped { eprintln!("edit {} dropped: {}", dropped.index, dropped.reason); }
+    if !edited.problems.is_empty() { bail!("cannot export sheets: {}", edited.problems.iter().map(|p| p.message.as_str()).collect::<Vec<_>>().join("; ")); }
+    let mut r = sheets::render_plan(&edited.plan, &areas, &grains, &own);
     r.registration.project_uuid = Some(project.uuid);
     r.registration.project_path = abs(&folder);
     let mut files = vec![
@@ -1156,7 +1171,7 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
         write(&out.join(file), &bytes)?;
     }
     let s = &r.stats;
-    let line_fill = if p.packing == Packing::Lines { format!(", {:.1}% line width", s.fill.line_width * 100.0) } else { String::new() };
+    let line_fill = if edited.plan.lines.is_some() { format!(", {:.1}% line width", s.fill.line_width * 100.0) } else { String::new() };
     eprintln!(
         "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, {} strays left off; fill: {:.1}% band area{line_fill}; background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice, {} unmarked, {} bands outside body, {} overlapping image/block pairs) in {:.0} ms",
         s.sheets,

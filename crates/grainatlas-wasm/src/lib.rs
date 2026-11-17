@@ -193,6 +193,16 @@ impl Session {
     pub fn print_sheets(&self, params: &str, grains: &str, tone: &str) -> Result<String, JsError> {
         self.0.print_sheets(params, grains, tone).map_err(err)
     }
+    pub fn print_sheets_with_edits(&self, params: &str, grains: &str, tone: &str, edits: &str) -> Result<String, JsError> {
+        self.0.print_sheets_with_edits(params, grains, tone, edits).map_err(err)
+    }
+    pub fn print_plan_render(&self, plan: &str, edits: &str, grains: &str, tone: &str) -> Result<String, JsError> {
+        self.0.print_plan_render(plan, edits, grains, tone).map_err(err)
+    }
+    pub fn print_band_image(&self, area_id: &str, mosaic_rect_um: &str, tone: &str) -> Result<Vec<u8>, JsError> {
+        let rect = serde_json::from_str(mosaic_rect_um).map_err(err)?;
+        self.0.print_band_image(area_id, rect, tone).map_err(err)
+    }
     /// Whole area on one sheet (WholeParams and tone JSON); no grains required.
     pub fn print_whole(&self, params: &str, tone: &str) -> Result<String, JsError> {
         self.0.print_whole(params, tone).map_err(err)

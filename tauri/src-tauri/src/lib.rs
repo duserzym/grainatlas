@@ -765,10 +765,26 @@ async fn ownership(state: State<'_, AppState>, tab: u32, grains: String) -> Res<
 
 /// Print sheets of the mount (pages, print_sheet registration, stats, ownership).
 #[tauri::command]
-async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grains: String, tone: String) -> Res<String> {
+async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grains: String, tone: String, edits: Option<String>) -> Res<String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_session(tab, |s| s.print_sheets(&params, &grains, &tone)).map_err(e)
+        state.with_session(tab, |s| s.print_sheets_with_edits(&params, &grains, &tone, edits.as_deref().unwrap_or(""))).map_err(e)
+    }).await.map_err(e)?
+}
+
+#[tauri::command]
+async fn print_plan_render(state: State<'_, AppState>, tab: u32, plan: String, edits: String, grains: String, tone: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.print_plan_render(&plan, &edits, &grains, &tone)).map_err(e)
+    }).await.map_err(e)?
+}
+
+#[tauri::command]
+async fn print_band_image(state: State<'_, AppState>, tab: u32, area_id: String, mosaic_rect_um: [f64; 4], tone: String) -> Res<Vec<u8>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.print_band_image(&area_id, mosaic_rect_um, &tone)).map_err(e)
     }).await.map_err(e)?
 }
 
@@ -1046,6 +1062,8 @@ pub fn run() {
             reset_window,
             ownership,
             print_sheets,
+            print_plan_render,
+            print_band_image,
             print_whole,
         ])
         .build(tauri::generate_context!())

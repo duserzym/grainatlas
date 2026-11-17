@@ -31,6 +31,8 @@ use crate::readers::PackageInfo;
 use crate::segment::Grain;
 
 pub mod packed;
+pub mod edit;
+pub use edit::{StripEdit, PrintEdits, EditedPlan, DroppedEdit, Problem, ProblemKind, LeftOff, LeftOffSummary, EditSummary, apply_edits, replay};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -371,6 +373,10 @@ pub struct PrintRegistration {
     /// to preserve legacy bytes; legacy line blocks are inferred from standard labels.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strip_blocks: Vec<SheetBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_off: Vec<LeftOff>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edits: Option<EditSummary>,
     pub bands: Vec<BandRecord>,
 }
 
@@ -508,6 +514,15 @@ pub struct SheetResult {
     pub pages: Vec<String>,
     pub registration: PrintRegistration,
     pub stats: SheetStats,
+    pub audit: Audit,
+    pub left_off_summary: LeftOffSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<Problem>,
+    pub plan: SheetPlan,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<DroppedEdit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_off: Vec<LeftOff>,
 }
 
 /// Pixel-free cut and placement result. Coordinates are sheet mm, top-left, y down.
@@ -529,6 +544,10 @@ pub struct SheetPlan {
     pub strays: Vec<StrayGrain>,
     /// Counts from filtering and cutting; rendering derives placement/image counts anew.
     pub cut_stats: SheetStats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_summary: Option<EditSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_off: Vec<LeftOff>,
 }
 
 /// Stable replay identity, independent of page, position and grain iteration order.
@@ -559,6 +578,14 @@ pub struct SheetStrip {
     /// Area/continuation text, separate from the sample name.
     pub label: String,
     pub bands: Vec<SheetBand>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub neighbours: Vec<StripKey>,
+    /// A lines-mode trailing gap mark shares its centre with this run's divider.
+    /// Cleared when either strip is touched, even if its position is later restored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shares_gap_with: Option<StripKey>,
 }
 
 /// A band's source geometry and ownership, enough to recompute repeated context.
@@ -575,6 +602,8 @@ pub struct SheetBand {
     pub cuts: Vec<(usize, f64)>,
     pub cut_sources: Vec<String>,
     pub gap_after_um: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeated_um: Option<Vec<[f64; 4]>>,
 }
 
 /// Lines-only separators and paper budgets, independent of strip origins.
@@ -1368,17 +1397,23 @@ fn place_lines(p: &SheetParams, areas: &[SheetArea], meta: &SheetMeta, cut: CutS
                 let bands = run.pieces.into_iter().map(|q| SheetBand {
                     key: strip_key(area, q.grains.iter().map(|g| g.id)), offset_mm: q.x - run.x,
                     grains: q.grains.iter().map(|g| g.id).collect(), mosaic_rect_um: q.rect, core_um: q.core,
-                    cuts: q.cuts, cut_sources: q.cut_sources, gap_after_um: q.gap_after_um,
+                    cuts: q.cuts, cut_sources: q.cut_sources, gap_after_um: q.gap_after_um, repeated_um: None,
                 }).collect();
                 indices.push(strips.len());
-                strips.push(SheetStrip { key, sheet: pi, origin_mm: [m + run.x, y], size_mm: [run.end - run.x, height], sample: run.sample, area: area.clone(), row: run.row, cont: run.cont, labelled: run.labelled, label, bands });
+                strips.push(SheetStrip { key, sheet: pi, origin_mm: [m + run.x, y], size_mm: [run.end - run.x, height], sample: run.sample, area: area.clone(), row: run.row, cont: run.cont, labelled: run.labelled, label, bands, hidden: false, neighbours: Vec::new(), shares_gap_with: None });
+            }
+            for pair in indices.windows(2) {
+                let (a, b) = (&strips[pair[0]], &strips[pair[1]]);
+                if a.area == b.area && !b.labelled && a.bands.last().is_some_and(|b| b.gap_after_um.is_some()) && (a.origin_mm[0] + a.size_mm[0] + PIECE_GAP_MM - b.origin_mm[0]).abs() < 1e-7 {
+                    strips[pair[0]].shares_gap_with = Some(b.key.clone());
+                }
             }
             lines.push(SheetLine { sheet: pi, origin_mm: [m, y], band_height_mm: bh, right_mm: right, strips: indices });
             y = y + LABEL_MM + bh + NOTE_MM;
         }
     }
     let targets = areas.iter().zip(printed).map(|(a, gs)| (a.rec.id.clone(), gs.iter().map(|g| g.id).collect())).collect();
-    SheetPlan { params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats }
+    SheetPlan { params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats, edit_summary: None, left_off: Vec::new() }
 }
 
 /// Place the plan's strips around separate taken rectangles. The public packer also
@@ -1389,15 +1424,9 @@ fn place_packed(plan: &mut SheetPlan, taken: &[SheetBlock]) {
     let m = p.margin_mm;
     let bodies = plan.cut_stats.header_mm.map(|header| [m, m + header + 1.0, w - m, h - m - FOOTER_MM]);
     for strip in &mut plan.strips {
+        strip.shares_gap_with = None;
         strip.labelled = true;
-        let mut width = strip.size_mm[0].max(20.0).max(text_w(&strip.sample, 3.2, true) + 6.0 + text_w(&strip.label, 2.5, false));
-        for band in &strip.bands {
-            if let Some(gap) = band.gap_after_um {
-                let mark = text_w("//", 2.4, false).max(text_w(&format!("{:.1} mm", gap / 1000.0), 1.7, false));
-                width = width.max(band.offset_mm + (band.mosaic_rect_um[2] - band.mosaic_rect_um[0]) / plan.um_per_mm + PIECE_GAP_MM / 2.0 + mark / 2.0);
-            }
-        }
-        strip.size_mm[0] = width;
+        edit::block_extent(strip, plan.um_per_mm);
     }
     let sizes: Vec<_> = plan.strips.iter().map(|s| s.size_mm).collect();
     let placed = packed::pack_rectangles(&sizes, bodies, taken);
@@ -1416,6 +1445,17 @@ fn is_zero_f64(v: &f64) -> bool { *v == 0.0 }
 /// Render a plan without cutting or placing again. Source areas and target UUIDs must
 /// match those used by [`plan_sheets`]; edited-plan validation is a separate later stage.
 pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership) -> SheetResult {
+    render_plan_with_images(plan, areas, grains, ownership, &|ai, rect| band_png(&areas[ai].img, rect, grains.get(&areas[ai].rec.id).map_or(&[], Vec::as_slice), &plan.params.enhance))
+}
+
+/// The provider returns the renderer's PNG and background status; sessions cache it.
+pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership, image: &(impl Fn(usize, [f64; 4]) -> (Vec<u8>, String) + Sync)) -> SheetResult {
+    let visible;
+    let source_plan = plan;
+    let plan = if plan.strips.iter().any(|s| s.hidden) {
+        visible = SheetPlan { strips: plan.strips.iter().filter(|s| !s.hidden).cloned().collect(), ..plan.clone() };
+        &visible
+    } else { plan };
     let (p, meta, k) = (&plan.params, &plan.meta, plan.um_per_mm);
     let page = super::Paper { w_mm: plan.paper_mm[0], h_mm: plan.paper_mm[1] };
     let m = p.margin_mm;
@@ -1434,6 +1474,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
         }).collect();
         Run { sample: r.sample.clone(), area: ai, row: r.row, cont: r.cont, labelled: r.labelled, x: 0.0, end: r.size_mm[0], pieces }
     }).collect();
+    let shown: Vec<Vec<&Grain>> = areas.iter().enumerate().map(|(ai, a)| printed[ai].iter().copied().filter(|g| plan.strips.iter().filter(|s| s.area == a.rec.id).flat_map(|s| &s.bands).any(|b| b.grains.contains(&g.id))).collect()).collect();
     let geo: Vec<Option<crate::ownership::AreaGeometry>> = areas.iter().map(|a| crate::ownership::AreaGeometry::new(a.rec)).collect();
     let view = |ai: usize, g: &Grain| -> Option<[f64; 2]> {
         let s = geo[ai].as_ref()?.to_stage(g.centroid_um);
@@ -1460,6 +1501,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
                 .sum::<usize>()
         })
         .sum();
+    stats.grains = runs.iter().flat_map(|r| &r.pieces).map(|q| q.grains.len()).sum();
     // Band images (in parallel).
     let jobs: Vec<(usize, usize)> = runs.iter().enumerate().flat_map(|(ri, r)| (0..r.pieces.len()).map(move |qi| (ri, qi))).collect();
     let mut image_offsets = vec![0];
@@ -1467,8 +1509,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
     let imgs: Vec<(Vec<u8>, String)> = crate::util::par_map(jobs.len(), |j| {
         let (ri, qi) = jobs[j];
         let run = &runs[ri];
-        let a = &areas[run.area];
-        band_png(&a.img, run.pieces[qi].rect, grains.get(&a.rec.id).map_or(&[][..], |v| v.as_slice()), &p.enhance)
+        image(run.area, run.pieces[qi].rect)
     });
     stats.bands = imgs.len();
     stats.stripped = imgs.iter().filter(|i| i.1 == "stripped").count();
@@ -1495,7 +1536,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
         paper_mm: [page.w_mm, page.h_mm],
         um_per_mm: k,
         scale: if auto.is_some() { "auto" } else { "fixed" }.into(),
-        layout: if p.packing == Packing::Packed { "packed".into() } else { String::new() },
+        layout: if plan.edit_summary.is_some() { "edited".into() } else if p.packing == Packing::Packed { "packed".into() } else { String::new() },
         grid_step_um: None,
         grid_origin_um: None,
         auto_scale: auto.clone(),
@@ -1506,7 +1547,9 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
         body_rect_mm: [m, m + headers[usize::from(stats.sheets > 1)] + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM],
         sheet_bodies: plan.sheet_bodies.clone(),
         strays: plan.strays.clone(),
-        strip_blocks: if plan.lines.is_none() { plan.strips.iter().map(|s| SheetBlock { sheet: s.sheet + 1, rect_mm: [s.origin_mm[0], s.origin_mm[1], s.origin_mm[0] + s.size_mm[0], s.origin_mm[1] + s.size_mm[1]] }).collect() } else { Vec::new() },
+        left_off: plan.left_off.clone(),
+        edits: plan.edit_summary.clone(),
+        strip_blocks: if plan.lines.is_none() { plan.strips.iter().map(edit::strip_block).collect() } else { Vec::new() },
         bands: Vec::new(),
     };
     // The header draws the key that fits this scale and says how the scale was chosen.
@@ -1594,7 +1637,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
                 let (px, pw, ph) = (strip.origin_mm[0] + q.x, q.w(k), q.h(k));
                 let iy = itop;
                 let _ = write!(s, r#"<image x="{px:.3}" y="{iy:.3}" width="{pw:.3}" height="{ph:.3}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png));
-                let repeated = q.repeated(&printed[run.area], p.pad_um);
+                let repeated = strip.bands[qi].repeated_um.clone().unwrap_or_else(|| q.repeated(&printed[run.area], p.pad_um));
                 draw_repeated(&mut s, q, &repeated, [px, iy], k, p.pad_um, j);
                 let owned_w = (q.core[2].min(q.rect[2]) - q.core[0].max(q.rect[0])) / k;
                 if owned_w > 13.0 {
@@ -1634,7 +1677,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
                 band_rects.push((run.area, q.rect));
                 let context = printed[run.area]
                     .iter()
-                    .filter(|g| !q.grains.iter().any(|own| own.id == g.id) && repeated.iter().any(|r| intersects(*r, g.bbox_um)))
+                    .filter(|g| !q.grains.iter().any(|own| own.id == g.id) && (repeated.iter().any(|r| intersects(*r, g.bbox_um)) || (plan.edit_summary.is_some() && contains(q.rect, g.bbox_um) && plan.strips.iter().flat_map(|s| &s.bands).any(|b| b.grains.contains(&g.id)))))
                     .map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() })
                     .collect();
                 reg.bands.push(BandRecord {
@@ -1651,6 +1694,10 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
                     background: bg.clone(),
                 });
             }
+            if !strip.neighbours.is_empty() {
+                let note = edit::continuation_note(source_plan, strip);
+                let _ = write!(s, r#"<text x="{rx0:.2}" y="{:.2}" font-size="1.9" fill="{GREY}">{}</text>"#, y + strip.size_mm[1] - 0.8, esc(&note));
+            }
             if let Some(ln) = plan.lines.as_ref().and_then(|lines| lines.iter().find(|ln| ln.sheet == pi && ln.strips.last() == Some(&ri))) {
                 let ny = ln.origin_mm[1] + LABEL_MM + ln.band_height_mm + NOTE_MM - 0.8;
                 let _ = write!(s, r##"<path d="M{m} {ny:.2} H{:.2}" stroke="#e3e3e3" stroke-width="0.2" stroke-dasharray="0.6 1.2"/>"##, w - m);
@@ -1663,8 +1710,8 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
         };
         if plan.lines.is_some() { budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - bottom).max(0.0); }
         stats.height_budget.push(budget);
-        header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &printed, ownership, &stats, k, &scale_note, &spots_off, header_mm);
-        mount_map(&mut s, p, page, areas, &printed, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm);
+        header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &shown, ownership, &stats, k, &scale_note, &spots_off, header_mm);
+        mount_map(&mut s, p, page, areas, &shown, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm);
         // Footer and corner registration marks.
         let fy = h - m - 2.0;
         let reg_file = &reg.registration_file;
@@ -1702,11 +1749,12 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
     stats.grains_unmarked = check.unmarked;
     stats.bands_outside_body = check.outside_body;
     stats.bands_overlapping = check.bands_overlapping;
-    SheetResult { pages: svgs, registration: reg, stats }
+    let problems = edit::problems(plan, &reg, &printed, areas);
+    SheetResult { pages: svgs, registration: reg, stats, audit: check, left_off_summary: LeftOffSummary { cropped: plan.left_off.iter().filter(|g| g.reason == "cropped").count(), hidden: plan.left_off.iter().filter(|g| g.reason == "hidden").count() }, problems, plan: source_plan.clone(), dropped: Vec::new(), left_off: plan.left_off.clone() }
 }
 
 /// Exact ownership audit, independent of how many repeated images show a grain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Audit {
     pub cut: usize,
     pub twice: usize,
@@ -1743,6 +1791,7 @@ pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetAre
     let body = if reg.body_rect_mm[2] > reg.body_rect_mm[0] { reg.body_rect_mm } else { [0.0, 0.0, reg.paper_mm[0], reg.paper_mm[1]] };
     let mut result = Audit { outside_body: reg.bands.iter().filter(|b| !contains(reg.sheet_bodies.iter().find(|s| s.sheet == b.sheet).map_or(body, |s| s.body_rect_mm), b.sheet_rect_mm) || b.sheet_rect_mm.iter().any(|v| !v.is_finite())).count(), ..Audit::default() };
     result.outside_body += reg.strip_blocks.iter().filter(|b| !contains(reg.sheet_bodies.iter().find(|s| s.sheet == b.sheet).map_or(body, |s| s.body_rect_mm), b.rect_mm) || b.rect_mm.iter().any(|v| !v.is_finite())).count();
+    result.bands_overlapping += reg.strip_blocks.iter().filter(|b| edit::covers_header(reg, b)).count();
     for (i, a) in reg.bands.iter().enumerate() {
         result.bands_overlapping += reg.bands[i + 1..].iter().filter(|b| a.sheet == b.sheet && packed::overlaps(a.sheet_rect_mm, b.sheet_rect_mm)).count();
     }
@@ -1755,7 +1804,7 @@ pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetAre
         let bands: Vec<&BandRecord> = reg.bands.iter().filter(|b| b.area == areas[ai].rec.id).collect();
         for g in gs {
             let owners: Vec<_> = bands.iter().filter(|b| b.grains.iter().any(|v| v.id == g.id)).collect();
-            if owners.is_empty() || owners.iter().any(|b| !contains(b.mosaic_rect_um, g.bbox_um)) {
+            if (owners.is_empty() && !reg.left_off.iter().any(|off| off.grain.id == g.id && off.grain.area == areas[ai].rec.id)) || owners.iter().any(|b| !contains(b.mosaic_rect_um, g.bbox_um)) {
                 result.cut += 1;
             }
             if owners.len() > 1 {
@@ -1771,7 +1820,7 @@ pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetAre
 
 /// One band: the mosaic crop with the display LUT, enhanced as asked, as PNG; and what happened
 /// to its background.
-fn band_png(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhanceParams) -> (Vec<u8>, String) {
+pub fn band_png(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhanceParams) -> (Vec<u8>, String) {
     let u = img.um_per_px;
     let (x0, y0) = ((rect[0] / u).round() as usize, (rect[1] / u).round() as usize);
     let (x1, y1) = (((rect[2] / u).round() as usize).min(img.w), ((rect[3] / u).round() as usize).min(img.h));

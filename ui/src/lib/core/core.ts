@@ -6,7 +6,7 @@ import { isHosted } from '@lab/bridge';
 
 import type {
   AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, LayoutParams, Published, LayoutResult, LooseSpec, MosaicJson, OpenResult, PackageInfo, Progress, Spot, Label, StitchSummary, ToneParams, SegmentParams, OutlinePad, Project,
-  Ownership, WholeParams, WholeResult, SheetParams, SheetResult,
+  Ownership, WholeParams, WholeResult, SheetParams, SheetResult, SheetPlan, StripEdit, PrintEdits, SheetRect,
 } from './types';
 
 export interface RawImage { w: number; h: number; data: Uint8Array }
@@ -105,7 +105,9 @@ export interface Core {
   ownership(grains: Record<string, Grain[]>): Promise<Ownership>;
   /** Print sheets of the mount: pages (SVG), the print_sheet registration, stats and ownership. */
   printWhole(params: WholeParams, tone: Record<string, ToneParams>): Promise<WholeResult>;
-  printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult>;
+  printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>, edits?: PrintEdits): Promise<SheetResult>;
+  printPlanRender(plan: SheetPlan, edits: StripEdit[] | PrintEdits, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult>;
+  printBandImage(areaId: string, mosaicRectUm: SheetRect, tone: Record<string, ToneParams>): Promise<Uint8Array>;
   /** The tab closed: free the session (desktop) or the worker (web). */
   dispose(): Promise<void>;
 }

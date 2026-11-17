@@ -4,7 +4,7 @@
 // already stitched, so only the cancelled step is lost.
 
 import type { Core, PackageFile, RawImage } from './core';
-import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, OutlinePad, WholeParams, WholeResult, SheetParams, SheetResult, Spot, Label, StitchSummary, ToneParams } from './types';
+import type { AreaParams, EditOp, AreaRegistration, BundleOptions, Fiducial, Grain, LaserAdapterInfo, LaserFit, Published, LayoutParams, LayoutResult, LooseSpec, MosaicJson, OpenResult, Ownership, PackageInfo, Progress, Project, SegmentParams, OutlinePad, WholeParams, WholeResult, SheetParams, SheetResult, SheetPlan, StripEdit, PrintEdits, SheetRect, Spot, Label, StitchSummary, ToneParams } from './types';
 
 import wasmUrl from './pkg/grainatlas_bg.wasm?url';
 
@@ -398,8 +398,17 @@ export class WasmCore implements Core {
     return this.call('printWhole', { params, tone });
   }
 
-  async printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult> {
+  async printPlanRender(plan: SheetPlan, edits: StripEdit[] | PrintEdits, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult> {
     await this.ready();
-    return this.call('printSheets', { params, grains, tone });
+    return this.call('printPlanRender', { plan, edits, grains, tone });
+  }
+  async printBandImage(areaId: string, mosaicRectUm: SheetRect, tone: Record<string, ToneParams>): Promise<Uint8Array> {
+    await this.ready();
+    return this.call('printBandImage', { areaId, mosaicRectUm, tone });
+  }
+
+  async printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>, edits?: PrintEdits): Promise<SheetResult> {
+    await this.ready();
+    return this.call('printSheets', { params, grains, tone, edits });
   }
 }

@@ -89,7 +89,9 @@ const ops: Record<string, Handler> = {
   laserExport: ({ spots, areaId, adapter }) => s().laser_export(JSON.stringify(spots), areaId, adapter ?? ''),
   ownership: ({ grains }) => JSON.parse(s().ownership(JSON.stringify(grains), '')),
   printWhole: ({ params, tone }) => JSON.parse(s().print_whole(JSON.stringify(params), JSON.stringify(tone))),
-  printSheets: ({ params, grains, tone }) => JSON.parse(s().print_sheets(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(tone))),
+  printSheets: ({ params, grains, tone, edits }) => JSON.parse(s().print_sheets_with_edits(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(tone), edits ? JSON.stringify(edits) : '')),
+  printPlanRender: ({ plan, edits, grains, tone }) => JSON.parse(s().print_plan_render(JSON.stringify(plan), JSON.stringify(edits), JSON.stringify(grains), JSON.stringify(tone))),
+  printBandImage: ({ areaId, mosaicRectUm, tone }) => s().print_band_image(areaId, JSON.stringify(mosaicRectUm), JSON.stringify(tone)),
 };
 
 function s(): wasm.Session {

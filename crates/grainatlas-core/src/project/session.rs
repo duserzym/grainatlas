@@ -65,6 +65,7 @@ pub const DEFAULT_HEAVY_BUDGET: usize = if cfg!(target_arch = "wasm32") {
 static HEAVY_USE: AtomicUsize = AtomicUsize::new(1);
 
 pub struct Session {
+    sheet_images: sheets::BandImageCache,
     last_heavy_use: usize,
     /// Number of attempted heavy rehydrations, for diagnostics and regression tests.
     pub rebuild_heavy_calls: usize,
@@ -94,6 +95,7 @@ pub struct Session {
 impl Session {
     pub fn new(name: &str) -> Session {
         Session {
+            sheet_images: Default::default(),
             last_heavy_use: 0,
             rebuild_heavy_calls: 0,
             heavy_budget: DEFAULT_HEAVY_BUDGET,
@@ -305,6 +307,7 @@ impl Session {
         self.bundle_sources.clear();
         self.bundle_digest = None;
         self.outputs.clear();
+        self.sheet_images.clear();
         self.recent.clear();
         self.work.clear();
         self.small.clear();
@@ -327,6 +330,7 @@ impl Session {
         self.bundle_sources.clear();
         self.bundle_digest = None;
         self.outputs.clear();
+        self.sheet_images.clear();
         self.recent.clear();
         self.work.clear();
         self.small.clear();
