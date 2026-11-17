@@ -42,6 +42,7 @@
   let sheet = $state<SheetParams>({
     paper: 'tabloid',
     landscape: true,
+    packing: 'lines',
     margin_mm: 8,
     um_per_mm: 'auto',
     pad_um: 22,
@@ -193,6 +194,12 @@
         <label class="field">Scale (µm per mm) <input type="number" min="0" step="0.5" bind:value={() => typeof wholeScale === 'number' ? wholeScale : undefined, (v) => wholeScale = v && v > 0 ? v : 'auto'} placeholder="auto (fit area)" data-testid="whole-scale" /></label>
         {:else}
         <label class="field">Scale (µm per mm) <input type="number" min="0" step="0.5" bind:value={() => (typeof sheet.um_per_mm === 'number' && sheet.um_per_mm > 0 ? sheet.um_per_mm : undefined), (value) => (sheet.um_per_mm = value && value > 0 ? value : 'auto')} placeholder="auto (from grain size)" data-testid="sheet-scale" title="Empty: the median grain prints about 15 mm across, on a round scale." /></label>
+        <label class="field" style="grid-column: 1 / -1">Arrangement
+          <select bind:value={sheet.packing} data-testid="sheet-packing">
+            <option value="lines">In lines, mount order</option>
+            <option value="packed">Packed, fewer sheets</option>
+          </select>
+        </label>
         {/if}
       </div>
       {#if sheetMode === 'whole'}
@@ -233,8 +240,9 @@
       {/if}
       {#if sheets}
         {@const st = sheets.stats}
-        <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>{sheets.registration.auto_scale ? ` (auto: median grain ${Math.round(sheets.registration.auto_scale.median_um)} µm prints ${(sheets.registration.auto_scale.median_um / sheets.registration.um_per_mm).toFixed(1)} mm)` : ''}{sheets.registration.spot_sizes_left_off_um?.length ? `, spot key without ${sheets.registration.spot_sizes_left_off_um.join(', ')} µm` : ''}; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{st.strays ? `, ${st.strays} strays left off` : ''}{st.isolated ? `, ${st.isolated} grains with fewer than two neighbours in their band` : ''}{st.cuts ? `, ${st.cuts} cuts with repeated strips` : ''}{st.forced_cuts ? `, ${st.forced_cuts} forced cuts` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}{st.grains_unmarked ? `, ${st.grains_unmarked} grains visible but not marked` : ''}{st.bands_outside_body ? `, ${st.bands_outside_body} bands outside the sheet body` : ''}.</p>
-        <p class="faint small">Header {st.header_mm[0]} mm on sheet 1, {st.header_mm[1]} mm after; band fill {(st.fill.band_area * 100).toFixed(1)}%, line width {(st.fill.line_width * 100).toFixed(1)}%, repeated {(st.fill.repeated * 100).toFixed(1)}% (worst band {(st.worst_repeated_fraction * 100).toFixed(1)}%), empty rows inside bands {(st.fill.empty_epoxy * 100).toFixed(1)}%; blank below this sheet's last line {st.height_budget[pageIdx]?.blank_below_mm.toFixed(1) ?? '0'} mm.</p>
+        {@const packed = sheets.registration.layout === 'packed'}
+        <p class="muted" data-testid="sheet-stats">{st.sheets} sheet{st.sheets === 1 ? '' : 's'}, {packed ? 'packed' : 'in lines'}, {st.bands} bands, {st.grains} grains at <b>1 mm = {sheets.registration.um_per_mm} µm</b>{sheets.registration.auto_scale ? ` (auto: median grain ${Math.round(sheets.registration.auto_scale.median_um)} µm prints ${(sheets.registration.auto_scale.median_um / sheets.registration.um_per_mm).toFixed(1)} mm)` : ''}{sheets.registration.spot_sizes_left_off_um?.length ? `, spot key without ${sheets.registration.spot_sizes_left_off_um.join(', ')} µm` : ''}; {st.duplicates} duplicates left to their owner area{st.artifacts ? `, ${st.artifacts} flagged artifacts left off` : ''}{st.filtered ? `, ${st.filtered} below the size limit` : ''}{st.strays ? `, ${st.strays} strays left off` : ''}{st.isolated ? `, ${st.isolated} grains with fewer than two neighbours in their band` : ''}{st.cuts ? `, ${st.cuts} cuts with repeated strips` : ''}{st.forced_cuts ? `, ${st.forced_cuts} forced cuts` : ''}{sheet.enhance.strip ? `; background stripped in ${st.stripped} bands, kept in ${st.strip_refused} for safety` : ''}. Check: {st.grains_cut ? `${st.grains_cut} grains cut by a band edge` : 'every grain whole in a band'}{st.grains_twice ? `, ${st.grains_twice} printed twice` : ''}{st.grains_unmarked ? `, ${st.grains_unmarked} grains visible but not marked` : ''}{st.bands_outside_body ? `, ${st.bands_outside_body} bands outside the sheet body` : ''}{st.bands_overlapping ? `, ${st.bands_overlapping} bands overlap` : ''}.</p>
+        <p class="faint small">Header {st.header_mm[0]} mm on sheet 1, {st.header_mm[1]} mm after; band fill {(st.fill.band_area * 100).toFixed(1)}%{packed ? '' : `, line width ${(st.fill.line_width * 100).toFixed(1)}%`}, repeated {(st.fill.repeated * 100).toFixed(1)}% (worst band {(st.worst_repeated_fraction * 100).toFixed(1)}%), empty rows inside bands {(st.fill.empty_epoxy * 100).toFixed(1)}%; {#if packed}blank on this sheet {((st.height_budget[pageIdx]?.blank_mm2 ?? 0) / 100).toFixed(1)} cm²{:else}blank below this sheet's last line {st.height_budget[pageIdx]?.blank_below_mm.toFixed(1) ?? '0'} mm{/if}.</p>
       {/if}
       {#if sheets || whole}
         <div class="two">
@@ -331,6 +339,7 @@
     padding: 0 var(--space-2) var(--space-2);
   }
   .side {
+    min-width: 0;
     padding: var(--space-4);
     display: flex;
     flex-direction: column;
@@ -339,7 +348,7 @@
   }
   .two {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-2);
     align-items: end;
   }

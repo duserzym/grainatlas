@@ -315,6 +315,7 @@ export interface EnhanceParams {
 export interface SheetParams {
   paper: string;
   landscape: boolean;
+  packing: 'lines' | 'packed';
   margin_mm: number;
   /** µm of sample per mm of paper, or 'auto': from the mount's grain sizes (median grain at
    *  least `target_grain_mm`, on a round scale, within the small-grain, zoning and spot-key limits). */
@@ -358,7 +359,7 @@ export interface BandRecord {
 /** The `print_sheet` frame: paper sheet ↔ mosaic (not the laser stage registration). */
 export interface PrintRegistration {
   frame: 'print_sheet';
-  layout?: 'whole_area' | '';
+  layout?: 'whole_area' | 'lines' | 'packed' | '';
   grid_step_um?: number | null;
   grid_origin_um?: [number, number] | null;
   note: string;
@@ -382,7 +383,7 @@ export interface PrintRegistration {
   bands: BandRecord[];
 }
 
-export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; forced_cuts: number; worst_repeated_fraction: number; clusters: number; strays: number; bands_outside_body: number; fill: { band_area: number; line_width: number; repeated: number; empty_epoxy: number }; header_mm: [number, number]; height_budget: { sheet: number; header_mm2: number; footer_margins_mm2: number; labels_notes_mm2: number; band_mm2: number; empty_epoxy_mm2: number; blank_below_mm: number; blank_right_mm2: number; other_line_mm2: number }[] }
+export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; forced_cuts: number; worst_repeated_fraction: number; clusters: number; strays: number; bands_outside_body: number; bands_overlapping?: number; fill: { band_area: number; line_width: number; repeated: number; empty_epoxy: number }; header_mm: [number, number]; height_budget: { sheet: number; header_mm2: number; footer_margins_mm2: number; labels_notes_mm2: number; band_mm2: number; empty_epoxy_mm2: number; blank_below_mm: number; blank_right_mm2: number; other_line_mm2: number; blank_mm2?: number }[] }
 
 /** One detection and the area that owns the grain. */
 export interface GrainOwner {
