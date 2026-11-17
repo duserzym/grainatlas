@@ -406,7 +406,7 @@ check (`audit`) counts grains missing from an owner band or not whole in it,
 grains owned by more than one band, and whole visible grains absent from both
 ownership and context. It also counts `bands_outside_body`, using the recorded
 `sheet_bodies[].body_rect_mm` in sheet coordinates, including repeated strips and pixel
-rounding (all four counts must be 0). An individual grain that cannot fit at the
+rounding (all audit counts must be 0). An individual grain that cannot fit at the
 requested fixed scale remains whole and triggers this audit; change scale or
 paper before printing such a result. Samples are ordered top of the
 mount first; areas retain their sample's order. Bands of different areas and
@@ -458,11 +458,12 @@ other bands' visible `context`, and records mosaic strip rectangles in
 `repeated_um`. `row` is the area's 1-based cluster number in reading order;
 all bands cut from that cluster keep that number. Stats include `clusters`,
 `cuts` and `isolated` (owned grains with fewer than two other printed box centres
-of the same area in their band), `strays` and the four audit counts.
+of the same area in their band), `strays` and the audit counts.
 `fill.band_area` is band image area divided by the available body area across
-all sheets; `fill.line_width` is the mean sum of band image widths on a line
-divided by body width. Labels, line gaps and inter-band gaps are excluded from
-the numerator. The denominator sums the real body area of every sheet.
+all sheets; in lines mode, `fill.line_width` is the mean sum of band image
+widths on a line divided by body width. Labels, line gaps and inter-band gaps are excluded from
+the numerator. Packed mode keeps `fill.line_width` at 0 in JSON. The denominator
+sums the real body area of every sheet.
 Registration records `sheet_bodies`, each with `sheet` (1-based), `header_mm`
 and `body_rect_mm` (`x0, y0, x1, y1`). Bodies start 1 mm below their header and
 end before the unchanged 5 mm footer. The legacy `body_rect_mm` is the envelope
@@ -477,7 +478,11 @@ includes the 1 mm header clearance), `labels_notes_mm2`, `band_mm2`,
 `blank_right_mm2` (to the right of the last image on each line), and
 `other_line_mm2` (gaps and space below shorter images). Together with
 `blank_below_mm` times body width, these partition the paper area. The last
-line includes its 4.2 mm notes allowance. `empty_epoxy_mm2` is a subset of band
+line includes its 4.2 mm notes allowance. Packed budgets use `blank_mm2` for body
+area minus strip blocks; `blank_below_mm` and `blank_right_mm2` stay 0. Labels
+and notes use each block's width, and `other_line_mm2` is the space inside blocks
+that is neither labels/notes nor images. Missing `blank_mm2` defaults to 0;
+zero is omitted so lines JSON stays unchanged. `empty_epoxy_mm2` is a subset of band
 area: full-width rows farther than `pad_um` (default 22 µm) from every visible
 printed grain box in that band. It excludes strays and artifacts, and includes
 owned and repeated context targets. This row measure identifies tall empty
@@ -509,6 +514,24 @@ sample labels, either header can grow to `19.1 + 2.7 × labels` mm, capped at
 66 mm; both heights are recorded. The measured Sandbox and Grenville XL mounts,
 and the letter-size Sandbox render, use 50 mm and 36 mm. No margins, footer
 height or print scale change.
+
+The `packing` parameter is `"lines"` (the default for older parameter JSON) or
+`"packed"`; other values are rejected. The `sheets` and `stitch` commands accept
+`--packing lines|packed`. Packing changes strip placement only. Every packed
+strip has its sample and area label, including continuation text, even when
+its run shared a label in lines mode. Grain-sheet registrations with absent
+or empty `layout` mean lines; packed writes
+`layout: "packed"`. The optional `strip_blocks` addition to the registration
+schema records packed strips with a 1-based `sheet` and `rect_mm`, covering
+labels, images, trailing gap marks and notes. The audit counts intersecting
+image pairs and intersecting block pairs
+as `bands_overlapping`, with an epsilon of 1e-7 mm. A pair may contribute to
+both counts. Legacy lines registrations reconstruct same-area line groups from
+standard labels and band order; their internal gap marks and dividers share horizontal
+space at different heights. Zero overlaps are omitted from stats JSON to preserve
+lines output; missing values default to 0. Explicit strip blocks also contribute
+to `bands_outside_body`, so an oversized label is reported even when its image
+fits the body.
 
 The registration sidecar (`<package>_print_registration.json`) is the
 `print_sheet` frame, separate from the laser stage registration. Its
@@ -547,7 +570,7 @@ writes `exports/<package>_grain_sheets_tabloid.pdf`,
 `exports/<package>_print_registration.json` and `exports/ownership.json`.
 In the app: Layout → Print sheets.
 
-`grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale auto|8] [--params sheet_params.json] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.
+`grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale auto|8] [--params sheet_params.json] [--packing lines|packed] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.
 
 ## Whole area on one sheet (`layout::whole`)
 

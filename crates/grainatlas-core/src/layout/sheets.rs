@@ -30,12 +30,24 @@ use crate::project::AreaRecord;
 use crate::readers::PackageInfo;
 use crate::segment::Grain;
 
+pub mod packed;
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Packing {
+    #[default]
+    Lines,
+    Packed,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SheetParams {
     /// "tabloid" (default), "letter", "a4", "a3".
     pub paper: String,
     pub landscape: bool,
+    /// Placement only; missing JSON uses lines and unknown modes are rejected.
+    pub packing: Packing,
     pub margin_mm: f64,
     /// Micrometres of sample per millimetre of paper (8 = 125x). 0, written "auto" in JSON,
     /// picks the scale per mount from its grain sizes ([`auto_scale`]).
@@ -84,6 +96,7 @@ impl Default for SheetParams {
         SheetParams {
             paper: "tabloid".into(),
             landscape: true,
+            packing: Packing::Lines,
             margin_mm: 8.0,
             um_per_mm: 0.0,
             target_grain_mm: 0.0,
@@ -327,7 +340,8 @@ pub struct PrintRegistration {
     /// "auto" or "fixed"; with auto, how the scale was chosen.
     #[serde(default)]
     pub scale: String,
-    /// Empty for grain sheets; "whole_area" for an uncut area.
+    /// Absent or empty means lines for grain sheets; packed writes "packed".
+    /// "whole_area" identifies an uncut area (edited plans will use "edited").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub layout: String,
     /// Whole-area grid spacing and top-left origin, in mosaic um.
@@ -353,7 +367,18 @@ pub struct PrintRegistration {
     /// Detections left in the project but omitted as dating targets.
     #[serde(default)]
     pub strays: Vec<StrayGrain>,
+    /// Packed strip blocks, including labels and gap marks, in sheet mm. Omitted for lines
+    /// to preserve legacy bytes; legacy line blocks are inferred from standard labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strip_blocks: Vec<SheetBlock>,
     pub bands: Vec<BandRecord>,
+}
+
+/// A taken or registered strip rectangle. Sheet numbers are 1-based.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SheetBlock {
+    pub sheet: usize,
+    pub rect_mm: [f64; 4],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -436,8 +461,11 @@ pub struct SheetStats {
     pub header_mm: [f64; 2],
     /// Mutually exclusive paper-area budget per sheet; empty epoxy is a subset of band area.
     pub height_budget: Vec<HeightBudget>,
-    /// Bands extending beyond the registered sheet body.
+    /// Band images or explicit strip blocks extending beyond the registered sheet body.
     pub bands_outside_body: usize,
+    /// Intersecting band-image pairs plus intersecting strip-block pairs (epsilon 1e-7 mm).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bands_overlapping: usize,
     /// Printed grains missing an owner band or not whole in their owner band.
     pub grains_cut: usize,
     /// Printed grains listed as owned by more than one band.
@@ -450,6 +478,7 @@ pub struct SheetStats {
 #[serde(default)]
 pub struct SheetFill {
     pub band_area: f64,
+    /// Mean occupied line width; kept as 0 in packed JSON.
     pub line_width: f64,
     /// Union of repeated strip area / band image area, over all bands.
     pub repeated: f64,
@@ -469,6 +498,9 @@ pub struct HeightBudget {
     pub blank_right_mm2: f64,
     /// Inter-band gaps and space below shorter images on the same line.
     pub other_line_mm2: f64,
+    /// Packed body area minus strip blocks; absent/0 for legacy lines budgets.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub blank_mm2: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -517,6 +549,7 @@ pub struct SheetStrip {
     pub sheet: usize,
     /// Top-left of the label, in sheet mm.
     pub origin_mm: [f64; 2],
+    /// Packed width includes the label, underline and trailing gap mark.
     pub size_mm: [f64; 2],
     pub sample: String,
     pub area: String,
@@ -1099,9 +1132,11 @@ pub fn sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Ve
     render_plan(&plan, areas, grains, ownership)
 }
 
-/// Cut with the existing line/page limits, then assign the legacy line positions.
+/// Cut with the existing line/page limits, then place whole strips in the requested mode.
 pub fn plan_sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership, meta: &SheetMeta) -> SheetPlan {
-    place_lines(p, areas, meta, cut_sheets(p, areas, grains, ownership))
+    let mut plan = place_lines(p, areas, meta, cut_sheets(p, areas, grains, ownership));
+    if p.packing == Packing::Packed { place_packed(&mut plan, &[]); }
+    plan
 }
 
 /// Cutting deliberately retains the line-filling loop: later cuts depend on its spare space.
@@ -1346,6 +1381,38 @@ fn place_lines(p: &SheetParams, areas: &[SheetArea], meta: &SheetMeta, cut: CutS
     SheetPlan { params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats }
 }
 
+/// Place the plan's strips around separate taken rectangles. The public packer also
+/// accepts sizes without a complete plan; its caller omits pinned strips from those sizes.
+fn place_packed(plan: &mut SheetPlan, taken: &[SheetBlock]) {
+    let p = &plan.params;
+    let [w, h] = plan.paper_mm;
+    let m = p.margin_mm;
+    let bodies = plan.cut_stats.header_mm.map(|header| [m, m + header + 1.0, w - m, h - m - FOOTER_MM]);
+    for strip in &mut plan.strips {
+        strip.labelled = true;
+        let mut width = strip.size_mm[0].max(20.0).max(text_w(&strip.sample, 3.2, true) + 6.0 + text_w(&strip.label, 2.5, false));
+        for band in &strip.bands {
+            if let Some(gap) = band.gap_after_um {
+                let mark = text_w("//", 2.4, false).max(text_w(&format!("{:.1} mm", gap / 1000.0), 1.7, false));
+                width = width.max(band.offset_mm + (band.mosaic_rect_um[2] - band.mosaic_rect_um[0]) / plan.um_per_mm + PIECE_GAP_MM / 2.0 + mark / 2.0);
+            }
+        }
+        strip.size_mm[0] = width;
+    }
+    let sizes: Vec<_> = plan.strips.iter().map(|s| s.size_mm).collect();
+    let placed = packed::pack_rectangles(&sizes, bodies, taken);
+    let count = placed.iter().chain(taken).map(|r| r.sheet).max().unwrap_or(0);
+    plan.sheet_bodies = (0..count).map(|i| SheetBody { sheet: i + 1, header_mm: plan.cut_stats.header_mm[usize::from(i > 0)], body_rect_mm: bodies[usize::from(i > 0)] }).collect();
+    for (strip, block) in plan.strips.iter_mut().zip(placed) {
+        strip.sheet = block.sheet - 1;
+        strip.origin_mm = [block.rect_mm[0], block.rect_mm[1]];
+    }
+    plan.lines = None;
+}
+
+fn is_zero(v: &usize) -> bool { *v == 0 }
+fn is_zero_f64(v: &f64) -> bool { *v == 0.0 }
+
 /// Render a plan without cutting or placing again. Source areas and target UUIDs must
 /// match those used by [`plan_sheets`]; edited-plan validation is a separate later stage.
 pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>, ownership: &Ownership) -> SheetResult {
@@ -1428,7 +1495,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
         paper_mm: [page.w_mm, page.h_mm],
         um_per_mm: k,
         scale: if auto.is_some() { "auto" } else { "fixed" }.into(),
-        layout: String::new(),
+        layout: if p.packing == Packing::Packed { "packed".into() } else { String::new() },
         grid_step_um: None,
         grid_origin_um: None,
         auto_scale: auto.clone(),
@@ -1439,6 +1506,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
         body_rect_mm: [m, m + headers[usize::from(stats.sheets > 1)] + 1.0, page.w_mm - m, page.h_mm - m - FOOTER_MM],
         sheet_bodies: plan.sheet_bodies.clone(),
         strays: plan.strays.clone(),
+        strip_blocks: if plan.lines.is_none() { plan.strips.iter().map(|s| SheetBlock { sheet: s.sheet + 1, rect_mm: [s.origin_mm[0], s.origin_mm[1], s.origin_mm[0] + s.size_mm[0], s.origin_mm[1] + s.size_mm[1]] }).collect() } else { Vec::new() },
         bands: Vec::new(),
     };
     // The header draws the key that fits this scale and says how the scale was chosen.
@@ -1458,7 +1526,8 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
     let mut j = 0;
     let n = plan.sheet_bodies.len();
     for pi in 0..n {
-        let pg: Vec<_> = plan.strips.iter().enumerate().filter(|(_, r)| r.sheet == pi).collect();
+        let mut pg: Vec<_> = plan.strips.iter().enumerate().filter(|(_, r)| r.sheet == pi).collect();
+        if plan.lines.is_none() { pg.sort_by(|a, b| a.1.origin_mm[1].total_cmp(&b.1.origin_mm[1]).then(a.1.origin_mm[0].total_cmp(&b.1.origin_mm[0])).then(a.0.cmp(&b.0))); }
         let mut here: Vec<String> = Vec::new();
         for &(_, r) in &pg {
             if !here.contains(&r.sample) {
@@ -1485,6 +1554,18 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
                 budget.other_line_mm2 += ln.right_mm * bh - band_area;
             }
         }
+        if plan.lines.is_none() {
+            let mut blocks = 0.0;
+            for &(ri, strip) in &pg {
+                let images: f64 = runs[ri].pieces.iter().map(|q| q.w(k) * q.h(k)).sum();
+                let block = strip.size_mm[0] * strip.size_mm[1];
+                blocks += block;
+                budget.band_mm2 += images;
+                budget.labels_notes_mm2 += strip.size_mm[0] * (LABEL_MM + NOTE_MM);
+                budget.other_line_mm2 += block - strip.size_mm[0] * (LABEL_MM + NOTE_MM) - images;
+            }
+            budget.blank_mm2 = body_w * body_h(pi) - blocks;
+        }
         for &(ri, strip) in &pg {
             let run = &runs[ri];
             let y = strip.origin_mm[1];
@@ -1493,7 +1574,8 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
             for q in &run.pieces {
                 budget.empty_epoxy_mm2 += empty_rows_um(q.rect, &printed[run.area], p.pad_um) / k * q.w(k);
             }
-            let (rx0, rx1) = (strip.origin_mm[0], strip.origin_mm[0] + if run.labelled { run.end.max(20.0) } else { run.end });
+            let rx0 = strip.origin_mm[0];
+            let rx1 = strip.origin_mm[0] + if run.labelled { run.end.max(20.0) } else { run.end };
             let ly = y + LABEL_MM - 1.5;
             if run.labelled {
                 let _ = write!(s, r#"<rect x="{rx0:.2}" y="{:.2}" width="2.6" height="2.6" rx="0.4" fill="{INK}"/>"#, ly - 2.4);
@@ -1579,7 +1661,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
         } else {
             pg.iter().map(|(_, r)| r.origin_mm[1] + r.size_mm[1]).fold(m + header_mm + 1.0, f64::max)
         };
-        budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - bottom).max(0.0);
+        if plan.lines.is_some() { budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - bottom).max(0.0); }
         stats.height_budget.push(budget);
         header(&mut s, &hp, meta, page, pi + 1, n, &here, areas, &printed, ownership, &stats, k, &scale_note, &spots_off, header_mm);
         mount_map(&mut s, p, page, areas, &printed, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm);
@@ -1619,6 +1701,7 @@ pub fn render_plan(plan: &SheetPlan, areas: &[SheetArea], grains: &BTreeMap<Stri
     stats.grains_twice = check.twice;
     stats.grains_unmarked = check.unmarked;
     stats.bands_outside_body = check.outside_body;
+    stats.bands_overlapping = check.bands_overlapping;
     SheetResult { pages: svgs, registration: reg, stats }
 }
 
@@ -1629,12 +1712,45 @@ pub struct Audit {
     pub twice: usize,
     pub unmarked: usize,
     pub outside_body: usize,
+    pub bands_overlapping: usize,
+}
+
+/// Legacy same-area line groups share a label and inter-band gap marks/dividers.
+/// Audit their envelope as one block: internal gap marks and dividers deliberately
+/// share horizontal space, at different heights. Explicit packed blocks stay separate.
+fn legacy_blocks(reg: &PrintRegistration, areas: &[SheetArea]) -> Vec<SheetBlock> {
+    if !reg.layout.is_empty() && reg.layout != "lines" { return Vec::new(); }
+    let mut blocks: Vec<SheetBlock> = Vec::new();
+    for (i, b) in reg.bands.iter().enumerate() {
+        let r = b.sheet_rect_mm;
+        if i.checked_sub(1).is_some_and(|j| reg.bands[j].sheet == b.sheet && reg.bands[j].area == b.area && (reg.bands[j].sheet_rect_mm[1] - r[1]).abs() < 1e-7) {
+            let block = blocks.last_mut().expect("previous band block");
+            block.rect_mm[2] = block.rect_mm[2].max(r[2]);
+            block.rect_mm[3] = block.rect_mm[3].max(r[3] + NOTE_MM);
+            continue;
+        }
+        let cont = reg.bands[..i].iter().any(|q| q.area == b.area && q.row == b.row);
+        let area = areas.iter().find(|a| a.rec.id == b.area).map_or_else(|| b.area.split_once('_').map_or(b.area.clone(), |(n, _)| n.into()), |a| area_short(a.rec));
+        let label = format!("area {area}{}", if cont { " · continued" } else { "" });
+        let right = r[2].max(r[0] + 20.0).max(r[0] + text_w(&b.sample, 3.2, true) + 6.0 + text_w(&label, 2.5, false));
+        blocks.push(SheetBlock { sheet: b.sheet, rect_mm: [r[0], r[1] - LABEL_MM, right, r[3] + NOTE_MM] });
+    }
+    blocks
 }
 
 pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetArea]) -> Audit {
     // Older registrations have no body rectangle; at least check the paper.
     let body = if reg.body_rect_mm[2] > reg.body_rect_mm[0] { reg.body_rect_mm } else { [0.0, 0.0, reg.paper_mm[0], reg.paper_mm[1]] };
     let mut result = Audit { outside_body: reg.bands.iter().filter(|b| !contains(reg.sheet_bodies.iter().find(|s| s.sheet == b.sheet).map_or(body, |s| s.body_rect_mm), b.sheet_rect_mm) || b.sheet_rect_mm.iter().any(|v| !v.is_finite())).count(), ..Audit::default() };
+    result.outside_body += reg.strip_blocks.iter().filter(|b| !contains(reg.sheet_bodies.iter().find(|s| s.sheet == b.sheet).map_or(body, |s| s.body_rect_mm), b.rect_mm) || b.rect_mm.iter().any(|v| !v.is_finite())).count();
+    for (i, a) in reg.bands.iter().enumerate() {
+        result.bands_overlapping += reg.bands[i + 1..].iter().filter(|b| a.sheet == b.sheet && packed::overlaps(a.sheet_rect_mm, b.sheet_rect_mm)).count();
+    }
+    let legacy;
+    let blocks = if reg.strip_blocks.is_empty() { legacy = legacy_blocks(reg, areas); &legacy } else { &reg.strip_blocks };
+    for (i, a) in blocks.iter().enumerate() {
+        result.bands_overlapping += blocks[i + 1..].iter().filter(|b| a.sheet == b.sheet && packed::overlaps(a.rect_mm, b.rect_mm)).count();
+    }
     for (ai, gs) in printed.iter().enumerate() {
         let bands: Vec<&BandRecord> = reg.bands.iter().filter(|b| b.area == areas[ai].rec.id).collect();
         for g in gs {

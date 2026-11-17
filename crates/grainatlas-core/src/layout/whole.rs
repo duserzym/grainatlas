@@ -325,6 +325,7 @@ pub fn whole_sheet(p: &WholeParams, area: &SheetArea, meta: &SheetMeta) -> Resul
             body_rect_mm: b,
         }],
         strays: Vec::new(),
+        strip_blocks: Vec::new(),
         bands: vec![BandRecord {
             sheet: 1,
             sample: a.sample.into(),

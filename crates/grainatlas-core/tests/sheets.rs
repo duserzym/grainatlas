@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use common::Rng;
 use grainatlas_core::image::Gray;
 use grainatlas_core::layout::AreaImage;
-use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
+use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams, Packing};
 use grainatlas_core::mosaic::{Placement, TilePlacement};
 use grainatlas_core::ownership::{self, OwnershipParams};
 use grainatlas_core::photometric::enhance::{self, EnhanceParams, StripRefusal};
@@ -543,6 +543,7 @@ fn strip_fills_hulls_and_refuses_when_unsafe() {
 
 #[test]
 fn sheets_print_owned_grains_with_a_registration() {
+    both_packings(|| {
     let (areas, grains) = two_areas();
     let own = ownership::assign(&areas, &grains, &OwnershipParams::default());
     let px: Vec<Vec<u8>> = areas
@@ -578,6 +579,7 @@ fn sheets_print_owned_grains_with_a_registration() {
         ..Default::default()
     };
     let p = SheetParams {
+        packing: TEST_PACKING.get(),
         um_per_mm: 8.0,
         min_grain_um: 0.0,
         enhance: EnhanceParams::default(),
@@ -694,6 +696,7 @@ fn sheets_print_owned_grains_with_a_registration() {
     );
     let pdf = grainatlas_core::layout::pdf::pdf_from_svgs(&r.pages).unwrap();
     assert!(pdf.starts_with(b"%PDF"));
+    });
 }
 
 #[test]
@@ -891,8 +894,19 @@ fn the_split_tool_flags_a_bubble_part() {
     );
 }
 
+std::thread_local! { static TEST_PACKING: std::cell::Cell<Packing> = const { std::cell::Cell::new(Packing::Lines) }; }
+
+fn both_packings(test: impl Fn()) {
+    for packing in [Packing::Lines, Packing::Packed] {
+        TEST_PACKING.set(packing);
+        test();
+    }
+    TEST_PACKING.set(Packing::Lines);
+}
+
 fn fast_sheets() -> SheetParams {
     SheetParams {
+        packing: TEST_PACKING.get(),
         um_per_mm: 8.0,
         min_grain_um: 0.0,
         min_cluster_grains: 0,
@@ -948,6 +962,11 @@ fn field_sheets_at_pixel(
         .collect();
     let own = ownership::assign(recs, gs, &OwnershipParams::default());
     let result = sheets::sheets(p, &areas, gs, &own, &SheetMeta::default());
+    if p.packing == Packing::Lines {
+        let packed = sheets::sheets(&SheetParams { packing: Packing::Packed, ..p.clone() }, &areas, gs, &own, &SheetMeta::default());
+        same_cut(&result, &packed);
+        assert_packed_blocks(&packed);
+    }
     let printed: Vec<Vec<&Grain>> = recs
         .iter()
         .map(|a| {
@@ -973,7 +992,8 @@ fn field_sheets_at_pixel(
             cut: 0,
             twice: 0,
             unmarked: 0,
-            outside_body: 0
+            outside_body: 0,
+            bands_overlapping: 0
         }
     );
     assert_eq!(
@@ -1116,6 +1136,7 @@ fn assert_band_geometry(result: &sheets::SheetResult) {
 
 #[test]
 fn dense_two_dimensional_context_stays_in_one_band() {
+    both_packings(|| {
     let gs: Vec<_> = (0..3)
         .flat_map(|y| {
             (0..6).map(move |x| grain(100.0 + x as f64 * 80.0, 100.0 + y as f64 * 80.0, 60.0))
@@ -1135,10 +1156,12 @@ fn dense_two_dimensional_context_stays_in_one_band() {
     assert_eq!(b.grains.len(), 18);
     assert!(gs.iter().all(|g| holds(b.mosaic_rect_um, g.bbox_um)));
     assert!(b.context.is_empty() && b.repeated_um.is_empty());
+    });
 }
 
 #[test]
 fn sparse_orphans_stay_separate_when_a_join_is_expensive() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 200.0,
         ..fast_sheets()
@@ -1161,10 +1184,12 @@ fn sparse_orphans_stay_separate_when_a_join_is_expensive() {
     assert_eq!(r.stats.isolated, 1);
     assert_eq!(r.stats.bands, 2);
     assert!(r.pages.iter().any(|s| s.contains("1 isolated")));
+    });
 }
 
 #[test]
 fn long_empty_stretches_are_separate_nonoverlapping_clusters() {
+    both_packings(|| {
     let gs: Vec<_> = [100.0, 10_000.0]
         .into_iter()
         .flat_map(|base| (0..3).map(move |x| grain(base + x as f64 * 80.0, 100.0, 60.0)))
@@ -1178,10 +1203,12 @@ fn long_empty_stretches_are_separate_nonoverlapping_clusters() {
             || bs[0].sheet_rect_mm[1] != bs[1].sheet_rect_mm[1]
     );
     assert_eq!((bs[0].row, bs[1].row), (1, 2));
+    });
 }
 
 #[test]
 fn wide_cluster_prefers_the_final_ten_percent_and_repeats_context() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 500.0,
         overlap_um: 180.0,
@@ -1242,6 +1269,7 @@ fn wide_cluster_prefers_the_final_ten_percent_and_repeats_context() {
         pdf.starts_with(b"%PDF"),
         "repeated-strip masks render to PDF"
     );
+    });
 }
 
 #[test]
@@ -1345,6 +1373,7 @@ fn cuts_keep_minimum_owned_groups_at_heads_and_tails() {
 
 #[test]
 fn empty_repeated_strips_widen_to_show_and_register_a_neighbour() {
+    both_packings(|| {
     for (d, step, context) in [
         (0, 360.0, 400.0),
         (1, 360.0, 400.0),
@@ -1437,10 +1466,12 @@ fn empty_repeated_strips_widen_to_show_and_register_a_neighbour() {
             "axis {d}, spacing {step} must exercise an originally empty strip"
         );
     }
+    });
 }
 
 #[test]
 fn svg_scale_bars_stay_in_owned_space_outside_repeated_strips() {
+    both_packings(|| {
     for d in 0..2 {
         let gs = (0..80)
             .map(|i| {
@@ -1519,10 +1550,12 @@ fn svg_scale_bars_stay_in_owned_space_outside_repeated_strips() {
             assert!(bars > right_strips && right_strips > 0);
         }
     }
+    });
 }
 
 #[test]
 fn cut_uses_the_nearest_empty_column_that_is_wide_enough() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 500.0,
         overlap_um: 180.0,
@@ -1550,10 +1583,12 @@ fn cut_uses_the_nearest_empty_column_that_is_wide_enough() {
         .collect();
     let r = single_field(&p, 6700, 300, gs);
     assert_eq!(r.registration.bands[0].repeated_um[0][0], 3180.0);
+    });
 }
 
 #[test]
 fn cut_pieces_follow_their_own_grains_on_a_wandering_row() {
+    both_packings(|| {
     let p = SheetParams {
         pad_um: 22.2,
         ..fast_sheets()
@@ -1614,10 +1649,12 @@ fn cut_pieces_follow_their_own_grains_on_a_wandering_row() {
             "each slice is shorter than the full wandering span: {spans:?}"
         );
     }
+    });
 }
 
 #[test]
 fn auto_overlap_is_the_larger_of_reference_size_and_a_third_of_context() {
+    both_packings(|| {
     let gs: Vec<_> = (0..80)
         .map(|i| grain(100.0 + i as f64 * 80.0, 100.0, 60.0))
         .collect();
@@ -1645,10 +1682,12 @@ fn auto_overlap_is_the_larger_of_reference_size_and_a_third_of_context() {
             }
         }
     }
+    });
 }
 
 #[test]
 fn orphan_joins_a_cluster_that_already_needs_cuts() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 100.0,
         ..fast_sheets()
@@ -1694,6 +1733,7 @@ fn orphan_joins_a_cluster_that_already_needs_cuts() {
             }
         }
     }
+    });
 }
 
 #[test]
@@ -1720,6 +1760,7 @@ fn wide_tall_clusters_cut_width_before_local_height() {
 
 #[test]
 fn crossing_cuts_keep_each_centroid_owner_whole() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 100.0,
         overlap_um: 70.0,
@@ -1752,6 +1793,7 @@ fn crossing_cuts_keep_each_centroid_owner_whole() {
             assert!(holds(b.mosaic_rect_um, g.bbox_um));
         }
     }
+    });
 }
 
 #[test]
@@ -1797,6 +1839,7 @@ fn whole_cluster_spends_a_new_line_and_bands_never_mix_areas() {
 
 #[test]
 fn box_neighbours_and_intersecting_rectangles_merge_to_stability() {
+    both_packings(|| {
     // Diagonal box gap uses max(dx, dy), not Euclidean or centroid distance.
     let p = SheetParams {
         context_um: 50.0,
@@ -1842,6 +1885,7 @@ fn box_neighbours_and_intersecting_rectangles_merge_to_stability() {
     gs.extend((0..3).map(|i| grain(1900.0, 420.0 + i as f64 * 80.0, 60.0)));
     let r = single_field(&p, 2100, 1100, gs);
     assert_eq!((r.stats.clusters, r.stats.bands), (1, 1));
+    });
 }
 
 #[test]
@@ -1886,6 +1930,7 @@ fn cluster_order_follows_the_long_axis_and_auto_context_uses_reference_size() {
 
 #[test]
 fn old_sheet_json_defaults_and_audit_checks_ownership_not_visibility() {
+    both_packings(|| {
     let p: SheetParams = serde_json::from_str(r#"{"gap_break_um":420}"#).unwrap();
     assert_eq!(
         (
@@ -1928,7 +1973,8 @@ fn old_sheet_json_defaults_and_audit_checks_ownership_not_visibility() {
             cut: 0,
             twice: 1,
             unmarked: 0,
-            outside_body: 0
+            outside_body: 0,
+            bands_overlapping: 1
         }
     );
     reg.bands[1].grains.clear();
@@ -1938,13 +1984,14 @@ fn old_sheet_json_defaults_and_audit_checks_ownership_not_visibility() {
             cut: 0,
             twice: 0,
             unmarked: 1,
-            outside_body: 0
+            outside_body: 0,
+            bands_overlapping: 1
         }
     );
     reg.bands[1].context = reg.bands[0].grains.clone();
     assert_eq!(
         sheets::audit(&reg, &printed, &areas),
-        sheets::Audit::default()
+        sheets::Audit { bands_overlapping: 1, ..Default::default() }
     );
     reg.bands[0].mosaic_rect_um[2] = g.bbox_um[2] - 0.1;
     assert_eq!(
@@ -1958,6 +2005,7 @@ fn old_sheet_json_defaults_and_audit_checks_ownership_not_visibility() {
         1,
         "context alone is not ownership"
     );
+    });
 }
 
 #[test]
@@ -2000,6 +2048,7 @@ fn oversized_clusters_use_remaining_space_only_above_forty_percent() {
 
 #[test]
 fn fractional_scale_and_pixels_keep_the_translation_exact() {
+    both_packings(|| {
     let p = SheetParams {
         um_per_mm: 5.7,
         pad_um: 22.2,
@@ -2023,10 +2072,12 @@ fn fractional_scale_and_pixels_keep_the_translation_exact() {
                 .all(|v| (v / 2.5).fract().abs() < 1e-7)
         );
     }
+    });
 }
 
 #[test]
 fn diagonal_cluster_retains_context_when_slices_have_empty_sides() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 200.0,
         overlap_um: 100.0,
@@ -2039,6 +2090,7 @@ fn diagonal_cluster_retains_context_when_slices_have_empty_sides() {
     assert_eq!(r.stats.clusters, 1);
     assert!(r.stats.bands > 2);
     assert_eq!(r.stats.isolated, 0);
+    });
 }
 
 /// The operator's drawn rectangle (TM4000 `.zag`), in navigation display pixels of 1 um with the
@@ -2246,6 +2298,7 @@ fn sheet_scale_reads_auto_or_a_number() {
 
 #[test]
 fn strays_are_reported_after_orphan_merging_and_never_become_targets() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 100.0,
         min_cluster_grains: SheetParams::default().min_cluster_grains,
@@ -2325,10 +2378,12 @@ fn strays_are_reported_after_orphan_merging_and_never_become_targets() {
         (merged.stats.grains, merged.stats.strays, merged.stats.bands),
         (31, 0, 1)
     );
+    });
 }
 
 #[test]
 fn stray_rule_preserves_small_areas_and_all_largest_ties() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 100.0,
         min_cluster_grains: 5,
@@ -2354,10 +2409,12 @@ fn stray_rule_preserves_small_areas_and_all_largest_ties() {
         ),
         (6, 0, 2)
     );
+    });
 }
 
 #[test]
 fn wide_cluster_with_a_sparse_bottom_slice_stays_inside_the_body() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 1400.0,
         overlap_um: 100.0,
@@ -2379,10 +2436,12 @@ fn wide_cluster_with_a_sparse_bottom_slice_stays_inside_the_body() {
             .all(|b| holds(result.registration.body_rect_mm, b.sheet_rect_mm)
                 && !b.grains.is_empty())
     );
+    });
 }
 
 #[test]
 fn audit_detects_a_band_outside_paper_even_when_mosaic_owners_are_whole() {
+    both_packings(|| {
     let g = grain(100.0, 100.0, 60.0);
     let mut result = single_field(&fast_sheets(), 400, 300, vec![g.clone()]);
     let a = area("001_Field", "Field", 0.0, 400, 300);
@@ -2414,6 +2473,7 @@ fn audit_detects_a_band_outside_paper_even_when_mosaic_owners_are_whole() {
         );
         result.registration.bands[0].sheet_rect_mm = original;
     }
+    });
 }
 
 #[test]
@@ -2466,6 +2526,7 @@ fn a_narrow_height_remainder_shares_its_line_with_the_next_width_piece() {
 
 #[test]
 fn fitting_a_height_slice_marks_context_clipped_at_its_side_edge() {
+    both_packings(|| {
     // This fixture deliberately permits a heavily repeated height slice to test
     // the side-edge hatch independently of the default panel-worth limit.
     let p = SheetParams {
@@ -2503,10 +2564,12 @@ fn fitting_a_height_slice_marks_context_clipped_at_its_side_edge() {
     let mut edge = rect_overlap(band.mosaic_rect_um, crossing.bbox_um).unwrap();
     edge[2] = edge[0];
     assert!(band.repeated_um.iter().any(|&s| holds(s, edge)));
+    });
 }
 
 #[test]
 fn orphan_joins_are_bounded_by_grain_gap_and_rectangle_growth() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 100.0,
         min_cluster_grains: 5,
@@ -2538,10 +2601,12 @@ fn orphan_joins_are_bounded_by_grain_gap_and_rectangle_growth() {
         );
         assert_eq!((r.stats.grains, r.stats.strays), (90, 1));
     }
+    });
 }
 
 #[test]
 fn rectangle_merging_cannot_rescue_a_far_disconnected_stray() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 100.0,
         min_cluster_grains: 5,
@@ -2588,6 +2653,7 @@ fn rectangle_merging_cannot_rescue_a_far_disconnected_stray() {
         ),
         (1, 0, host.len() + 1)
     );
+    });
 }
 
 #[test]
@@ -2653,6 +2719,7 @@ fn sheet_bodies_and_height_budgets_use_each_headers_actual_height() {
 
 #[test]
 fn audit_uses_the_sheet_body_before_its_legacy_envelope() {
+    both_packings(|| {
     let g = grain(100.0, 100.0, 60.0);
     let mut r = single_field(&fast_sheets(), 400, 300, vec![g.clone()]);
     let a = area("001_Field", "Field", 0.0, 400, 300);
@@ -2682,10 +2749,12 @@ fn audit_uses_the_sheet_body_before_its_legacy_envelope() {
         0,
         "old registrations retain their body fallback"
     );
+    });
 }
 
 #[test]
 fn registration_filename_is_the_exact_footer_and_export_name() {
+    both_packings(|| {
     let p = SheetParams {
         registration_file: "mount_A_print_registration.json".into(),
         ..fast_sheets()
@@ -2696,10 +2765,12 @@ fn registration_filename_is_the_exact_footer_and_export_name() {
         "registration {}",
         r.registration.registration_file
     )));
+    });
 }
 
 #[test]
 fn empty_epoxy_counts_empty_rows_without_counting_artifacts_as_targets() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 1000.0,
         ..fast_sheets()
@@ -2720,10 +2791,12 @@ fn empty_epoxy_counts_empty_rows_without_counting_artifacts_as_targets() {
     assert!((r.stats.fill.empty_epoxy - 696.0 / 904.0).abs() < 1e-10);
     assert!((r.stats.height_budget[0].empty_epoxy_mm2 - 104.0 * 696.0 / 64.0).abs() < 1e-10);
     assert_eq!(r.stats.artifacts, 1);
+    });
 }
 
 #[test]
 fn compact_map_keeps_six_asymmetrically_spaced_labels_inside_its_box() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 600.0,
         ..fast_sheets()
@@ -2776,10 +2849,12 @@ fn compact_map_keeps_six_asymmetrically_spaced_labels_inside_its_box() {
             a.name
         );
     }
+    });
 }
 
 #[test]
 fn a_mostly_repeated_height_tail_moves_the_width_piece_whole() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 650.0,
         overlap_um: 140.0,
@@ -2845,10 +2920,12 @@ fn a_mostly_repeated_height_tail_moves_the_width_piece_whole() {
     );
     assert_eq!(result.stats.forced_cuts, 0);
     assert!(result.stats.worst_repeated_fraction <= p.max_repeated_fraction);
+    });
 }
 
 #[test]
 fn a_few_owner_tail_moves_the_cut_earlier_in_either_direction() {
+    both_packings(|| {
     for d in 0..2 {
         let step = if d == 0 { 340.0 } else { 140.0 };
         let p = SheetParams {
@@ -2880,10 +2957,12 @@ fn a_few_owner_tail_moves_the_cut_earlier_in_either_direction() {
         );
         assert_eq!(result.stats.grains, 12);
     }
+    });
 }
 
 #[test]
 fn a_forced_cut_keeps_every_owner_once_and_marks_the_context() {
+    both_packings(|| {
     for (min_cut_grains, max_repeated_fraction) in [(5, 1.0 / 3.0), (0, 0.01)] {
         let p = SheetParams {
             min_cut_grains,
@@ -2938,10 +3017,12 @@ fn a_forced_cut_keeps_every_owner_once_and_marks_the_context() {
             );
         }
     }
+    });
 }
 
 #[test]
 fn panel_worth_fields_default_for_older_json() {
+    both_packings(|| {
     let p: SheetParams = serde_json::from_str("{}").unwrap();
     assert_eq!((p.min_cut_grains, p.max_repeated_fraction), (0, 1.0 / 3.0));
     let stats: sheets::SheetStats = serde_json::from_str(r#"{"fill":{"band_area":0.5}}"#).unwrap();
@@ -2962,10 +3043,12 @@ fn panel_worth_fields_default_for_older_json() {
             .cut_sources
             .is_empty()
     );
+    });
 }
 
 #[test]
 fn repeated_fill_counts_intersecting_strips_once_and_weights_band_area() {
+    both_packings(|| {
     let p = SheetParams {
         context_um: 150.0,
         overlap_um: 100.0,
@@ -3018,6 +3101,7 @@ fn repeated_fill_counts_intersecting_strips_once_and_weights_band_area() {
     );
     assert!((result.stats.fill.repeated - repeat / total).abs() < 1e-10);
     assert!((result.stats.worst_repeated_fraction - worst).abs() < 1e-10);
+    });
 }
 
 /// The viewer's mount inset (ui/src/lib/mount-inset.ts `stageBox`) ports `stage_box`. Both
@@ -3139,4 +3223,248 @@ fn sheet_plan_round_trips_and_renders_at_strip_origins() {
         images
     };
     assert_eq!(images(&original), images(&moved));
+}
+
+/// Ignore placement and compare every other band field as a multiset.
+fn same_cut(a: &sheets::SheetResult, b: &sheets::SheetResult) {
+    let bands = |r: &sheets::SheetResult| {
+        let mut bands: Vec<_> = r.registration.bands.iter().cloned().map(|mut b| {
+            b.sheet = 0;
+            b.sheet_rect_mm = [0.0; 4];
+            serde_json::to_string(&b).unwrap()
+        }).collect();
+        bands.sort();
+        bands
+    };
+    assert_eq!(bands(a), bands(b));
+    assert_eq!(a.registration.strays, b.registration.strays);
+    assert_eq!((a.stats.grains, a.stats.cuts, a.stats.forced_cuts, a.stats.clusters, a.stats.isolated), (b.stats.grains, b.stats.cuts, b.stats.forced_cuts, b.stats.clusters, b.stats.isolated));
+}
+
+fn assert_packed_blocks(r: &sheets::SheetResult) {
+    assert_eq!(r.registration.layout, "packed");
+    assert_eq!((r.stats.bands_overlapping, r.stats.bands_outside_body), (0, 0));
+    assert_eq!(r.stats.fill.line_width, 0.0);
+    assert!(!r.registration.strip_blocks.is_empty());
+    for (i, block) in r.registration.strip_blocks.iter().enumerate() {
+        let body = &r.registration.sheet_bodies[block.sheet - 1];
+        assert!(holds(body.body_rect_mm, block.rect_mm));
+        for other in r.registration.strip_blocks.iter().skip(i + 1).filter(|b| b.sheet == block.sheet) {
+            assert!(rect_overlap(block.rect_mm, other.rect_mm).is_none(), "blocks include labels: {block:?}, {other:?}");
+            let [a, b] = [block.rect_mm, other.rect_mm];
+            assert!(a[2] + 2.5 <= b[0] + 1e-7 || b[2] + 2.5 <= a[0] + 1e-7 || a[3] + 2.5 <= b[1] + 1e-7 || b[3] + 2.5 <= a[1] + 1e-7);
+        }
+    }
+    for band in &r.registration.bands {
+        let body = &r.registration.sheet_bodies[band.sheet - 1];
+        assert!(holds(body.body_rect_mm, band.sheet_rect_mm));
+        for d in 0..2 {
+            let um = band.mosaic_rect_um[d + 2] - band.mosaic_rect_um[d];
+            assert!(((band.sheet_rect_mm[d + 2] - band.sheet_rect_mm[d]) * r.registration.um_per_mm - um).abs() < 1e-6 * um);
+        }
+    }
+    for (body, budget) in r.registration.sheet_bodies.iter().zip(&r.stats.height_budget) {
+        let block_area: f64 = r.registration.strip_blocks.iter().filter(|b| b.sheet == body.sheet).map(|b| (b.rect_mm[2] - b.rect_mm[0]) * (b.rect_mm[3] - b.rect_mm[1])).sum();
+        let body_area = (body.body_rect_mm[2] - body.body_rect_mm[0]) * (body.body_rect_mm[3] - body.body_rect_mm[1]);
+        assert!((budget.blank_mm2 - (body_area - block_area)).abs() < 1e-7);
+        let [w, h] = r.registration.paper_mm;
+        assert!((budget.header_mm2 + budget.footer_margins_mm2 + budget.labels_notes_mm2 + budget.band_mm2 + budget.other_line_mm2 + budget.blank_mm2 - w * h).abs() < 1e-7);
+    }
+    for page in &r.pages {
+        assert!(!page.contains("stroke-dasharray=\"0.6 1.2\""));
+    }
+}
+
+#[test]
+fn packed_preserves_the_cut_mapping_and_bytes_across_runs() {
+    let (p, recs, gs) = golden_mount();
+    let lines = field_sheets(&p, &recs, &gs);
+    assert!(lines.stats.sheets >= 3);
+    let p = SheetParams { packing: Packing::Packed, ..p };
+    let packed = field_sheets(&p, &recs, &gs);
+    same_cut(&lines, &packed);
+    assert!(packed.stats.sheets <= lines.stats.sheets);
+    assert_packed_blocks(&packed);
+    let second = field_sheets(&p, &recs, &gs);
+    assert_eq!(serde_json::to_string(&packed.registration).unwrap(), serde_json::to_string(&second.registration).unwrap());
+    assert_eq!(packed.pages, second.pages);
+    assert_eq!(packed.stats, second.stats);
+    assert!(packed.pages.iter().any(|p| p.contains(">//</text>")));
+    assert!(packed.pages.iter().any(|p| p.contains("repeated-hatch")));
+}
+
+#[test]
+fn packed_fills_space_below_short_two_thirds_width_bands() {
+    // Lines pair a short wide band with a tall narrow band. Packing can stack
+    // short bands beside tall ones without changing a single mosaic crop.
+    let p = SheetParams { paper: "letter".into(), context_um: 2200.0, printed: "2000-01-01".into(), ..fast_sheets() };
+    let mut recs = Vec::new();
+    let mut gs = BTreeMap::new();
+    for i in 0..16 {
+        let (w, h) = if i % 2 == 0 { (1400, 200) } else { (520, 800) };
+        let rec = area(&format!("A{i}"), &format!("zr-{i}"), -(i as f64) * 10_000_000.0, w + 100, h + 100);
+        let grains = [100.0, w as f64 - 50.0].into_iter().flat_map(|x| [100.0, h as f64 - 50.0].into_iter().map(move |y| grain(x, y, 60.0))).collect();
+        gs.insert(rec.id.clone(), grains);
+        recs.push(rec);
+    }
+    let lines = field_sheets(&p, &recs, &gs);
+    assert!(lines.stats.sheets >= 3);
+    let packed = field_sheets(&SheetParams { packing: Packing::Packed, ..p }, &recs, &gs);
+    same_cut(&lines, &packed);
+    assert!(packed.stats.sheets < lines.stats.sheets, "{} packed, {} lines", packed.stats.sheets, lines.stats.sheets);
+    assert_packed_blocks(&packed);
+}
+
+#[test]
+fn packed_reserves_pinned_rectangles_and_uses_body_edges_without_a_gap() {
+    use sheets::{SheetBlock, packed::pack_rectangles};
+    let bodies = [[8.0, 59.0, 208.0, 159.0], [8.0, 45.0, 208.0, 159.0]];
+    let pinned = [SheetBlock { sheet: 1, rect_mm: [38.0, 79.0, 108.0, 119.0] }, SheetBlock { sheet: 2, rect_mm: [8.0, 45.0, 208.0, 60.0] }];
+    let sizes = [[25.0, 30.0]; 30];
+    let placed = pack_rectangles(&sizes, bodies, &pinned);
+    assert_eq!(placed.len(), sizes.len());
+    assert!(placed.iter().any(|b| b.sheet == 1));
+    assert_eq!(placed, pack_rectangles(&sizes, bodies, &pinned));
+    for (i, block) in placed.iter().enumerate() {
+        assert!(holds(bodies[usize::from(block.sheet > 1)], block.rect_mm));
+        for other in pinned.iter().chain(placed.iter().skip(i + 1)).filter(|b| b.sheet == block.sheet) {
+            let [a, b] = [block.rect_mm, other.rect_mm];
+            assert!(a[2] + 2.5 <= b[0] + 1e-7 || b[2] + 2.5 <= a[0] + 1e-7 || a[3] + 2.5 <= b[1] + 1e-7 || b[3] + 2.5 <= a[1] + 1e-7);
+        }
+    }
+    let exact = pack_rectangles(&[[200.0, 100.0], [200.0, 114.0]], bodies, &[]);
+    assert_eq!(exact, [SheetBlock { sheet: 1, rect_mm: bodies[0] }, SheetBlock { sheet: 2, rect_mm: bodies[1] }]);
+    let oversize = pack_rectangles(&[[201.0, 101.0], [10.0, 10.0]], bodies, &[]);
+    assert_ne!(oversize[0].sheet, oversize[1].sheet, "oversized strips get a sheet of their own");
+}
+
+#[test]
+fn packing_json_defaults_and_unknown_modes_are_clear() {
+    let old: SheetParams = serde_json::from_str(r#"{"paper":"letter","um_per_mm":8}"#).unwrap();
+    assert_eq!(old.packing, Packing::Lines);
+    let packed: SheetParams = serde_json::from_str(r#"{"packing":"packed"}"#).unwrap();
+    assert_eq!(packed.packing, Packing::Packed);
+    let error = serde_json::from_str::<SheetParams>(r#"{"packing":"other"}"#).unwrap_err().to_string();
+    assert!(error.contains("expected `lines` or `packed`"), "{error}");
+    let mut old_budget = serde_json::to_value(sheets::HeightBudget::default()).unwrap();
+    old_budget.as_object_mut().unwrap().remove("blank_mm2");
+    let budget: sheets::HeightBudget = serde_json::from_value(old_budget).unwrap();
+    assert_eq!(budget.blank_mm2, 0.0);
+    let stats: sheets::SheetStats = serde_json::from_str("{}").unwrap();
+    assert_eq!(stats.bands_overlapping, 0);
+}
+
+#[test]
+fn registration_audit_detects_image_and_label_block_overlaps() {
+    let (p, recs, gs) = golden_mount();
+    let r = field_sheets(&SheetParams { packing: Packing::Packed, ..p }, &recs, &gs);
+    // Geometry auditing also works without source pixels, targets or area records.
+    let mut reg: sheets::PrintRegistration = serde_json::from_str(&serde_json::to_string(&r.registration).unwrap()).unwrap();
+    assert_eq!(sheets::audit(&reg, &[], &[]).bands_overlapping, 0);
+    reg.strip_blocks.truncate(2);
+    reg.strip_blocks[1] = reg.strip_blocks[0].clone();
+    assert_eq!(sheets::audit(&reg, &[], &[]).bands_overlapping, 1, "block collision even though the images are disjoint");
+    reg.strip_blocks.clear();
+    reg.bands.truncate(2);
+    reg.bands[1].sheet = reg.bands[0].sheet;
+    reg.bands[1].sheet_rect_mm = reg.bands[0].sheet_rect_mm;
+    assert_eq!(sheets::audit(&reg, &[], &[]).bands_overlapping, 1, "image auditing does not need strip records");
+    let edge = reg.bands[0].sheet_rect_mm[2];
+    reg.bands[1].sheet_rect_mm[0] = edge - 1e-8;
+    reg.bands[1].sheet_rect_mm[2] = edge + 10.0;
+    assert_eq!(sheets::audit(&reg, &[], &[]).bands_overlapping, 0, "ignore floating point edge contact");
+}
+
+fn field_plan(p: &SheetParams, recs: &[AreaRecord], gs: &BTreeMap<String, Vec<Grain>>) -> sheets::SheetPlan {
+    // Planning is pixel-free: only the source image dimensions and resolution matter.
+    let areas: Vec<_> = recs.iter().map(|rec| {
+        let m = rec.placement.as_ref().unwrap();
+        SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px: &[], lut: [128; 256], um_per_px: 1.0 } }
+    }).collect();
+    let own = ownership::assign(recs, gs, &OwnershipParams::default());
+    sheets::plan_sheets(p, &areas, gs, &own, &SheetMeta::default())
+}
+
+#[test]
+fn packed_block_sizes_cover_labels_underlines_and_gap_marks() {
+    let mut rec = area("A1", "zr-1", 0.0, 2400, 300);
+    rec.sample = "zr-12345678901234567890".into();
+    let gs = BTreeMap::from([(rec.id.clone(), vec![grain(100.0, 100.0, 60.0), grain(2000.0, 100.0, 60.0)])]);
+    let p = SheetParams { context_um: 100.0, ..fast_sheets() };
+    let lines = field_plan(&p, std::slice::from_ref(&rec), &gs);
+    let packed = field_plan(&SheetParams { packing: Packing::Packed, ..p.clone() }, std::slice::from_ref(&rec), &gs);
+    assert_eq!(lines.strips.len(), 2);
+    assert!(lines.strips[0].bands.last().unwrap().gap_after_um.is_some());
+    assert!(!lines.strips[1].labelled);
+    assert_eq!(lines.targets, packed.targets);
+    for (line, block) in lines.strips.iter().zip(&packed.strips) {
+        assert_eq!(line.key, block.key);
+        assert_eq!(line.size_mm[1], block.size_mm[1]);
+        assert_eq!(line.bands[0].mosaic_rect_um, block.bands[0].mosaic_rect_um);
+        assert!(block.labelled);
+        assert_eq!(line.bands[0].offset_mm, block.bands[0].offset_mm);
+        let band = &block.bands[0];
+        let image_right = band.offset_mm + (band.mosaic_rect_um[2] - band.mosaic_rect_um[0]) / packed.um_per_mm;
+        assert!(block.size_mm[0] >= image_right);
+        let drawn = block.sample.chars().count() as f64 * 3.2 * 0.66 + 6.0 + block.label.chars().count() as f64 * 2.5 * 0.58;
+        assert!(block.size_mm[0] >= drawn.max(20.0));
+        if let Some(gap) = band.gap_after_um {
+            let drawn = format!("{:.1} mm", gap / 1000.0).chars().count() as f64 * 1.7 * 0.58;
+            assert!(block.size_mm[0] >= image_right + 2.5 + drawn / 2.0);
+        }
+    }
+    let json = serde_json::to_string(&packed).unwrap();
+    assert_eq!(packed, serde_json::from_str::<sheets::SheetPlan>(&json).unwrap());
+    assert_packed_blocks(&field_sheets(&SheetParams { packing: Packing::Packed, ..p }, &[rec], &gs));
+}
+
+#[test]
+fn packed_every_bands_strip_draws_its_sample_and_area_labels() {
+    let mut rec = area("A1", "zr-1", 0.0, 2400, 300);
+    rec.name = "A1".into();
+    let recs = [rec];
+    let gs = BTreeMap::from([(recs[0].id.clone(), vec![grain(100.0, 100.0, 60.0), grain(2000.0, 100.0, 60.0)])]);
+    let p = SheetParams { context_um: 100.0, ..fast_sheets() };
+    let lines = field_plan(&p, &recs, &gs);
+    let line = lines.lines.as_ref().unwrap().iter().find(|l| l.strips.iter().any(|&i| !lines.strips[i].labelled)).unwrap();
+    assert!(line.strips.iter().any(|&i| lines.strips[i].labelled));
+    let p = SheetParams { packing: Packing::Packed, ..p };
+    let plan = field_plan(&p, &recs, &gs);
+    let result = field_sheets(&p, &recs, &gs);
+    let mut checked = 0;
+    for band in &result.registration.bands {
+        let strip = plan.strips.iter().find(|s| s.area == band.area && s.bands.iter().any(|b| b.grains.contains(&band.grains[0].id))).unwrap();
+        assert!(strip.labelled);
+        assert_eq!(strip.sheet + 1, band.sheet);
+        let doc = roxmltree::Document::parse(&result.pages[band.sheet - 1]).unwrap();
+        let texts: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("text") && n.attribute("y").is_some_and(|y| (y.parse::<f64>().unwrap() - (strip.origin_mm[1] + 3.1)).abs() < 0.01)).collect();
+        assert!(texts.iter().any(|n| n.text() == Some(strip.sample.as_str()) && n.attribute("x").is_some_and(|x| (x.parse::<f64>().unwrap() - (strip.origin_mm[0] + 3.6)).abs() < 0.01)), "sample label for band {band:?}");
+        let expected = if strip.cont { "area A1 · continued" } else { "area A1" };
+        assert!(texts.iter().any(|n| n.text() == Some(expected)), "area label for band {band:?}");
+        checked += 1;
+    }
+    assert_eq!(checked, 2);
+}
+
+#[test]
+fn packed_oversized_images_and_labels_keep_their_scale_and_fail_bounds_audit() {
+    let px = vec![128; 64 * 64];
+    for label_only in [false, true] {
+        let mut rec = area("A1", "zr-1", 0.0, 6400, 6400);
+        if label_only { rec.sample = format!("zr-{}", "a".repeat(220)); }
+        let g = if label_only { grain(1000.0, 1000.0, 60.0) } else { grain(3200.0, 3200.0, 4000.0) };
+        let gs = BTreeMap::from([(rec.id.clone(), vec![g.clone()])]);
+        let own = ownership::assign(std::slice::from_ref(&rec), &gs, &OwnershipParams::default());
+        let areas = [SheetArea { rec: &rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: 64, h: 64, px: &px, lut: [128; 256], um_per_px: 100.0 } }];
+        let p = SheetParams { packing: Packing::Packed, ..fast_sheets() };
+        let result = sheets::sheets(&p, &areas, &gs, &own, &SheetMeta::default());
+        assert_eq!((result.stats.sheets, result.stats.bands, result.stats.grains), (1, 1, 1));
+        assert!(result.stats.bands_outside_body > 0);
+        assert_eq!((result.stats.grains_cut, result.stats.bands_overlapping), (0, 0));
+        let b = &result.registration.bands[0];
+        assert!(holds(b.mosaic_rect_um, g.bbox_um));
+        for d in 0..2 {
+            assert!(((b.sheet_rect_mm[d + 2] - b.sheet_rect_mm[d]) * p.um_per_mm - (b.mosaic_rect_um[d + 2] - b.mosaic_rect_um[d])).abs() < 1e-6);
+        }
+    }
 }

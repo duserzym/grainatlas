@@ -14,7 +14,7 @@ mod rerender;
 mod project_atlas;
 mod whole;
 use grainatlas_core::Ctl;
-use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams};
+use grainatlas_core::layout::sheets::{self, SheetArea, SheetMeta, SheetParams, Packing};
 use grainatlas_core::project::pipeline::{self, Timings};
 use grainatlas_core::project::session::Session;
 use grainatlas_core::project::{AreaParams, Project};
@@ -63,6 +63,9 @@ enum Cmd {
         /// mount's grain sizes, see docs/print_sheets.md "Layout rule: print scale").
         #[arg(long, value_parser = parse_scale)]
         scale: Option<f64>,
+        /// Grain sheets: lines (default, mount order) or packed (fewer sheets).
+        #[arg(long, value_name = "lines|packed", value_parser = parse_packing)]
+        packing: Option<Packing>,
         /// Also write each sheet as SVG.
         #[arg(long)]
         svg: bool,
@@ -246,6 +249,9 @@ struct StitchOptions {
     /// Print scale in um of sample per mm of paper (sheets: 0 = auto from the grain sizes; grains: 0 = fit).
     #[arg(long, default_value_t = 0.0)]
     scale: f64,
+    /// Sheets: lines (default, mount order) or packed (fewer sheets).
+    #[arg(long, value_name = "lines|packed", default_value = "lines", value_parser = parse_packing)]
+    packing: Packing,
     /// Sheets: no non-local means denoising of the bands.
     #[arg(long)]
     no_denoise: bool,
@@ -292,6 +298,7 @@ fn main() -> Result<()> {
             name,
             paper,
             scale,
+            packing,
             svg,
             title,
             lab,
@@ -340,6 +347,9 @@ fn main() -> Result<()> {
             }
             if let Some(scale) = scale {
                 p.um_per_mm = scale;
+            }
+            if let Some(packing) = packing {
+                p.packing = packing;
             }
             if let Some(title) = title {
                 p.title = title;
@@ -668,6 +678,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         print,
         print_style,
         scale,
+        packing,
         no_denoise,
         no_sharpen,
         strip_bg,
@@ -914,6 +925,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
         let reg_file = format!("{name}_print_registration.json");
         let sp = grainatlas_core::layout::sheets::SheetParams {
             paper: paper.clone(),
+            packing,
             um_per_mm: if scale > 0.0 { scale } else { 0.0 },
             enhance: grainatlas_core::photometric::enhance::EnhanceParams {
                 denoise: !no_denoise,
@@ -979,8 +991,9 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
             &serde_json::to_vec_pretty(&own)?,
         )?;
         let s = &r.stats;
+        let line_fill = if sp.packing == Packing::Lines { format!(", {:.1}% line width", s.fill.line_width * 100.0) } else { String::new() };
         eprintln!(
-            "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, {} strays left off; fill: {:.1}% band area, {:.1}% line width; background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice, {} unmarked, {} bands outside body) in {:.0} ms",
+            "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, {} strays left off; fill: {:.1}% band area{line_fill}; background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice, {} unmarked, {} bands outside body, {} overlapping image/block pairs) in {:.0} ms",
             s.sheets,
             s.bands,
             s.grains,
@@ -989,13 +1002,13 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
             s.filtered,
             s.strays,
             s.fill.band_area * 100.0,
-            s.fill.line_width * 100.0,
             s.stripped,
             s.strip_refused,
             s.grains_cut,
             s.grains_twice,
             s.grains_unmarked,
             s.bands_outside_body,
+            s.bands_overlapping,
             clock() - t
         );
         let ui = project
@@ -1143,8 +1156,9 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
         write(&out.join(file), &bytes)?;
     }
     let s = &r.stats;
+    let line_fill = if p.packing == Packing::Lines { format!(", {:.1}% line width", s.fill.line_width * 100.0) } else { String::new() };
     eprintln!(
-        "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, {} strays left off; fill: {:.1}% band area, {:.1}% line width; background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice, {} unmarked, {} bands outside body) in {:.0} ms",
+        "sheets: {} sheets, {} bands, {} grains printed ({} duplicates, {} artifacts, {} outside the size limits, {} strays left off; fill: {:.1}% band area{line_fill}; background stripped in {} bands, kept in {} for safety; check: {} grains cut by a band edge, {} printed twice, {} unmarked, {} bands outside body, {} overlapping image/block pairs) in {:.0} ms",
         s.sheets,
         s.bands,
         s.grains,
@@ -1153,13 +1167,13 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool) -> Re
         s.filtered,
         s.strays,
         s.fill.band_area * 100.0,
-        s.fill.line_width * 100.0,
         s.stripped,
         s.strip_refused,
         s.grains_cut,
         s.grains_twice,
         s.grains_unmarked,
         s.bands_outside_body,
+        s.bands_overlapping,
         start.elapsed().as_secs_f64() * 1000.0
     );
     Ok(())
@@ -1357,5 +1371,36 @@ fn parse_scale(s: &str) -> std::result::Result<f64, String> {
     match s.trim().parse::<f64>() {
         Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
         _ => Err(format!("{s:?}: a positive number of um per mm, or auto")),
+    }
+}
+
+fn parse_packing(s: &str) -> std::result::Result<Packing, String> {
+    match s {
+        "lines" => Ok(Packing::Lines),
+        "packed" => Ok(Packing::Packed),
+        _ => Err(format!("{s:?}: expected lines or packed")),
+    }
+}
+
+#[cfg(test)]
+mod packing_tests {
+    use super::*;
+
+    #[test]
+    fn sheets_and_stitch_parse_packing_and_reject_unknown_modes() {
+        for mode in ["lines", "packed"] {
+            let expected = parse_packing(mode).unwrap();
+            let cli = Cli::try_parse_from(["grainatlas", "sheets", "mount-a.grainatlas", "--out", "print-a", "--packing", mode]).unwrap();
+            let Cmd::Sheets { packing, .. } = cli.cmd else { panic!("sheets command") };
+            let mut params: SheetParams = serde_json::from_str(r#"{"packing":"lines"}"#).unwrap();
+            if let Some(packing) = packing { params.packing = packing; }
+            assert_eq!(params.packing, expected, "flags override JSON");
+            let cli = Cli::try_parse_from(["grainatlas", "stitch", "mount-a", "--out", "mount-a.grainatlas", "--packing", mode]).unwrap();
+            let Cmd::Stitch(options) = cli.cmd else { panic!("stitch command") };
+            assert_eq!(options.packing, expected);
+        }
+        assert!(Cli::try_parse_from(["grainatlas", "sheets", "mount-a.grainatlas", "--out", "print-a", "--packing", "other"]).err().unwrap().to_string().contains("expected lines or packed"));
+        let cli = Cli::try_parse_from(["grainatlas", "sheets", "mount-a.grainatlas", "--out", "print-a"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Sheets { packing: None, .. }));
     }
 }
