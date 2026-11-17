@@ -203,6 +203,8 @@ All of this is optional; without a server grainatlas works as before.
   server answers, else it is typed. `grainatlas atlas <package> --out <dir or
   .zip>` writes the same bundle from the command line, and native and browser
   builds write identical bytes.
+  In the mount picker or Register project dialog, **New mount…** lets a
+  signed-in user create and select their own mount.
 - **Open from server**: `index.html?server=<base>&project=<id>[&spot=<id>]`
   (`&mount=<id>&access=<token>` in UPbDB's own viewer links, enough for
   the files and the mount's results without signing in),

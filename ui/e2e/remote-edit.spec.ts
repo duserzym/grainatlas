@@ -57,11 +57,13 @@ function readStoredZip(zip: Buffer): Map<string, Buffer> {
   return files;
 }
 
-async function mockServer(page: Page, onLevelZero = () => {}) {
+async function mockServer(page: Page, onLevelZero = () => {}, unregistered = false) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
   const syncBodies: any[] = [];
+  const createBodies: any[] = [];
+  const mounts = unregistered ? [] : [{ id: mountId, label: 'Synthetic mount', mount_type: 'epoxy_1in', grain_count: 2, spot_count: 3, can_edit: true }];
   const unexpected: string[] = [];
   let revision = 1;
   const hashes = { grains: 'grains-1', spots: 'spots-1', labels: 'labels-1' };
@@ -89,8 +91,22 @@ async function mockServer(page: Page, onLevelZero = () => {}) {
   let atlasVersion = 1;
   await page.route(`${server}/**`, async route => {
     const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
-    const json = (value: unknown) => route.fulfill({ status: 200, json: value, headers: { 'access-control-allow-origin': '*' } });
+    const json = (value: unknown, status = 200) => route.fulfill({ status, json: value, headers: { 'access-control-allow-origin': '*' } });
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
+    if (pathname === '/v1/mounts') {
+      if (request.method() === 'GET') return json(mounts);
+      if (request.method() === 'POST') {
+        expect(request.headers().authorization).toBe('Bearer synthetic-token');
+        const body = request.postDataJSON();
+        createBodies.push(body);
+        if (mounts.some(m => m.label.toLowerCase() === body.label.toLowerCase())) return json({ detail: 'A mount with this label already exists.', code: 'label_taken' }, 409);
+        const mount = { id: '20000000-0000-4000-8000-000000000002', ...body, grain_count: 0, spot_count: 0, can_edit: true, sample_count: 0, projects: [], prepared_at: null, atlas: null };
+        mounts.push(mount);
+        return json(mount, 201);
+      }
+    }
+    if (pathname === '/v1/atlas/projects') return json([]);
+    if (unregistered && pathname === `/v1/atlas/projects/${projectId}`) return json({ detail: 'Project not registered.' }, 404);
     if (pathname.startsWith(`/atlas/projects/${projectId}/`)) {
       const relative = pathname.slice(`/atlas/projects/${projectId}/`.length);
       if (relative.includes('/0/')) onLevelZero();
@@ -110,6 +126,8 @@ async function mockServer(page: Page, onLevelZero = () => {}) {
     if (pathname === `/v1/atlas/projects/${projectId}/elements`) return json({ ...elements, mount_id: mountId, revision, hashes, project_uuids: [projectId], current_project_uuid: projectId });
     if (pathname === '/v1/sessions') return json([]);
     if (pathname === `/v1/mounts/${mountId}/results`) return json({ mount_id: mountId, spots: [] });
+    const resultsMount = mounts.find(m => pathname === `/v1/mounts/${m.id}/results`);
+    if (resultsMount) return json({ mount_id: resultsMount.id, spots: [] });
     if (pathname === `/v1/mounts/${mountId}/changes`) return json({ mount_id: mountId, revision, since: 1, changes: [] });
     if (request.method() === 'POST' && pathname === `/v1/mounts/${mountId}/atlas`) {
       const body = request.postDataBuffer();
@@ -136,8 +154,55 @@ async function mockServer(page: Page, onLevelZero = () => {}) {
     unexpected.push(`${request.method()} ${pathname}`);
     return route.fulfill({ status: 404, json: { detail: 'Unexpected synthetic endpoint' } });
   });
-  return { project, atlas, syncBodies, unexpected, uploads, bundleRequests };
+  return { project, atlas, syncBodies, unexpected, uploads, bundleRequests, createBodies };
 }
+
+test('Canvas creates and selects a mount, and keeps duplicate-label errors in the form', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const { project, createBodies, unexpected } = await mockServer(page);
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await page.getByTestId('tab-link').click();
+  const newMount = page.getByRole('button', { name: 'New mount…', exact: true });
+  await expect(newMount).toBeDisabled();
+  await page.getByTestId('edit-copy').click();
+  await newMount.click();
+  const form = page.getByRole('form', { name: 'New mount' });
+  await expect(form.getByLabel('Label', { exact: true })).toHaveValue(project.name);
+  await form.getByLabel('Label', { exact: true }).fill('Synthetic mount');
+  await form.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(form.getByRole('alert')).toHaveText('Creating mount: A mount with this label already exists.');
+  await form.getByLabel('Label', { exact: true }).fill('New synthetic mount');
+  await form.getByTestId('mount-type').selectOption('grain_tape');
+  await form.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(page.getByTestId('mount-select')).toHaveValue('20000000-0000-4000-8000-000000000002');
+  await expect(form).toHaveCount(0);
+  expect(createBodies).toEqual([
+    { label: 'Synthetic mount', mount_type: 'epoxy_1in' },
+    { label: 'New synthetic mount', mount_type: 'grain_tape' },
+  ]);
+  expect(unexpected).toEqual([]);
+});
+
+test('registration creates and selects a mount when the mount list is empty', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const { createBodies, unexpected } = await mockServer(page, () => {}, true);
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  await page.getByTestId('edit-copy').click();
+  await expect(page.getByTestId('sync-action')).toHaveText('Register…');
+  await page.getByTestId('sync-action').click();
+  const dialog = page.getByRole('dialog', { name: 'Register project' });
+  await expect(dialog.getByTestId('mount-note')).toHaveText('No mounts yet: create one.');
+  await expect(dialog.getByRole('button', { name: 'Register and sync', exact: true })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'New mount…', exact: true }).click();
+  await dialog.getByLabel('Label', { exact: true }).fill('New registration mount');
+  await dialog.getByTestId('mount-type').selectOption('thin_section');
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(dialog.getByTestId('mount-select')).toHaveValue('20000000-0000-4000-8000-000000000002');
+  await expect(dialog.getByRole('button', { name: 'Register and sync', exact: true })).toBeEnabled();
+  expect(createBodies).toEqual([{ label: 'New registration mount', mount_type: 'thin_section' }]);
+  expect(unexpected).toEqual([]);
+});
 
 test('published images support tone, sheets, save, sync and returning to view', async ({ page }) => {
   let levelZeroRequests = 0;

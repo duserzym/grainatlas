@@ -50,6 +50,7 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[], gra
 //
 // Endpoints (upblab/docs/WORKFLOW.md v1 and UPbDB's schemas/openapi.json):
 //   GET  /v1/mounts                         mount picker (MountOut list)
+//   POST /v1/mounts                         create a mount owned by the signed-in user
 //   POST /v1/mounts/{id}/atlas              publish: multipart/form-data, field `bundle` = the zip;
 //                                           writes no spot rows (spots go by sync), answers spot_check
 //   GET  /v1/mounts/{id}/results            results overlay (MountResults)
@@ -145,6 +146,14 @@ async function failure(r: Response, what: string): Promise<ApiError> {
   }
   // Raw status and body go to the console; people get one sentence.
   console.warn(`${what}: ${r.status} ${r.statusText}`, raw.slice(0, 2000));
+  if (r.status === 409 || r.status === 422) {
+    const detail = body && typeof body === 'object' ? (body as { detail?: unknown }).detail : null;
+    const messages = (Array.isArray(detail) ? detail : [detail]).map(d => {
+      const message = d && typeof d === 'object' ? (d as { msg?: unknown }).msg : d;
+      return typeof message === 'string' ? message.trim() : '';
+    }).filter(Boolean);
+    if (messages.length) return new ApiError(r.status, `${what}: ${messages.join('; ')}`);
+  }
   return new ApiError(r.status, `${what}: ${errorSentence(r.status, body)}`);
 }
 
@@ -177,6 +186,14 @@ export interface MountOut {
 
 export function listMounts(base: string, token: string | null): Promise<MountOut[]> {
   return call(base, '/v1/mounts', token, { method: 'GET' }, 'Listing mounts');
+}
+
+export type MountType = 'epoxy_1in' | 'epoxy_1in_half' | 'thin_section' | 'grain_tape';
+
+export function createMount(base: string, token: string | null, mount: { label: string; mount_type: MountType; notes?: string }): Promise<MountOut> {
+  return call(base, '/v1/mounts', token, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mount),
+  }, 'Creating mount');
 }
 
 /** Publish compares the bundle's spots.json with the database (contract 2026-11, section 4). */

@@ -56,8 +56,8 @@
       {:else if session.dialog === 'register'}
         <h2>Register project</h2>
         <SyncLinkOffer />
-        <p>Pick an existing mount. Creating mounts is available in the database.</p>
-        <MountPicker value={mount} onchange={id => mount = id} existingOnly />
+        <p>Pick a mount or create one.</p>
+        <MountPicker value={mount} onchange={id => mount = id} disabled={session.busy} existingOnly />
         {#if session.pixelsChanged}<label class="check"><input type="checkbox" bind:checked={publishImages} /> Publish a new atlas version with these images</label>{/if}
         <div class="actions"><button onclick={() => session.dialog = null}>Cancel</button><button class="primary" disabled={!mount || session.busy} onclick={() => session.register(mount, session.pixelsChanged && publishImages)}>Register and sync</button></div>
       {:else if session.dialog === 'pixels'}
