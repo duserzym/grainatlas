@@ -259,3 +259,6 @@ note line only when they have a continuation note; Separate restores that
 space and the editor reports any resulting overlap. Cutting retains its
 original header and note limits. Lines output remains byte-identical. The
 synthetic golden mount uses 2 packed sheets before and after this follow-up.
+The two November mounts at the scales in the table now pack into 2 and 4
+sheets (3 and 5 before), the same as the prototype; their lines output is
+unchanged apart from the print time.
