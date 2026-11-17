@@ -66,10 +66,12 @@ waiting for its name and an example file).
    `grainatlas segment <project> --add-missing [--area ID]... [--signal auto|cl|bse] [--dry-run]`.
    It requires an existing grain list and cannot be combined with `--missing`.
 4. Places laser spots, lines and rasters on an infinite canvas with the mouse
-   or trackpad alone (click to place, drag to move, drag the ring to resize,
+   or trackpad alone (click to place, drag to move,
    double-click to rename), named from a pattern, `{sample}_{n}` by default (n continues across
    samples within a session, or per sample when chosen), with UUIDv7 ids;
    batch edits of the selection; exports CSV and GeoJSON.
+   Spot size comes only from the size input in the side panel, for new and
+   selected spots; placed spots are never resized by dragging.
 5. Packs grains or areas onto Letter, Tabloid, A4 or A3 pages with labels,
    scale bars, spots and cut marks; exports PDF and SVG.
 6. Registers reference images (photos of annotated printouts, post-laser

@@ -173,7 +173,7 @@
         <tr><td><span class="kbd">1</span>…<span class="kbd">6</span></td><td>diameter preset</td><td><span class="kbd">⌥1</span>…<span class="kbd">⌥5</span></td><td>screens</td></tr>
       </tbody>
     </table>
-    <p class="faint small">Every image view (Area, Canvas, Layout preview) pans and zooms the same way: the mouse wheel zooms about the cursor, two-finger scroll pans, pinch zooms, drag empty space to pan, double-click to fit. On the Canvas: click to place, drag a spot to move it, drag its ring handle to resize, double-click its name to rename.</p>
+    <p class="faint small">Every image view (Area, Canvas, Layout preview) pans and zooms the same way: the mouse wheel zooms about the cursor, two-finger scroll pans, pinch zooms, drag empty space to pan, double-click to fit. On the Canvas: click to place, drag a spot to move it, double-click its name to rename. Set the size of new and selected spots in the side panel's size input.</p>
   </div>
 </section>
 

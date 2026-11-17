@@ -67,7 +67,9 @@ tools, spot numbering and batch edits.
 
 Choose **Spot** to place laser spots, set their diameter in µm and name them
 from a pattern, such as `{sample}_{n}`.
-Drag spots to move them or their rings to resize them, then export CSV or GeoJSON.
+Drag spots to move them, then export CSV or GeoJSON.
+Spot size comes only from the size input in the side panel, for new and selected
+spots; placed spots are never resized by dragging.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/spots-1440x900-dark.webp">

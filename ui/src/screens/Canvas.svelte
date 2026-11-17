@@ -2,7 +2,7 @@
   import { bundlePixels } from '../lib/bundle-tone';
   // Canvas screen: the infinite canvas with grains and spots.
   // Pointer-first: navigate with trackpad or mouse, click to place, drag a spot
-  // to move it, drag its ring handle to resize, double-click its name to rename;
+  // to move it, use the size input to resize, double-click its name to rename;
   // the floating panel edits the hovered or selected object. Keys are extras.
   import { exportSpotLabels, grainNumber, splitChildren, mergedChild, reassignLineage, renumberLabels } from '../lib/grain-lineage';
   import { grainForCut, splitPolygon, mergePolygons, polygonBoolean, polygonGrain } from '../lib/polygon-edit';
@@ -245,7 +245,7 @@
   let splitLine = $state<[number, number, number, number] | null>(null);
   let drawing = $state<{ kind: SpotKind | 'measure'; x: number; y: number; x2: number; y2: number } | null>(null);
   let measure = $state<[number, number, number, number] | null>(null);
-  let gesture = $state.raw<{ mode: 'move' | 'resize'; ids: string[]; startX: number; startY: number; orig: Map<string, { x: number; y: number; x2: number | null; y2: number | null; d: number }>; dirty: boolean } | null>(null);
+  let gesture = $state.raw<{ ids: string[]; startX: number; startY: number; orig: Map<string, { x: number; y: number; x2: number | null; y2: number | null }>; dirty: boolean } | null>(null);
   let editing = $state<{ id: string; text: string; sx: number; sy: number } | null>(null);
   // Hand editing of outlines: the lasso (a freehand drag, or click by click) and the brush.
   let lasso = $state<{ pts: [number, number][]; op: EditOp; free: boolean; clicks: number; dragged: boolean } | null>(null);
@@ -888,15 +888,6 @@
     }
     return best;
   }
-  function hitHandle(xUm: number, yUm: number): Spot | null {
-    for (const s of selSpots) {
-      if (s.area_id !== areaId || s.kind !== 'spot') continue;
-      const r = s.diameter_um / 2;
-      const hx = s.x_um + r * Math.SQRT1_2, hy = s.y_um + r * Math.SQRT1_2;
-      if (Math.hypot(xUm - hx, yUm - hy) <= 9 * k) return s;
-    }
-    return null;
-  }
   function hitLabel(xUm: number, yUm: number): Label | null {
     return labels.find((l) => Math.abs(xUm - l.x_um) < 60 * k && yUm < l.y_um + 4 * k && yUm > l.y_um - 16 * k) ?? null;
   }
@@ -952,11 +943,6 @@
       drawing = { kind: app.tool === 'measure' ? 'measure' : (app.tool as SpotKind), x: sx, y: sy, x2: sx, y2: sy };
       return true;
     }
-    const h = ev.shiftKey || ev.metaKey || ev.ctrlKey ? null : hitHandle(x, y);
-    if (h) {
-      gesture = { mode: 'resize', ids: [h.id], startX: x, startY: y, orig: new Map([[h.id, { x: h.x_um, y: h.y_um, x2: h.x2_um, y2: h.y2_um, d: h.diameter_um }]]), dirty: false };
-      return true;
-    }
     const s = hitSpot(x, y);
     if (s) {
       if (app.tool === 'delete') {
@@ -973,7 +959,7 @@
       } else pickSpot(s.id, how, true);
       if (!app.selection.includes(s.id)) return true;
       const ids = app.selection.filter((i) => areaSpots.some((q) => q.id === i));
-      gesture = { mode: 'move', ids, startX: x, startY: y, orig: new Map(app.spots.filter((q) => ids.includes(q.id)).map((q) => [q.id, { x: q.x_um, y: q.y_um, x2: q.x2_um, y2: q.y2_um, d: q.diameter_um }])), dirty: false };
+      gesture = { ids, startX: x, startY: y, orig: new Map(app.spots.filter((q) => ids.includes(q.id)).map((q) => [q.id, { x: q.x_um, y: q.y_um, x2: q.x2_um, y2: q.y2_um }])), dirty: false };
       return true;
     }
     const l = hitLabel(x, y);
@@ -984,7 +970,7 @@
         return true;
       }
       app.selection = [l.id];
-      gesture = { mode: 'move', ids: [l.id], startX: x, startY: y, orig: new Map([[l.id, { x: l.x_um, y: l.y_um, x2: null, y2: null, d: 0 }]]), dirty: false };
+      gesture = { ids: [l.id], startX: x, startY: y, orig: new Map([[l.id, { x: l.x_um, y: l.y_um, x2: null, y2: null }]]), dirty: false };
       return true;
     }
     if (ev.shiftKey && !ev.ctrlKey && !ev.metaKey && (app.tool === 'select' || app.tool === 'spot')) {
@@ -1028,14 +1014,6 @@
       if (pressScreen && Math.hypot(p.sx - pressScreen[0], p.sy - pressScreen[1]) <= CLICK_SLOP) return;
       app.checkpoint();
       gesture.dirty = true;
-    }
-    if (gesture.mode === 'resize') {
-      const id = gesture.ids[0];
-      const o = gesture.orig.get(id)!;
-      const d = Math.max(1, Math.round(2 * Math.hypot(x - o.x, y - o.y) * 2) / 2);
-      app.spots = app.spots.map((s) => (s.id === id ? { ...s, diameter_um: d } : s));
-      app.diameter = d;
-      return;
     }
     let dx = x - gesture.startX, dy = y - gesture.startY;
     if (gesture.ids.length === 1) {
@@ -1107,7 +1085,7 @@
     }
     if (gesture?.dirty) {
       // Re-link moved spots to the grain they now sit on (names are kept).
-      const ids = gesture.mode === 'move' ? gesture.ids : [];
+      const ids = gesture.ids;
       app.spots = app.spots.map((s) => {
         if (!ids.includes(s.id)) return s;
         const g = grainAt(app.grains[s.area_id] ?? [], s.x_um, s.y_um);
@@ -1569,9 +1547,6 @@
                     {#if active || colourHalo}<circle class="contrast-halo" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />{/if}
                     <circle cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />
                     <circle class="dot" cx={s.x_um} cy={s.y_um} r={1.2 * k} />
-                    {#if sel && !isViewer}
-                      <circle class="handle" cx={s.x_um + (s.diameter_um / 2) * Math.SQRT1_2} cy={s.y_um + (s.diameter_um / 2) * Math.SQRT1_2} r={5 * k} />
-                    {/if}
                   {/if}
                   {#if app.layers.labels && editing?.id !== s.id}
                     <text transform="translate({s.x_um + s.diameter_um / 2 + 3 * k} {s.y_um}) rotate({-rotDeg}) scale({k})" dy="4">{s.name}</text>
@@ -1747,7 +1722,7 @@
                 <tr><td>laser</td><td class="num" data-testid="panel-laser">{(lf.matrix[0] * focus.x_um + lf.matrix[2] * focus.y_um + lf.matrix[4]).toFixed(lu === 'mm' ? 4 : 1)}, {(lf.matrix[1] * focus.x_um + lf.matrix[3] * focus.y_um + lf.matrix[5]).toFixed(lu === 'mm' ? 4 : 1)} {lu}</td></tr>
               {/if}
               <tr><td>stage</td><td class="num">{st ? `${(st[0] / 1e6).toFixed(4)}, ${(st[1] / 1e6).toFixed(4)} mm` : '–'}</td></tr>
-              <tr><td>created</td><td>{focus.created.replace('T', ' ').slice(0, 19)} {focus.created_by}</td></tr>
+              <tr><td>created</td><td>{(focus.created ?? '').replace('T', ' ').slice(0, 19)} {focus.created_by ?? ''}</td></tr>
               <tr><td>id</td><td class="mono small">{focus.id}</td></tr>
             </tbody>
           </table>
@@ -2569,12 +2544,6 @@
   :global(.ga-root) .spot.sel text {
     font-weight: 700;
   }
-  :global(.ga-root) .spot .handle {
-    fill: var(--ov-spot-selected);
-    stroke: var(--ov-spot);
-    stroke-width: 1.5;
-    cursor: nwse-resize;
-  }
   :global(.ga-root) .spot.active circle,
   :global(.ga-root) .spot.active rect,
   :global(.ga-root) .spot.active .axis {
@@ -2611,11 +2580,6 @@
     stroke-linecap: round;
     filter: drop-shadow(0 0 1px #111);
     pointer-events: none;
-  }
-  :global(.ga-root) .spot.review-coloured circle.handle {
-    fill: var(--ov-spot-selected);
-    stroke: #111;
-    stroke-width: 1.5;
   }
   :global(.ga-root) .flabel.sel {
     fill: var(--accent);

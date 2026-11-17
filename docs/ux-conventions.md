@@ -53,6 +53,9 @@ in the current area, or visible grains in the Grains tab. Escape clears
 the selection and keeps the tool; with no selection it switches to Select.
 Delete or Backspace deletes the selected spots, or the selected grains.
 
+Spot size comes only from the size input in the side panel, for new and selected
+spots; placed spots are never resized by dragging.
+
 ## 3. One click for a good result; every control still there; Reset
 
 - An **Auto** button gives a result that is hard to get wrong, computed from
