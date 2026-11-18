@@ -657,9 +657,16 @@ const INK: &str = "#1a1a1a";
 const GREY: &str = "#6b6b6b";
 const LIGHT: &str = "#bdbdbd";
 
-/// Allow a taller map only for many area labels; cap at the former 66 mm.
-fn header_heights(areas: &[SheetArea]) -> [f64; 2] {
-    let labels = areas.iter().map(|a| a.img.sample).collect::<std::collections::BTreeSet<_>>().len();
+/// A non-empty grain sample wins over the owning area's resolved sample.
+fn grain_sample<'a>(g: &'a Grain, area_sample: &'a str) -> &'a str {
+    g.sample.as_deref().filter(|s| !s.is_empty()).unwrap_or(area_sample)
+}
+
+/// Allow a taller map for area and grain sample labels; cap at the former 66 mm.
+fn header_heights(areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>) -> [f64; 2] {
+    let labels = areas.iter().flat_map(|a| std::iter::once(a.img.sample).chain(
+        grains.get(&a.rec.id).into_iter().flatten().filter_map(|g| g.sample.as_deref().filter(|s| !s.is_empty()))
+    )).collect::<std::collections::BTreeSet<_>>().len();
     let map = (19.1 + labels as f64 * 2.7).min(66.0);
     [FULL_HEADER_MM.max(map), COMPACT_HEADER_MM.max(map)]
 }
@@ -708,7 +715,7 @@ struct Run<'g> {
     area: usize,
     row: usize,
     cont: bool,
-    /// False when it follows a run of the same area on the line (a divider, no label).
+    /// False when it follows a run of the same area and sample (a divider, no label).
     labelled: bool,
     x: f64,
     end: f64,
@@ -1172,13 +1179,20 @@ pub fn plan_sheets(p: &SheetParams, areas: &[SheetArea], grains: &BTreeMap<Strin
     plan
 }
 
+struct SampleUnit<'g> {
+    area: usize,
+    grains: Vec<&'g Grain>,
+    clusters: Vec<Cluster<'g>>,
+    context: (f64, f64),
+}
+
 /// Cutting deliberately retains the line-filling loop: later cuts depend on its spare space.
 fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<String, Vec<Grain>>, ownership: &Ownership) -> CutSheets<'g> {
     let base = paper(&p.paper).unwrap_or(super::Paper { w_mm: 279.4, h_mm: 431.8 });
     let page = if p.landscape { super::Paper { w_mm: base.w_mm.max(base.h_mm), h_mm: base.w_mm.min(base.h_mm) } } else { base };
     let m = p.margin_mm;
     let body_w = page.w_mm - 2.0 * m;
-    let headers = header_heights(areas);
+    let headers = header_heights(areas, grains);
     let body_h = |pi: usize| page.h_mm - 2.0 * m - headers[usize::from(pi > 0)] - 1.0 - FOOTER_MM;
     let mut stats = SheetStats { header_mm: headers, ..Default::default() };
 
@@ -1212,29 +1226,52 @@ fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<Str
 
     let band_h = body_h(1) - LABEL_MM - NOTE_MM;
     let mut strays = Vec::new();
-    let mut area_clusters = Vec::new();
-    let mut contexts = Vec::new();
+    // Each unit owns only one area's grains of one effective sample. Context,
+    // orphan joins and the largest-cluster exception apply within that unit.
+    let mut samples: Vec<(String, Vec<SampleUnit>)> = Vec::new();
+    // Preserve area order when mount heights tie, even for areas with no printed grains.
+    for a in areas {
+        let sample = ownership.sample_of(&a.rec.id).unwrap_or(a.img.sample);
+        if !samples.iter().any(|s| s.0 == sample) {
+            samples.push((sample.to_string(), Vec::new()));
+        }
+    }
     for (ai, gs) in printed.iter_mut().enumerate() {
-        let img = &areas[ai].img;
-        let r = reference_size(gs);
-        let c = if p.context_um > 0.0 { p.context_um } else { (3.0 * r).max(p.gap_break_um) };
-        let mut clusters = clusters_of(gs, c, p, img, [body_w * k, band_h * k]);
-        // Classify disconnected components before rectangle unions can rescue
-        // an off-row singleton inside a long, wandering row's bounding box.
-        let largest = clusters.iter().map(|q| q.grains.len()).max().unwrap_or(0);
-        clusters.retain(|q| {
-            if q.grains.len() >= p.min_cluster_grains || q.grains.len() == largest {
-                return true;
+        let fallback = ownership.sample_of(&areas[ai].rec.id).unwrap_or(areas[ai].img.sample);
+        let mut units: Vec<(String, Vec<&Grain>)> = Vec::new();
+        for &g in gs.iter() {
+            let sample = grain_sample(g, fallback);
+            match units.iter_mut().find(|u| u.0 == sample) {
+                Some(u) => u.1.push(g),
+                None => units.push((sample.to_string(), vec![g])),
             }
-            strays.extend(q.grains.iter().map(|g| StrayGrain { area: areas[ai].rec.id.clone(), id: g.id, number: g.number, label: g.label.clone(), eq_diameter_um: g.eq_diameter_um, centroid_um: g.centroid_um, bbox_um: g.bbox_um }));
-            false
-        });
-        merge_intersections(&mut clusters, p.pad_um, img);
-        let d = usize::from(img.w <= img.h);
-        clusters.sort_by(|a, b| a.rect[d].total_cmp(&b.rect[d]).then(a.rect[1 - d].total_cmp(&b.rect[1 - d])));
+        }
+        for (sample, mut unit) in units {
+            let img = &areas[ai].img;
+            let r = reference_size(&unit);
+            let c = if p.context_um > 0.0 { p.context_um } else { (3.0 * r).max(p.gap_break_um) };
+            let mut clusters = clusters_of(&unit, c, p, img, [body_w * k, band_h * k]);
+            // Classify disconnected components before rectangle unions can rescue
+            // an off-row singleton inside a long, wandering row's bounding box.
+            let largest = clusters.iter().map(|q| q.grains.len()).max().unwrap_or(0);
+            clusters.retain(|q| {
+                if q.grains.len() >= p.min_cluster_grains || q.grains.len() == largest {
+                    return true;
+                }
+                strays.extend(q.grains.iter().map(|g| StrayGrain { area: areas[ai].rec.id.clone(), id: g.id, number: g.number, label: g.label.clone(), eq_diameter_um: g.eq_diameter_um, centroid_um: g.centroid_um, bbox_um: g.bbox_um }));
+                false
+            });
+            merge_intersections(&mut clusters, p.pad_um, img);
+            let d = usize::from(img.w <= img.h);
+            clusters.sort_by(|a, b| a.rect[d].total_cmp(&b.rect[d]).then(a.rect[1 - d].total_cmp(&b.rect[1 - d])));
+            unit.retain(|g| !strays.iter().any(|s| s.area == areas[ai].rec.id && s.id == g.id));
+            let work = SampleUnit { area: ai, grains: unit, clusters, context: (r, c) };
+            match samples.iter_mut().find(|s| s.0 == sample) {
+                Some(s) => s.1.push(work),
+                None => samples.push((sample, vec![work])),
+            }
+        }
         gs.retain(|g| !strays.iter().any(|s| s.area == areas[ai].rec.id && s.id == g.id));
-        area_clusters.push(clusters);
-        contexts.push((r, c));
     }
     stats.strays = strays.len();
     stats.grains = printed.iter().map(Vec::len).sum();
@@ -1246,17 +1283,8 @@ fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<Str
         let sg = areas[ai].rec.stage_sign;
         Some([sg[0] * s[0] / 1000.0, sg[1] * s[1] / 1000.0])
     };
-    let sample_of = |ai: usize| ownership.sample_of(&areas[ai].rec.id).unwrap_or(areas[ai].img.sample).to_string();
-    let mut samples: Vec<(String, Vec<usize>)> = Vec::new();
-    for ai in 0..areas.len() {
-        let s = sample_of(ai);
-        match samples.iter_mut().find(|x| x.0 == s) {
-            Some(x) => x.1.push(ai),
-            None => samples.push((s, vec![ai])),
-        }
-    }
-    let top = |ais: &Vec<usize>| {
-        let ys: Vec<f64> = ais.iter().flat_map(|&ai| printed[ai].iter().filter_map(move |g| view(ai, g)).map(|v| v[1])).collect();
+    let top = |units: &Vec<SampleUnit>| {
+        let ys: Vec<f64> = units.iter().flat_map(|u| u.grains.iter().filter_map(|g| view(u.area, g)).map(|v| v[1])).collect();
         if ys.is_empty() { f64::INFINITY } else { ys.iter().sum::<f64>() / ys.len() as f64 }
     };
     samples.sort_by(|a, b| top(&a.1).total_cmp(&top(&b.1)));
@@ -1268,30 +1296,28 @@ fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<Str
     let mut ph = 0.0;
     let mut cur: Vec<Run> = Vec::new();
     let mut lx = 0.0;
-    for (sample, ais) in &samples {
-        for &ai in ais {
-            if printed[ai].is_empty() {
-                continue;
-            }
+    let mut rows = vec![0; areas.len()];
+    for (sample, units) in samples {
+        for SampleUnit { area: ai, grains: unit, clusters, context: (r, c) } in units {
             let img = &areas[ai].img;
-            let (r, c) = contexts[ai];
             let overlap = if p.overlap_um > 0.0 { p.overlap_um } else { r.max(c / 3.0) };
-            let clusters = std::mem::take(&mut area_clusters[ai]);
             stats.clusters += clusters.len();
-            let label_w = text_w(sample, 3.2, true) + 6.0 + text_w(&format!("area {} · continued", area_short(areas[ai].rec)), 2.5, false);
-            for (ri, cluster) in clusters.into_iter().enumerate() {
+            let label_w = text_w(&sample, 3.2, true) + 6.0 + text_w(&format!("area {} · continued", area_short(areas[ai].rec)), 2.5, false);
+            for cluster in clusters {
+                rows[ai] += 1;
+                let row = rows[ai];
                 // Prefer this ownership bound through both axes; the full-line
                 // fallback relaxes it only if no fitting grouped cut exists.
                 let optional_min_group = if cluster.grains.len() >= 2 * p.min_group { p.min_group } else { 0 };
                 let min_group = optional_min_group.max(if p.min_cut_grains == 0 { p.min_cluster_grains } else { p.min_cut_grains });
-                let cut = CutContext { r, c, overlap, pad: p.pad_um, min_group, optional_min_group, source: "width", max_repeated_fraction: p.max_repeated_fraction, grains: &printed[ai] };
+                let cut = CutContext { r, c, overlap, pad: p.pad_um, min_group, optional_min_group, source: "width", max_repeated_fraction: p.max_repeated_fraction, grains: &unit };
                 let initial = Piece { grains: cluster.grains, x: 0.0, rect: cluster.rect, core: cluster.rect, cuts: Vec::new(), cut_sources: Vec::new(), gap_after_um: None };
                 // Cut wide clusters first: each width piece can then keep its
                 // own height, without making a full-width sparse bottom slice.
                 let mut cont = false;
                 let mut rest = initial;
                 loop {
-                    let same = cur.last().is_some_and(|r| r.area == ai);
+                    let same = cur.last().is_some_and(|r| r.area == ai && r.sample == sample);
                     let mut start = if cur.is_empty() { 0.0 } else { lx + if same { PIECE_GAP_MM } else { RUN_GAP_MM } };
                     let whole = rest.w(k) <= body_w;
                     let need = if same { rest.w(k) } else { rest.w(k).max(LABEL_MIN_MM.min(label_w)) };
@@ -1343,16 +1369,16 @@ fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<Str
                             }
                         }
                         q.x = start;
-                        let labelled = !cur.last().is_some_and(|r| r.area == ai);
+                        let labelled = !cur.last().is_some_and(|r| r.area == ai && r.sample == sample);
                         // A removed inter-cluster stretch retains the existing
                         // // mark and distance. Cuts instead carry repeated strips.
-                        if let Some(prev) = cur.last_mut().filter(|r| r.area == ai && r.row != ri + 1) {
+                        if let Some(prev) = cur.last_mut().filter(|r| r.area == ai && r.sample == sample && r.row != row) {
                             let prev = prev.pieces.last_mut().expect("band");
                             prev.gap_after_um = Some(box_gap(prev.rect, q.rect));
                         }
                         let end = start + q.w(k);
                         lx = if labelled { end.max(start + label_w) } else { end };
-                        cur.push(Run { sample: sample.clone(), area: ai, row: ri + 1, cont, labelled, x: start, end, pieces: vec![q] });
+                        cur.push(Run { sample: sample.clone(), area: ai, row, cont, labelled, x: start, end, pieces: vec![q] });
                         cont = true;
                         if let Some(bottom) = tail {
                             finish_line(&mut cur, &mut pg, &mut ph, k);
@@ -1408,7 +1434,7 @@ fn place_lines(p: &SheetParams, areas: &[SheetArea], meta: &SheetMeta, cut: CutS
             }
             for pair in indices.windows(2) {
                 let (a, b) = (&strips[pair[0]], &strips[pair[1]]);
-                if a.area == b.area && !b.labelled && a.bands.last().is_some_and(|b| b.gap_after_um.is_some()) && (a.origin_mm[0] + a.size_mm[0] + PIECE_GAP_MM - b.origin_mm[0]).abs() < 1e-7 {
+                if a.area == b.area && a.sample == b.sample && !b.labelled && a.bands.last().is_some_and(|b| b.gap_after_um.is_some()) && (a.origin_mm[0] + a.size_mm[0] + PIECE_GAP_MM - b.origin_mm[0]).abs() < 1e-7 {
                     strips[pair[0]].shares_gap_with = Some(b.key.clone());
                 }
             }
@@ -1486,7 +1512,6 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
         let sg = areas[ai].rec.stage_sign;
         Some([sg[0] * s[0] / 1000.0, sg[1] * s[1] / 1000.0])
     };
-    let sample_of = |ai: usize| ownership.sample_of(&areas[ai].rec.id).unwrap_or(areas[ai].img.sample).to_string();
     stats.isolated = runs
         .iter()
         .map(|r| {
@@ -1579,7 +1604,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
             r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}" font-family="DejaVu Sans, sans-serif"><rect width="{w}" height="{h}" fill="white"/>"#
         );
         // Bands on this sheet, for the map.
-        let mut band_rects: Vec<(usize, [f64; 4])> = Vec::new();
+        let mut band_rects: Vec<(usize, String, [f64; 4])> = Vec::new();
         let header_mm = plan.sheet_bodies[pi].header_mm;
         let mut budget = HeightBudget { sheet: pi + 1, header_mm2: header_mm * body_w, footer_margins_mm2: w * h - body_w * (h - 2.0 * m) + (FOOTER_MM + 1.0) * body_w, ..Default::default() };
         if let Some(lines) = &plan.lines {
@@ -1669,7 +1694,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                         gap / 1000.0
                     );
                 }
-                band_rects.push((run.area, q.rect));
+                band_rects.push((run.area, run.sample.clone(), q.rect));
                 let context = printed[run.area]
                     .iter()
                     .filter(|g| !q.grains.iter().any(|own| own.id == g.id) && (repeated.iter().any(|r| intersects(*r, g.bbox_um)) || (plan.edit_summary.is_some() && contains(q.rect, g.bbox_um) && plan.strips.iter().flat_map(|s| &s.bands).any(|b| b.grains.contains(&g.id)))))
@@ -1706,7 +1731,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
         if plan.lines.is_some() { budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - bottom).max(0.0); }
         stats.height_budget.push(budget);
         header(&mut s, if plan.lines.is_none() { p } else { &hp }, meta, page, pi + 1, n, &here, areas, &shown, ownership, &stats, k, &scale_note, &spots_off, header_mm, plan.lines.is_none(), &band_rects);
-        mount_map(&mut s, p, page, areas, &shown, &here, &band_rects, &|ai| sample_of(ai), &view, header_mm, if plan.lines.is_none() { Some(if pi == 0 { compact::map_top(p, meta, page, &stats) } else { 6.5 }) } else { None });
+        mount_map(&mut s, p, page, areas, &shown, &here, &band_rects, ownership, &view, header_mm, if plan.lines.is_none() { Some(if pi == 0 { compact::map_top(p, meta, page, &stats) } else { 6.5 }) } else { None });
         // Footer and corner registration marks.
         let fy = h - m - 2.0;
         let reg_file = &reg.registration_file;
@@ -1974,7 +1999,7 @@ fn header(
     spots_off: &[f64],
     header_mm: f64,
     compact: bool,
-    bands: &[(usize, [f64; 4])],
+    bands: &[(usize, String, [f64; 4])],
 ) {
     let m = p.margin_mm;
     let map_w = map_width(page, areas, header_mm);
@@ -2022,9 +2047,10 @@ fn header(
     let _ = write!(s, r#"<text x="{x:.2}" y="{y:.2}" font-size="2.1" fill="{GREY}">ON THIS SHEET</text>"#);
     x += 25.0;
     for sn in here {
-        let ais: Vec<usize> = (0..areas.len()).filter(|&ai| ownership.sample_of(&areas[ai].rec.id).unwrap_or(areas[ai].img.sample) == sn).collect();
-        let ng: usize = ais.iter().map(|&ai| printed[ai].len()).sum();
-        let ar: Vec<String> = ais.iter().filter(|&&ai| !printed[ai].is_empty()).map(|&ai| area_short(areas[ai].rec)).collect();
+        let count = |ai: usize| printed[ai].iter().filter(|g| grain_sample(g, ownership.sample_of(&areas[ai].rec.id).unwrap_or(areas[ai].img.sample)) == sn).count();
+        let ais: Vec<usize> = (0..areas.len()).filter(|&ai| count(ai) > 0).collect();
+        let ng: usize = ais.iter().map(|&ai| count(ai)).sum();
+        let ar: Vec<String> = ais.iter().map(|&ai| area_short(areas[ai].rec)).collect();
         let txt = format!("{ng} grains · area {}", ar.join(" + "));
         let tw = text_w(sn, 2.7, true) + text_w(&txt, 2.5, false) + 9.0;
         if x + tw > text_r && x > m + 25.0 {
@@ -2110,12 +2136,13 @@ fn mount_map(
     areas: &[SheetArea],
     printed: &[Vec<&Grain>],
     here: &[String],
-    bands: &[(usize, [f64; 4])],
-    sample_of: &dyn Fn(usize) -> String,
+    bands: &[(usize, String, [f64; 4])],
+    ownership: &Ownership,
     view: &dyn Fn(usize, &Grain) -> Option<[f64; 2]>,
     header_mm: f64,
     compact_top: Option<f64>,
 ) {
+    let sample_of = |ai: usize| ownership.sample_of(&areas[ai].rec.id).unwrap_or(areas[ai].img.sample);
     let m = p.margin_mm;
     let compact = compact_top.is_some();
     let top = compact_top.unwrap_or(12.0);
@@ -2139,7 +2166,7 @@ fn mount_map(
     let ty = |v: f64| oy + (v - y0) * sc;
     for (ai, b) in boxes.iter().enumerate() {
         let Some(b) = b else { continue };
-        let on = if compact { bands.iter().any(|(j, _)| *j == ai) } else { here.contains(&sample_of(ai)) };
+        let on = if compact { bands.iter().any(|(j, _, _)| *j == ai) } else if printed[ai].is_empty() { here.iter().any(|sn| sn == sample_of(ai)) } else { printed[ai].iter().any(|g| here.iter().any(|sn| grain_sample(g, sample_of(ai)) == sn)) };
         let _ = write!(
             s,
             r#"<rect x="{:.3}" y="{:.3}" width="{:.3}" height="{:.3}" fill="{}" stroke="{}" stroke-width="0.15"/>"#,
@@ -2151,21 +2178,24 @@ fn mount_map(
             if on { INK } else { LIGHT }
         );
     }
-    // Grains as dots.
+    // Split a dot path only when the area's grains have different states.
     for (ai, gs) in printed.iter().enumerate() {
-        let on = if compact { bands.iter().any(|(j, _)| *j == ai) } else { here.contains(&sample_of(ai)) };
-        let mut d = String::new();
+        let fallback = sample_of(ai);
+        let mut paths: Vec<(bool, String)> = Vec::new();
         for g in gs {
+            let on = here.iter().any(|sn| grain_sample(g, fallback) == sn)
+                && (!compact || bands.iter().any(|(j, _, _)| *j == ai));
             if let Some(v) = view(ai, g) {
-                let _ = write!(d, "M{:.2} {:.2}h0.01", tx(v[0]), ty(v[1]));
+                let i = paths.iter().position(|(state, _)| *state == on).unwrap_or_else(|| { paths.push((on, String::new())); paths.len() - 1 });
+                let _ = write!(paths[i].1, "M{:.2} {:.2}h0.01", tx(v[0]), ty(v[1]));
             }
         }
-        if !d.is_empty() {
+        for (on, d) in paths {
             let _ = write!(s, r#"<path d="{d}" stroke="{}" stroke-width="0.7" stroke-linecap="round"/>"#, if on { "white" } else { "#9a9a9a" });
         }
     }
     // This sheet's bands as white outlines (mosaic corners through the stage).
-    for (ai, r) in bands {
+    for (ai, _, r) in bands {
         let Some(ge) = crate::ownership::AreaGeometry::new(areas[*ai].rec) else { continue };
         let sg = areas[*ai].rec.stage_sign;
         let c: Vec<[f64; 2]> = [[r[0], r[1]], [r[2], r[3]]].iter().map(|&q| ge.to_stage(q)).map(|st| [sg[0] * st[0] / 1000.0, sg[1] * st[1] / 1000.0]).collect();
@@ -2187,17 +2217,24 @@ fn mount_map(
     // One label per sample in a column right of the mount, at the sample's mean height (pushed
     // apart where they would touch), with a leader from the sample's right edge.
     let mut labels: Vec<(String, f64, f64, bool)> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
     for ai in 0..areas.len() {
-        let sn = sample_of(ai);
-        if labels.iter().any(|l| l.0 == sn) {
-            continue;
+        let fallback = sample_of(ai);
+        for sn in std::iter::once(fallback).chain(printed[ai].iter().map(|g| grain_sample(g, fallback))) {
+            if !names.iter().any(|s| s == sn) { names.push(sn.to_string()); }
         }
+    }
+    for sn in names {
         let bs: Vec<[f64; 4]> = (0..areas.len()).filter(|&j| sample_of(j) == sn).filter_map(|j| boxes[j]).collect();
-        if bs.is_empty() {
-            continue;
-        }
-        let right = bs.iter().map(|b| b[2]).fold(f64::NEG_INFINITY, f64::max);
-        let mid = bs.iter().map(|b| (b[1] + b[3]) / 2.0).sum::<f64>() / bs.len() as f64;
+        let unchanged = (0..areas.len()).all(|ai| printed[ai].iter().all(|g| (grain_sample(g, sample_of(ai)) == sn) == (sample_of(ai) == sn)));
+        let (right, mid) = if unchanged {
+            if bs.is_empty() { continue; }
+            (bs.iter().map(|b| b[2]).fold(f64::NEG_INFINITY, f64::max), bs.iter().map(|b| (b[1] + b[3]) / 2.0).sum::<f64>() / bs.len() as f64)
+        } else {
+            let positions: Vec<_> = (0..areas.len()).flat_map(|ai| printed[ai].iter().filter(|g| grain_sample(g, sample_of(ai)) == sn).filter_map(|g| view(ai, g)).collect::<Vec<_>>()).collect();
+            if positions.is_empty() { continue; }
+            (positions.iter().map(|v| v[0]).fold(f64::NEG_INFINITY, f64::max), positions.iter().map(|v| v[1]).sum::<f64>() / positions.len() as f64)
+        };
         let on = here.contains(&sn);
         if !compact || on { labels.push((sn, tx(right), ty(mid), on)); }
     }

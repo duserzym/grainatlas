@@ -14,6 +14,8 @@ cannot be found that way. So every automatic print layout in grainatlas
 mosaic together, and gives up paper before it gives up context. Cutting,
 rearranging and removing empty stretches are allowed only where they do not
 strip a grain of its neighbours.
+Strips follow each grain's own sample when it has one, falling back to its area's sample.
+Grains of different samples form separate strips even within one area; context and stray rules apply within each sample there.
 
 Terms: `r` is the area's reference grain size (`segment::filter::reference_size`
 of its printed grains, see below); the **context distance** `c` is

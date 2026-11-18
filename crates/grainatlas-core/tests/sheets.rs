@@ -3616,3 +3616,279 @@ fn compact_headers_bound_many_long_labels_and_preserve_acquisition_values() {
         if paper == "letter" { assert!(plan.sheet_bodies[0].header_mm > 40.0, "wrapped scan value grows the first header"); }
     }
 }
+
+fn mixed_sample_field() -> (Vec<AreaRecord>, BTreeMap<String, Vec<Grain>>) {
+    let rec = area("001_S1", "S1", 0.0, 1000, 1800);
+    let mut gs = Vec::new();
+    for (sample, y, count) in [(Some("S2"), 300.0, 5), (None, 900.0, 6), (Some("S3"), 1500.0, 4)] {
+        for i in 0..count {
+            let mut g = grain(150.0 + i as f64 * 100.0, y, 60.0);
+            g.sample = sample.map(str::to_string);
+            g.number = gs.len() as u32 + 1;
+            gs.push(g);
+        }
+    }
+    (vec![rec], BTreeMap::from([("001_S1".into(), gs)]))
+}
+
+fn sample_field_areas(recs: &[AreaRecord]) -> Vec<SheetArea<'_>> {
+    recs.iter().map(|rec| {
+        let m = rec.placement.as_ref().unwrap();
+        SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px: &[], lut: [128; 256], um_per_px: 1.0 } }
+    }).collect()
+}
+
+fn render_sample_plan(plan: &sheets::SheetPlan, recs: &[AreaRecord], gs: &BTreeMap<String, Vec<Grain>>) -> sheets::SheetResult {
+    let own = ownership::assign(recs, gs, &OwnershipParams::default());
+    sheets::render_plan_with_images(plan, &sample_field_areas(recs), gs, &own, &|_, _| (Vec::new(), "kept".into()))
+}
+
+#[test]
+fn samples_without_geometry_keep_area_order_even_when_the_first_area_has_no_grains() {
+    let mut recs = vec![
+        area("001_X", "X", 0.0, 600, 600),
+        area("002_Y", "Y", -1000000.0, 600, 600),
+        area("003_X", "X", -2000000.0, 600, 600),
+    ];
+    for rec in &mut recs {
+        rec.tiles[0].stage_nm = None;
+        assert!(ownership::AreaGeometry::new(rec).is_none());
+    }
+    let gs = BTreeMap::from([
+        (recs[1].id.clone(), vec![grain(300.0, 300.0, 60.0)]),
+        (recs[2].id.clone(), vec![grain(300.0, 300.0, 60.0)]),
+    ]);
+    for packing in [Packing::Lines, Packing::Packed] {
+        let plan = field_plan(&SheetParams { packing, ..fast_sheets() }, &recs, &gs);
+        assert_eq!(plan.strips.iter().map(|s| s.sample.as_str()).collect::<Vec<_>>(), ["X", "Y"]);
+        assert_eq!(plan.cut_stats.grains, 2);
+    }
+}
+
+#[test]
+fn unchanged_map_samples_without_stage_boxes_have_no_label() {
+    let mut recs = vec![area("001_X", "X", 0.0, 600, 600), area("002_Y", "Y", -1000000.0, 600, 600)];
+    let mut tile = recs[0].tiles[0].clone();
+    tile.stage_nm = None;
+    recs[0].tiles.push(tile);
+    let placement = recs[0].placement.as_mut().unwrap();
+    let mut tile = placement.tiles[0].clone();
+    tile.index = 1;
+    placement.tiles.push(tile);
+    assert!(ownership::AreaGeometry::new(&recs[0]).is_some());
+    assert!(sheets::stage_box(&recs[0]).is_none());
+    let gs = recs.iter().map(|rec| (rec.id.clone(), vec![grain(300.0, 300.0, 60.0)])).collect();
+    for packing in [Packing::Lines, Packing::Packed] {
+        let plan = field_plan(&SheetParams { packing, ..fast_sheets() }, &recs, &gs);
+        let result = render_sample_plan(&plan, &recs, &gs);
+        let doc = roxmltree::Document::parse(&result.pages[0]).unwrap();
+        let labels: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("text") && n.prev_sibling_element().is_some_and(|p| p.has_tag_name("path") && p.attribute("stroke-width") == Some("0.12"))).filter_map(|n| n.text()).collect();
+        assert!(labels.contains(&"Y"));
+        assert!(!labels.contains(&"X"));
+    }
+}
+
+fn assert_sample_owners(plan: &sheets::SheetPlan, gs: &BTreeMap<String, Vec<Grain>>) {
+    for s in &plan.strips {
+        for id in s.bands.iter().flat_map(|b| &b.grains) {
+            let g = gs[&s.area].iter().find(|g| g.id == *id).unwrap();
+            assert_eq!(s.sample, g.sample.as_deref().filter(|s| !s.is_empty()).unwrap_or("S1"));
+        }
+    }
+}
+
+#[test]
+fn mixed_area_strips_follow_grain_samples_in_mount_order() {
+    let (recs, gs) = mixed_sample_field();
+    for packing in [Packing::Lines, Packing::Packed] {
+        let p = SheetParams { packing, min_cluster_grains: 5, ..fast_sheets() };
+        let plan = field_plan(&p, &recs, &gs);
+        assert_eq!(plan.strips.iter().map(|s| s.sample.as_str()).collect::<Vec<_>>(), ["S2", "S1", "S3"]);
+        assert_eq!(plan.strips.iter().map(|s| s.row).collect::<std::collections::BTreeSet<_>>().len(), 3);
+        assert_eq!(plan.strips.iter().map(|s| &s.key).collect::<std::collections::BTreeSet<_>>().len(), 3);
+        assert!(plan.strips.iter().all(|s| s.labelled && s.bands.iter().all(|b| b.gap_after_um.is_none())));
+        assert_sample_owners(&plan, &gs);
+        let r = render_sample_plan(&plan, &recs, &gs);
+        assert_eq!((r.stats.grains, r.stats.clusters, r.stats.strays), (15, 3, 0));
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        for strip in &plan.strips {
+            let doc = roxmltree::Document::parse(&r.pages[strip.sheet]).unwrap();
+            assert!(doc.descendants().any(|n| n.has_tag_name("text") && n.text() == Some(&strip.sample) && n.attribute("y").is_some_and(|y| (y.parse::<f64>().unwrap() - strip.origin_mm[1] - 3.1).abs() < 0.01)));
+        }
+    }
+}
+
+#[test]
+fn mixed_sample_headers_count_grains_in_their_holding_area() {
+    let (recs, gs) = mixed_sample_field();
+    for packing in [Packing::Lines, Packing::Packed] {
+        let p = SheetParams { packing, ..fast_sheets() };
+        let r = render_sample_plan(&field_plan(&p, &recs, &gs), &recs, &gs);
+        let doc = roxmltree::Document::parse(&r.pages[0]).unwrap();
+        for (sample, count) in [("S2", 5), ("S1", 6), ("S3", 4)] {
+            if packing == Packing::Packed {
+                assert!(doc.descendants().filter_map(|n| n.text()).any(|t| t.contains(&format!("{sample} · {count} grains · area 001"))));
+            } else {
+                let label = doc.descendants().find(|n| n.has_tag_name("text") && n.text() == Some(sample) && n.attribute("font-size") == Some("2.7")).unwrap();
+                assert_eq!(label.next_sibling_element().unwrap().text(), Some(format!("{count} grains · area 001").as_str()));
+            }
+        }
+    }
+}
+
+#[test]
+fn explicit_area_samples_and_empty_samples_preserve_svg_bytes_and_edits() {
+    let (p, recs, gs) = golden_mount();
+    let own = ownership::assign(&recs, &gs, &OwnershipParams::default());
+    for packing in [Packing::Lines, Packing::Packed] {
+        let p = SheetParams { packing, ..p.clone() };
+        let original = field_plan(&p, &recs, &gs);
+        let edits = [sheets::StripEdit::Move { strip: original.strips[0].key.clone(), sheet: 0, origin_mm: Some(original.strips[0].origin_mm) }];
+        let baseline = render_sample_plan(&original, &recs, &gs).pages;
+        let edited = sheets::apply_edits(&original, &edits, &sample_field_areas(&recs), &gs);
+        let edited_svg = render_sample_plan(&edited.plan, &recs, &gs).pages;
+        for empty in [false, true] {
+            let mut explicit = gs.clone();
+            for (ai, grains) in &mut explicit {
+                for g in grains { g.sample = Some(if empty { "" } else { own.sample_of(ai).unwrap() }.into()); }
+            }
+            let plan = field_plan(&p, &recs, &explicit);
+            assert_eq!(original, plan);
+            assert_eq!(baseline, render_sample_plan(&plan, &recs, &explicit).pages);
+            let replay = sheets::replay(&plan, &sheets::PrintEdits { params: p.clone(), um_per_mm: plan.um_per_mm, edits: edits.to_vec() }, &sample_field_areas(&recs), &explicit);
+            assert_eq!(replay.applied, 1);
+            assert_eq!(edited_svg, render_sample_plan(&replay.plan, &recs, &explicit).pages);
+        }
+    }
+}
+
+#[test]
+fn mixed_samples_stay_separate_after_split_move_and_replay() {
+    let (recs, gs) = mixed_sample_field();
+    let p = SheetParams { packing: Packing::Packed, ..fast_sheets() };
+    let plan = field_plan(&p, &recs, &gs);
+    let strip = plan.strips.iter().find(|s| s.sample == "S2").unwrap();
+    let edits = vec![
+        sheets::StripEdit::Split { band: strip.bands[0].key.clone(), axis: sheets::edit::Axis::X, at_um: 300.0 },
+        sheets::StripEdit::Move { strip: strip.key.clone(), sheet: 0, origin_mm: Some(strip.origin_mm) },
+        sheets::StripEdit::Repack {},
+    ];
+    let replay = sheets::replay(&plan, &sheets::PrintEdits { params: p, um_per_mm: plan.um_per_mm, edits }, &sample_field_areas(&recs), &gs);
+    assert_eq!(replay.applied, 3, "{:?}", replay.dropped);
+    assert_sample_owners(&replay.plan, &gs);
+    assert!(replay.left_off.is_empty());
+    assert!(replay.problems.is_empty(), "{:?}", replay.problems);
+    assert_eq!(replay.plan.strips.iter().find(|s| s.sample == "S2").unwrap().bands.len(), 2);
+}
+
+#[test]
+fn hiding_a_sample_cannot_adopt_its_grains_into_another_samples_crop() {
+    let (recs, gs) = mixed_sample_field();
+    let plan = field_plan(&fast_sheets(), &recs, &gs);
+    let s1 = plan.strips.iter().find(|s| s.sample == "S1").unwrap();
+    let s2 = plan.strips.iter().find(|s| s.sample == "S2").unwrap();
+    let edits = [
+        sheets::StripEdit::Crop { band: s1.bands[0].key.clone(), mosaic_rect_um: [100.0, 250.0, 700.0, 950.0] },
+        sheets::StripEdit::Hide { strip: s2.key.clone() },
+    ];
+    let edited = sheets::apply_edits(&plan, &edits, &sample_field_areas(&recs), &gs);
+    assert_eq!(edited.applied, 2, "{:?}", edited.dropped);
+    assert_sample_owners(&edited.plan, &gs);
+    assert_eq!(edited.left_off.len(), 5);
+    assert!(edited.left_off.iter().all(|g| g.reason == "hidden"));
+    let refused = sheets::apply_edits(&plan, &[sheets::StripEdit::Join { band_a: s1.bands[0].key.clone(), band_b: s2.bands[0].key.clone() }], &sample_field_areas(&recs), &gs);
+    assert_eq!(refused.applied, 0);
+    assert_eq!(refused.plan, plan);
+    assert!(refused.dropped[0].reason.contains("different areas or samples"));
+}
+
+#[test]
+fn mixed_sample_map_uses_grain_anchors_and_dot_states() {
+    let (recs, gs) = mixed_sample_field();
+    for packing in [Packing::Lines, Packing::Packed] {
+        let mut plan = field_plan(&SheetParams { packing, ..fast_sheets() }, &recs, &gs);
+        // Keep all targets visible in the mount, but put S1 and S3 on a later sheet.
+        let mut later = plan.sheet_bodies[0].clone();
+        later.sheet = 2;
+        plan.sheet_bodies.push(later);
+        for s in &mut plan.strips { if s.sample != "S2" { s.sheet = 1; } }
+        let r = render_sample_plan(&plan, &recs, &gs);
+        let doc = roxmltree::Document::parse(&r.pages[0]).unwrap();
+        let dots: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("path") && n.attribute("stroke-linecap") == Some("round") && n.attribute("stroke-width") == Some("0.7")).collect();
+        assert_eq!(dots.len(), 2);
+        let count = |color| dots.iter().find(|n| n.attribute("stroke") == Some(color)).unwrap().attribute("d").unwrap().matches('M').count();
+        assert_eq!(count("white"), 5);
+        assert_eq!(count("#9a9a9a"), 10);
+        // The S1 box is dark because it holds printed S2 targets.
+        assert!(doc.descendants().any(|n| n.has_tag_name("rect") && n.attribute("fill") == Some("#3a3a3a")));
+        // S3 has no area of its own. Its leader starts at its rightmost grain
+        // and mean view height, rather than at the S1 area box.
+        let page = if packing == Packing::Packed { 1 } else { 0 };
+        let doc = roxmltree::Document::parse(&r.pages[page]).unwrap();
+        let label = doc.descendants().find(|n| n.has_tag_name("text") && n.text() == Some("S3") && n.prev_sibling_element().is_some_and(|p| p.has_tag_name("path"))).unwrap();
+        let leader = label.prev_sibling_element().unwrap().attribute("d").unwrap();
+        let coords: Vec<f64> = leader.split_whitespace().take(2).map(|v| v.trim_start_matches('M').parse().unwrap()).collect();
+        let rect = doc.descendants().find(|n| n.has_tag_name("rect") && matches!(n.attribute("fill"), Some("#3a3a3a" | "#ededed"))).unwrap();
+        let v = |name| rect.attribute(name).unwrap().parse::<f64>().unwrap();
+        assert!((coords[0] - (v("x") + 450.0 / 1000.0 * v("width") + 0.3)).abs() < 0.02);
+        assert!((coords[1] - (v("y") + 1500.0 / 1800.0 * v("height"))).abs() < 0.02);
+    }
+}
+
+#[test]
+fn compact_header_lists_only_areas_with_bands_of_that_sample_on_the_sheet() {
+    let (mut recs, mut gs) = mixed_sample_field();
+    let mut other = area("002_S1", "S1", -3000000.0, 1000, 1800);
+    other.name = "002_S1".into();
+    let mut g = grain(300.0, 300.0, 60.0);
+    g.sample = Some("S2".into());
+    gs.insert(other.id.clone(), vec![g]);
+    recs.push(other);
+    let p = SheetParams { packing: Packing::Packed, ..fast_sheets() };
+    let plan = field_plan(&p, &recs, &gs);
+    let other_strip = plan.strips.iter().find(|s| s.area == "002_S1").unwrap();
+    let edits = [sheets::StripEdit::AddSheet { at: 1 }, sheets::StripEdit::Move { strip: other_strip.key.clone(), sheet: 1, origin_mm: None }];
+    let edited = sheets::apply_edits(&plan, &edits, &sample_field_areas(&recs), &gs);
+    assert_eq!(edited.applied, 2, "{:?}", edited.dropped);
+    let r = render_sample_plan(&edited.plan, &recs, &gs);
+    let doc = roxmltree::Document::parse(&r.pages[0]).unwrap();
+    let header = doc.descendants().find(|n| n.attribute("data-header") == Some("compact")).unwrap();
+    let text = header.descendants().filter(|n| n.has_tag_name("text")).filter_map(|n| n.text()).collect::<Vec<_>>().join(" ");
+    assert!(text.contains("S2 · 6 grains · area 001"), "{text}");
+    assert!(!text.contains("002"), "{text}");
+    let doc = roxmltree::Document::parse(&r.pages[1]).unwrap();
+    let header = doc.descendants().find(|n| n.attribute("data-header") == Some("compact")).unwrap();
+    let text = header.descendants().filter(|n| n.has_tag_name("text")).filter_map(|n| n.text()).collect::<Vec<_>>().join(" ");
+    assert!(text.contains("S2 · 6 grains · area 002"), "{text}");
+    assert!(!text.contains("area 001"), "{text}");
+}
+
+#[test]
+fn mixed_sample_strays_are_classified_within_each_sample_unit() {
+    let (recs, mut gs) = mixed_sample_field();
+    let grains = gs.get_mut("001_S1").unwrap();
+    let mut stray = grain(900.0, 1100.0, 20.0);
+    stray.sample = Some("S2".into());
+    let stray_id = stray.id;
+    grains.push(stray);
+    let p = SheetParams { context_um: 150.0, min_cluster_grains: 5, ..fast_sheets() };
+    let plan = field_plan(&p, &recs, &gs);
+    assert_eq!(plan.strays.len(), 1);
+    assert_eq!(plan.strays[0].id, stray_id);
+    assert_eq!(plan.cut_stats.grains, 15);
+    assert_eq!(plan.cut_stats.clusters, 3);
+    assert_eq!(plan.strips.iter().find(|s| s.sample == "S3").unwrap().bands[0].grains.len(), 4, "each sample keeps its largest cluster");
+}
+
+#[test]
+fn lines_header_reserves_room_for_grain_only_sample_labels() {
+    let (recs, mut gs) = mixed_sample_field();
+    let p = fast_sheets();
+    for g in gs.values_mut().flatten() { g.sample = None; }
+    let original = field_plan(&p, &recs, &gs);
+    assert_eq!(original.cut_stats.header_mm, [50.0, 36.0]);
+    for (i, g) in gs.values_mut().flatten().enumerate() { g.sample = Some(format!("S{}", i + 2)); }
+    let plan = field_plan(&p, &recs, &gs);
+    let expected = 19.1 + 16.0 * 2.7;
+    for h in plan.cut_stats.header_mm { assert!((h - expected).abs() < 1e-7); }
+}

@@ -231,7 +231,7 @@ taken while building, within this plan:
   lines-mode run that shared the label of the run before it would otherwise
   print unnamed on another sheet.
 - Ownership after edits: a band keeps the owners still wholly inside it; a grain
-  that loses its band is adopted by another shown band of its area that holds it
+  that loses its band is adopted by another shown band of its area and sample that holds it
   whole, otherwise it is listed in `left_off` (cropped or hidden). Split
   children stay side by side in their strip; Separate makes one strip each.
 - `print_sheets` in project.json also stores the resolved scale, so a changed

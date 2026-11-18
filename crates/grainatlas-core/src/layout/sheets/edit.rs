@@ -115,9 +115,14 @@ struct SplitRecord { strip_key: StripKey, children: [StripKey; 2], parent: Sheet
 struct State {
     touched: BTreeSet<StripKey>, edited: BTreeSet<StripKey>,
     original: BTreeMap<StripKey, Vec<[f64; 4]>>, splits: Vec<SplitRecord>,
+    // Preserve the automatic plan's resolved samples, including area aliases.
+    samples: BTreeMap<(String, uuid::Uuid), String>,
     counters: BTreeMap<(String, String), u32>, reasons: BTreeMap<(String, uuid::Uuid), String>,
 }
 impl State {
+    fn same_sample(&self, area: &str, id: uuid::Uuid, sample: &str) -> bool {
+        self.samples.get(&(area.to_string(), id)).is_some_and(|s| s == sample)
+    }
     fn touch(&mut self, s: &SheetStrip) { self.touched.insert(s.key.clone()); self.touched.extend(s.bands.iter().map(|b| b.key.clone())); }
     fn child(&mut self, key: &StripKey) -> Result<StripKey, String> {
         let n = self.counters.entry((key.area.clone(), key.grains_hash.clone())).or_insert(key.split);
@@ -129,10 +134,11 @@ impl State {
 /// Apply only to a freshly made automatic plan. Every refused edit leaves it unchanged.
 pub fn apply_edits(plan: &SheetPlan, edits: &[StripEdit], areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>) -> EditedPlan {
     let mut plan = plan.clone();
-    let mut state = State { touched: BTreeSet::new(), edited: BTreeSet::new(), original: BTreeMap::new(), splits: Vec::new(), counters: BTreeMap::new(), reasons: BTreeMap::new() };
+    let mut state = State { touched: BTreeSet::new(), edited: BTreeSet::new(), original: BTreeMap::new(), splits: Vec::new(), samples: BTreeMap::new(), counters: BTreeMap::new(), reasons: BTreeMap::new() };
     for s in &plan.strips {
         let gs: Vec<_> = grains[&s.area].iter().filter(|g| plan.targets[&s.area].contains(&g.id)).collect();
         for b in &s.bands {
+            for id in &b.grains { state.samples.insert((s.area.clone(), *id), s.sample.clone()); }
             state.original.insert(b.key.clone(), b.repeated_um.clone().unwrap_or_else(|| piece(b, &grains[&s.area]).repeated(&gs, plan.params.pad_um)));
             let count = state.counters.entry((b.key.area.clone(), b.key.grains_hash.clone())).or_default();
             *count = (*count).max(b.key.split);
@@ -260,6 +266,7 @@ fn apply_one(plan: &mut SheetPlan, edit: &StripEdit, areas: &[SheetArea], grains
         }
         StripEdit::Join { band_a, band_b } => {
             let (i, a) = locate(plan, band_a)?; let (ib, b) = locate(plan, band_b)?;
+            if plan.strips[i].area != plan.strips[ib].area || plan.strips[i].sample != plan.strips[ib].sample { return Err("bands belong to different areas or samples".into()); }
             let pos = state.splits.iter().position(|r| (r.children[0] == *band_a && r.children[1] == *band_b) || (r.children[1] == *band_a && r.children[0] == *band_b)).ok_or("bands are not direct split siblings")?;
             let record = state.splits.remove(pos);
             let parent_key = record.parent.key.clone();
@@ -347,7 +354,7 @@ fn reconcile(plan: &mut SheetPlan, grains: &BTreeMap<String, Vec<Grain>>, state:
     for s in &mut plan.strips {
         if s.hidden { continue; }
         for b in &mut s.bands {
-            b.grains.retain(|id| grains[&s.area].iter().find(|g| g.id == *id).is_some_and(|g| contains(b.mosaic_rect_um, g.bbox_um)) && owned.insert((s.area.clone(), *id)));
+            b.grains.retain(|id| state.same_sample(&s.area, *id, &s.sample) && grains[&s.area].iter().find(|g| g.id == *id).is_some_and(|g| contains(b.mosaic_rect_um, g.bbox_um)) && owned.insert((s.area.clone(), *id)));
         }
     }
     plan.left_off.clear();
@@ -355,7 +362,7 @@ fn reconcile(plan: &mut SheetPlan, grains: &BTreeMap<String, Vec<Grain>>, state:
         for id in ids {
             if owned.contains(&(area.clone(), *id)) { continue; }
             let Some(g) = grains.get(area).and_then(|gs| gs.iter().find(|g| g.id == *id)) else { continue; };
-            if let Some(b) = plan.strips.iter_mut().filter(|s| !s.hidden && &s.area == area).flat_map(|s| &mut s.bands).find(|b| contains(b.mosaic_rect_um, g.bbox_um)) {
+            if let Some(b) = plan.strips.iter_mut().filter(|s| !s.hidden && &s.area == area && state.same_sample(area, *id, &s.sample)).flat_map(|s| &mut s.bands).find(|b| contains(b.mosaic_rect_um, g.bbox_um)) {
                 b.grains.push(*id); owned.insert((area.clone(), *id));
             } else {
                 plan.left_off.push(LeftOff { grain: StrayGrain { area: area.clone(), id: *id, number: g.number, label: g.label.clone(), eq_diameter_um: g.eq_diameter_um, centroid_um: g.centroid_um, bbox_um: g.bbox_um }, reason: state.reasons.get(&(area.clone(), *id)).cloned().unwrap_or_else(|| "cropped".into()) });

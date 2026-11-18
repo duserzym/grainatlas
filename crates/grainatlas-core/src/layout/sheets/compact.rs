@@ -272,7 +272,7 @@ pub(super) fn draw(
     header_mm: f64,
     kv: &[(&str, String)],
     processing: &str,
-    bands: &[(usize, [f64; 4])],
+    bands: &[(usize, String, [f64; 4])],
 ) {
     let m = p.margin_mm;
     let width = page.w_mm - 2.0 * m - map_width(page) - 6.0;
@@ -351,17 +351,21 @@ pub(super) fn draw(
             let ar: Vec<_> = areas
                 .iter()
                 .enumerate()
-                .filter(|(ai, a)| {
-                    ownership.sample_of(&a.rec.id).unwrap_or(a.img.sample) == sn
-                        && bands.iter().any(|(j, _)| j == ai)
-                })
+                .filter(|(ai, _)| bands.iter().any(|(j, sample, _)| j == ai && sample == sn))
                 .map(|(_, a)| area_short(a.rec))
                 .collect();
             let ng: usize = areas
                 .iter()
                 .enumerate()
-                .filter(|(_, a)| ownership.sample_of(&a.rec.id).unwrap_or(a.img.sample) == sn)
-                .map(|(ai, _)| printed[ai].len())
+                .map(|(ai, a)| {
+                    printed[ai]
+                        .iter()
+                        .filter(|g| {
+                            grain_sample(g, ownership.sample_of(&a.rec.id).unwrap_or(a.img.sample))
+                                == sn
+                        })
+                        .count()
+                })
                 .sum();
             format!("{sn} · {ng} grains · area {}", ar.join(" + "))
         })
