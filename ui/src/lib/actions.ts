@@ -714,7 +714,7 @@ export async function saveProject(app: AppState = current()) {
       app.dirty = false;
       clearStoredCopy(p.uuid, dir);
       app.notice = `Saved ${where}`;
-      await app.sync.afterSave();
+      void app.sync.afterSave();
     }
     return where;
   }
@@ -737,7 +737,7 @@ export async function saveProjectFile(app: AppState = current(), ask = true) {
     if (app.error) return null;
     app.dirty = false;
     if (app.projectPath) clearStoredCopy(p.uuid, app.projectPath.path);
-    await app.sync.afterSave();
+    void app.sync.afterSave();
     return null;
   }
   if (where) {
@@ -745,7 +745,7 @@ export async function saveProjectFile(app: AppState = current(), ask = true) {
     clearStoredCopy(p.uuid, where);
     app.notice = `Saved ${where}`;
     app.dirty = false;
-    await app.sync.afterSave();
+    void app.sync.afterSave();
   }
   return where;
 }

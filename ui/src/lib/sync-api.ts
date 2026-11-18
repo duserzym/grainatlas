@@ -1,3 +1,4 @@
+import { fetchWithTimeout, HttpNetworkError, readBodyText } from './http.ts';
 import { syncCache } from './sync-cache.ts';
 import { idempotentWrite, type WriteIdentity } from './idempotency.ts';
 import { canWrite, requireWrite } from './presentation.ts';
@@ -47,7 +48,8 @@ export class SyncApiError extends Error {
   }
 }
 /** The request did not reach the server or its reply was lost: the same request may be retried. */
-export class SyncNetworkError extends Error {}
+export { HttpNetworkError as SyncNetworkError };
+const SyncNetworkError = HttpNetworkError;
 /** One sentence for an error reply: the server's own detail or message when it sends a code
  * (contract 2026-11), else by status. Status 0 means the request never reached the server. */
 export function errorSentence(status: number, body: unknown): string {
@@ -153,10 +155,18 @@ export class SyncApi {
     const cached = cacheable ? cache.get(url.href) : undefined;
     let r: Response;
     try {
-      const send = (key?: string) => fetch(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(cached ? { 'If-None-Match': cached.etag } : {}), ...(init.headers ?? {}), ...(key ? { 'Idempotency-Key': key } : {}) } });
+      const send = (key?: string) => fetchWithTimeout(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(cached ? { 'If-None-Match': cached.etag } : {}), ...(init.headers ?? {}), ...(key ? { 'Idempotency-Key': key } : {}) } });
       r = init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase()) ? await idempotentWrite(send, identity) : await send();
     }
     catch (e) { if (e instanceof SyncApiError) throw e; console.warn(`Database request ${path} failed:`, e); throw new SyncNetworkError(errorSentence(0, null)); }
+    // Read the reply here: a body lost mid-read is a network failure (a write may have landed,
+    // so the retry keeps its key), never a raw TypeError in a caller. Replies are small JSON.
+    if (r.status !== 204 && r.status !== 304) {
+      let text: string;
+      try { text = await readBodyText(r); }
+      catch (e) { console.warn(`Database reply ${path} was cut off:`, e); throw new SyncNetworkError(errorSentence(0, null)); }
+      r = new Response(text, { status: r.status, statusText: r.statusText, headers: r.headers });
+    }
     if (r.status === 304 && cached) return new Response(cached.body, { headers: cached.headers });
     if (cacheable && r.ok) {
       const etag = r.headers.get('ETag');

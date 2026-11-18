@@ -1,3 +1,4 @@
+import { fetchWithDeadline, databaseOfflineMessage } from './http.ts';
 import { idempotentWrite } from './idempotency.ts';
 import { canWrite, requireWrite } from './presentation.ts';
 import { errorSentence } from './sync-api.ts';
@@ -168,11 +169,11 @@ async function call<T>(base: string, path: string, token: string | null, init: R
   if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
   let r: Response;
   try {
-    const send = (key?: string) => fetch(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined), ...(key ? { 'Idempotency-Key': key } : {}) } });
+    const send = (key?: string) => fetchWithDeadline(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined), ...(key ? { 'Idempotency-Key': key } : {}) } });
     r = init.method === 'POST' ? await idempotentWrite(send, { key: new Headers(init.headers).get('Idempotency-Key') ?? undefined }) : await send();
   } catch (e) {
     console.warn(`${what}: cannot reach ${base}`, e);
-    throw new ApiError(0, `${what}: ${errorSentence(0, null)}`);
+    throw new ApiError(0, databaseOfflineMessage);
   }
   if (!r.ok) throw await failure(r, what);
   return (await r.json()) as T;

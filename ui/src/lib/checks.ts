@@ -6,13 +6,16 @@ import { acceptedChecks, findingSignature, findingsSummary } from './check-prese
 
 const pending = new WeakSet<AppState>();
 
-export async function runChecks(app: AppState = current(), refreshLabels = false) {
+export async function runChecks(app: AppState = current(), refreshLabels = false, serverChecks = true) {
   const projectId = app.project?.uuid;
   if (!projectId) return [];
   let labels = app.checkLabels;
   app.checkLabelsError = null;
   app.mountLabelsCount = null;
-  if (labels === null && app.server && app.mountId) {
+  if (!serverChecks && labels === null && app.server && app.mountId) {
+    app.checkLabelsError = 'Database checks skipped while saving. Your work is kept on this computer.';
+  }
+  if (serverChecks && labels === null && app.server && app.mountId) {
     const server = app.server, mount = app.mountId;
     try {
       if (refreshLabels) clearMountAcquisitionLabels(server, mount);
@@ -43,7 +46,8 @@ export async function beforeCheckedAction(app: AppState = current(), action: 'sa
   if (pending.has(app)) return false;
   pending.add(app);
   try {
-    const findings = await runChecks(app);
+    // Save never waits on a database already found unreachable; online it checks as before.
+    const findings = await runChecks(app, false, action !== 'save' || !app.sync.knownUnreachable);
     if (!findings.length) return true;
     const projectId = app.project?.uuid;
     if (!projectId) return false;

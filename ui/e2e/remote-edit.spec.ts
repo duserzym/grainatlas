@@ -58,7 +58,7 @@ function readStoredZip(zip: Buffer): Map<string, Buffer> {
 }
 
 async function mockServer(page: Page, onLevelZero = () => {}, unregistered = false, beforeLevelZero: () => Promise<void> = async () => {},
-  quiet: { standalone?: boolean; failures?: number; bulk?: boolean; beforeReply?: () => Promise<void> } = {}) {
+  quiet: { standalone?: boolean; failures?: number; bulk?: boolean; beforeReply?: () => Promise<void>; unresponsive?: boolean; staleCopy?: boolean } = {}) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
@@ -76,6 +76,20 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
     spots: ui.spots.map((s: any) => ({ ...s, project_uuid: projectId, kind: 'spot', acquisition_ids: [] })),
     labels: ui.labels.map((l: any) => ({ ...l, project_uuid: projectId })),
   };
+  if (quiet.staleCopy) await page.addInitScript(({ project, elements, server, mountId }) => {
+    const older = structuredClone(project);
+    older.upbdb = { mount_id: null };
+    older.grainatlas_ui.spots = [];
+    const key = `grainatlas.project.${project.package.name}`;
+    localStorage.setItem(key, JSON.stringify(older));
+    localStorage.setItem('grainatlas.drafts', JSON.stringify([project.uuid]));
+    localStorage.setItem(`grainatlas.draft.${project.uuid}`, JSON.stringify({
+      uuid: project.uuid, name: project.name, server, mount: mountId, base_revision: 1, base: elements,
+      synced: true, server_can_edit: true, pixels_base: null, source_keys: [key],
+      updated_at: new Date().toISOString(), changes: { spots: elements.spots.length, grains: 0, labels: 0 },
+      pending: { ...elements, spots: [] },
+    }));
+  }, { project, elements, server, mountId });
   await page.addInitScript(({ server, standalone }) => {
     const w = window as any;
     // Exercise the real hosted bridge command route while keeping all image work in wasm.
@@ -94,10 +108,16 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
   const uploads: Map<string, Buffer>[] = [];
   const bundleRequests: { path: string; version: number }[] = [];
   let atlasVersion = 1;
+  const databaseRequests: string[] = [];
   await page.route(`${server}/**`, async route => {
     const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
     const json = (value: unknown, status = 200) => route.fulfill({ status, json: value, headers: { 'access-control-allow-origin': '*' } });
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
+    if (pathname.startsWith('/v1/')) {
+      databaseRequests.push(pathname);
+      // Leave the intercepted request pending: DNS resolves but no headers arrive.
+      if (quiet.unresponsive) return;
+    }
     if (pathname === '/v1/mounts') {
       if (request.method() === 'GET') return json(mounts);
       if (request.method() === 'POST') {
@@ -177,7 +197,7 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
     unexpected.push(`${request.method()} ${pathname}`);
     return route.fulfill({ status: 404, json: { detail: 'Unexpected synthetic endpoint' } });
   });
-  return { project, atlas, syncBodies, syncRequests, unexpected, uploads, bundleRequests, createBodies };
+  return { project, atlas, syncBodies, syncRequests, unexpected, uploads, bundleRequests, createBodies, databaseRequests };
 }
 
 test('Canvas creates and selects a mount, and keeps duplicate-label errors in the form', async ({ page }) => {
@@ -479,6 +499,61 @@ async function placeQuietSpot(page: Page, project: any) {
   p = await point(); await page.mouse.click(p.x, p.y);
   await expect(page.getByTestId('spot')).toHaveCount(before + 1);
 }
+
+test('an unanswered database goes offline within ten seconds; Save and deletion stay usable', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, unresponsive: true });
+  const start = Date.now();
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('sync-chip')).toHaveText('Offline, will sync later', { timeout: 10000 });
+  expect(Date.now() - start).toBeLessThan(10000);
+  await page.getByTestId('edit-copy').click();
+  await expect(page.getByTestId('tool-spot')).toBeEnabled();
+  const download = page.waitForEvent('download', { timeout: 3000 });
+  await page.getByTestId('save-project').click();
+  await page.getByTestId('checks-continue').click();
+  await download;
+  expect(mock.databaseRequests).not.toContain('/v1/sessions');
+  await expect(page.getByText(/Database checks skipped while saving/)).toBeVisible();
+  const removed = mock.project.grainatlas_ui.spots[0];
+  await page.locator(`tr[data-spot-id="${removed.id}"]`).click();
+  await page.keyboard.press('Delete');
+  await expect(page.getByTestId('spot')).toHaveCount(mock.project.grainatlas_ui.spots.length - 1, { timeout: 1000 });
+  expect(mock.syncRequests).toEqual([]);
+});
+
+test('Cancel stops an unanswered open-from-server request immediately', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true });
+  const url = `${server}/atlas/projects/${projectId}/atlas.json`;
+  await page.route(url, () => { /* Keep headers pending until Cancel aborts the request. */ });
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('busy')).toBeVisible();
+  const failed = page.waitForEvent('requestfailed', { predicate: r => r.url() === url, timeout: 2000 });
+  await page.getByTestId('busy').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await failed;
+  await expect(page.getByTestId('busy')).toHaveCount(0, { timeout: 1000 });
+  expect(mock.bundleRequests).toEqual([]);
+});
+
+test('an older copy waits for a choice and Bring them back prevents all spot deletions', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, staleCopy: true });
+  await openQuietEdit(page);
+  await expect(page.getByTestId('sync-chip')).toHaveText('Needs your attention');
+  await expect(page.getByTestId('spot')).toHaveCount(0);
+  await page.waitForTimeout(10000);
+  expect(mock.syncRequests).toEqual([]);
+  await page.getByTestId('sync-action').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading')).toHaveText('This copy is older than the shared project');
+  await expect(dialog.getByRole('button').first()).toHaveText('Bring them back');
+  await expect(dialog).toContainText(`${mock.project.grainatlas_ui.spots.length} spots and 0 grains`);
+  await dialog.getByRole('button', { name: 'Bring them back', exact: true }).click();
+  await expect(page.getByTestId('spot')).toHaveCount(mock.project.grainatlas_ui.spots.length);
+  await placeQuietSpot(page, mock.project);
+  await expect(page.getByTestId('sync-chip')).toHaveText('Up to date', { timeout: 10000 });
+  expect(mock.syncRequests.length).toBeGreaterThan(0);
+  for (const body of mock.syncBodies) expect(body.spots.delete).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
 
 test('quiet sync saves, syncs and settles with one idempotent write', async ({ page }) => {
   let release!: () => void;

@@ -10,7 +10,7 @@
   let choices = $state<Record<string, Resolution>>({});
   let publishImages = $state(true);
   const session = $derived(app.sync);
-  const action = $derived(session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Get latest changes' : session.state === 'both-changed' ? session.detailText === 'Database has more' ? 'Sync now' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync now');
+  const action = $derived(session.staleOpen ? 'Review…' : session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Get latest changes' : session.state === 'both-changed' ? session.detailText === 'Database has more' ? 'Sync now' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync now');
   const pillState = $derived(session.text === 'Needs your attention' ? 'needs-confirmation' : session.text === 'Syncing…' ? 'checking' : session.text === 'Up to date' ? 'in-sync' : session.text === 'Offline, will sync later' ? 'offline' : 'local-changes');
   const text = $derived(session.text);
   const revisionTitle = $derived(session.status ? `v${session.status.atlas_version ?? '—'} r${session.status.revision}` : '');
@@ -41,14 +41,23 @@
       </svg>
       <span aria-live="polite">{text}</span>
     </button>
-    {#if session.state !== 'in-sync' || session.confirmation || session.pixelsChanged}
+    {#if session.staleOpen || session.state !== 'in-sync' || session.confirmation || session.pixelsChanged}
       <button class:primary={pillState !== 'checking' && pillState !== 'offline'} data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || app.loadingProject || (app.readOnly && session.state === 'local-changes')} onclick={() => { detailsOpen = false; void session.action(); }}>{action}</button>
     {/if}
   </div>
 {/if}
 {#if session.dialog}
     <dialog bind:this={dialogElement} class="glass panel review" oncancel={() => session.cancelConfirmation()} onkeydown={e => e.stopPropagation()} aria-modal="true" aria-label={session.dialog === 'bulk' ? 'Confirm sync' : session.dialog === 'review' ? 'Review differences' : session.dialog === 'register' ? 'Register project' : 'Sync to database'} tabindex="-1">
-      {#if session.dialog === 'bulk' && session.confirmation}
+      {#if session.dialog === 'stale' && session.staleOpen}
+        <SyncAttention title={session.staleBulk ? 'Keep these spots?' : 'This copy is older than the shared project'}
+          message={session.staleBulk ? `${session.staleOpen.spots.length} spots would be removed from the shared project.` : `${session.staleOpen.spots.length} spots and ${session.staleOpen.grains.length} grains that are in the shared project are missing here.${session.staleOpen.labels.length ? ` ${session.staleOpen.labels.length} labels are also missing.` : ''}`}
+          spots="Bring them back keeps every spot; Remove deletes them from the shared project for everyone.">
+          {#snippet actions()}
+            <button class="primary" disabled={session.busy || app.readOnly} onclick={() => session.bringBack()}>Bring them back</button>
+            <button disabled={session.busy || app.readOnly} onclick={() => session.removeStale()}>Remove them</button>
+          {/snippet}
+        </SyncAttention>
+      {:else if session.dialog === 'bulk' && session.confirmation}
         <SyncAttention title="Keep these grains and spots?"
           message={`This change removes ${session.confirmation.retireGrains} grains and ${session.confirmation.deleteSpots} spots from the shared project.`}
           spots={`${session.confirmation.deleteSpots} spots would be removed. Spots with measurements are kept.`}>

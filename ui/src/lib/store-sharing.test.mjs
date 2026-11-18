@@ -314,6 +314,119 @@ function quietReply(body, revision = 2) {
     spots: { created: 1, updated: 0, deleted: 0 }, grains: { created: 0, adopted: 0, updated: 0, retired: 0 }, labels: { created: 0, updated: 0, retired: 0 } },
     not_in_snapshot: { spots: [], grains: [], labels: [] }, complete: true, warnings: [], rebased_over: 0 };
 }
+test('an older copy pauses all sends, restores base elements and drops a queued deletion', async t => {
+  const { session, base, hashes } = quietSession('older-copy-synthetic');
+  t.after(() => session.dispose());
+  base.spots = [{ id: 'shared-spot', name: 'Synthetic spot', area_id: 'area', grain_id: 'grain', x_um: 2, y_um: 2, diameter_um: 1 }];
+  base.labels = [{ id: 'shared-label', area_id: 'area', x_um: 1, y_um: 1, text: 'Synthetic label' }];
+  session.draft = { ...session.draft, base, pending_request: { body: { spots: { delete: ['shared-spot'] } } } };
+  storage.set('grainatlas.draft.older-copy-synthetic', JSON.stringify(session.draft));
+  storage.set('grainatlas.drafts', JSON.stringify([session.draft.uuid]));
+  app.grains = {}; app.project.upbdb.mount_id = null;
+  session.opened();
+  let writes = 0;
+  const status = session.status;
+  const server = { ...base, revision: 1, hashes };
+  session.api = async () => ({ lookup: async () => status, elements: async () => structuredClone(server),
+    sync: async (_mount, body) => { writes++; assert.deepEqual(body.spots.delete, []); return quietReply(body); } });
+  await session.check();
+  assert.deepEqual(session.staleOpen, { spots: ['shared-spot'], grains: ['grain'], labels: ['shared-label'] });
+  assert.equal(session.text, 'Needs your attention'); assert.equal(session.backgroundPending, false);
+  await session.runAutomatic(); await session.sync();
+  assert.equal(writes, 0);
+  session.bringBack();
+  assert.equal(app.spots[0].id, 'shared-spot'); assert.equal(app.grains.area[0].id, 'grain');
+  assert.equal(app.labels[0].id, 'shared-label');
+  assert.equal(session.staleOpen, null); assert.equal(session.draft.pending_request, null);
+  await session.sync(); assert.equal(writes, 1);
+});
+test('a deletion made after opening stays an ordinary edit through the first check', async t => {
+  const { session, base, hashes } = quietSession('current-copy-synthetic');
+  t.after(() => session.dispose());
+  addQuietSpot(); base.spots = JSON.parse(JSON.stringify(app.spots));
+  session.draft = { ...session.draft, base };
+  storage.set('grainatlas.draft.current-copy-synthetic', JSON.stringify(session.draft));
+  storage.set('grainatlas.drafts', JSON.stringify([session.draft.uuid]));
+  session.opened(); assert.equal(session.staleOpen, null);
+  app.checkpoint(); app.spots = []; session.track();
+  const status = session.status;
+  session.api = async () => ({ lookup: async () => status, elements: async () => ({ ...base, revision: 1, hashes }) });
+  await session.check();
+  assert.equal(session.staleOpen, null); assert.deepEqual(session.localChanges.spots.delete, ['quiet-spot']);
+});
+test('bringing back an opening grain retirement also cancels the lineage that would retire it again', t => {
+  const { session, base } = quietSession('old-lineage-synthetic');
+  t.after(() => session.dispose());
+  const parent = base.grains[0];
+  app.grains = { area: [{ ...parent, id: 'split-child', split_from: parent.id },
+    { ...parent, id: 'merged-child', merged_from: [parent.id] }] };
+  session.staleOpen = { spots: [], grains: [parent.id], labels: [] };
+  session.bringBack();
+  assert.ok(app.grains.area.some(g => g.id === parent.id));
+  assert.equal(app.grains.area.find(g => g.id === 'split-child').split_from, undefined);
+  assert.deepEqual(app.grains.area.find(g => g.id === 'merged-child').merged_from, []);
+});
+test('automatic deletion of six base spots waits for a choice before any request', async t => {
+  const { session, base } = quietSession('many-removals-synthetic');
+  t.after(() => session.dispose());
+  addQuietSpot();
+  base.spots = Array.from({ length: 6 }, (_, n) => ({ ...app.spots[0], id: `shared-${n}` }));
+  session.draft = { ...session.draft, base };
+  app.spots = []; session.track();
+  let requests = 0;
+  session.api = async () => { requests++; throw new Error('No request before a choice'); };
+  await session.runAutomatic();
+  assert.equal(requests, 0); assert.equal(session.staleBulk, true);
+  assert.equal(session.staleOpen.spots.length, 6); assert.equal(session.text, 'Needs your attention');
+  session.bringBack(); assert.equal(app.spots.length, 6); assert.equal(session.staleOpen, null);
+});
+test('spot deletion waits at most eight seconds even if the measured-list body stalls', async t => {
+  (await import('./sync-session.svelte.ts')).forgetUnreachable();
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const { SyncApi } = await import('./sync-api.ts');
+  const { session } = quietSession('stalled-measurements-synthetic');
+  t.after(() => session.dispose());
+  addQuietSpot(); session.track(false);
+  const status = session.status;
+  const fetch = t.mock.method(globalThis, 'fetch', async url => String(url).endsWith('/elements')
+    ? new Response(new ReadableStream()) : Response.json(status));
+  session.api = async () => new SyncApi('https://quiet.test', null);
+  const checking = session.check();
+  assert.equal(session.refuseSpotDeletion(['quiet-spot']), true);
+  for (let i = 0; i < 50 && fetch.mock.callCount() < 2; i++) await Promise.resolve();
+  assert.equal(fetch.mock.callCount(), 2);
+  // Allow the second response's body reader to start before advancing time.
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  t.mock.timers.tick(8000);
+  assert.equal(session.checking, true, 'the body may take longer than the response timeout');
+  assert.equal(session.refuseSpotDeletion(['quiet-spot']), false);
+  t.mock.timers.tick(22000); await checking;
+  assert.equal(session.text, 'Offline, will sync later');
+});
+test('saving a linked project while the database is known unreachable skips server checks and finishes at once', async t => {
+  const { saveProjectFile } = await import('./actions.ts');
+  const { session } = quietSession('offline-save-synthetic');
+  const previousCore = app.core, previousServer = app.link.server;
+  app.link.server = 'https://quiet.test'; app.link.syncOnSave = true;
+  app.project.upbdb.mount_id = 'mount';
+  let savedFile = false, release;
+  const stalled = new Promise(resolve => { release = resolve; });
+  app.core = Promise.resolve({ kind: 'wasm', checkProject: async () => [],
+    saveProjectFile: async () => { savedFile = true; } });
+  const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('Save must not fetch acquisition labels'); });
+  session.api = async () => { await stalled; throw new Error('Synthetic outage'); };
+  session.reachable = false; // an earlier check found the database unreachable
+  try {
+    await saveProjectFile(app, false);
+    // Known offline: the file is saved at once and no sync or label fetch is attempted.
+    assert.equal(savedFile, true);
+    assert.equal(fetch.mock.callCount(), 0);
+    assert.match(app.notice, /Database checks skipped while saving/);
+  } finally {
+    release(); await session.settled(); session.dispose();
+    app.core = previousCore; app.link.server = previousServer;
+  }
+});
 test('real session coalesces automatic edits and stops for hosted, read-only, settings and attention', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { session } = quietSession();

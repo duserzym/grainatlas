@@ -1,3 +1,4 @@
+import { staleOpenElements, automaticSpotRemovals, type MissingElements } from './stale-open';
 import { isHosted } from '@lab/bridge';
 import { BackgroundSync } from './background-sync';
 import { bundlePixels, saveBundleTones } from './bundle-tone';
@@ -18,6 +19,13 @@ import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, elem
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 interface HeldSync { identity: string; mine: Elements; current: ReadElements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
+/** When each server was last found unreachable: a re-check (e.g. after Edit) of a server that
+ * just failed does not block spot deletion again. */
+const unreachableAt = new Map<string, number>();
+/** Tests only: forget remembered failures. */
+export function forgetUnreachable() { unreachableAt.clear(); }
+const recentlyUnreachable = (server: string | null | undefined) => !!server && unreachableAt.has(server) && Date.now() - unreachableAt.get(server)! < 120_000;
+
 export class SyncSession {
   private app: AppState;
   draft = $state.raw<Draft | null>(null);
@@ -27,7 +35,50 @@ export class SyncSession {
   busy = $state(false);
   checking = $state(false);
   private suppressDraft = false;
-  dialog = $state<'register' | 'review' | 'pixels' | 'bulk' | null>(null);
+  staleOpen = $state.raw<MissingElements | null>(null);
+  staleBulk = $state(false);
+  private editedSinceOpen = false;
+  private deletionCheckDeadline = 0;
+  /** Also called after adopting pending elements on the Open tab. */
+  opened() {
+    this.automatic.cancel(); this.uuid = null; this.editedSinceOpen = false;
+    this.staleBulk = false;
+    const p = this.app.project;
+    const draft = p ? listDrafts(this.app.remote?.server ?? this.app.server).find(d => d.uuid === p.uuid) ?? readDraft(p.uuid) : null;
+    this.staleOpen = this.app.readOnly ? null : staleOpenElements(draft?.base, this.elements);
+    this.dialog = null;
+  }
+  showStaleOpen() { if (this.staleOpen) this.dialog = 'stale'; }
+  bringBack() {
+    if (!canWrite() || this.app.readOnly || this.busy || !this.staleOpen || !this.draft?.base) return;
+    const ids = this.staleOpen;
+    const base = clone(this.draft.base);
+    const additions = storedElements(base);
+    additions.spots = base.spots.filter(s => ids.spots.includes(s.id));
+    additions.grains = additions.grains.filter(g => ids.grains.includes(g.id));
+    additions.labels = additions.labels.filter(l => ids.labels.includes(l.id));
+    this.save({ pending_request: null });
+    this.keepDatabase(additions, true);
+    this.editedSinceOpen = true;
+    this.staleOpen = null; this.staleBulk = false; this.dialog = null;
+    this.track(false); this.refreshAutomatic();
+  }
+  async removeStale() {
+    if (!canWrite() || this.app.readOnly || this.busy || !this.staleOpen) return;
+    this.editedSinceOpen = true;
+    this.staleOpen = null; this.staleBulk = false; this.dialog = null;
+    this.save({ pending_request: null });
+    await this.sync();
+  }
+  private holdAutomaticDeletes(deleted: string[]) {
+    if (!this.automaticRunning) return false;
+    const spots = automaticSpotRemovals(this.draft?.base, deleted);
+    if (!spots.length) return false;
+    this.staleOpen = { spots, grains: [], labels: [] }; this.staleBulk = true;
+    this.dialog = 'stale'; this.pendingSync = false; this.automatic.cancel();
+    return true;
+  }
+  dialog = $state<'register' | 'review' | 'pixels' | 'bulk' | 'stale' | null>(null);
   confirmation = $state.raw<AtlasSyncConfirmation | null>(null);
   private heldSync: HeldSync | null = null;
   showConfirmation() { if (this.heldSync && this.heldSync.identity === this.identity && !this.app.readOnly) this.dialog = 'bulk'; }
@@ -102,9 +153,17 @@ export class SyncSession {
   });
   get databaseContext(): Record<Kind, string[]> { return this.cachedDatabaseContext; }
   get databaseAdded(): Elements { return this.draft?.database_added ?? emptyElements(); }
-  private keepDatabase(additions: Elements) {
+  private keepDatabase(additions: Elements, cancelRetirements = false) {
     if (!KINDS.some(k => additions[k].length)) return;
-    this.setElements(keepAdditions(clone(this.elements), additions));
+    const local = clone(this.elements);
+    if (cancelRetirements) {
+      const parents = new Set(additions.grains.map(g => g.id));
+      local.grains = local.grains.map(g => ({ ...g,
+        ...(g.split_from && parents.has(g.split_from) ? { split_from: undefined } : {}),
+        ...(g.merged_from ? { merged_from: g.merged_from.filter(id => !parents.has(id)) } : {}),
+      }));
+    }
+    this.setElements(keepAdditions(local, additions));
     this.save({ database_added: keepAdditions(this.databaseAdded, additions) });
     this.track(false);
   }
@@ -125,6 +184,8 @@ export class SyncSession {
   private serverElements = $state.raw<ReadElements | null>(null);
   private serverSpots = $state.raw<Elements['spots']>([]);
   get syncDisabledReason(): string { return this.draft?.link_conflict ? 'This project is linked to another mount' : this.status?.can_edit === false ? 'Read-only access: you do not have permission to sync this mount.' : ''; }
+  /** The database was found unreachable by this session or, within two minutes, by a re-check. */
+  get knownUnreachable(): boolean { return this.reachable === false || recentlyUnreachable(this.app.remote?.server ?? this.draft?.server ?? this.app.server); }
   refuseSpotDeletion(ids: string[]): boolean {
     if ([...this.serverSpots, ...(this.draft?.base?.spots ?? []), ...this.elements.spots].some(s => ids.includes(s.id) && s.acquisition_ids?.length)) {
       this.app.notice = 'This spot has measurements in the database; it cannot be deleted there';
@@ -132,7 +193,9 @@ export class SyncSession {
     }
     // Until the first measured-spot list is in, nothing shown can vouch for these spots. Later
     // checks keep the previous list and the revision it belongs to, so deletes stay allowed.
-    if (ids.length && this.checking && this.elementsRevision === null && this.registered !== false) {
+    // Once a check has found the database unreachable, a retry in flight does not block deletes:
+    // measured spots stay protected through the acquisition links kept in the draft base.
+    if (ids.length && this.checking && this.reachable !== false && !recentlyUnreachable(this.app.remote?.server ?? this.draft?.server ?? this.app.server) && Date.now() < this.deletionCheckDeadline && this.elementsRevision === null && this.registered !== false) {
       this.app.notice = 'Checking which spots are measured…';
       return true;
     }
@@ -149,7 +212,7 @@ export class SyncSession {
     return !this.disposed && canWrite() && !isHosted() && !this.app.hosted && this.app.link.syncAutomatically !== false
       && this.ready && !this.app.readOnly && !!this.draft?.mount
       && (this.registered === true && this.status?.can_edit === true || !!this.draft?.server_can_edit && !!this.draft?.pending_request)
-      && !this.confirmation && !this.review && !this.dialog && !this.held.length && !this.intentFailure
+      && !this.staleOpen && !this.confirmation && !this.review && !this.dialog && !this.held.length && !this.intentFailure
       && !this.draft?.link_conflict && !(this.error && this.reachable !== false);
   }
   get backgroundPending() { return this.automaticEnabled && (!!this.draft?.pending_request || !!this.cachedSyncStatus?.elements || this.pendingSync); }
@@ -167,6 +230,10 @@ export class SyncSession {
   dispose() { this.disposed = true; this.automatic.cancel(); }
   private async runAutomatic() {
     if (!this.backgroundPending || this.busy) return;
+    await this.runQuietSync();
+  }
+  private async runQuietSync() {
+    if (this.busy) return;
     this.automaticRunning = true;
     try { await this.sync(); }
     finally { this.automaticRunning = false; }
@@ -238,6 +305,7 @@ export class SyncSession {
     const serverChanged = hashes && this.serverHashes ? (['spots', 'grains', 'labels'] as const).some(k => hashes[k] !== this.serverHashes![k]) : undefined;
     return syncState({ firstSync: this.firstSync, serverChanged, registered: this.registered, reachable: this.reachable, baseRevision: this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null, serverRevision: this.elementsRevision ?? this.status?.revision ?? null, localChanges: this.cachedSyncStatus?.elements ?? hasChanges(this.counts), pixelsChanged: this.pixelsChanged }); }
   get detailText(): string {
+    if (this.staleOpen) return 'Needs your attention';
     if (this.confirmation) return 'Needs confirmation';
     if (this.draft?.link_conflict) return 'This project is linked to another mount';
     if (this.intentFailure) return `Local changes · ${this.intentFailure}`;
@@ -250,7 +318,7 @@ export class SyncSession {
   get text() {
     return plainSyncStatus(this.draft ? { ...this.draft, held_back: this.held } : null, { pending: !!this.cachedSyncStatus?.pending }, {
       busy: this.busy, reachable: this.reachable, error: !!this.error,
-      attention: !!this.confirmation || !!this.review || !!this.intentFailure || !!this.held.length,
+      attention: !!this.staleOpen || !!this.confirmation || !!this.review || !!this.intentFailure || !!this.held.length,
       serverRevision: this.draft?.server_revision ?? this.status?.revision, checked: this.reachable === true && !!this.status,
     });
   }
@@ -293,6 +361,7 @@ export class SyncSession {
     const p = this.app.project;
     if (!p || this.app.readOnly || this.app.loadingProject || this.app.storedCopy) return;
     if (!this.draft || this.draft.uuid !== p.uuid) this.draft = ensureDraft(p, this.app.server);
+    if (edited) this.editedSinceOpen = true;
     const key = this.app.projectPath ? `grainatlas.copy.${p.uuid}|${this.app.projectPath.path}` : `grainatlas.project.${p.package.name}`;
     const changes = this.draft.base ? this.counts : null;
     const pending = !!this.intentFailure || !this.draft.base || hasChanges(changes) ? this.pendingElements : null;
@@ -323,15 +392,18 @@ export class SyncSession {
       appStorage.track(this.app, 'draft', () => writeDraft(this.draft!)); // ready open adopts even when the subsequent lookup is offline
       this.registered = undefined; this.status = null; this.reachable = null; this.review = null; this.dialog = null; this.syncedAt = this.draft.synced_at ?? null; this.viewRevision = null; this.viewBase = null; this.viewHashes = null; this.serverHashes = null; this.elementsRevision = null; this.serverSpots = []; this.serverElements = null; this.snapshotNeeded = false; this.notice = ''; this.intentFailure = this.draft.incomplete?.reason ?? ''; this.omissions = this.draft.incomplete?.omissions ?? { spots: [], grains: [], labels: [] }; this.candidates = this.draft.link_candidates ?? []; this.heldBack = this.draft.held_back ?? [];
     }
+    // A view may enter Edit without opening the file again. Only inspect it
+    // before the first local edit or explicit choice in this session.
+    if (!this.staleOpen && !this.app.readOnly) this.staleOpen = staleOpenElements(this.draft?.base, this.elements, this.editedSinceOpen);
     this.checkedElements = null;
     this.track(false);
-    this.busy = true; this.checking = true;
+    this.busy = true; this.checking = true; this.deletionCheckDeadline = Date.now() + 8000;
     try {
       const api = await this.api();
       const status = await api.lookup(this.draft?.linked_uuid ?? p.uuid);
       if (!this.isCurrent(identity)) return;
       if (!status) this.setStatus(null);
-      this.registered = !!status; this.reachable = true;
+      this.registered = !!status; this.reachable = true; unreachableAt.delete(this.app.remote?.server ?? this.draft?.server ?? this.app.server ?? '');
       if (this.app.error === this.errorHeadline) this.app.error = null;
       if (this.draft?.incomplete) { this.failureMessage = this.draft.incomplete.reason; this.validationFailed = true; }
       if (!this.intentFailure) { this.error = ''; this.failureMessage = ''; this.validationFailed = false; }
@@ -375,11 +447,13 @@ export class SyncSession {
       this.track(false);
     } catch (e) {
       this.reachable = e instanceof SyncApiError && e.status < 500;
+      const failedServer = this.app.remote?.server ?? this.draft?.server ?? this.app.server;
+      if (failedServer && !this.reachable) unreachableAt.set(failedServer, Date.now());
       this.error = e instanceof Error ? e.message : String(e);
       this.errorDetails = e instanceof SyncApiError ? e.raw : '';
     } finally { this.finished(); this.checking = false; if (this.identity !== identity) void this.check(); }
     this.refreshAutomatic();
-    if (!this.automaticEnabled && this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.sync(); }
+    if (!this.staleOpen && !this.automaticEnabled && this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.runQuietSync(); }
   }
   dismissLink() { this.candidates = []; this.save({ link_offered: true, link_candidates: [] }); }
   showLink(): string {
@@ -447,6 +521,7 @@ export class SyncSession {
     flushWrites();
     if (!canWrite()) return;
     if (this.busy || this.syncDisabledReason) return;
+    if (this.staleOpen) { this.showStaleOpen(); return; }
     if (this.confirmation) { this.showConfirmation(); return; }
     if (this.state === 'offline' || this.state === 'checking') { await this.check(); return; }
     if (this.state === 'unregistered') { this.dialog = 'register'; return; }
@@ -593,6 +668,8 @@ export class SyncSession {
     if (!canWrite()) return;
     if (this.busy) await this.settled();
     if (this.busy || !this.ready || !this.app.project || this.app.readOnly || this.syncDisabledReason) return;
+    if (this.staleOpen) { if (!this.automaticRunning && !shellCommand) this.showStaleOpen(); return; }
+    if (this.holdAutomaticDeletes(this.draft?.pending_request?.body?.spots.delete ?? this.localChanges.spots.delete)) return;
     if (!this.draft?.mount) { this.showLink(); return; }
     // Old drafts or undo can bypass the canvas guard. Restore protected spots
     // locally too, rather than acknowledging a silent hide as a deletion.
@@ -669,6 +746,7 @@ export class SyncSession {
           const onlyAdditions = KINDS.every(k => !sinceSeen[k].delete.length && (k !== 'grains' || !sinceSeen.grains.retire.length) && sinceSeen[k].upsert.every(e => !(draft.base ?? draft.base_seen ?? emptyElements())[k].some(s => s.id === e.id)));
           const body: SyncBody = recovery?.body ?? approved?.body ?? { project_uuid: projectUuid, base_revision: 'revision' in current && (mode === 'delta' && !approved || onlyAdditions && KINDS.some(k => sinceSeen[k].upsert.length)) ? Number(current.revision) : draft.base_revision ?? 0, mode, ...diff,
             spots: { ...diff.spots, upsert: diff.spots.upsert.map(s => mode === 'snapshot' ? { ...s, sample: mine.spots.find(local => local.id === s.id)?.sample } : s) } };
+          if (this.holdAutomaticDeletes(body.spots.delete)) return;
           const parents = new Set([...body.grains.retire, ...body.grains.delete, ...body.grains.upsert.flatMap(g => [...(g.split_from ? [g.split_from] : []), ...(g.merged_from ?? [])])]);
           const counts: AtlasSyncConfirmation = {
             retireGrains: current.grains.filter(g => !g.retired && g.id && parents.has(g.id)).length,
@@ -845,9 +923,10 @@ export class SyncSession {
     if (!canWrite()) return;
     if (!this.ready) return;
     this.track();
-    if (this.canSyncOnSave) {
+    if (this.app.checkLabelsError?.startsWith('Database checks skipped')) this.app.notice = [this.app.notice, this.app.checkLabelsError].filter(Boolean).join(' ');
+    if (!this.staleOpen && this.canSyncOnSave) {
       if (this.pixelsChanged) this.dialog = 'pixels';
-      else await this.sync();
+      else await this.runQuietSync();
     }
   }
 }

@@ -81,6 +81,7 @@
       tab.spots = uiSpots(elements.spots, elements.grains, tab.spots, Object.fromEntries(project.areas.map(a => [a.id, a.sample])));
       tab.grains = groupedGrains(elements.grains, tab.grains);
       tab.labels = elements.labels;
+      tab.sync.opened();
       await tab.sync.check();
       await tab.sync.action();
     } catch (e) { tab.error = e instanceof Error ? e.message : String(e); }

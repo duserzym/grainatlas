@@ -614,6 +614,7 @@ class AppState {
     if (ui?.labels) this.labels = ui.labels;
     if (ui?.tone) this.tone = ui.tone;
     for (const a of p.areas) this.params[a.id] = JSON.parse(JSON.stringify(a.params));
+    this.sync.opened();
   }
 }
 

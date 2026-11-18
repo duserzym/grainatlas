@@ -125,6 +125,7 @@ async function draftTab(uuid: string): Promise<AppState | null> {
   tab.adopt(project);
   tab.spots = uiSpots(elements.spots, elements.grains, tab.spots);
   tab.grains = groupedGrains(elements.grains, tab.grains); tab.labels = elements.labels;
+  tab.sync.opened();
   appStorage.track(tab, 'draft', () => writeDraft(draft)); tab.sync.draft = draft;
   await tab.sync.check();
   return tab;

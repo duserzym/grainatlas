@@ -1,3 +1,4 @@
+import { fetchWithTimeout, HttpNetworkError } from './http.ts';
 import { canWrite } from './presentation';
 // Open from server: a published atlas bundle read from `<server>/atlas/projects/<id>/`
 // (WORKFLOW.md 3.1). Nothing is stitched: the canvas draws the bundle's WebP tiles, and the
@@ -85,11 +86,13 @@ export class RemoteTiles {
   }
 }
 
-async function getJson<T>([url, init]: [string, RequestInit], what: string, received?: (response: Response) => void): Promise<T> {
+async function getJson<T>([url, init]: [string, RequestInit], what: string, received?: (response: Response) => void, signal?: AbortSignal): Promise<T> {
   let r: Response;
   try {
-    r = await fetch(url, init);
+    r = await fetchWithTimeout(url, init, { signal });
   } catch (e) {
+    if (signal?.aborted) throw signal.reason;
+    if (e instanceof HttpNetworkError) throw e;
     throw new Error(`${what}: cannot reach ${url.split('?')[0]} (${e instanceof Error ? e.message : e})`);
   }
   const hint = r.status === 401 ? ' (sign in, paste a token in Settings, or use a link with ?access=)' : r.status === 404 ? ' (not published, or not visible to you)' : '';
@@ -129,22 +132,28 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   hostedSync.status({ type: ATLAS_EVENTS.status, project: projectId, mount: null, name: projectId, mode: 'view', state: 'checking', revision: null, atlasVersion: null, changes: null, syncedAt: null }, true);
   const token = await authToken(app, server);
   const at: Pick<Remote, 'server' | 'projectId' | 'token' | 'access' | 'version'> = { server, projectId, token, access };
-  const r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
-    const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json', response => {
-      const version = Number(response.headers.get('X-Atlas-Version'));
-      if (Number.isSafeInteger(version) && version > 0) at.version = version;
+  const controller = new AbortController();
+  const cancel = () => controller.abort(new Error('cancelled'));
+  app.cancelTask = cancel;
+  let r: { atlas: AtlasJson; project: Project } | undefined;
+  try {
+    r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
+      const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json', response => {
+        const version = Number(response.headers.get('X-Atlas-Version'));
+        if (Number.isSafeInteger(version) && version > 0) at.version = version;
+      }, controller.signal);
+      if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
+      if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
+      const project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json', undefined, controller.signal);
+      // Published bundles are immutable; ones from before the UPbDB rename have no `upbdb`
+      // link. The mount this viewer was opened for stands in until the sync check confirms it.
+      project.upbdb ??= { mount_id: mount ?? null };
+      // check() overlays current identified database elements (or a pending draft)
+      // on this bundle; the bundle still supplies pixels and display metadata.
+      return { atlas, project };
     });
-    if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
-    if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
-    const project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json');
-    // Published bundles are immutable; ones from before the UPbDB rename have no `upbdb`
-    // link. The mount this viewer was opened for stands in until the sync check confirms it.
-    project.upbdb ??= { mount_id: mount ?? null };
-    // check() overlays current identified database elements (or a pending draft)
-    // on this bundle; the bundle still supplies pixels and display metadata.
-    return { atlas, project };
-  });
-  if (!r) return false;
+  } finally { if (app.cancelTask === cancel) app.cancelTask = null; }
+  if (!r || controller.signal.aborted) return false;
   const remote: Remote = { server, projectId, atlas: r.atlas, version: at.version, readOnly: true, token, access, mount };
   app.cancelPixelsLoad?.();
   app.pixelsLoad = null;
@@ -221,6 +230,7 @@ export async function editCopy(app: AppState = current()) {
     app.grains = groupedGrains(pending.grains, app.grains); app.labels = pending.labels;
     app.draftHere = draft!.base_revision ?? 'unknown';
   }
+  app.sync.opened();
   await app.sync.editBase();
   if (pending) app.draftHere = app.sync.draft?.base_revision ?? 'unknown';
   app.persist();
