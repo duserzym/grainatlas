@@ -32,7 +32,8 @@ uses one module with one set of constants
 | mouse wheel | zoom about the cursor (`exp(-dy * 0.0015)`) |
 | trackpad two-finger scroll | pan |
 | trackpad pinch, ctrl/cmd + wheel | zoom about the fingers / cursor |
-| drag on empty space, middle drag, Space + drag | pan |
+| drag on empty space | pan, except in the Canvas Select tool, where it draws a selection box |
+| middle drag, Space + drag | pan |
 | two touch points | pinch zoom (rotate where the view allows it) |
 | double-click on empty space | fit |
 | arrows (Shift: more), `+` `-` `0` | nudge 60 / 240 px, zoom 1.5×, fit |
@@ -47,8 +48,29 @@ wheel keeps scrolling the page there, ctrl + wheel zooms.
 
 **Selecting several.** Cmd-click (macOS) or Ctrl-click toggles a spot or
 grain. Shift-click selects a range in a table and adds on the Canvas.
-Shift+drag on empty space draws a selection rectangle in the Canvas; all
-other drags follow the gesture table above. Cmd/Ctrl+A selects all spots
+In the Select tool, plain drag on empty space or a grain draws a box and
+replaces selection with the items whose centroids are inside; an empty box
+clears selection. Plain drag starting on a selected spot moves the selected
+spots. Shift+drag adds items in a box. Cmd/Ctrl+drag toggles them, also with
+Shift held. Modified boxes can start on a spot without moving or deleting
+it. A Shift-click without movement keeps the tool's usual click behaviour.
+Other tools pan on plain drag on empty space. Space+drag, middle drag and
+trackpad two-finger scroll pan in every tool.
+
+| Canvas tool | Drag behaviour and box selection |
+| --- | --- |
+| Select (V) | Plain drag replaces; Shift adds; Cmd/Ctrl toggles; grains in the Grains tab, spots otherwise |
+| Spot (S) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; grains in the Grains tab, spots otherwise |
+| Delete (D) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; grains in the Grains tab, spots otherwise |
+| Add grain (G) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; always grains |
+| Outline (O), Brush (B), Split (K) | Not available; keep stroke modifiers; switch to Select (V) to box-select |
+
+Artifacts are included only while the artifacts layer is visible. Grain
+table filters still apply. Box selection changes selection only, leaving
+spot data untouched. Selected grains appear in the table and on the Canvas
+and use the same grain actions as click selection.
+
+Cmd/Ctrl+A selects all spots
 in the current area, or visible grains in the Grains tab. Escape clears
 the selection and keeps the tool; with no selection it switches to Select.
 Delete or Backspace deletes the selected spots, or the selected grains.

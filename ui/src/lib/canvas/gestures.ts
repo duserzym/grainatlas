@@ -8,8 +8,8 @@
 //       WebKit (Safari, Tauri on macOS): gesturestart / gesturechange / gestureend
 //   ctrl / cmd + mouse wheel ........... zoom (same path as Chromium pinch)
 //   alt + wheel, WebKit rotate gesture . rotate (views that allow it)
-//   drag empty space, middle drag,
-//   Space + drag ....................... pan
+//   drag empty space ................... pan unless a tool takes the drag
+//   middle drag, Space + drag .......... pan
 //   two touch points ................... pinch zoom (+ rotate)
 //   double-click empty space ........... fit
 //   arrow keys ......................... nudge (Shift: larger), + / - zoom, 0 fit

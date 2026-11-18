@@ -19,6 +19,13 @@ export function addMany(sel: Sel, ids: string[]): Sel {
   return { ids: [...new Set([...sel.ids, ...ids])], anchor: ids.at(-1) ?? sel.anchor };
 }
 
+/** Each hit toggles once, even if a spatial query returns duplicate ids. */
+export function toggleMany(sel: Sel, ids: string[]): Sel {
+  const hits = new Set(ids), selected = new Set(sel.ids);
+  return { ids: [...selected].filter(id => !hits.has(id)).concat([...hits].filter(id => !selected.has(id))),
+    anchor: ids.at(-1) ?? sel.anchor };
+}
+
 export function clickHow(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, inTable: boolean): PickHow {
   return e.metaKey || e.ctrlKey ? 'toggle' : e.shiftKey ? inTable ? 'range' : 'add' : 'only';
 }
