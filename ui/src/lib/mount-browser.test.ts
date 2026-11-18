@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserAccount, accountLabs, defaultScope, mirrorServer, serverMirrorId, batchRevisions, recentRevisionIds, recentRevisions, cacheKey, hideMountCache, observeServerToken, localMatch, mountPage, mountPath, readCache, tileBadges, writeCache, CACHE_BYTES } from './mount-browser';
 import type { MountOut } from './upbdb';
 import type { Draft } from './drafts';
+import { pixelSignature } from './sync-pixels';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout, resetLayoutStorage } from './layout-prefs';
 
 function storage() {
@@ -28,6 +29,22 @@ describe('tile matching and badges', () => {
     expect(tileBadges(mount, { draft: { ...draft, changes: null, synced: true } }, 'owner', 3)).toEqual(['On this computer']);
     expect(tileBadges({ ...mount, role: 'read' }, null, 'viewer')).toEqual(['Not on this computer', 'Shared · Read']);
     expect(tileBadges({ ...mount, role: 'admin' }, null, 'viewer')).toContain('Shared · Admin');
+  });
+  it('a stale pixels_changed flag in an otherwise synced draft is not local changes', () => {
+    const project = { uuid: draft.uuid, package: { name: 'Invented project' }, settings: {}, upbdb: { mount_id: mount.id },
+      areas: [{ id: 'a', mosaic: { sha256: 'invented-sha', w: 10, h: 8, um_per_px: 2 }, params: { tone: { low_pct: 0, gamma: 0.8 } } }],
+      grainatlas_ui: { tone: {}, spots: [], grains: {}, labels: [] } } as unknown as Parameters<typeof pixelSignature>[0];
+    const key = pixelSignature(project);
+    const synced = { ...draft, changes: { grains: 0, spots: 0, labels: 0 }, pending: null, synced: true, pixels_base: key, pixels_changed: true } as Draft;
+    // A newer draft records the key it compared: it matches, so the old flag is stale.
+    expect(tileBadges(mount, { draft: { ...synced, pixels_key: key } }, 'owner', 3)).toEqual(['On this computer']);
+    // A legacy draft without a key: the stored project copy matches the published images.
+    const store = storage();
+    store.setItem(draft.source_keys![0], JSON.stringify(project));
+    expect(tileBadges(mount, { draft: synced }, 'owner', 3, store)).toEqual(['On this computer']);
+    // A real image change still counts.
+    const changed = pixelSignature({ ...project, areas: [{ ...project.areas[0], mosaic: { ...project.areas[0].mosaic!, sha256: 'other-sha' } }] });
+    expect(tileBadges(mount, { draft: { ...synced, pixels_key: changed } }, 'owner', 3)).toEqual(['On this computer', 'Local changes']);
   });
 });
 describe('private, bounded offline cache', () => {

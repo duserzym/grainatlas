@@ -1,6 +1,7 @@
 import type { MountOut } from './upbdb.ts';
 import type { RecentEntry } from './deeplink.ts';
-import type { Draft } from './drafts.ts';
+import type { Draft, DraftStorage } from './drafts.ts';
+import { draftSyncStatus } from './sync-status.ts';
 import type { MirrorStorage } from './mount-mirror.ts';
 import { serverFetch, oversightSession } from './oversight.ts';
 
@@ -64,10 +65,12 @@ export function localMatch(mount: MountOut, recent: RecentEntry[], drafts: Draft
   const entry = recent.find(r => (draft && same(r.id, draft.uuid)) || same(r.id, mount.atlas?.project_id));
   return entry || draft?.source_keys?.length ? { recent: entry, draft } : null;
 }
-export function tileBadges(mount: MountOut, match: ReturnType<typeof localMatch>, account: string, revision?: number): string[] {
+/** "Local changes" comes from the same status as the Open list and the sync chip: a stale
+ * `pixels_changed` flag in an otherwise synced draft is not local work. */
+export function tileBadges(mount: MountOut, match: ReturnType<typeof localMatch>, account: string, revision?: number, storage?: DraftStorage): string[] {
   const d = match?.draft;
   const badges = [match ? 'On this computer' : 'Not on this computer'];
-  if (d && (d.pixels_changed || d.incomplete || Object.values(d.changes ?? {}).some(n => n > 0) || (!d.synced && d.pending))) badges.push('Local changes');
+  if (d && (d.incomplete || draftSyncStatus(d, storage).pending)) badges.push('Local changes');
   if (d?.base_revision != null && revision != null && revision > d.base_revision) badges.push('Newer on server');
   if (mount.creator?.id !== account && mount.role) badges.push(`Shared · ${mount.role === 'owner' ? 'Admin' : mount.role[0].toUpperCase() + mount.role.slice(1)}`);
   return badges;
