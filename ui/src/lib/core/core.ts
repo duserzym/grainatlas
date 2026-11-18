@@ -13,7 +13,18 @@ export interface RawImage { w: number; h: number; data: Uint8Array }
 
 export interface PackageFile { path: string; file: Blob }
 
+export interface GrainExportOptions {
+  pixel_values: 'original' | 'displayed'; format: 'png' | 'tiff'; margin_um: number;
+  include_crops: boolean; include_masks: boolean; selected: string[] | null;
+  area_id: string | null; exported: string; display_tone: Record<string, ToneParams>;
+}
+export interface GrainExportBatch { data: Uint8Array; done: boolean }
 export interface Core {
+  beginGrainExport?(project: Project, options: GrainExportOptions): Promise<void>;
+  grainExportBatch?(zipStream: boolean, onProgress?: (p: Progress) => void): Promise<GrainExportBatch>;
+  abortGrainExport?(): Promise<void>;
+  saveGrainExport?(project: Project, options: GrainExportOptions, onProgress?: (p: Progress) => void): Promise<string | null>;
+
   readonly kind: 'wasm' | 'tauri';
   /** Web: hand over the files of a package folder, an area folder or loose images. */
   openFiles(name: string, files: PackageFile[], onProgress?: (p: Progress) => void): Promise<OpenResult>;

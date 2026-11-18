@@ -11,6 +11,7 @@ pub mod blend;
 pub mod checks;
 pub mod error;
 pub mod image;
+pub mod grain_export;
 pub mod laser;
 pub mod layout;
 pub mod mosaic;

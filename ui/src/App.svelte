@@ -399,7 +399,7 @@
       })();
       if (tabKeys)
         void import('@tauri-apps/api/event').then(({ listen }) =>
-          listen<string>('grainatlas://menu', (e) => (e.payload === 'new-tab' || e.payload === 'close-tab') && tabCommand(e.payload)).then((f) => undo.push(f)),
+          listen<string>('grainatlas://menu', (e) => { if (e.payload === 'new-tab' || e.payload === 'close-tab') tabCommand(e.payload); else if (e.payload === 'export-grains' && !current().busy) { current().screen = 'canvas'; current().grainExportPrompt = true; } }).then((f) => undo.push(f)),
         );
     }
     // Files dropped on UPb Lab's window or opened through the OS (rule 4): the

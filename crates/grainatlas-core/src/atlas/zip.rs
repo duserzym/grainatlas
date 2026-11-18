@@ -105,6 +105,87 @@ pub fn write(prefix: &str, files: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Incremental STORE writer: only the central directory is retained, never image data.
+/// Hosts may append returned chunks to a file, stream, or browser Blob parts.
+#[derive(Default)]
+pub struct Stream {
+    offset: u64,
+    central: Vec<u8>,
+    count: u16,
+}
+impl Stream {
+    pub fn entry(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+        let size = u32::try_from(bytes.len())
+            .map_err(|_| Error::Invalid("ZIP entry exceeds 4 GB; save a folder".into()))?;
+        let len = u16::try_from(name.len())
+            .map_err(|_| Error::Invalid("ZIP entry name too long".into()))?;
+        if self.count == u16::MAX
+            || self.offset
+                + 30
+                + name.len() as u64
+                + bytes.len() as u64
+                + self.central.len() as u64
+                + 46
+                + name.len() as u64
+                + 22
+                > u32::MAX as u64
+        {
+            return Err(Error::Invalid(
+                "Plain ZIP limit reached; save as a folder".into(),
+            ));
+        }
+        let crc = crc32(bytes);
+        let mut out = Vec::with_capacity(30 + name.len() + bytes.len());
+        u32le(&mut out, LOCAL);
+        u16le(&mut out, 20);
+        u16le(&mut out, UTF8);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u16le(&mut out, DOS_DATE);
+        u32le(&mut out, crc);
+        u32le(&mut out, size);
+        u32le(&mut out, size);
+        u16le(&mut out, len);
+        u16le(&mut out, 0);
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(bytes);
+        let c = &mut self.central;
+        u32le(c, CENTRAL);
+        u16le(c, 20);
+        u16le(c, 20);
+        u16le(c, UTF8);
+        u16le(c, 0);
+        u16le(c, 0);
+        u16le(c, DOS_DATE);
+        u32le(c, crc);
+        u32le(c, size);
+        u32le(c, size);
+        u16le(c, len);
+        u16le(c, 0);
+        u16le(c, 0);
+        u16le(c, 0);
+        u16le(c, 0);
+        u32le(c, 0);
+        u32le(c, self.offset as u32);
+        c.extend_from_slice(name.as_bytes());
+        self.offset += out.len() as u64;
+        self.count += 1;
+        Ok(out)
+    }
+    pub fn finish(mut self) -> Vec<u8> {
+        let size = self.central.len() as u32;
+        u32le(&mut self.central, END);
+        u16le(&mut self.central, 0);
+        u16le(&mut self.central, 0);
+        u16le(&mut self.central, self.count);
+        u16le(&mut self.central, self.count);
+        u32le(&mut self.central, size);
+        u32le(&mut self.central, self.offset as u32);
+        u16le(&mut self.central, 0);
+        self.central
+    }
+}
+
 fn rd16(b: &[u8], at: usize) -> Result<u16> {
     b.get(at..at + 2).map(|s| u16::from_le_bytes([s[0], s[1]])).ok_or_else(|| Error::Invalid("truncated zip".into()))
 }

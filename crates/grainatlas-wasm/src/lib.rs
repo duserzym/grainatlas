@@ -21,13 +21,17 @@ fn iso_now() -> String {
 }
 
 #[wasm_bindgen]
-pub struct Session(session::Session);
+pub struct Session(
+    session::Session,
+    Option<grainatlas_core::grain_export::Export>,
+    grainatlas_core::atlas::zip::Stream,
+);
 
 #[wasm_bindgen]
 impl Session {
     #[wasm_bindgen(constructor)]
     pub fn new(name: &str) -> Session {
-        Session(session::Session::new(name))
+        Session(session::Session::new(name), None, Default::default())
     }
     pub fn add_file(&mut self, path: &str, bytes: Vec<u8>) {
         self.0.add_file(path, bytes);
@@ -158,6 +162,57 @@ impl Session {
     }
     pub fn brush_grain(&mut self, area_id: &str, stroke: &str, size_um: f64, base: &str, op: &str) -> Result<String, JsError> {
         self.0.brush_grain(area_id, stroke, size_um, base, op).map_err(err)
+    }
+    pub fn grain_export_begin(&mut self, project: &str, options: &str) -> Result<(), JsError> {
+        self.grain_export_abort();
+        self.1 = Some(
+            grainatlas_core::grain_export::Export::begin(&self.0, project, options).map_err(err)?,
+        );
+        Ok(())
+    }
+    pub fn grain_export_abort(&mut self) {
+        self.2 = Default::default();
+        if let Some(job) = self.1.take() {
+            job.abort(&mut self.0);
+        }
+    }
+    pub fn grain_export_done(&self) -> bool {
+        self.1.is_none()
+    }
+    pub fn grain_export_batch(
+        &mut self,
+        progress: &js_sys::Function,
+        zip_stream: bool,
+    ) -> Result<Vec<u8>, JsError> {
+        let prog = |stage: &str, f: f32| {
+            let _ = progress.call2(
+                &JsValue::NULL,
+                &JsValue::from_str(stage),
+                &JsValue::from_f64(f as f64),
+            );
+        };
+        let ctl = Ctl {
+            cancel: &|| false,
+            progress: &prog,
+        };
+        let job = self.1.as_mut().ok_or_else(|| err("no grain export"))?;
+        let files = if job.is_ready() {
+            self.1.take().unwrap().finish(&ctl).map_err(err)?
+        } else {
+            job.batch(&mut self.0, &ctl).map_err(err)?.files
+        };
+        if zip_stream {
+            let mut out = Vec::new();
+            for (name, bytes) in files {
+                out.extend(self.2.entry(&name, &bytes).map_err(err)?);
+            }
+            if self.1.is_none() {
+                out.extend(std::mem::take(&mut self.2).finish());
+            }
+            Ok(out)
+        } else {
+            grainatlas_core::atlas::zip::write("", &files).map_err(err)
+        }
     }
     pub fn export_grains(&self, area_id: &str, grains: &str) -> Result<String, JsError> {
         self.0.export_grains(area_id, grains).map_err(err)

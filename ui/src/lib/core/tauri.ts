@@ -183,6 +183,12 @@ export class TauriCore implements Core {
   async setLink(mountId: string | null, samples: Record<string, string>): Promise<void> {
     await this.call('set_link', { mountId: mountId ?? '', samples: JSON.stringify(samples) });
   }
+  async saveGrainExport(project: Project, options: import('./core').GrainExportOptions, onProgress?: (p: Progress) => void): Promise<string | null> {
+    if (!canWrite()) return null;
+    this.onProgress = onProgress ?? null;
+    try { return await this.call<string | null>('save_grain_export', { project: JSON.stringify(project), options: JSON.stringify(options) }); }
+    finally { this.onProgress = null; }
+  }
   async exportGrains(areaId: string, grains: Grain[]): Promise<string> {
     return this.call<string>('export_grains', { areaId, grains: JSON.stringify(grains) });
   }

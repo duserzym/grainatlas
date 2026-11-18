@@ -7,6 +7,7 @@
 //! little-endian u32.
 
 mod sheets;
+mod grain_export;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;

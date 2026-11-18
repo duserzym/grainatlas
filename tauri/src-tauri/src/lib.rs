@@ -679,6 +679,53 @@ async fn atlas_zip(state: State<'_, AppState>, tab: u32, project: String, option
     }).await.map_err(e)?
 }
 
+/// Grain crops are written one batch at a time; failed exports are removed.
+#[tauri::command]
+async fn save_grain_export(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, options: String) -> Res<Option<String>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let d = app.dialog().file().set_title("Folder for the grain export");
+        let Some(parent) = d.blocking_pick_folder() else { return Ok(None) };
+        let parent = parent.into_path().map_err(e)?;
+        let stamp = now_iso().replace([':', '.'], "-");
+        let mut suffix = 0usize;
+        let dir = loop {
+            let dir = parent.join(format!("grain-export-{stamp}{}", if suffix == 0 { String::new() } else { format!("-{suffix}") }));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => break dir,
+                Err(x) if x.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
+                Err(x) => return Err(e(x)),
+            }
+        };
+        let result = state.with_session_ctl(&app, tab, |s, ctl| {
+            std::fs::write(dir.join("INCOMPLETE.txt"), "Incomplete grain export. This marker is removed after success.\n").map_err(|x| grainatlas_core::Error::Invalid(x.to_string()))?;
+            let mut job = grainatlas_core::grain_export::Export::begin(s, &project, &options)?;
+            let write = |files: Vec<grainatlas_core::grain_export::File>| -> grainatlas_core::Result<()> {
+                for (name, bytes) in files {
+                    ctl.check()?;
+                    let path = dir.join(name);
+                    if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|x| grainatlas_core::Error::Invalid(x.to_string()))?; }
+                    std::fs::write(path, bytes).map_err(|x| grainatlas_core::Error::Invalid(x.to_string()))?;
+                }
+                Ok(())
+            };
+            loop { let batch = job.batch(s, ctl)?; write(batch.files)?; if batch.done { break; } }
+            write(job.finish(ctl)?)?;
+            ctl.check()?;
+            std::fs::remove_file(dir.join("INCOMPLETE.txt")).map_err(|x| grainatlas_core::Error::Invalid(x.to_string()))?;
+            ctl.check()
+        });
+        if let Err(error) = result {
+            if let Err(cleanup) = std::fs::remove_dir_all(&dir) {
+                let _ = std::fs::write(dir.join("INCOMPLETE.txt"), format!("Export incomplete: {error}. Cleanup failed: {cleanup}"));
+                return Err(format!("{error}; incomplete export at {}: {cleanup}", dir.display()));
+            }
+            return Err(e(error));
+        }
+        Ok(Some(dir.display().to_string()))
+    }).await.map_err(e)?
+}
+
 /// Saves the atlas bundle: a `<project_id>.atlas/` folder in a chosen folder, or a zip through the
 /// save dialog. Returns the path written, or null when cancelled.
 #[tauri::command]
@@ -888,7 +935,8 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let new_tab = MenuItemBuilder::with_id("new-tab", "New Tab").accelerator("CmdOrCtrl+T").build(app)?;
     let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab").accelerator("CmdOrCtrl+W").build(app)?;
     let close_window = MenuItemBuilder::with_id("close-window", "Close Window").accelerator("CmdOrCtrl+Shift+W").build(app)?;
-    let file = SubmenuBuilder::new(app, "File").item(&new_tab).item(&close_tab).separator().item(&close_window).build()?;
+    let export_grains = MenuItemBuilder::with_id("export-grains", "Export grains...").build(app)?;
+    let file = SubmenuBuilder::new(app, "File").item(&new_tab).item(&close_tab).separator().item(&export_grains).separator().item(&close_window).build()?;
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
     let window = SubmenuBuilder::new(app, "Window").minimize().maximize().separator().fullscreen().build()?;
     let mut m = MenuBuilder::new(app);
@@ -939,7 +987,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(menu)
         .on_menu_event(|app, ev| match ev.id().as_ref() {
-            "new-tab" | "close-tab" => {
+            "new-tab" | "close-tab" | "export-grains" => {
                 let _ = app.emit("grainatlas://menu", ev.id().as_ref());
             }
             "close-window" | "quit-app" => {
@@ -967,13 +1015,12 @@ pub fn run() {
             if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::CloseRequested { .. }) {
                 geometry::save(window);
             }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main"
+            if let WindowEvent::CloseRequested { api, .. } = event
+                    && window.label() == "main"
                     && window.state::<QuitGuardReady>().0.load(Ordering::Acquire)
                     && window.emit_to("main", QUIT_REQUESTED, ()).is_ok()
-                {
-                    api.prevent_close();
-                }
+            {
+                api.prevent_close();
             }
         })
         .on_page_load(|webview, payload| {
@@ -1053,6 +1100,7 @@ pub fn run() {
             save_project,
             atlas_zip,
             save_atlas,
+            save_grain_export,
             record_published,
             blank,
             close_tab,

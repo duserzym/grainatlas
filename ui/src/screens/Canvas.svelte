@@ -15,6 +15,8 @@
   import { pick, selectAll, addMany, toggleMany, clickHow, type PickHow, type Sel } from '../lib/selection';
   import { canvasBox, grainGrid } from '../lib/grain-selection';
   import { CLICK_SLOP } from '../lib/canvas/gestures';
+  import GrainExportDialog from '../components/GrainExportDialog.svelte';
+  import { saveGrainExport } from '../lib/save-grain-export';
   import SpotBatchDialog from '../components/SpotBatchDialog.svelte';
   import { RingContrasts, type Contrast } from '../lib/canvas/contrast';
   import type { Core } from '../lib/core/core';
@@ -1343,7 +1345,7 @@
       }
       return;
     }
-    if (app.busy || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
+    if (app.busy || app.grainExportPrompt || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
     if (e.key.startsWith('Arrow')) app.flash = null;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
@@ -1446,6 +1448,9 @@
   {#each DATE_CHOICES as kind (kind)}<option value={kind} title={kind === 'preferred' ? 'Preferred (207Pb/206Pb above 1000 Ma)' : kind}>{dateLabel(kind)}</option>{/each}
 {/snippet}
 
+{#if app.grainExportPrompt}
+  <GrainExportDialog selectedCount={selGrains.length} hasArea={!!areaId} oncancel={() => app.grainExportPrompt = false} onexport={(choice) => { app.grainExportPrompt = false; void saveGrainExport(choice, areaId, [...selGrains]).catch(e => { app.error = e instanceof Error ? e.message : String(e); }); }} />
+{/if}
 <svelte:window onkeydown={key} oncontextmenu={contextSpot} onpointerdown={closeSpotMenu} />
 
 {#if isViewer && spotMenu}
@@ -2009,6 +2014,7 @@
             <button onclick={findMissedGrains} disabled={noPixels || !!app.busy} title="Adds grains that no outline covers; existing grains, numbers and spots stay as they are" data-testid="find-missed-grains">Find missed grains</button>
           {/if}
           <button class:danger={confirmAll} onclick={findAll} disabled={noPixels || !!app.busy} title={missingGrainAreas ? 'Areas that already have grains are left as they are' : 'Finds grains again in every area; hand edits to outlines are replaced'} data-testid="find-all-grains">{allGrainsLabel}</button>
+          <button onclick={() => app.grainExportPrompt = true} disabled={!Object.values(app.grains).some(gs => gs.some(g => !g.artifact)) || !!app.busy}>Export grains...</button>
           <button onclick={exportGrains} disabled={!grains.length}>Grain CSV</button>
         </div>
         <div class="row">

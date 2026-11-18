@@ -2218,7 +2218,7 @@ fn mount_map(
     // apart where they would touch), with a leader from the sample's right edge.
     let mut labels: Vec<(String, f64, f64, bool)> = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    for ai in 0..areas.len() {
+    for (ai, _) in areas.iter().enumerate() {
         let fallback = sample_of(ai);
         for sn in std::iter::once(fallback).chain(printed[ai].iter().map(|g| grain_sample(g, fallback))) {
             if !names.iter().any(|s| s == sn) { names.push(sn.to_string()); }

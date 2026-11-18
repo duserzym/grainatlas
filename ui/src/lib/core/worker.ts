@@ -76,6 +76,9 @@ const ops: Record<string, Handler> = {
   },
   exportSpots: ({ spots, grains, format }) => s().export_spots(JSON.stringify(spots), JSON.stringify(grains), format),
   setLink: ({ mountId, samples }) => s().set_link(mountId, JSON.stringify(samples)),
+  grainExportBegin: ({ project, options }) => s().grain_export_begin(JSON.stringify(project), JSON.stringify(options)),
+  grainExportAbort: () => s().grain_export_abort(),
+  grainExportBatch: ({ zipStream }, id) => ({ data: s().grain_export_batch((stage: string, fraction: number) => post({ id, progress: { stage, fraction } }), zipStream), done: s().grain_export_done() }),
   exportGrains: ({ areaId, grains }) => s().export_grains(areaId, JSON.stringify(grains)),
   layout: ({ params, grains, spots, labels, tone }) =>
     JSON.parse(s().layout(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(spots), JSON.stringify(labels), JSON.stringify(tone))),
@@ -126,8 +129,8 @@ self.onmessage = async (e: MessageEvent) => {
     if (value instanceof Uint8Array) value = value.slice();
     else if (value instanceof Uint32Array) value = value.slice();
     else if (value && typeof value === 'object' && 'data' in value && (value as { data: unknown }).data instanceof Uint8Array) {
-      const v = value as { w: number; h: number; data: Uint8Array };
-      value = { w: v.w, h: v.h, data: v.data.slice() };
+      const v = value as { data: Uint8Array };
+      value = { ...v, data: v.data.slice() };
     }
     post({ id, ok: true, value }, transferables(value));
   } catch (err) {

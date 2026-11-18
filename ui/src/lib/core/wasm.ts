@@ -318,6 +318,13 @@ export class WasmCore implements Core {
     return this.call('exportSpots', { spots, grains, format });
   }
 
+  async beginGrainExport(project: Project, options: import('./core').GrainExportOptions): Promise<void> {
+    await this.ready(); return this.call('grainExportBegin', { project: JSON.parse(JSON.stringify(project)), options });
+  }
+  async grainExportBatch(zipStream: boolean, onProgress?: (p: Progress) => void): Promise<import('./core').GrainExportBatch> {
+    await this.ready(); return this.call('grainExportBatch', { zipStream }, onProgress);
+  }
+  async abortGrainExport(): Promise<void> { await this.call('grainExportAbort'); }
   async exportGrains(areaId: string, grains: Grain[]): Promise<string> {
     await this.ready();
     return this.call('exportGrains', { areaId, grains });
