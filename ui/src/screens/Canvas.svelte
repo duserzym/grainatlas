@@ -43,6 +43,7 @@
   import { findAllGrains, stitch } from '../lib/actions';
   import { autoSignalLabel, grainStatus } from '../lib/grain-status';
   import { ownerColourToken, ownerLegend, spotSample } from '../lib/grain-owners';
+  import { shownGrains } from '../lib/grain-visibility';
 
   import { presentation } from '../lib/presentation';
   import { sendSpotAction } from '../lib/spot-action';
@@ -312,9 +313,8 @@
       reviewSpots.groups = groups;
     }
   }
-  const outlinedGrains = $derived(reviewVisible
-    ? visibleGrains.filter(g => spots.some(s => s.grain_id === g.id))
-    : visibleGrains);
+  // Outlines, numbers and scale bars all draw this one set (lib/grain-visibility).
+  const outlinedGrains = $derived(shownGrains(grains, (g) => !!owners.get(g.id)?.duplicate_of, app.showNeighbourGrains, reviewVisible, areaSpots));
   const labels = $derived(app.labels.filter((l) => l.area_id === areaId));
   const segParams = $derived(areaId ? app.params[areaId]?.segment : null);
   const missingGrainAreas = $derived((app.project?.areas ?? []).filter((a) => app.grains[a.id] === undefined).length);
@@ -1517,7 +1517,7 @@
               <polygon class="shell-flash grain-flash" points={flashingGrain.polygon_um.map((p) => p.join(',')).join(' ')} data-testid="shell-grain-flash" />
             {/if}
             {#if app.layers.scalebars}
-              {#each visibleGrains as g (g.id)}
+              {#each outlinedGrains as g (g.id)}
                 {@const y = g.bbox_um[3] + 6 * k}
                 <g class="gbar">
                   <line x1={g.bbox_um[0]} x2={g.bbox_um[0] + g.scale_bar_um} y1={y} y2={y} />
@@ -1526,7 +1526,7 @@
               {/each}
             {/if}
             {#if app.layers.numbers}
-              {#each visibleGrains as g (g.id)}
+              {#each outlinedGrains as g (g.id)}
                 <text class="gnum" class:sel={selGrains.includes(g.id)} transform="translate({g.bbox_um[0]} {g.bbox_um[1]}) rotate({-rotDeg}) scale({k})" dy="-3">{grainNumber(g)}</text>
               {/each}
             {/if}
