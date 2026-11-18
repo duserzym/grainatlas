@@ -3,6 +3,7 @@ import { isHosted } from '@lab/bridge';
 import { BackgroundSync } from './background-sync';
 import { bundlePixels, saveBundleTones } from './bundle-tone';
 import { deferredWrites, flushWrites } from './deferred-writes';
+import { oversightSession } from './oversight';
 import { canWrite } from './presentation';
 import { hostedSync } from './hosted-sync';
 import type { AtlasSyncConfirmation } from '@lab/bridge';
@@ -105,7 +106,7 @@ export class SyncSession {
     this.track(false); this.refreshAutomatic();
   }
   async confirmBulk() {
-    if (!canWrite()) return;
+    if (!canWrite() || oversightSession.readOnly) return;
     const held = this.heldSync;
     if (!held || held.identity !== this.identity) return;
     this.dialog = null;
@@ -185,7 +186,7 @@ export class SyncSession {
   private checkedElements: { identity: string; projectUuid: string; fetchedAt: number; elements: ReadElements } | null = null;
   private serverElements = $state.raw<ReadElements | null>(null);
   private serverSpots = $state.raw<Elements['spots']>([]);
-  get syncDisabledReason(): string { return this.draft?.link_conflict ? 'This project is linked to another mount' : this.status?.can_edit === false ? 'Read-only access: you do not have permission to sync this mount.' : ''; }
+  get syncDisabledReason(): string { return oversightSession.readOnly ? 'Viewing as someone else is read-only.' : this.draft?.link_conflict ? 'This project is linked to another mount' : this.status?.can_edit === false ? 'Read-only access: you do not have permission to sync this mount.' : ''; }
   /** The database was found unreachable by this session or, within two minutes, by a re-check. */
   get knownUnreachable(): boolean { return this.reachable === false || recentlyUnreachable(this.app.remote?.server ?? this.draft?.server ?? this.app.server); }
   refuseSpotDeletion(ids: string[]): boolean {
@@ -211,7 +212,7 @@ export class SyncSession {
   private disposed = false;
   private automatic = new BackgroundSync(() => { void this.runAutomatic(); });
   private get automaticEnabled() {
-    return !this.disposed && canWrite() && !isHosted() && !this.app.hosted && this.app.link.syncAutomatically !== false
+    return !this.disposed && canWrite() && !oversightSession.readOnly && !isHosted() && !this.app.hosted && this.app.link.syncAutomatically !== false
       && this.ready && !this.app.readOnly && !!this.draft?.mount
       && (this.registered === true && this.status?.can_edit === true || !!this.draft?.server_can_edit && !!this.draft?.pending_request)
       && !this.staleOpen && !this.imageDecision && !this.confirmation && !this.review && !this.dialog && !this.held.length && !this.intentFailure
@@ -301,7 +302,7 @@ export class SyncSession {
   }
   async replaceImages() {
     const job = this.draft?.publish_job;
-    if (!job || !canWrite() || this.app.readOnly) return;
+    if (!job || !canWrite() || oversightSession.readOnly || this.app.readOnly) return;
     this.savePublishJob({ ...job, decision: undefined, replace_current: true, upload_id: undefined,
       start_key: crypto.randomUUID(), commit_key: crypto.randomUUID(), zip_key: crypto.randomUUID() });
     this.dialog = null;
@@ -326,7 +327,7 @@ export class SyncSession {
   async publishImages(projectUuid = this.draft?.linked_uuid, background = false): Promise<void> {
     if (this.imageRun) return this.imageRun;
     if (this.staleOpen) { if (!background) this.showStaleOpen(); return; }
-    if (background && !this.imagePending || !canWrite() || this.app.readOnly || !this.ready) return;
+    if (background && !this.imagePending || !canWrite() || oversightSession.readOnly || this.app.readOnly || !this.ready) return;
     if (background && !imagesMayRun(this.lastImageEdit, Date.now(), this.imageGates(false))) { this.imageTimer.ensure(); return; }
     const identity = this.identity;
     const scope = () => JSON.stringify([this.identity, this.app.project?.upbdb.mount_id, this.app.remote?.server ?? this.draft?.server ?? this.app.server, this.app.link.token, this.app.sessionToken]);
@@ -336,7 +337,7 @@ export class SyncSession {
     this.imageBusy = true; this.imageProgress = null; this.imageError = ''; this.imageTimer.cancel();
     const gate = async (idle = true) => {
       for (;;) {
-        if (!sameProject() || !canWrite() || this.app.readOnly) throw new DOMException('Image publishing stopped', 'AbortError');
+        if (!sameProject() || !canWrite() || oversightSession.readOnly || this.app.readOnly) throw new DOMException('Image publishing stopped', 'AbortError');
         // Recheck between every request and retry, including a resumed job.
         if (this.staleOpen || background && (this.reachable !== true || this.knownUnreachable)) throw new DOMException('Image publishing paused', 'AbortError');
         if (!idle || imagesMayRun(background || this.imageEdits !== startedEdits ? this.lastImageEdit : -Infinity, Date.now(), this.imageGates(!background))) return;
@@ -412,7 +413,7 @@ export class SyncSession {
   private cachedCounts = $derived.by(() => changeCounts(this.localChanges));
   get counts() { return this.cachedCounts; }
   get canSyncOnSave(): boolean {
-    return this.ready && !this.app.readOnly && this.app.link.syncOnSave && this.registered === true && this.reachable === true && this.status?.can_edit === true;
+    return !oversightSession.readOnly && this.ready && !this.app.readOnly && this.app.link.syncOnSave && this.registered === true && this.reachable === true && this.status?.can_edit === true;
   }
   private pixelKey = $derived.by(() => {
     if ((!this.app.pkg && !bundlePixels(this.app)) || !Object.keys(this.app.stitched).length || !this.app.project) return null;
@@ -602,7 +603,7 @@ export class SyncSession {
     return this.error;
   }
   async link(candidate: Candidate) {
-    if (!canWrite()) return;
+    if (!canWrite() || oversightSession.readOnly) return;
     if (this.busy || !this.app.project || this.app.readOnly || !candidate.can_edit) return;
     const identity = this.identity;
     this.busy = true;
@@ -658,7 +659,7 @@ export class SyncSession {
   }
   async action() {
     flushWrites();
-    if (!canWrite()) return;
+    if (!canWrite() || oversightSession.readOnly) return;
     if (this.busy || this.syncDisabledReason) return;
     if (this.staleOpen) { this.showStaleOpen(); return; }
     if (this.imageDecision) { this.showImageDecision(); return; }
@@ -672,7 +673,7 @@ export class SyncSession {
   }
   async register(mount: string, publishPixels = false) {
     flushWrites();
-    if (!canWrite()) return;
+    if (!canWrite() || oversightSession.readOnly) return;
     if (!mount || this.syncDisabledReason) return;
     try { await (await this.app.core).setLink(mount, {}); } catch (e) { this.failed(e); return; }
     this.save({ mount });
@@ -749,7 +750,7 @@ export class SyncSession {
   }
   async apply(choices: Record<string, Resolution>, publishPixels = false) {
     flushWrites();
-    if (!canWrite()) return;
+    if (!canWrite() || oversightSession.readOnly) return;
     const review = this.review;
     if (!review) return;
     const result = resolveMerge(review.merge, choices);
@@ -805,7 +806,7 @@ export class SyncSession {
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
   async sync(publishPixels = false, shellCommand = false, approved?: HeldSync, reviewedBase?: ReadElements) {
     flushWrites();
-    if (!canWrite()) return;
+    if (!canWrite() || oversightSession.readOnly) return;
     if (this.busy) await this.settled();
     if (this.busy || !this.ready || !this.app.project || this.app.readOnly || this.syncDisabledReason) return;
     if (this.staleOpen) { if (!this.automaticRunning && !shellCommand) this.showStaleOpen(); return; }
@@ -1049,7 +1050,7 @@ export class SyncSession {
   }
   async afterSave() {
     flushWrites();
-    if (!canWrite()) return;
+    if (!canWrite() || oversightSession.readOnly) return;
     if (!this.ready) return;
     this.track();
     if (this.app.checkLabelsError?.startsWith('Database checks skipped')) this.app.notice = [this.app.notice, this.app.checkLabelsError].filter(Boolean).join(' ');

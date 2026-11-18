@@ -1,5 +1,6 @@
 import { fetchWithDeadline, databaseOfflineMessage } from './http.ts';
 import { idempotentWrite } from './idempotency.ts';
+import { serverFetch, ServerReadOnlyError } from './oversight.ts';
 import { canWrite, requireWrite } from './presentation.ts';
 import { errorSentence } from './sync-api.ts';
 // Links and hand-overs to UPbDB (the sessions database), through the UPb
@@ -176,13 +177,14 @@ function headers(token: string | null, extra: Record<string, string> = {}): Reco
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
 }
 
-async function call<T>(base: string, path: string, token: string | null, init: RequestInit, what: string, keyChanged?: (key: string) => void | Promise<void>): Promise<T> {
+async function call<T>(base: string, path: string, token: string | null, init: RequestInit, what: string, keyChanged?: (key: string) => void | Promise<void>, project?: string): Promise<T> {
   if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
   let r: Response;
   try {
-    const send = (key?: string) => fetchWithDeadline(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined), ...(key ? { 'Idempotency-Key': key } : {}) } });
+    const send = (key?: string) => serverFetch(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined), ...(key ? { 'Idempotency-Key': key } : {}) } }, project, fetchWithDeadline);
     r = init.method === 'POST' ? await idempotentWrite(send, { key: new Headers(init.headers).get('Idempotency-Key') ?? undefined, keyChanged }) : await send();
   } catch (e) {
+    if (e instanceof ServerReadOnlyError) throw e;
     console.warn(`${what}: cannot reach ${base}`, e);
     throw new ApiError(0, databaseOfflineMessage);
   }
@@ -198,10 +200,23 @@ export interface MountOut {
   grain_count: number;
   spot_count: number;
   can_edit: boolean;
+  creator?: { id: string; name: string } | null;
+  lab?: { handle: string; display_name?: string } | null;
+  role?: 'owner' | 'read' | 'write' | 'admin';
+  sample_names?: string[];
+  sample_count?: number;
+  mineral?: string[];
+  session_dates?: string[];
+  created_at?: string | null;
+  imaged_at?: string | null;
+  last_changed_at?: string | null;
+  content_revision?: number;
+  atlas?: { project_id: string; thumbnail: string | null; uploaded_at?: string; version?: number } | null;
+  thumbnail_data?: string;
 }
 
 export function listMounts(base: string, token: string | null): Promise<MountOut[]> {
-  return call(base, '/v1/mounts', token, { method: 'GET' }, 'Listing mounts');
+  return call(base, '/v1/mounts?limit=50', token, { method: 'GET' }, 'Listing mounts');
 }
 
 export type MountType = 'epoxy_1in' | 'epoxy_1in_half' | 'thin_section' | 'grain_tape';
@@ -235,7 +250,7 @@ export async function publishAtlas(base: string, token: string | null, mountId: 
     `\r\n--${boundary}\r\nContent-Disposition: form-data; name="replace_current"\r\n\r\n${replaceCurrent}\r\n--${boundary}--\r\n`,
   ], { type: `multipart/form-data; boundary=${boundary}` });
   return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/atlas`, token, { method: 'POST', body,
-    headers: { 'Idempotency-Key': key, 'Content-Type': body.type } }, 'Publishing the atlas', keyChanged);
+    headers: { 'Idempotency-Key': key, 'Content-Type': body.type } }, 'Publishing the atlas', keyChanged, projectId);
 }
 
 /** URL of a file of a published bundle. */

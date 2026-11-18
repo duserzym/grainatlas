@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect, mockSessionRead, mockRevisionRead } from './mock-session';
 import { firstFreePlace, LABEL_MM } from '../src/lib/strip-edit';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -47,6 +48,9 @@ async function mockServer(page: Page, fixture: SavedFixture = {}) {
     const headers = { 'access-control-allow-origin': '*' };
     const json = (value: unknown) => route.fulfill({ json: value, headers });
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { ...headers, 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
+    if (await mockRevisionRead(route)) return;
+    const session = mockSessionRead(request.method(), pathname);
+    if (session !== undefined) return json(session);
     if (request.method() === 'GET') {
       if (pathname === '/v1/mounts') return json([{ id: mountId, label: 'mount A', mount_type: 'epoxy_1in', grain_count: 30, spot_count: 0, can_edit: true }]);
       if (pathname === '/v1/atlas/projects' || pathname === '/v1/sessions') return json([]);

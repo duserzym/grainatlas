@@ -30,6 +30,8 @@ export interface RecentEntry {
   when: string;
   areas: number;
   spots: number;
+  /** Small local overview, kept only on this computer. */
+  thumbnail?: string;
 }
 
 /** Same id rule as the shell's resolver: UUIDs or URL-safe slugs. */

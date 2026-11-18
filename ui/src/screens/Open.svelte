@@ -1,12 +1,19 @@
 <script lang="ts">
   import { appStorage } from '../lib/app-storage';
+  import StartMounts from '../components/StartMounts.svelte';
+  import MountPicker from '../components/MountPicker.svelte';
+  import { oversightSession } from '../lib/oversight';
+  import { SyncApi } from '../lib/sync-api';
+  import { authToken } from '../lib/atlas';
+  import { DRAFTS_CHANGED, listDrafts, storedDraftProject, ensureDraft, writeDraft, type Draft } from '../lib/drafts';
+  import type { MountOut } from '../lib/upbdb';
   import DraftList from '../components/DraftList.svelte';
   import { onMount } from 'svelte';
   import { app, shared, tabs } from '../lib/store.svelte';
   import { fromDrop, fromInput } from '../lib/files';
   import { pendingProjectNotice, loadProjectFile, openFiles, openPaths } from '../lib/actions';
   import { isDesktop } from '../lib/core/core';
-  import { readRecent, type RecentEntry } from '../lib/deeplink';
+  import { RECENT_KEY, readRecent, type RecentEntry } from '../lib/deeplink';
   import type { Project } from '../lib/core/types';
   import { openRecent, recentCounts, recentLocation, relocateRecent, removeRecent, samePackage, storedProject, updateRecentCounts, baseName, type PathStatus, type RecentLocation } from '../lib/recent';
 
@@ -39,7 +46,35 @@
   onMount(() => {
     recent = readRecent();
     refreshCounts();
+    void localOverviews();
   });
+
+  /** Use an already loaded local pyramid; opening the start screen never loads source images. */
+  async function localOverviews() {
+    for (const tab of tabs.list) {
+      if (tab.readOnly || !tab.project) continue;
+      const uuid = tab.project.uuid;
+      const entry = recent.find(r => r.id === uuid);
+      if (!entry || entry.thumbnail) continue;
+      const [area, stitched] = Object.entries(tab.stitched)[0] ?? [];
+      const level = stitched?.mosaic.levels.at(-1);
+      if (!area || !level || level.cols !== 1 || level.rows !== 1) continue;
+      try {
+        const raw = await (await tab.core).pyramidTile(area, level.level, 0, 0);
+        if (tab.readOnly || tab.project?.uuid !== uuid) continue;
+        const source = document.createElement('canvas'); source.width = raw.w; source.height = raw.h;
+        source.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(raw.data), raw.w, raw.h), 0, 0);
+        const canvas = document.createElement('canvas');
+        const ratio = Math.min(1, 200 / Math.max(raw.w, raw.h));
+        canvas.width = Math.max(1, Math.round(raw.w * ratio)); canvas.height = Math.max(1, Math.round(raw.h * ratio));
+        canvas.getContext('2d')!.drawImage(source, 0, 0, canvas.width, canvas.height);
+        const thumbnail = canvas.toDataURL('image/webp', .7);
+        if (thumbnail.length > 100000) continue;
+        recent = readRecent().map(r => r.id === uuid ? { ...r, thumbnail } : r);
+        appStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+      } catch { /* the local pyramid may have been evicted */ }
+    }
+  }
 
   /** Packages: counts from the copy this app keeps. Saved projects: their file, read in the background (a few at a time, each bounded). */
   async function refreshCounts() {
@@ -77,6 +112,9 @@
     if (busy) return;
     busy = r.name;
     note = null;
+    const draft = localDrafts.find(d => d.uuid === r.id);
+    const copy = draft ? storedDraftProject(draft) : null;
+    if (copy && !keptCopies.has(r.name)) keptCopies.set(r.name, copy);
     try {
       const out = await openRecent(r, kept(r.name), {
         canOpenPaths: desktop,
@@ -95,13 +133,6 @@
       app.error = String(err);
     } finally {
       busy = null;
-    }
-  }
-
-  function rowKey(e: KeyboardEvent, r: RecentEntry) {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      void choose(r);
     }
   }
 
@@ -167,208 +198,157 @@
     const f = (e.target as HTMLInputElement).files?.[0];
     if (f) await loadProjectFile(f).catch((err) => (app.error = String(err)));
   }
+  let mountContent = $state(false);
+  let mountOffline = $state(false);
+  let signedIn = $state(false);
+  let refreshMounts = $state(0);
+  let linkDialog = $state<{ recent?: RecentEntry; mount?: MountOut; create?: boolean } | null>(null);
+  let linkNote = $state('');
+  let linking = $state(false);
+  let localDrafts = $state<Draft[]>([]);
+  let split: HTMLDivElement;
+  let projectInput: HTMLInputElement;
+  const hasContent = $derived(recent.length > 0 || mountContent);
+  onMount(() => {
+    const update = () => localDrafts = listDrafts();
+    update(); window.addEventListener(DRAFTS_CHANGED, update);
+    return () => window.removeEventListener(DRAFTS_CHANGED, update);
+  });
+  function unlinked(r: RecentEntry) {
+    return !localDrafts.find(d => d.uuid === r.id)?.mount && !kept(r.name)?.upbdb?.mount_id;
+  }
+  function showLink(r?: RecentEntry, mount?: MountOut, create = false) {
+    linkNote = ''; linkDialog = { recent: r, mount, create };
+  }
+  async function linkMount(id: string, r = linkDialog?.recent) {
+    if (oversightSession.readOnly || linking || !app.server) return;
+    if (!r) { linkDialog = null; refreshMounts++; return; }
+    const project = kept(r.name);
+    const uuid = r.id ?? project?.uuid;
+    if (!uuid) { linkNote = 'Open this project first to link it.'; return; }
+    linking = true; linkNote = '';
+    try {
+      const server = app.server;
+      await new SyncApi(server, await authToken()).link(uuid, id);
+      const draft = localDrafts.find(d => d.uuid === uuid) ?? (project ? ensureDraft(project, server) : {
+        uuid, name: r.name, server, mount: null, base_revision: null, base: null, updated_at: r.when, changes: null,
+      });
+      const updated = { ...draft, server, mount: id, link_offered: true, link_candidates: [] };
+      writeDraft(updated); localDrafts = [...localDrafts.filter(d => d.uuid !== uuid), updated];
+      const open = tabs.list.find(t => t.project?.uuid === uuid);
+      if (open) await open.sync.check();
+      linkDialog = null; refreshMounts++;
+    } catch (e) { linkNote = e instanceof Error ? e.message : String(e); }
+    finally { linking = false; }
+  }
+  function showModal(node: HTMLDialogElement) { node.showModal(); return { destroy: () => node.close() }; }
+  function resize(event: PointerEvent) {
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    const move = (e: PointerEvent) => {
+      app.layout.recentWidth = Math.max(180, Math.min(360, e.clientX - split.getBoundingClientRect().left));
+    };
+    const stop = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', stop); handle.removeEventListener('pointercancel', stop); app.saveLayout(); };
+    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', stop); handle.addEventListener('pointercancel', stop);
+  }
 </script>
 
 <section class="open">
-  <DraftList />
-  {#each shared.pendingProjects as pending (pending.project.package.name)}
-    <div class="glass panel linked" role="status">
-      <p data-testid="pending-project">{pendingProjectNotice(pending.project)}</p>
-      <div class="row"><button class="primary" onclick={pick} data-testid="pending-open-package">Open package…</button></div>
-    </div>
-  {/each}
-  {#if app.deepLink}
-    <div class="glass panel linked" role="status" data-testid="deeplink">
-      <h2>Linked project</h2>
-      {#if app.deepLink.name}
-        <p>The link points to project <code>{app.deepLink.project}</code>{#if app.deepLink.spot}, spot <code>{app.deepLink.spot}</code>{/if}, last opened here from the package <strong>{app.deepLink.name}</strong>. Images are not kept in this page: open that package folder again and the {app.deepLink.spot ? 'spot is selected' : 'project comes back'}.</p>
-      {:else}
-        <p>Project <code>{app.deepLink.project}</code>{#if app.deepLink.spot} (spot <code>{app.deepLink.spot}</code>){/if} is not available on this computer. Open its package folder, then load the project's saved <code>project.json</code> (Project file, below) to continue.</p>
-      {/if}
-      <div class="row">
-        <button class="primary" onclick={pick} data-testid="deeplink-open">Open package…</button>
-        <button onclick={() => (app.deepLink = null)}>Dismiss</button>
-      </div>
+  <div class="glass panel action-bar" class:over ondragover={e => { e.preventDefault(); over = true; }} ondragleave={() => over = false} ondrop={drop} role="region" aria-label="Open files">
+    <button onclick={pick} data-testid="choose-folder">Open package…</button>
+    <button onclick={() => projectInput.click()}>Open project…</button>
+    <button disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(undefined, undefined, true)}>New mount…</button>
+    <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
+    {#if hasContent}<span class="faint small">Drop a folder or images here</span>{/if}
+  </div>
+  <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={() => chosen(input)} data-testid="package-input" />
+  <input bind:this={imagesInput} type="file" multiple accept=".jpg,.jpeg,.png,.tif,.tiff,.bmp,image/*" hidden onchange={() => chosen(imagesInput)} data-testid="images-input" />
+  <input bind:this={projectInput} type="file" accept=".json,.gaproj,application/json" hidden onchange={project} data-testid="project-input" />
+  {#if !hasContent}
+    <div class="glass drop" class:over role="button" tabindex="0" aria-label="Open a package folder, an area folder or images"
+      ondragover={e => { e.preventDefault(); over = true; }} ondragleave={() => over = false} ondrop={drop} onclick={pick} onkeydown={e => (e.key === 'Enter' || e.key === ' ') && pick()}>
+      <h1>Open images</h1>
+      <p class="muted">Drop a package folder, an area folder or image files here.</p>
+      <p class="faint small">The files stay on this computer. For loose images, give the scale once.</p>
     </div>
   {/if}
-  <div
-    class="glass drop"
-    class:over
-    role="button"
-    tabindex="0"
-    aria-label="Open a package folder, an area folder or images"
-    ondragover={(e) => { e.preventDefault(); over = true; }}
-    ondragleave={() => (over = false)}
-    ondrop={drop}
-    onclick={pick}
-    onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && pick()}
-  >
-    <h1>Open images</h1>
-    <p class="muted">Drop a folder or image files here, or click to choose a folder. Any of these opens:</p>
-    <ul class="kinds">
-      <li><b>A package</b>: a Hitachi TM4000 Zigzag folder (the <code>.zag</code> and one subfolder per area), or images with a <code>positions.csv</code> (<code>file,x_um,y_um,pixel_size_nm</code>).</li>
-      <li><b>One area folder</b> on its own (<code>001_name/</code> with its <code>.ini</code>, tiles and <code>.txt</code> sidecars): the scale comes from the sidecars.</li>
-      <li><b>Loose images</b> with no sidecars: you give the scale once (µm per pixel or field width); each image is an area, or they form one grid.</li>
-    </ul>
-    <p class="faint">Nothing leaves this computer: the files are read in this page{desktop ? ' (desktop app)' : ''}.</p>
-    <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={() => chosen(input)} data-testid="package-input" />
-    <input bind:this={imagesInput} type="file" multiple accept=".jpg,.jpeg,.png,.tif,.tiff,.bmp,image/*" hidden onchange={() => chosen(imagesInput)} data-testid="images-input" />
-  </div>
-  <div class="example">
-    <button onclick={pick} data-testid="choose-folder">Choose folder…</button>
-    <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
-  </div>
-
-
-  <div class="cols">
-    <div class="glass panel">
+  {#each shared.pendingProjects as pending (pending.project.package.name)}
+    <div class="glass panel" role="status"><p data-testid="pending-project">{pendingProjectNotice(pending.project)}</p><button onclick={pick} data-testid="pending-open-package">Open package…</button></div>
+  {/each}
+  {#if app.deepLink}
+    <div class="glass panel" role="status" data-testid="deeplink"><h2>Linked project</h2>
+      <p>Project <code>{app.deepLink.project}</code>{#if app.deepLink.spot}, spot <code>{app.deepLink.spot}</code>{/if}. Open {app.deepLink.name ?? 'its package folder'} to continue.</p>
+      <button onclick={pick} data-testid="deeplink-open">Open package…</button><button onclick={() => app.deepLink = null}>Dismiss</button>
+    </div>
+  {/if}
+  <div class="split" bind:this={split} style={`--recent-width: ${app.layout.recentWidth}px`}>
+    <aside class="glass panel recent-list">
       <h2>Recent projects</h2>
-      {#if recent.length}
-        <table class="data">
-          <thead><tr><th>Package</th><th>Areas</th><th>Spots</th><th>Last opened</th></tr></thead>
-          <tbody>
-            {#each recent as r (r.name)}
-              {@const c = shown(r)}
-              {@const path = where(r)}
-              <tr
-                class="recent"
-                class:busy={busy === r.name}
-                tabindex="0"
-                role="button"
-                aria-label={`Open ${r.name}`}
-                aria-busy={busy === r.name}
-                title={path ?? 'Location not recorded: choose its folder'}
-                data-testid="recent-row"
-                onclick={() => choose(r)}
-                onkeydown={(e) => rowKey(e, r)}
-              >
-                <td>{r.name}{#if busy === r.name}<span class="faint small"> opening…</span>{/if}</td>
-                <td class="num" title={c.cached ? 'Cached when last opened' : undefined}>{c.areas}</td>
-                <td class="num" title={c.cached ? 'Cached when last opened' : undefined}>{c.spots}</td>
-                <td class="muted">{new Date(r.when).toLocaleString()}</td>
-              </tr>
-              {#if note?.name === r.name}
-                <tr class="note"><td colspan="4">
-                  <div role="status" data-testid="recent-note">
-                    {#if note.kind === 'missing'}
-                      <p><strong>{r.name}</strong> is not at <code>{note.path}</code>.</p>
-                    {:else if note.kind === 'unreachable'}
-                      <p><code>{note.path}</code> did not answer within 4 s; Google Drive may be offline.</p>
-                    {:else if note.kind === 'unlocated'}
-                      <p>Location not recorded: choose its folder.</p>
-                    {:else if note.kind === 'wrong'}
-                      <p>The folder <code>{baseName(note.path ?? '')}</code> is not the package <strong>{r.name}</strong>. Choose the folder named {r.name}.</p>
-                    {:else}
-                      <p>Opening by path needs the desktop app.{#if note.path} Its folder: <code>{note.path}</code>.{/if}</p>
-                    {/if}
-                    <div class="row">
-                      {#if note.kind === 'unsupported'}
-                        <button class="primary" onclick={pick} data-testid="recent-choose">Choose folder…</button>
-                      {:else}
-                        {#if note.kind === 'unreachable'}<button class="primary" onclick={() => choose(r)} data-testid="recent-retry">Try again</button>{/if}
-                        <button class:primary={note.kind !== 'unreachable'} onclick={() => locate(r)} data-testid="recent-locate">Locate…</button>
-                        <button onclick={() => forget(r)} data-testid="recent-remove">Remove from list</button>
-                      {/if}
-                      <button onclick={() => (note = null)}>Dismiss</button>
-                    </div>
-                  </div>
-                </td></tr>
-              {/if}
-            {/each}
-          </tbody>
-        </table>
-        <p class="faint small">Click a project to open it: grains, spots and parameters come back. Removing one from this list keeps its saved work.</p>
-      {:else}
-        <p class="muted">None yet.</p>
-      {/if}
-    </div>
-    <div class="glass panel">
-      <h2>Project file</h2>
-      <p class="muted">After opening the package, load a saved <code>project.json</code> to restore its parameters, grains and spots.</p>
-      <input type="file" accept=".json,.gaproj,application/json" onchange={project} disabled={!app.pkg} />
-    </div>
+      {#each recent as r (r.name)}
+        {@const c = shown(r)}
+        <div class="recent-item" data-testid="recent-row">
+          <button class="recent-title" disabled={!!busy} onclick={() => choose(r)} title={where(r) ?? 'Location not recorded'}>{r.name}{busy === r.name ? ' opening…' : ''}</button>
+          <p class="faint small">{c.areas} areas · {c.spots} spots{c.cached ? ' · cached' : ''}</p>
+          <p class="faint small">{new Date(r.when).toLocaleString()}</p>
+          <p class="small">On this computer</p>
+          {#if unlinked(r)}<button class="small" disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(r)}>Link to a mount</button>{/if}
+          {#if note?.name === r.name}
+            <div class="note" role="status" data-testid="recent-note">
+              {#if note.kind === 'missing'}<p>{r.name} is not at <code>{note.path}</code>.</p>
+              {:else if note.kind === 'unreachable'}<p><code>{note.path}</code> did not answer within 4 s; storage may be offline.</p>
+              {:else if note.kind === 'unlocated'}<p>Location not recorded: choose its folder.</p>
+              {:else if note.kind === 'wrong'}<p>The folder {baseName(note.path ?? '')} is not the package {r.name}.</p>
+              {:else}<p>Opening by path needs the desktop app.</p>{/if}
+              <div class="row">
+                {#if note.kind === 'unsupported'}<button onclick={pick} data-testid="recent-choose">Choose folder…</button>
+                {:else}
+                  {#if note.kind === 'unreachable'}<button onclick={() => choose(r)} data-testid="recent-retry">Try again</button>{/if}
+                  <button onclick={() => locate(r)} data-testid="recent-locate">Locate…</button>
+                  <button onclick={() => forget(r)} data-testid="recent-remove">Remove from list</button>
+                {/if}
+                <button onclick={() => note = null}>Dismiss</button>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {:else}<p class="muted">None yet.</p>{/each}
+      <details><summary>Sync drafts</summary><DraftList /></details>
+    </aside>
+    <div class="splitter" role="slider" tabindex="0" aria-label="Recent projects width" aria-orientation="vertical" aria-valuenow={app.layout.recentWidth} aria-valuemin="180" aria-valuemax="360" onpointerdown={resize}
+      onkeydown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); app.layout.recentWidth = Math.max(180, Math.min(360, app.layout.recentWidth + (e.key === 'ArrowLeft' ? -10 : 10))); app.saveLayout(); } }}></div>
+    <StartMounts {recent} onopen={choose} onlink={m => showLink(undefined, m)} oncontent={n => { if (n > 0) mountContent = true; }} onauth={value => { signedIn = value; if (!value) mountContent = false; }} onoffline={value => mountOffline = value} refresh={refreshMounts} />
   </div>
+  {#if linkDialog}
+    <dialog use:showModal class="glass panel mount-dialog" aria-label={linkDialog.create ? 'New mount' : 'Link a local project'} oncancel={e => { e.preventDefault(); if (!linking) linkDialog = null; }}>
+        <h2>{linkDialog.create ? 'New mount' : linkDialog.mount ? `Link to ${linkDialog.mount.label}` : `Link ${linkDialog.recent?.name}`}</h2>
+        {#if linkDialog.mount}
+          {#each recent.filter(unlinked) as r}<button disabled={linking || oversightSession.readOnly} onclick={() => linkMount(linkDialog!.mount!.id, r)}>{r.name}</button>{:else}<p>No unlinked local projects. Open a local project first.</p>{/each}
+        {:else}
+          <MountPicker value={null} onchange={id => void linkMount(id)} disabled={linking || mountOffline} startNew={linkDialog.create} />
+        {/if}
+        {#if linkNote}<p role="status">{linkNote}</p>{/if}
+        <button disabled={linking} onclick={() => linkDialog = null}>Close</button>
+    </dialog>
+  {/if}
 </section>
 
 <style>
-  .open {
-    max-width: 960px;
-    margin: var(--space-8) auto;
-    padding: 0 var(--space-4);
-    display: grid;
-    gap: var(--space-6);
-    overflow: auto;
-    max-height: 100%;
-  }
-  .drop {
-    padding: var(--space-8);
-    text-align: center;
-    cursor: pointer;
-    border-style: dashed;
-    transition: border-color var(--motion), background var(--motion);
-  }
-  .drop.over,
-  .drop:hover {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-  .drop p {
-    max-width: 44rem;
-    margin: var(--space-3) auto 0;
-  }
-  .kinds {
-    max-width: 44rem;
-    margin: var(--space-3) auto 0;
-    text-align: left;
-    display: grid;
-    gap: var(--space-1);
-    color: var(--text-muted);
-    font-size: 0.92rem;
-  }
-  .example {
-    display: flex;
-    gap: var(--space-3);
-    align-items: center;
-    justify-content: center;
-  }
-  .cols {
-    display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-    gap: var(--space-4);
-  }
-  .small {
-    font-size: 0.8rem;
-  }
-  .linked {
-    border-color: var(--accent);
-  }
-  .linked p {
-    margin: var(--space-2) 0 var(--space-3);
-    overflow-wrap: anywhere;
-  }
-  .row {
-    display: flex;
-    gap: var(--space-2);
-    flex-wrap: wrap;
-  }
-  tr.recent {
-    cursor: pointer;
-  }
-  tr.recent:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
-  tr.recent:focus-visible td {
-    background: var(--accent-soft);
-  }
-  tr.recent.busy {
-    cursor: progress;
-  }
-  tr.note td {
-    background: var(--accent-soft);
-  }
-  tr.note p {
-    margin: 0 0 var(--space-2);
-    overflow-wrap: anywhere;
-  }
+  .open { width: 100%; height: 100%; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); overflow: auto; min-height: 0; }
+  .action-bar, .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+  .action-bar { padding: var(--space-2) var(--space-3); }
+  .drop { padding: var(--space-6); text-align: center; cursor: pointer; border-style: dashed; }
+  .over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop p { margin: var(--space-2) 0 0; }
+  .split { display: grid; grid-template-columns: minmax(180px, var(--recent-width)) 8px minmax(0, 1fr); gap: var(--space-2); align-items: start; min-width: 0; }
+  .splitter { align-self: stretch; min-height: 160px; cursor: col-resize; touch-action: none; border-left: 2px solid var(--hairline); }
+  .splitter:focus-visible { outline: 2px solid var(--accent); }
+  .recent-list { min-width: 0; padding: var(--space-3); }
+  h2 { margin: 0 0 var(--space-2); }
+  .recent-item { padding: var(--space-2) 0; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
+  .recent-item p { margin: var(--space-1) 0; }
+  .recent-title { width: 100%; text-align: left; overflow-wrap: anywhere; font-weight: 600; }
+  .note { font-size: .8rem; padding-top: var(--space-2); }
+  .mount-dialog::backdrop { background: color-mix(in srgb, var(--bg) 55%, transparent); }
+  .mount-dialog { margin: auto; width: min(500px, 90vw); max-height: 80vh; overflow: auto; display: grid; gap: var(--space-3); }
+  @media (max-width: 850px) { .split { grid-template-columns: minmax(0, 1fr); } .splitter { display: none; } }
 </style>

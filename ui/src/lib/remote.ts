@@ -1,4 +1,5 @@
 import { fetchWithTimeout, HttpNetworkError } from './http.ts';
+import { serverFetch } from './oversight';
 import { canWrite } from './presentation';
 // Open from server: a published atlas bundle read from `<server>/atlas/projects/<id>/`
 // (WORKFLOW.md 3.1). Nothing is stitched: the canvas draws the bundle's WebP tiles, and the
@@ -90,7 +91,7 @@ export class RemoteTiles {
 async function getJson<T>([url, init]: [string, RequestInit], what: string, received?: (response: Response) => void, signal?: AbortSignal): Promise<T> {
   let r: Response;
   try {
-    r = await fetchWithTimeout(url, init, { signal });
+    r = await serverFetch(url, init, undefined, (url, init) => fetchWithTimeout(url, init, { signal }));
   } catch (e) {
     if (signal?.aborted) throw signal.reason;
     if (e instanceof HttpNetworkError) throw e;

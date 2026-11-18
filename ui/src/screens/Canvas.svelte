@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { oversightSession } from '../lib/oversight';
   import { bundlePixels } from '../lib/bundle-tone';
   // Canvas screen: the infinite canvas with grains and spots.
   // Pointer-first: navigate with trackpad or mouse, click to place, drag a spot
@@ -1899,7 +1900,7 @@
 
         </div>
         <details><summary>Advanced</summary><div class="row">
-          <button onclick={() => publish()} disabled={noPixels || !app.server || !app.project?.upbdb.mount_id} data-testid="publish"
+          <button onclick={() => publish()} disabled={oversightSession.readOnly || noPixels || !app.server || !app.project?.upbdb.mount_id} data-testid="publish"
             title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the UPbDB server in Settings' : !app.project?.upbdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to UPbDB</button>
         </div></details>
         {#if app.project?.upbdb.published?.length}

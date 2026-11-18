@@ -2,6 +2,7 @@
   import { clearPublishStatusCache } from '../lib/publish-engine';
   import { clearPublishedFiles } from '../lib/published-files';
   import { clearSyncCache } from '../lib/sync-cache';
+  import { hideMountCache } from '../lib/mount-browser';
   import { onMount } from 'svelte';
   import { appStorage } from '../lib/app-storage';
   import { imageCache } from '../lib/tile-cache';
@@ -68,6 +69,7 @@
     clearPublishStatusCache();
     void clearPublishedFiles();
     app.sessionToken = null; app.sessionServer = null;
+    hideMountCache();
     app.link.token = '';
     app.saveLink();
     signInText = 'Signed out on this computer.';
@@ -136,13 +138,13 @@
             <button onclick={() => void cancelSignIn()} data-testid="sign-in-cancel">Cancel</button>
           {:else}
             <button class="primary" onclick={signIn} disabled={!app.server && !serverText.trim()} data-testid="sign-in">Sign in…</button>
-            {#if app.link.token}<button onclick={signOut} data-testid="sign-out">Sign out</button>{/if}
           {/if}
         </div>
         {#if signInText}<p class="small" role="status">{signInText}</p>{/if}
         {#if signInError}<p class="small error" role="alert">{signInError}</p>{/if}
         <p class="faint small">Opens the server's sign-in page in your browser (any method it offers). Or paste a token below.</p>
       {/if}
+      {#if app.link.token && !signingIn}<button onclick={signOut} data-testid="sign-out">Sign out</button>{/if}
       <label class="field">Token
         <input type="password" autocomplete="off" placeholder="bearer token from UPbDB" bind:value={app.link.token} onchange={() => app.saveLink()} data-testid="token" />
       </label>

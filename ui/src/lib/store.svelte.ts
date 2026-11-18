@@ -1,3 +1,5 @@
+import { DEFAULT_LAYOUT, loadLayout, saveLayout, resetLayoutStorage, type LayoutPrefs } from './layout-prefs';
+export { DEFAULT_LAYOUT, type LayoutPrefs } from './layout-prefs';
 import { saveBundleTones, type BundleSources } from './bundle-tone';
 import { canWrite, presentation } from './presentation';
 // Application state (Svelte 5 runes). The core holds pixels; the UI holds the
@@ -95,30 +97,6 @@ function systemDark() {
     return matchMedia('(prefers-color-scheme: dark)').matches;
   } catch {
     return false;
-  }
-}
-
-/** Panel geometry and open states of this viewer (ux-conventions rule 7), never in a project. */
-export interface LayoutPrefs {
-  /** The floating spot / grain panel's position on the Canvas, px from the canvas's top-left. */
-  panel: { x: number; y: number };
-  /** The Canvas side panel folded to a strip. */
-  sideCollapsed: boolean;
-  printCollapsed?: boolean;
-  infoCollapsed: boolean;
-  menuCollapsed: boolean;
-  layersOpen: boolean;
-  spotEntryOpen: boolean;
-}
-const LAYOUT_KEY = 'grainatlas.layout';
-export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, infoCollapsed: false, menuCollapsed: false, layersOpen: false, spotEntryOpen: true };
-
-function loadLayout(): LayoutPrefs {
-  try {
-    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
-    return { ...DEFAULT_LAYOUT, ...v, panel: { ...DEFAULT_LAYOUT.panel, ...(v.panel ?? {}) } };
-  } catch {
-    return structuredClone(DEFAULT_LAYOUT);
   }
 }
 
@@ -432,7 +410,7 @@ class AppState {
   saveLayout() {
     if (!canWrite()) return;
     try {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify($state.snapshot(this.layout)));
+      saveLayout(localStorage, $state.snapshot(this.layout));
     } catch {
       /* ignore */
     }
@@ -442,7 +420,7 @@ class AppState {
   async resetLayout() {
     if (!canWrite()) return;
     try {
-      localStorage.removeItem(LAYOUT_KEY);
+      resetLayoutStorage(localStorage);
     } catch {
       /* ignore */
     }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { oversightSession } from '../lib/oversight';
   import { existingProject } from '../lib/open-target';
   import { draftSyncStatus, plainSyncStatus } from '../lib/sync-status';
   import { appStorage } from '../lib/app-storage';
@@ -103,7 +104,7 @@
     {#each drafts as draft (draft.uuid)}
       <div class="draft" data-testid="draft-row">
         <div><strong>{draft.name}</strong> · <span class="faint small" data-testid="draft-status">{statusFor(draft)}</span><p class="faint small">{new Date(draft.updated_at).toLocaleString()}</p></div>
-        <button disabled={busy !== null} onclick={() => draft.changes === null ? check(draft) : sync(draft)}>{draft.changes === null ? 'Check' : 'Sync'}</button>
+        <button disabled={busy !== null || (oversightSession.readOnly && draft.changes !== null)} onclick={() => draft.changes === null ? check(draft) : sync(draft)}>{draft.changes === null ? 'Check' : 'Sync'}</button>
         <button disabled={busy !== null} onclick={() => discard(draft)}>Discard</button>
       </div>
     {/each}
@@ -112,7 +113,7 @@
 {/if}
 
 <style>
-  .draft { display:flex; align-items:center; gap:var(--space-2); border-top:1px solid var(--hairline); padding-block:var(--space-2); }
-  .draft div { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .draft { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); border-top:1px solid var(--hairline); padding-block:var(--space-2); }
+  .draft div { flex:1 1 220px; min-width:0; overflow-wrap:anywhere; }
   .draft p { margin:var(--space-1) 0; }
 </style>

@@ -3,9 +3,11 @@
   // (hosted token, pasted token, or the same-origin sign-in), else a typed mount id.
   import { app } from '../lib/store.svelte';
   import { authToken } from '../lib/atlas';
-  import { createMount, listMounts, type MountOut, type MountType } from '../lib/upbdb';
+  import { oversightSession } from '../lib/oversight';
+  import { mountPage, mountPath, type MountPage } from '../lib/mount-browser';
+  import { createMount, type MountOut, type MountType } from '../lib/upbdb';
 
-  let { value, onchange, disabled = false, existingOnly = false }: { value: string | null; onchange: (id: string) => void; disabled?: boolean; existingOnly?: boolean } = $props();
+  let { value, onchange, disabled = false, existingOnly = false, startNew = false }: { value: string | null; onchange: (id: string) => void; disabled?: boolean; existingOnly?: boolean; startNew?: boolean } = $props();
   let mounts = $state<MountOut[] | null>(null);
   let note = $state('');
   let typed = $state(false);
@@ -14,28 +16,41 @@
   let mountType = $state<MountType>('epoxy_1in');
   let busy = $state(false);
   let error = $state('');
-  const locked = $derived(disabled || app.readOnly);
+  const locked = $derived(disabled || app.readOnly || oversightSession.readOnly);
   let loadVersion = 0;
+  let listing = $state(false);
+  let next = $state<string | null>(null);
+  let query = $state('');
+  const pages = new Map<string, MountPage>();
 
-  async function load(server: string | null) {
+  async function load(server: string | null, more = false) {
+    if (more && listing) return;
     const version = ++loadVersion;
-    mounts = null;
+    if (!more) mounts = null;
     creating = false;
     error = '';
     if (!server) {
       note = existingOnly ? 'Set the database server in Settings to pick a mount.' : 'No UPbDB server set (Settings): type the mount id.';
       return;
     }
+    listing = true;
     note = 'Loading mounts…';
     try {
-      const listed = await listMounts(server, await authToken());
+      const token = await authToken();
+      const path = mountPath({ q: query }, more ? next : null);
+      const key = JSON.stringify([server, token, oversightSession.state?.viewAs, path]);
+      const page = await mountPage(server, token ?? '', path, pages.get(key));
+      pages.set(key, page);
+      const listed = page.rows;
       if (version !== loadVersion) return;
-      mounts = listed;
+      mounts = more ? [...(mounts ?? []), ...listed.filter(m => !mounts?.some(old => old.id === m.id))] : listed;
+      next = page.next;
       note = mounts.length ? '' : 'No mounts yet: create one.';
+      if (startNew && !more) newMount();
     } catch (e) {
       if (version !== loadVersion) return;
       note = `${e instanceof Error ? e.message : e}${existingOnly ? '' : '. Type the mount id instead.'}`;
-    }
+    } finally { if (version === loadVersion) listing = false; }
   }
   function newMount() {
     label = (app.project?.name ?? '').trim().slice(0, 100);
@@ -68,17 +83,24 @@
     }
   }
   $effect(() => {
-    void load(app.server);
+    const server = app.server;
+    const viewAs = oversightSession.state?.viewAs;
+    void viewAs;
+    void load(server);
   });
 </script>
 
 <div class="picker">
+  <form onsubmit={(e) => { e.preventDefault(); void load(app.server); }}>
+    <label class="field">Find a mount<input bind:value={query} placeholder="Label or sample" /></label>
+    <button type="submit" disabled={busy || listing}>Search</button>
+  </form>
   {#if mounts?.length && !typed}
     <label class="field">Mount
       <select value={value ?? ''} disabled={locked || busy} onchange={(e) => onchange(e.currentTarget.value)} data-testid="mount-select">
         <option value="">not linked</option>
         {#each mounts as m (m.id)}
-          <option value={m.id} disabled={!m.can_edit}>{m.label} · {m.mount_type} · {m.grain_count} grains, {m.spot_count} spots{m.can_edit ? '' : ' (read-only)'}</option>
+          <option value={m.id} disabled={!m.can_edit}>{m.label} · {m.creator?.name ?? 'Unknown owner'} · {m.mount_type} · {m.grain_count} grains, {m.spot_count} spots{m.can_edit ? '' : ' (read-only)'}</option>
         {/each}
         {#if !existingOnly && value && !mounts.some((m) => m.id === value)}<option value={value}>{value}</option>{/if}
       </select>
@@ -90,6 +112,7 @@
     </label>
     {#if mounts?.length}<button class="linkish" disabled={locked || busy} onclick={() => (typed = false)}>Pick from the list</button>{/if}
   {/if}
+  {#if next}<button disabled={busy || listing} onclick={() => load(app.server, true)}>Show more mounts</button>{/if}
   {#if note}<p class="faint small" data-testid="mount-note">{note}</p>{/if}
   {#if app.server}
     {#if creating}

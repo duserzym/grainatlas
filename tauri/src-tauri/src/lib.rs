@@ -56,6 +56,7 @@ mod recent;
 mod project_save;
 mod signin;
 mod store;
+mod mirror;
 mod updater;
 mod upblab;
 use tauri_plugin_dialog::DialogExt;
@@ -985,6 +986,8 @@ pub fn run() {
         .manage(AppState::default())
         .manage(updater::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            mirror::mirror_read,
+            mirror::mirror_write,
             store::store_list,
             store::store_read,
             store::store_write,

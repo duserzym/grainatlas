@@ -1,0 +1,266 @@
+import type { MountOut } from './upbdb.ts';
+import type { RecentEntry } from './deeplink.ts';
+import type { Draft } from './drafts.ts';
+import type { MirrorStorage } from './mount-mirror.ts';
+import { serverFetch, oversightSession } from './oversight.ts';
+
+export const SERVER_SESSION_CHANGED = 'grainatlas:server-session-changed';
+let sessionEpoch = 0;
+export const PAGE_SIZE = 50;
+export const CACHE_TILES = 500;
+export const CACHE_BYTES = 20 * 1024 * 1024;
+export interface BrowserLab { id: string; handle: string; display_name?: string; my_role?: 'owner' | 'member' | null }
+export interface BrowserAccount { id: string; username: string; display_name: string; can_manage_people: boolean; mirrorId: string; labsNext?: string | null; labs: BrowserLab[] }
+export interface MountPage { rows: MountOut[]; next: string | null; total: number; etag: string | null; at: string }
+export interface MountCache { pages: Record<string, MountPage>; account?: BrowserAccount; meEtag?: string | null; labsEtag?: string | null; serverEtag?: string | null; revisions?: RevisionCache }
+/** Matches UPb Lab: URL parser normalization, no query/fragment or trailing slash. */
+export function mirrorServer(server: string) {
+  const url = new URL(server.trim()); url.search = ''; url.hash = '';
+  return url.href.replace(/\/+$/, '');
+}
+async function hash(value: string) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(bytes), n => n.toString(16).padStart(2, '0')).join('');
+}
+export async function serverMirrorId(server: string) { return hash(mirrorServer(server)); }
+export function cacheKey(mirrorId: string, account: string) { return `mirror/${mirrorId}/${account}/start-screen.json`; }
+export async function readCache(storage: MirrorStorage, key: string): Promise<MountCache> {
+  try { const v = JSON.parse(await storage.getItem(key) ?? 'null'); return v && v.pages && typeof v.pages === 'object' && !Array.isArray(v.pages) ? v : { pages: {} }; } catch { return { pages: {} }; }
+}
+export async function writeCache(storage: MirrorStorage, key: string, cache: MountCache) {
+  // Newest pages first. This budget applies only to start-screen metadata and thumbnails.
+  const pages: MountCache['pages'] = {};
+  let count = 0;
+  for (const [path, page] of Object.entries(cache.pages).sort((a, b) => b[1].at.localeCompare(a[1].at))) {
+    const rows = page.rows.slice(0, CACHE_TILES - count).map(row => ({ ...row }));
+    if (!rows.length && page.rows.length) continue;
+    pages[path] = { ...page, rows };
+    count += rows.length;
+  }
+  const bounded = { ...cache, pages };
+  const bytes = () => new TextEncoder().encode(JSON.stringify(bounded)).length;
+  if (bytes() > CACHE_BYTES) for (const page of Object.values(pages)) for (const row of page.rows) delete row.thumbnail_data;
+  while (bytes() > CACHE_BYTES && Object.keys(pages).length) delete pages[Object.keys(pages).at(-1)!];
+  try { await storage.setItem(key, JSON.stringify(bounded)); } catch { /* the in-memory list still works */ }
+}
+/** Hide server state and invalidate in-flight work; mirrors and drafts stay on disk.
+ * A refusal hides the UI without retrying identity; sign-out also resets identity. */
+export function hideMountCache(resetIdentity = true) {
+  sessionEpoch++;
+  revisionReads.clear();
+  if (resetIdentity) sessionReads.clear();
+  oversightSession.clear();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(SERVER_SESSION_CHANGED));
+}
+export function accountLabs(account: Pick<BrowserAccount, 'can_manage_people'>, labs: BrowserLab[]) {
+  return labs.filter(lab => !account.can_manage_people || lab.my_role != null);
+}
+export function defaultScope(account: BrowserAccount): Record<string, string> {
+  return { sort: '-last_changed', ...(account.can_manage_people ? account.labs[0] ? { lab: account.labs[0].handle } : { mine: 'true' } : {}) };
+}
+export function localMatch(mount: MountOut, recent: RecentEntry[], drafts: Draft[], server: string): { recent?: RecentEntry; draft?: Draft } | null {
+  const same = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+  const draft = drafts.find(d => d.server?.replace(/\/+$/, '') === server.replace(/\/+$/, '') && same(d.mount, mount.id));
+  const entry = recent.find(r => (draft && same(r.id, draft.uuid)) || same(r.id, mount.atlas?.project_id));
+  return entry || draft?.source_keys?.length ? { recent: entry, draft } : null;
+}
+export function tileBadges(mount: MountOut, match: ReturnType<typeof localMatch>, account: string, revision?: number): string[] {
+  const d = match?.draft;
+  const badges = [match ? 'On this computer' : 'Not on this computer'];
+  if (d && (d.pixels_changed || d.incomplete || Object.values(d.changes ?? {}).some(n => n > 0) || (!d.synced && d.pending))) badges.push('Local changes');
+  if (d?.base_revision != null && revision != null && revision > d.base_revision) badges.push('Newer on server');
+  if (mount.creator?.id !== account && mount.role) badges.push(`Shared · ${mount.role === 'owner' ? 'Admin' : mount.role[0].toUpperCase() + mount.role.slice(1)}`);
+  return badges;
+}
+export const DEFAULT_START_LAYOUT = { recentWidth: 240, tileSize: 'M' as 'S' | 'M' | 'L' };
+export function startLayout(value: { recentWidth?: number; tileSize?: string }) {
+  return { recentWidth: Math.max(180, Math.min(360, Number(value.recentWidth) || DEFAULT_START_LAYOUT.recentWidth)), tileSize: ['S', 'M', 'L'].includes(value.tileSize ?? '') ? value.tileSize as 'S' | 'M' | 'L' : DEFAULT_START_LAYOUT.tileSize };
+}
+
+/** Only the connect and idle intervals are bounded; a progressing transfer has no total deadline. */
+export async function readResponse(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  let timer = setTimeout(() => controller.abort(), 8000);
+  const reset = () => { clearTimeout(timer); timer = setTimeout(() => controller.abort(), 15000); };
+  const started = performance.now();
+  try {
+    const r = await serverFetch(url, { ...init, signal: controller.signal });
+    reset();
+    if (!r.body || r.status === 304) return r;
+    const reader = r.body.getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) { const part = await reader.read(); if (part.done) break; chunks.push(part.value); reset(); }
+    return new Response(new Blob(chunks as BlobPart[]), { status: r.status, statusText: r.statusText, headers: r.headers });
+  } finally { clearTimeout(timer); console.debug('Mount browser request', new URL(url).pathname, Math.round(performance.now() - started), 'ms'); }
+}
+export async function checkedJson<T>(response: Response): Promise<T> {
+  if (!response.ok) throw new Error(`Database ${response.status}: ${(await response.text()).slice(0, 180)}`);
+  return response.json();
+}
+async function identityKey(server: string, token: string) {
+  return `mirror-bindings/${await serverMirrorId(server)}/${await hash(token)}.json`;
+}
+// Retain fulfilled and rejected reads until sign-out/credential change. Store the
+// promise before any await so concurrent consumers share the same network work.
+// Responses are cloned for each caller; consuming a body never consumes the cache.
+const sessionReads = new Map<string, { token: string; result: Promise<[Response, Response | undefined]> }>();
+function sessionIdentity(server: string, token: string, saved: MountCache) {
+  const previous = sessionReads.get(server);
+  if (previous?.token === token) return previous.result;
+  const auth = { Authorization: `Bearer ${token}` };
+  const result = Promise.all([
+    readResponse(`${server}/v1/accounts/me`, { headers: { ...auth, ...(saved.meEtag ? { 'If-None-Match': saved.meEtag } : {}) } }),
+    // Older servers need not provide /server. /me still checks authentication.
+    readResponse(`${server}/v1/server`, { headers: { ...auth, ...(saved.serverEtag ? { 'If-None-Match': saved.serverEtag } : {}) } }).catch(() => undefined),
+  ]);
+  sessionReads.set(server, { token, result });
+  return result;
+}
+/** A binding is looked up by this server and credential only; it contains no token.
+ * A fresh credential must resolve /me before it can read any account's folder. */
+export async function browserAccount(server: string, token: string, storage: MirrorStorage, showCached?: (account: BrowserAccount, cache: MountCache) => void): Promise<BrowserAccount> {
+  const epoch = sessionEpoch;
+  const current = () => { if (epoch !== sessionEpoch) throw new Error('The signed-in account changed.'); };
+  if (!token) throw new Error('Sign in to see your mounts');
+  if (!server.trim()) throw new Error('Set the UPbDB server first.');
+  server = mirrorServer(server);
+  const key = await identityKey(server, token);
+  const fallback = await serverMirrorId(server);
+  let binding: { accountId: string; mirrorId: string } | null = null;
+  try { binding = JSON.parse(await storage.getItem(key) ?? 'null'); } catch { /* unavailable storage */ }
+  let saved = binding ? await readCache(storage, cacheKey(binding.mirrorId, binding.accountId)) : { pages: {} } as MountCache;
+  if (saved.account?.id !== binding?.accountId) saved = { pages: {} };
+  current();
+  if (saved.account) showCached?.(saved.account, saved);
+  try {
+    const auth = { Authorization: `Bearer ${token}` };
+    const [meResponse, datasetResponse] = await sessionIdentity(server, token, saved);
+    const response = meResponse.clone();
+    const serverResponse = datasetResponse?.clone();
+    const serverInfo = serverResponse?.status === 304
+      ? { dataset: saved.account?.mirrorId, etag: serverResponse.headers.get('ETag') ?? saved.serverEtag }
+      : serverResponse?.ok
+        ? { dataset: (await serverResponse.json().catch(() => null))?.dataset_id as unknown, etag: serverResponse.headers.get('ETag') }
+        : undefined;
+    current();
+    if (response.status === 401 || response.status === 403) { hideMountCache(false); throw new Error(`Database ${response.status}: Sign in again.`); }
+    const me = response.status === 304 && saved.account ? saved.account : await checkedJson<BrowserAccount>(response);
+    const mirrorId = (typeof serverInfo?.dataset === 'string' && serverInfo.dataset) || binding?.mirrorId || fallback;
+    // Only the same account's URL-keyed mirror can migrate when dataset_id first appears.
+    if (binding?.accountId !== me.id || (mirrorId !== binding.mirrorId && binding.mirrorId !== fallback)) saved = { pages: {} };
+    const destination = await readCache(storage, cacheKey(mirrorId, me.id));
+    current();
+    if (destination.account?.id === me.id) saved = destination;
+    else if (!saved.account && mirrorId !== fallback && (!binding || binding.mirrorId === fallback)) {
+      // A new credential may be the first to discover dataset_id for this account.
+      const urlCopy = await readCache(storage, cacheKey(fallback, me.id));
+      if (urlCopy.account?.id === me.id) saved = urlCopy;
+    }
+    current();
+    const cachedAccount = saved.account;
+    if (cachedAccount) showCached?.({ ...cachedAccount, mirrorId }, saved);
+    const labsResponse = await readResponse(`${server}/v1/labs?limit=100`, { headers: { ...auth, ...(saved.labsEtag ? { 'If-None-Match': saved.labsEtag } : {}) } });
+    if (labsResponse.status === 401 || labsResponse.status === 403) { hideMountCache(false); throw new Error(`Database ${labsResponse.status}: Sign in again.`); }
+    const labs = labsResponse.status === 304 && cachedAccount ? cachedAccount.labs : accountLabs(me, await checkedJson<BrowserLab[]>(labsResponse));
+    const account: BrowserAccount = { id: me.id, username: me.username, display_name: me.display_name, can_manage_people: me.can_manage_people, mirrorId, labsNext: labsResponse.status === 304 ? cachedAccount?.labsNext : labsResponse.headers.get('X-Next-Cursor'), labs };
+    current();
+    await writeCache(storage, cacheKey(mirrorId, me.id), { ...saved, account, meEtag: response.headers.get('ETag') ?? saved.meEtag, labsEtag: labsResponse.headers.get('ETag') ?? saved.labsEtag, serverEtag: serverInfo?.etag ?? saved.serverEtag });
+    current();
+    try { await storage.setItem(key, JSON.stringify({ accountId: me.id, mirrorId })); } catch { /* unavailable quota */ }
+    current();
+    return account;
+  } catch (e) {
+    // A refusal never revives the mirror. Network failures can use this credential's binding.
+    if (!(e instanceof Error && /^Database \d/.test(e.message)) && saved.account && epoch === sessionEpoch) return saved.account;
+    throw e;
+  }
+}
+const observedTokens = new Map<string, string | null>();
+export function observeServerToken(server: string | null, token: string | null) {
+  if (!server) return;
+  const key = mirrorServer(server), previous = observedTokens.get(key);
+  if (previous !== undefined && previous !== token) {
+    sessionReads.delete(key);
+    hideMountCache(false);
+  }
+  observedTokens.set(key, token);
+}
+export function mountPath(filters: Record<string, string>, after?: string | null) {
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), ...Object.fromEntries(Object.entries(filters).filter(([, v]) => !!v)) });
+  if (after) params.set('after', after);
+  return `/v1/mounts?${params}`;
+}
+export async function mountPage(server: string, token: string, path: string, cached?: MountPage): Promise<MountPage> {
+  const response = await readResponse(server + path, { headers: { Authorization: `Bearer ${token}`, ...(cached?.etag ? { 'If-None-Match': cached.etag } : {}) } });
+  if (response.status === 304 && cached) return { ...cached, at: new Date().toISOString() };
+  const rows = await checkedJson<MountOut[]>(response);
+  return { rows, next: response.headers.get('X-Next-Cursor'), total: Number(response.headers.get('X-Total-Count') ?? rows.length), etag: response.headers.get('ETag'), at: new Date().toISOString() };
+}
+export interface RevisionRow { project_uuid: string; mount_id: string; revision: number }
+export async function batchRevisions(server: string, token: string, projects: string[], cached?: { rows: RevisionRow[]; etag: string | null }) {
+  const ids = [...new Set(projects)];
+  if (ids.length > 500) throw new Error('Revision batches accept at most 500 project UUIDs.');
+  if (!ids.length) return { rows: [], etag: null };
+  const response = await readResponse(`${server}/v1/atlas/projects/revisions`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(cached?.etag ? { 'If-None-Match': cached.etag } : {}) }, body: JSON.stringify({ projects: ids }) });
+  return response.status === 304 && cached ? cached : { rows: await checkedJson<RevisionRow[]>(response), etag: response.headers.get('ETag') };
+}
+
+interface RevisionBatch { key: string; rows: RevisionRow[]; etag: string | null; at: number }
+export interface RevisionCache { batches: RevisionBatch[] }
+// In-flight and fulfilled batches survive component remounts. The mirror also
+// retains the last lookup across document reloads, without storing credentials.
+interface RevisionRead { value?: RevisionBatch; pending?: Promise<RevisionBatch>; viewers: Set<() => boolean> }
+const revisionReads = new Map<string, RevisionRead>();
+export function recentRevisionIds(recent: RecentEntry[], drafts: Draft[], server: string): string[] {
+  const ids = new Set(recent.flatMap(r => r.id ? [r.id.toLowerCase()] : []));
+  return [...new Set(drafts.filter(d => ids.has(d.uuid.toLowerCase()) && d.mount && d.server && mirrorServer(d.server) === mirrorServer(server))
+    .map(d => (d.linked_uuid ?? d.uuid).toLowerCase()))].sort();
+}
+/** Called in the background by the visible start screen only. Each response has
+ * its own ETag and freshness time; no UUIDs are silently dropped at the bound. */
+export async function recentRevisions(server: string, token: string, account: string, projects: string[], cached: RevisionCache | undefined, visible: () => boolean): Promise<RevisionCache> {
+  const epoch = sessionEpoch;
+  const current = () => visible() && epoch === sessionEpoch;
+  const batches: RevisionBatch[] = [];
+  if (!server || !token || !account || !projects.length || !current()) return { batches };
+  server = mirrorServer(server);
+  const ids = [...new Set(projects)].sort();
+  const scope = [server, account, oversightSession.state?.viewAs?.username ?? ''];
+  for (let from = 0; from < ids.length; from += 500) {
+    if (!current()) throw new Error('The start-screen session changed.');
+    const projects = ids.slice(from, from + 500);
+    const key = JSON.stringify([...scope, projects]);
+    const previous = cached?.batches.find(b => b.key === key);
+    let entry = revisionReads.get(key);
+    if (!entry) {
+      entry = { value: previous, viewers: new Set() };
+      revisionReads.set(key, entry);
+    }
+    const state = entry;
+    state.viewers.add(current);
+    try {
+      const saved = state.value;
+      if (saved && Date.now() >= saved.at && Date.now() - saved.at < 60_000) {
+        batches.push(saved);
+        continue;
+      }
+      if (!state.pending) {
+        state.pending = Promise.resolve().then(async () => {
+          if (![...state.viewers].some(viewer => viewer())) throw new Error('The start-screen session changed.');
+          const result = await batchRevisions(server, token, projects, saved);
+          if (epoch !== sessionEpoch) throw new Error('The signed-in account changed.');
+          return state.value = { ...result, key, at: Date.now() };
+        }).finally(() => { state.pending = undefined; });
+      }
+      const result = await state.pending;
+      if (!current()) throw new Error('The start-screen session changed.');
+      batches.push(result);
+    } finally { state.viewers.delete(current); }
+  }
+  // Bound retained metadata for changing scopes/filters. Pending work is shared.
+  for (const [key, entry] of revisionReads) {
+    if (revisionReads.size <= 64) break;
+    if (!entry.pending && !entry.viewers.size) revisionReads.delete(key);
+  }
+  return { batches };
+}

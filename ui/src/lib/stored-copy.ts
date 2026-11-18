@@ -66,8 +66,9 @@ export function persistProject(project: Project, path: string | null, when = new
     if (path) target.setItem(storedCopyKey(project.uuid, path), JSON.stringify({ saved_at: when, path, project }));
     else target.setItem(PROJECT_PREFIX + project.package.name, JSON.stringify(project));
     const recent = JSON.parse(target.getItem(RECENT_KEY) || '[]') as ReturnType<typeof readRecent>;
+    const thumbnail = recent.find(r => r.id === project.uuid)?.thumbnail;
     const entries = recent.filter((r) => r.name !== project.package.name);
-    entries.unshift({ id: project.uuid, name: project.package.name, when, areas: project.areas.length, spots: projectChanges(project).spots.length, ...(path ? { path } : project.package.path ? { package_path: project.package.path } : {}) });
+    entries.unshift({ ...(thumbnail ? { thumbnail } : {}), id: project.uuid, name: project.package.name, when, areas: project.areas.length, spots: projectChanges(project).spots.length, ...(path ? { path } : project.package.path ? { package_path: project.package.path } : {}) });
     target.setItem(RECENT_KEY, JSON.stringify(entries.slice(0, 12)));
     return true;
   } catch {

@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect, mockSessionRead, mockRevisionRead } from './mock-session';
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -158,6 +159,9 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
       imageReplies.set(key, reply);
       return json(reply);
     }
+    if (await mockRevisionRead(route)) return;
+    const session = mockSessionRead(request.method(), pathname);
+    if (session !== undefined) return json(session);
     if (pathname === '/v1/mounts') {
       if (request.method() === 'GET') return json(mounts);
       if (request.method() === 'POST') {

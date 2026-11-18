@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, mockSessionRead, mockRevisionRead } from './mock-session';
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -14,7 +14,7 @@ test.beforeAll(() => {
   execFileSync('cargo', ['run', '-p', 'grainatlas-core', '--example', 'synthetic_bundle'], { cwd: root, stdio: 'pipe' });
 });
 
-test('dragging a spot edge moves it; only the size input changes its diameter', async ({ page }) => {
+for (const stalled of [false, true]) test(`dragging a spot edge moves it; only the size input changes its diameter${stalled ? ' while identity reads are stalled' : ''}`, async ({ page }) => {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
@@ -31,11 +31,23 @@ test('dragging a spot edge moves it; only the size input changes its diameter', 
     localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: false, quality: 100, nasRoot: '' }));
   }, { server });
   const unexpected: string[] = [];
+  let identityReads = 0;
+  let releaseIdentity!: () => void;
+  const identityGate = new Promise<void>(resolve => { releaseIdentity = resolve; });
   await page.route(`${server}/**`, async route => {
     const request = route.request(), pathname = new URL(request.url()).pathname;
     const headers = { 'access-control-allow-origin': '*' };
     const json = (value: unknown) => route.fulfill({ json: value, headers });
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { ...headers, 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
+    if (await mockRevisionRead(route)) return;
+    const session = mockSessionRead(request.method(), pathname);
+    if (session !== undefined) {
+      if (['/v1/accounts/me', '/v1/server'].includes(pathname)) {
+        identityReads++;
+        if (stalled) await identityGate;
+      }
+      return json(session);
+    }
     if (request.method() === 'GET') {
       if (pathname === '/v1/mounts') return json([{ id: mountId, label: 'Synthetic mount', mount_type: 'epoxy_1in', grain_count: 2, spot_count: 3, can_edit: true }]);
       if (pathname === '/v1/atlas/projects' || pathname === '/v1/sessions') return json([]);
@@ -91,5 +103,12 @@ test('dragging a spot edge moves it; only the size input changes its diameter', 
   await page.getByTestId('size-side').fill('24');
   await page.getByTestId('size-side').press('Enter');
   await expect(circle).toHaveAttribute('r', '12');
+  if (stalled) {
+    // All edits above completed with both identity responses still withheld.
+    expect(identityReads).toBe(2);
+    const labs = page.waitForResponse(r => new URL(r.url()).pathname === '/v1/labs');
+    releaseIdentity();
+    await labs;
+  }
   expect(unexpected).toEqual([]);
 });

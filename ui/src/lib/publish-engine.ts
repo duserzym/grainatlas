@@ -1,5 +1,6 @@
 import { idempotentWrite } from './idempotency.ts';
 import { fetchWithDeadline } from './http.ts';
+import { oversightSession, serverFetch, ServerReadOnlyError } from './oversight.ts';
 import { publishAtlas, type AtlasPublishOut } from './upbdb.ts';
 import type { AtlasJson } from './remote';
 
@@ -52,9 +53,9 @@ export function resumablePublishing(server: string, token: string | null): Promi
   if (!value) {
     value = (async () => {
       try {
-        const r = await fetchWithDeadline(`${server}/v1/assets/check`, { method: 'POST', headers: {
+        const r = await serverFetch(`${server}/v1/assets/check`, { method: 'POST', headers: {
           'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        }, body: '{"sha256":[]}' });
+        }, body: '{"sha256":[]}' }, undefined, fetchWithDeadline);
         if (r.status === 200) return true;
         if ([404, 405, 501].includes(r.status)) return false;
         throw await failure(r);
@@ -82,6 +83,7 @@ export interface PublishOptions {
 }
 /** One immutable manifest and keys per job. Credentials never enter draft storage. */
 export async function uploadImages(o: PublishOptions): Promise<AtlasPublishOut> {
+  if (oversightSession.readOnly) throw new ServerReadOnlyError('Viewing as someone else is read-only.');
   const { bundle, token, server, mount } = o;
   let job = { ...o.job };
   const wait = o.wait ?? waitFor;
@@ -92,16 +94,17 @@ export async function uploadImages(o: PublishOptions): Promise<AtlasPublishOut> 
       await o.gate();
       await o.checkpoint?.();
       try {
-        const fetchRequest = (id?: string) => fetchWithDeadline(`${server}${path}`, { ...init, body, headers: {
+        const fetchRequest = (id?: string) => serverFetch(`${server}${path}`, { ...init, body, headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init.headers as Record<string, string>),
           ...(id ? { 'Idempotency-Key': id } : {}),
-        } });
+        } }, bundle.atlas.project_id, fetchWithDeadline);
         const send = (id?: string) => init.method === 'PUT' ? uploadSlot(async () => { await o.gate(); return fetchRequest(id); }) : fetchRequest(id);
         const partKey = (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'];
         const r = key || partKey ? await idempotentWrite(send, { key: key ? job[key] : partKey, keyChanged: key ? async id => { save({ [key]: id }); await o.checkpoint?.(); } : undefined, wait }) : await send();
         if (r.ok || r.status === 304 || r.status === 308) return r;
         throw await failure(r);
       } catch (error) {
+        if (error instanceof ServerReadOnlyError) throw error;
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
         const e = error instanceof PublishError ? error : new PublishError(0, '', String(error));
         if (!e.transient || attempt >= 2) throw e;
@@ -121,6 +124,7 @@ export async function uploadImages(o: PublishOptions): Promise<AtlasPublishOut> 
         return publishAtlas(server, token, mount, bundle.atlas.project_id, bundle.zip, job.zip_key, job.replace_current, async key => { save({ zip_key: key }); await o.checkpoint?.(); }, job.start_key);
       }); }
       catch (error) {
+        if (error instanceof ServerReadOnlyError) throw error;
         const raw = error as { status?: number; code?: string; retryAfter?: number; raw?: string };
         const e = new PublishError(raw.status ?? 0, raw.code ?? '', raw.raw ?? String(error), raw.retryAfter);
         if (e.code === 'replace_confirm') { save({ decision: 'ask' }); throw e; }

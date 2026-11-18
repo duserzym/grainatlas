@@ -4,6 +4,9 @@
   import { screenEnabled } from './lib/screens';
   import { grainNumber } from './lib/grain-lineage';
   import { onMount, tick, untrack } from 'svelte';
+  import { authToken } from './lib/atlas';
+  import { oversightSession } from './lib/oversight';
+  import { oversight, onOversight } from '@lab/bridge';
   import { presentation } from './lib/presentation';
   import { appStorage } from './lib/app-storage';
   import VersionChip from './components/VersionChip.svelte';
@@ -341,6 +344,13 @@
     const unwatch = watchTheme();
     const undo: (() => void)[] = [];
     undo.push(startScheduler());
+    const authWatch = setInterval(() => void authToken().catch(() => {}), 5000);
+    undo.push(() => clearInterval(authWatch));
+    if (isHosted()) {
+      let received = false;
+      undo.push(onOversight(value => { received = true; oversightSession.set(value); }));
+      void oversight().then(value => { if (!received) oversightSession.set(value); }).catch(() => {});
+    }
     if (desktop) {
       if (!isHosted()) {
         void (async () => {
@@ -531,7 +541,12 @@
   {#if syncDetailsOpen && app.project}<SyncDetails />{/if}
   </div>{/if}
 
-  <main>
+  <main class:has-oversight={oversightSession.readOnly || !!oversightSession.owner(app.server, app.project?.uuid)}>
+    {#if oversightSession.state?.viewAs}
+      <div class="glass panel session-banner" role="status" data-testid="view-as-banner">Viewing as {oversightSession.state.viewAs.name} (read-only)</div>
+    {:else if oversightSession.owner(app.server, app.project?.uuid)}
+      <div class="glass panel session-banner" role="status" data-testid="on-behalf-banner">Editing on behalf of {oversightSession.owner(app.server, app.project?.uuid)}</div>
+    {/if}
     {#if !isViewer && (app.notice || app.error || (app.storageWarning && hiddenStorageWarning !== app.storageWarning))}
       <div class="notices" use:publishNoticeBottom>
         {#if app.storageWarning}
@@ -696,6 +711,8 @@
     min-height:0;
     overflow:hidden;
   }
+  main.has-oversight { grid-template-rows:auto minmax(0, 1fr); }
+  .session-banner { padding:var(--space-2) var(--space-4); margin:0 var(--space-2) var(--space-2); border-color:var(--accent); }
   .screen { position:relative; min-height:0; min-width:0; overflow:hidden; }
   .screen.pixels-loading { display:grid; grid-template-rows:auto minmax(0,1fr); }
   .notices {

@@ -1,4 +1,5 @@
 import { flushWrites } from './deferred-writes';
+import { oversightSession } from './oversight';
 import { canWrite } from './presentation';
 import { chooseOpenTab, existingProject } from './open-target';
 import type { AtlasMode, AtlasResultCode, CommandResult } from '@lab/bridge';
@@ -66,6 +67,7 @@ export async function leaveEdit(app: AppState, decision: 'sync' | 'keep-draft' |
   flushWrites();
   await app.sync.settled();
   if (app.readOnly) return result(app);
+  if (decision === 'sync' && oversightSession.readOnly) return fail('unauthorized', 'Viewing as someone else is read-only.');
   if (decision === 'sync') {
     await app.sync.sync(false, shellCommand);
     if (app.sync.confirmation || app.sync.validationFailed || app.sync.dialog === 'review' || app.sync.unsynced || app.sync.reachable !== true) return failure(app);
@@ -131,6 +133,7 @@ async function draftTab(uuid: string): Promise<AppState | null> {
   return tab;
 }
 export async function runHostedCommand(cmd: AtlasCommand): Promise<Partial<CommandResult> | void> {
+  if (oversightSession.readOnly && cmd.type === 'sync-draft') return fail('unauthorized', 'Viewing as someone else is read-only.');
   if (!canWrite() && !['report-status', 'atlas-synced', 'open-project'].includes(cmd.type)) return fail('failed', 'This viewer is read-only.');
   if (cmd.type === 'report-status') { reportHostedStatus(current(), true); hostedSync.drafts(listDrafts(current().server), true); return; }
   if (cmd.type === 'atlas-synced') {

@@ -1,6 +1,7 @@
 import { fetchWithTimeout, HttpNetworkError, readBodyText } from './http.ts';
 import { syncCache } from './sync-cache.ts';
 import { idempotentWrite, type WriteIdentity } from './idempotency.ts';
+import { oversightSession, serverFetch, ServerReadOnlyError } from './oversight.ts';
 import { canWrite, requireWrite } from './presentation.ts';
 /** UPbDB B1 wire contract (docs/atlas-sync.md). */
 import type { Project } from './core/types';
@@ -146,19 +147,21 @@ export class SyncApi {
   private token: string | null;
   private access: string | null;
   constructor(server: string, token: string | null, access: string | null = null) { this.server = server; this.token = token; this.access = access; }
-  private async call(path: string, init: RequestInit = {}, identity: WriteIdentity = {}): Promise<Response> {
+  private async call(path: string, init: RequestInit = {}, identity: WriteIdentity = {}, project?: string): Promise<Response> {
     if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
     const url = new URL(this.server + path);
     if (this.access && !init.method) url.searchParams.set('access', this.access);
+    const viewAs = oversightSession.state?.viewAs;
+    if (viewAs) url.searchParams.set('as', viewAs.username);
     const cache = syncCache(this.server, this.token, this.access);
     const cacheable = !init.method || init.method === 'GET';
     const cached = cacheable ? cache.get(url.href) : undefined;
     let r: Response;
     try {
-      const send = (key?: string) => fetchWithTimeout(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(cached ? { 'If-None-Match': cached.etag } : {}), ...(init.headers ?? {}), ...(key ? { 'Idempotency-Key': key } : {}) } });
+      const send = (key?: string) => serverFetch(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(cached ? { 'If-None-Match': cached.etag } : {}), ...(init.headers ?? {}), ...(key ? { 'Idempotency-Key': key } : {}) } }, project, fetchWithTimeout);
       r = init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase()) ? await idempotentWrite(send, identity) : await send();
     }
-    catch (e) { if (e instanceof SyncApiError) throw e; console.warn(`Database request ${path} failed:`, e); throw new SyncNetworkError(errorSentence(0, null)); }
+    catch (e) { if (e instanceof SyncApiError || e instanceof ServerReadOnlyError) throw e; console.warn(`Database request ${path} failed:`, e); throw new SyncNetworkError(errorSentence(0, null)); }
     // Read the reply here: a body lost mid-read is a network failure (a write may have landed,
     // so the retry keeps its key), never a raw TypeError in a caller. Replies are small JSON.
     if (r.status !== 204 && r.status !== 304) {
@@ -217,7 +220,7 @@ export class SyncApi {
     return r.json();
   }
   async link(uuid: string, mount: string): Promise<ProjectStatus> {
-    const r = await this.call(`/v1/atlas/projects/${encodeURIComponent(uuid)}/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mount_id: mount, make_current: false }) });
+    const r = await this.call(`/v1/atlas/projects/${encodeURIComponent(uuid)}/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mount_id: mount, make_current: false }) }, {}, uuid);
     if (r.status === 409) throw new SyncApiError(409, ['This project is linked to another mount']);
     if (!r.ok) throw new Error(`Link: ${r.status}`);
     return r.json();
@@ -235,7 +238,7 @@ export class SyncApi {
   /** `requestId` (never for a dry run) lets the server answer a retried request with its stored reply. */
   async sync(mount: string, body: SyncBody, requestId?: string, keyChanged?: WriteIdentity['keyChanged'], wireRequestId = requestId): Promise<SyncReply> {
     requireWrite();
-    const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...syncWireBody(body), ...(wireRequestId && !body.dry_run ? { request_id: wireRequestId } : {}) }) }, { key: requestId, keyChanged });
+    const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...syncWireBody(body), ...(wireRequestId && !body.dry_run ? { request_id: wireRequestId } : {}) }) }, { key: requestId, keyChanged }, body.project_uuid);
     if (r.status !== 200 && r.status !== 409) throw new SyncApiError(r.status, [errorSentence(r.status, null)]);
     const reply = await r.json();
     if (r.status === 409 && !Array.isArray(reply?.changes)) {

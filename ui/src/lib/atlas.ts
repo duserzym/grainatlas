@@ -1,3 +1,5 @@
+import { observeServerToken } from './mount-browser';
+import { oversightSession } from './oversight';
 import { neutralTone, storedBundleTones } from './bundle-tone';
 import { canWrite } from './presentation';
 import { keepPrintEdits } from './strip-edit';
@@ -6,7 +8,7 @@ import { keepPrintEdits } from './strip-edit';
 // and the desktop app); this file only moves them.
 
 import { beforeCheckedAction } from './checks';
-import { token as shellToken } from '@lab/bridge';
+import { isHosted, token as shellToken } from '@lab/bridge';
 import type { BundleOptions, Project, Published } from './core/types';
 import { download } from './files';
 import { normalizeServer, type AtlasPublishOut } from './upbdb';
@@ -25,13 +27,14 @@ export function bundleOptions(p: Project, app: AppState = current()): BundleOpti
 
 /** The bearer token: the shell's when hosted, else the one pasted in Settings. */
 export async function authToken(app: AppState = current(), server: string | null = app.remote?.server ?? app.server): Promise<string | null> {
+  const observed = (token: string | null) => { observeServerToken(server, token); return token; };
   try {
     const t = await shellToken();
-    if (t) return t;
+    if (t || isHosted()) return observed(t);
   } catch {
     /* not hosted */
   }
-  return app.sessionToken && normalizeServer(app.sessionServer) === normalizeServer(server) ? app.sessionToken : app.link.token.trim() || null;
+  return observed(app.sessionToken && normalizeServer(app.sessionServer) === normalizeServer(server) ? app.sessionToken : app.link.token.trim() || null);
 }
 
 /** Entries of a STORE-only zip (what the core writes). */
@@ -142,7 +145,7 @@ export async function backgroundBundle(app: AppState, projectUuid: string | unde
 
 /** Explicit Publish shares the engine and success handling with quiet publishing. */
 export async function publish(app: AppState = current(), projectUuid = app.sync.draft?.linked_uuid) {
-  if (!canWrite() || !(await beforeCheckedAction(app, 'publish'))) return;
+  if (oversightSession.readOnly || !canWrite() || !(await beforeCheckedAction(app, 'publish'))) return;
   await app.sync.publishImages(projectUuid);
 }
 

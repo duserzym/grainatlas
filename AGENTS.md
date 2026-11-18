@@ -84,7 +84,8 @@ makes to it follows these rules:
   `X-Next-Cursor` cursor; show the first page at once and load more on demand.
 - **Revalidate, do not re-download.** Keep the `ETag` of each list or detail
   and send `If-None-Match`; a 304 means the cached copy is current. Cache per
-  account and server, and clear it on sign-out.
+  account and server. Sign-out hides the mirror and keeps it and unsynced work
+  (UPbDB ADR-0012 supersedes the earlier clear-on-sign-out rule).
 - **Never block the interface on a download.** Fetch progressively, show what
   has arrived, and keep the app usable while the rest loads.
 - **Time out on stalls, not on size.** Use a short connect timeout and a stall

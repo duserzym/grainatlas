@@ -2,12 +2,15 @@ import { downloadFile } from './file-transfer.ts';
 import type { Remote } from './remote';
 import { atlasUrl } from './upbdb.ts';
 import { imageCache } from './tile-cache.ts';
+import { oversightSession } from './oversight.ts';
 
 type Address = Pick<Remote, 'server' | 'projectId' | 'token' | 'access' | 'version'>;
 export function fileRequest(r: Address, path: string): [string, RequestInit] {
   const query = new URLSearchParams();
   if (r.version !== undefined) query.set('version', String(r.version));
   if (r.access) query.set('access', r.access);
+  const viewAs = oversightSession.state?.viewAs;
+  if (viewAs) query.set('as', viewAs.username);
   const suffix = query.size ? `?${query}` : '';
   return [atlasUrl(r.server, r.projectId, path) + suffix, {
     cache: r.version === undefined ? 'no-cache' : 'default',
