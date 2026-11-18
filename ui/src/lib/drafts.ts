@@ -28,6 +28,7 @@ export interface Draft {
   /** The sync request awaiting a reply: a retry of the same body reuses its id. */
   /** Last lightweight revision check. This never acknowledges local edits. */
   checked_at?: string; server_revision?: number; server_can_edit?: boolean;
+  publish_job?: import('./publish-engine').PublishJob | null;
   pending_request?: import('./sync-api').PendingRequest | null;
 }
 export type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'length' | 'key'>>;

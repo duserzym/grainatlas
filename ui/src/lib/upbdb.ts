@@ -132,6 +132,9 @@ export function resolveServer(override: string | null, configured: string): stri
 }
 
 export class ApiError extends Error {
+  code = '';
+  raw = '';
+  retryAfter = 0;
   status: number;
   constructor(status: number, message: string) {
     super(message);
@@ -148,6 +151,14 @@ async function failure(r: Response, what: string): Promise<ApiError> {
   } catch {
     /* no body */
   }
+  const problem = body as { code?: string; detail?: { code?: string } } | null;
+  const decorate = (error: ApiError) => {
+    error.code = problem?.code ?? problem?.detail?.code ?? '';
+    error.raw = raw;
+    const after = r.headers.get('Retry-After');
+    error.retryAfter = after ? (Number.isFinite(Number(after)) ? Number(after) * 1000 : Math.max(0, Date.parse(after) - Date.now())) : 0;
+    return error;
+  };
   // Raw status and body go to the console; people get one sentence.
   console.warn(`${what}: ${r.status} ${r.statusText}`, raw.slice(0, 2000));
   if (r.status === 409 || r.status === 422) {
@@ -156,21 +167,21 @@ async function failure(r: Response, what: string): Promise<ApiError> {
       const message = d && typeof d === 'object' ? (d as { msg?: unknown }).msg : d;
       return typeof message === 'string' ? message.trim() : '';
     }).filter(Boolean);
-    if (messages.length) return new ApiError(r.status, `${what}: ${messages.join('; ')}`);
+    if (messages.length) return decorate(new ApiError(r.status, `${what}: ${messages.join('; ')}`));
   }
-  return new ApiError(r.status, `${what}: ${errorSentence(r.status, body)}`);
+  return decorate(new ApiError(r.status, `${what}: ${errorSentence(r.status, body)}`));
 }
 
 function headers(token: string | null, extra: Record<string, string> = {}): Record<string, string> {
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
 }
 
-async function call<T>(base: string, path: string, token: string | null, init: RequestInit, what: string): Promise<T> {
+async function call<T>(base: string, path: string, token: string | null, init: RequestInit, what: string, keyChanged?: (key: string) => void | Promise<void>): Promise<T> {
   if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
   let r: Response;
   try {
     const send = (key?: string) => fetchWithDeadline(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined), ...(key ? { 'Idempotency-Key': key } : {}) } });
-    r = init.method === 'POST' ? await idempotentWrite(send, { key: new Headers(init.headers).get('Idempotency-Key') ?? undefined }) : await send();
+    r = init.method === 'POST' ? await idempotentWrite(send, { key: new Headers(init.headers).get('Idempotency-Key') ?? undefined, keyChanged }) : await send();
   } catch (e) {
     console.warn(`${what}: cannot reach ${base}`, e);
     throw new ApiError(0, databaseOfflineMessage);
@@ -215,14 +226,16 @@ export interface AtlasPublishOut {
   [k: string]: unknown;
 }
 
-export async function publishAtlas(base: string, token: string | null, mountId: string, projectId: string, zip: Uint8Array, key = crypto.randomUUID()): Promise<AtlasPublishOut> {
-  const form = new FormData();
-  form.append('bundle', new Blob([zip as BlobPart], { type: 'application/zip' }), `${projectId}.atlas.zip`);
-  // Encode once: fetch(FormData) would choose a new multipart boundary on every retry.
-  const encoded = new Response(form);
-  const body = await encoded.blob();
+export async function publishAtlas(base: string, token: string | null, mountId: string, projectId: string, zip: Uint8Array, key: string = crypto.randomUUID(), replaceCurrent = false, keyChanged?: (key: string) => void | Promise<void>, boundaryKey = key): Promise<AtlasPublishOut> {
+  // A stable boundary preserves the exact request after a quit as well as an in-memory retry.
+  const boundary = `grainatlas-${boundaryKey}`;
+  const body = new Blob([
+    `--${boundary}\r\nContent-Disposition: form-data; name="bundle"; filename="${encodeURIComponent(projectId)}.atlas.zip"\r\nContent-Type: application/zip\r\n\r\n`,
+    zip as BlobPart,
+    `\r\n--${boundary}\r\nContent-Disposition: form-data; name="replace_current"\r\n\r\n${replaceCurrent}\r\n--${boundary}--\r\n`,
+  ], { type: `multipart/form-data; boundary=${boundary}` });
   return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/atlas`, token, { method: 'POST', body,
-    headers: { 'Idempotency-Key': key, 'Content-Type': encoded.headers.get('Content-Type')! } }, 'Publishing the atlas');
+    headers: { 'Idempotency-Key': key, 'Content-Type': body.type } }, 'Publishing the atlas', keyChanged);
 }
 
 /** URL of a file of a published bundle. */

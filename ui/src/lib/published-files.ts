@@ -1,3 +1,4 @@
+import { downloadFile } from './file-transfer.ts';
 import type { Remote } from './remote';
 import { atlasUrl } from './upbdb.ts';
 import { imageCache } from './tile-cache.ts';
@@ -31,9 +32,7 @@ export async function publishedFile(remote: Remote, path: string, signal?: Abort
     const controller = new AbortController();
     const promise = imageCache.load(hash, async () => {
       controller.signal.throwIfAborted();
-      const response = await fetch(url, { ...init, signal: controller.signal });
-      if (!response.ok) throw new Error(`Published file ${path}: ${response.status}`);
-      return response.arrayBuffer();
+      return downloadFile(url, init, controller.signal);
     });
     job = { promise, controller, users: 0 };
     pending.set(key, job);
@@ -56,4 +55,13 @@ export async function publishedFile(remote: Remote, path: string, signal?: Abort
       if (pending.get(key) === active) pending.delete(key);
     }
   }
+}
+
+/** Abort old readers before clearing bytes so a signed-out request cannot refill the cache. */
+export async function clearPublishedFiles() {
+  const active = [...pending.values()];
+  for (const job of active) job.controller.abort();
+  pending.clear();
+  await Promise.allSettled(active.map(job => job.promise));
+  await imageCache.clear();
 }

@@ -7,7 +7,9 @@ import { canWrite } from './presentation';
 import { hostedSync } from './hosted-sync';
 import type { AtlasSyncConfirmation } from '@lab/bridge';
 import type { AppState } from './store.svelte';
-import { authToken, publish } from './atlas';
+import { authToken, publish, performPublish } from './atlas';
+import { PublishError, waitFor, type PublishJob } from './publish-engine';
+import { imagesMayRun } from './image-idle';
 import { SyncApi, SyncApiError, SyncNetworkError, lineageFailureMessage, changesFromEvents, problemSummary, requestIdFor, syncWireBody, type Candidate, type ProjectStatus, type SyncBody } from './sync-api';
 import { canonicalJson } from './sync-hash';
 import { notifyUpbLab } from './upblab-notice';
@@ -78,7 +80,7 @@ export class SyncSession {
     this.dialog = 'stale'; this.pendingSync = false; this.automatic.cancel();
     return true;
   }
-  dialog = $state<'register' | 'review' | 'pixels' | 'bulk' | 'stale' | null>(null);
+  dialog = $state<'register' | 'review' | 'pixels' | 'bulk' | 'stale' | 'replace-images' | null>(null);
   confirmation = $state.raw<AtlasSyncConfirmation | null>(null);
   private heldSync: HeldSync | null = null;
   showConfirmation() { if (this.heldSync && this.heldSync.identity === this.identity && !this.app.readOnly) this.dialog = 'bulk'; }
@@ -212,11 +214,12 @@ export class SyncSession {
     return !this.disposed && canWrite() && !isHosted() && !this.app.hosted && this.app.link.syncAutomatically !== false
       && this.ready && !this.app.readOnly && !!this.draft?.mount
       && (this.registered === true && this.status?.can_edit === true || !!this.draft?.server_can_edit && !!this.draft?.pending_request)
-      && !this.staleOpen && !this.confirmation && !this.review && !this.dialog && !this.held.length && !this.intentFailure
+      && !this.staleOpen && !this.imageDecision && !this.confirmation && !this.review && !this.dialog && !this.held.length && !this.intentFailure
       && !this.draft?.link_conflict && !(this.error && this.reachable !== false);
   }
   get backgroundPending() { return this.automaticEnabled && (!!this.draft?.pending_request || !!this.cachedSyncStatus?.elements || this.pendingSync); }
   refreshAutomatic() {
+    this.refreshImages();
     if (!this.backgroundPending) { this.automatic.cancel(); return; }
     if (!this.busy) {
       if (this.reachable === false) this.automatic.retry();
@@ -224,10 +227,11 @@ export class SyncSession {
     }
   }
   wakeAutomatic() {
+    if (this.imagePending) { this.imageTimer.wake(); return true; }
     if (this.backgroundPending) { if (!this.busy) this.automatic.wake(); return true; }
     return false;
   }
-  dispose() { this.disposed = true; this.automatic.cancel(); }
+  dispose() { this.disposed = true; this.automatic.cancel(); this.imageTimer.cancel(); }
   private async runAutomatic() {
     if (!this.backgroundPending || this.busy) return;
     await this.runQuietSync();
@@ -237,6 +241,133 @@ export class SyncSession {
     this.automaticRunning = true;
     try { await this.sync(); }
     finally { this.automaticRunning = false; }
+  }
+  imageBusy = $state(false);
+  imageProgress = $state.raw<{ done: number; total: number } | null>(null);
+  imageError = $state('');
+  private imageOffline = $state(false);
+  private imageRetryAfter = 0;
+  private lastImageEdit = Date.now();
+  private imageEdits = 0;
+  private imageRun: Promise<void> | null = null;
+  private imageTimer = new BackgroundSync(() => { void this.publishImages(undefined, true); }, Math.random, 10_000);
+  get imageDecision() { return this.draft?.publish_job?.decision === 'ask'; }
+  private get imagePending() {
+    return this.automaticEnabled && this.reachable === true && !this.knownUnreachable && !this.backgroundPending && !this.busy && !this.imageBusy
+      && (this.pixelsChanged || !!this.draft?.publish_job?.result) && this.pixelKey !== null && !this.app.pixelsLoad && !this.imageDecision
+      && !(this.draft?.publish_job?.decision === 'keep' && this.draft.publish_job.pixels_key === this.pixelKey);
+  }
+  private imageGates(foreground: boolean) {
+    return {
+      elementsIdle: foreground || !this.busy && !this.backgroundPending,
+      attention: !!this.staleOpen || !!this.confirmation || !!this.review || !!this.dialog || !!this.app.checkPrompt || !!this.app.renamePrompt
+        || !!this.app.leaveEditPrompt || !!this.app.storedCopy || !!this.app.offer || !!this.app.pendingLoose
+        || typeof document !== 'undefined' && !!document.querySelector('dialog[open]'),
+      visible: typeof document === 'undefined' || document.visibilityState !== 'hidden',
+      loading: !!this.app.pixelsLoad || !!this.app.busy || this.app.rendering > 0 || Object.values(this.app.liveBusy).some(Boolean),
+    };
+  }
+  /** Called at the edit itself, before the deferred write, so timers cannot race a paint. */
+  imagesEdited() {
+    this.lastImageEdit = Date.now(); this.imageEdits++;
+    if (!this.imageBusy) this.imageTimer.cancel();
+  }
+  private refreshImages() {
+    if (!this.imagePending) { this.imageTimer.cancel(); return; }
+    if (this.imageOffline) this.imageTimer.retry(this.imageRetryAfter);
+    else this.imageTimer.ensure();
+  }
+  private imageCheckpoint = '';
+  savePublishJob(job: PublishJob | null) { this.save({ publish_job: job }); }
+  async persistPublishJob() {
+    const job = this.draft?.publish_job;
+    if (!job) throw new DOMException('Image publishing stopped', 'AbortError');
+    const key = JSON.stringify([job.server, job.mount, job.account, job.atlas_sha256, job.upload_id, job.start_key, job.commit_key, job.zip_key, job.replace_current, job.completed_at]);
+    if (key === this.imageCheckpoint) return;
+    flushWrites();
+    if (!this.draft || !await appStorage.trackDurable(this.app, 'draft', () => writeDraft(this.draft!))) {
+      throw new PublishError(422, 'storage', 'The image upload could not be saved on this computer. Free some space, then try again.');
+    }
+    this.imageCheckpoint = key;
+  }
+  showImageDecision() { if (this.imageDecision) this.dialog = 'replace-images'; }
+  keepImages() {
+    const job = this.draft?.publish_job;
+    if (!job) return;
+    this.savePublishJob({ ...job, decision: 'keep', pixels_key: this.pixelKey });
+    this.imageOffline = false; this.imageError = ''; this.imageTimer.reset();
+    this.dialog = null;
+    this.refreshAutomatic();
+  }
+  async replaceImages() {
+    const job = this.draft?.publish_job;
+    if (!job || !canWrite() || this.app.readOnly) return;
+    this.savePublishJob({ ...job, decision: undefined, replace_current: true, upload_id: undefined,
+      start_key: crypto.randomUUID(), commit_key: crypto.randomUUID(), zip_key: crypto.randomUUID() });
+    this.dialog = null;
+    await this.publishImages();
+  }
+  async imagesPublished(projectUuid: string, valid: () => boolean = () => true, gate: () => Promise<void> = async () => {}) {
+    const identity = this.identity;
+    await gate();
+    const api = await this.api();
+    // Keep the job until the published base has been read: a failed refresh resumes/replays commit.
+    const published = await api.publishedProject(projectUuid);
+    if (!this.isCurrent(identity) || !valid()) return;
+    if (published) this.save({ pixels_base: pixelSignature(published) });
+    await gate();
+    const status = await api.lookup(projectUuid);
+    if (!this.isCurrent(identity) || !valid()) return;
+    this.setStatus(status);
+    this.savePublishJob(null);
+    this.track(false);
+    if (this.status) this.syncedNotice(this.status.revision, { spots: 0, grains: 0, labels: 0 }, true);
+  }
+  async publishImages(projectUuid = this.draft?.linked_uuid, background = false): Promise<void> {
+    if (this.imageRun) return this.imageRun;
+    if (this.staleOpen) { if (!background) this.showStaleOpen(); return; }
+    if (background && !this.imagePending || !canWrite() || this.app.readOnly || !this.ready) return;
+    if (background && !imagesMayRun(this.lastImageEdit, Date.now(), this.imageGates(false))) { this.imageTimer.ensure(); return; }
+    const identity = this.identity;
+    const scope = () => JSON.stringify([this.identity, this.app.project?.upbdb.mount_id, this.app.remote?.server ?? this.draft?.server ?? this.app.server, this.app.link.token, this.app.sessionToken]);
+    const startedScope = scope();
+    const startedEdits = this.imageEdits;
+    const sameProject = () => !this.disposed && this.isCurrent(identity) && scope() === startedScope;
+    this.imageBusy = true; this.imageProgress = null; this.imageError = ''; this.imageTimer.cancel();
+    const gate = async (idle = true) => {
+      for (;;) {
+        if (!sameProject() || !canWrite() || this.app.readOnly) throw new DOMException('Image publishing stopped', 'AbortError');
+        // Recheck between every request and retry, including a resumed job.
+        if (this.staleOpen || background && (this.reachable !== true || this.knownUnreachable)) throw new DOMException('Image publishing paused', 'AbortError');
+        if (!idle || imagesMayRun(background || this.imageEdits !== startedEdits ? this.lastImageEdit : -Infinity, Date.now(), this.imageGates(!background))) return;
+        await waitFor(500);
+      }
+    };
+    this.imageRun = (async () => {
+      try {
+        await performPublish(this.app, projectUuid, gate, sameProject);
+        if (sameProject()) { this.imageOffline = false; this.imageTimer.reset(); }
+      } catch (error) {
+        if (!sameProject() || error instanceof DOMException && error.name === 'AbortError') return;
+        const e = error as { code?: string; status?: number; retryAfter?: number };
+        if (e.code === 'replace_confirm') this.showImageDecision();
+        else {
+          this.imageError = error instanceof Error ? error.message : String(error);
+          // Image failures stay quiet and retry; only replacement requires an attention decision.
+          this.imageOffline = error instanceof PublishError ? error.transient : !e.status || e.status >= 500 || e.status === 429;
+          this.imageRetryAfter = e.retryAfter ?? 0;
+          if (background && this.imageOffline) {
+            this.reachable = false;
+            const server = this.app.remote?.server ?? this.draft?.server ?? this.app.server;
+            if (server) unreachableAt.set(server, Date.now());
+          }
+        }
+      } finally {
+        this.imageBusy = false; this.imageRun = null;
+        if (sameProject()) this.refreshAutomatic();
+      }
+    })();
+    return this.imageRun;
   }
   private idleWaiters: (() => void)[] = [];
   async settled() { flushWrites(); while (this.busy) await new Promise<void>(resolve => this.idleWaiters.push(resolve)); }
@@ -306,6 +437,9 @@ export class SyncSession {
     return syncState({ firstSync: this.firstSync, serverChanged, registered: this.registered, reachable: this.reachable, baseRevision: this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null, serverRevision: this.elementsRevision ?? this.status?.revision ?? null, localChanges: this.cachedSyncStatus?.elements ?? hasChanges(this.counts), pixelsChanged: this.pixelsChanged }); }
   get detailText(): string {
     if (this.staleOpen) return 'Needs your attention';
+    if (this.imageDecision) return 'Choose whether to replace the current images';
+    if (this.imageBusy) return this.imageProgress ? `Syncing images… ${this.imageProgress.done} of ${this.imageProgress.total} files` : 'Syncing images…';
+    if (this.imageError) return this.imageError;
     if (this.confirmation) return 'Needs confirmation';
     if (this.draft?.link_conflict) return 'This project is linked to another mount';
     if (this.intentFailure) return `Local changes · ${this.intentFailure}`;
@@ -316,11 +450,15 @@ export class SyncSession {
     return chipText(this.state, this.counts, this.status?.atlas_version ?? null, this.status?.revision ?? null, this.pixelsChanged, this.firstSync); // sync warnings show in the notice bar and the details drawer, not the pill
   }
   get text() {
-    return plainSyncStatus(this.draft ? { ...this.draft, held_back: this.held } : null, { pending: !!this.cachedSyncStatus?.pending }, {
+    const text = plainSyncStatus(this.draft ? { ...this.draft, held_back: this.held } : null, { pending: !!this.cachedSyncStatus?.pending }, {
       busy: this.busy, reachable: this.reachable, error: !!this.error,
       attention: !!this.staleOpen || !!this.confirmation || !!this.review || !!this.intentFailure || !!this.held.length,
       serverRevision: this.draft?.server_revision ?? this.status?.revision, checked: this.reachable === true && !!this.status,
     });
+    if (this.imageDecision || text === 'Needs your attention') return 'Needs your attention';
+    if (this.imageBusy && !this.busy) return 'Syncing images…';
+    if (this.imageOffline && !this.busy) return 'Offline, will sync later';
+    return text;
   }
   get registeredSpotConflict() {
     return this.review?.merge.differences.some(d => d.collision && d.kind === 'spots' &&
@@ -371,6 +509,7 @@ export class SyncSession {
     const status = draftSyncStatus(this.draft, undefined, { changes: this.counts, pixelsKey: this.pixelKey });
     this.storedSyncStatus = { pixels: status.pixels, unlinked: status.unlinked };
     this.save({ changes, pending, pending_at: pending ? now : null, ...(this.pixelKey !== null ? { pixels_key: this.pixelKey } : {}), pixels_changed: status.pixels, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
+    if (edited) this.imagesEdited();
     if (edited && this.backgroundPending && !this.busy) this.automatic.edit();
   }
   /** Every opening path calls this before returning. Later polling never replaces the base. */
@@ -381,7 +520,7 @@ export class SyncSession {
     const identity = this.identity;
     if (!p || this.busy || this.app.loadingProject || this.app.storedCopy) return;
     if (p.uuid !== this.uuid) {
-      this.automatic.reset(); this.pendingSync = false;
+      this.automatic.reset(); this.imageTimer.reset(); this.imageError = ''; this.imageOffline = false; this.pendingSync = false;
       this.uuid = p.uuid; this.suppressDraft = false; this.confirmation = null; this.heldSync = null;
       const previous = listDrafts(this.app.remote?.server ?? this.app.server).find(d => d.uuid === p.uuid) ?? readDraft(p.uuid);
       const fresh = !previous;
@@ -522,6 +661,7 @@ export class SyncSession {
     if (!canWrite()) return;
     if (this.busy || this.syncDisabledReason) return;
     if (this.staleOpen) { this.showStaleOpen(); return; }
+    if (this.imageDecision) { this.showImageDecision(); return; }
     if (this.confirmation) { this.showConfirmation(); return; }
     if (this.state === 'offline' || this.state === 'checking') { await this.check(); return; }
     if (this.state === 'unregistered') { this.dialog = 'register'; return; }
@@ -888,18 +1028,7 @@ export class SyncSession {
           this.track();
           if (this.app.draftHere != null && !this.unsynced) this.app.draftHere = null;
           if (publishPixels && (this.app.pkg || bundlePixels(this.app))) {
-            const before = this.app.lastPublish?.at;
             await publish(this.app);
-            if (this.app.lastPublish?.at && this.app.lastPublish.at !== before) {
-              // Only acknowledge pixels after a successful publish made by this invocation.
-              const published = await api.publishedProject(this.draft.linked_uuid ?? this.app.project.uuid);
-              if (!this.isCurrent(identity)) return;
-              if (published) this.save({ pixels_base: pixelSignature(published) });
-              this.setStatus(await api.lookup(this.draft.linked_uuid ?? this.app.project.uuid));
-              this.track();
-              // Events are snapshots (newest wins): announce the new atlas version, no element writes.
-              if (this.status) this.syncedNotice(this.status.revision, { spots: 0, grains: 0, labels: 0 }, true);
-            }
           }
           break;
         } catch (e) {

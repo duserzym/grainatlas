@@ -9,6 +9,7 @@ import { canWrite } from './presentation';
 import { isBridgeCommand } from '@lab/bridge';
 import { hostedSync, ATLAS_EVENTS } from './hosted-sync';
 import { draftElements, listDrafts, storedDraftProject } from './drafts';
+import { draftSyncStatus } from './sync-status';
 import { groupedGrains, uiSpots } from './sync';
 import type { RawImage } from './core/core';
 import type { LevelInfo, MosaicJson, Project, StitchSummary } from './core/types';
@@ -203,7 +204,9 @@ export async function editCopy(app: AppState = current()) {
   const draft = listDrafts(remote.server).find(d => d.uuid === p.uuid);
   const sameUuid = draft ? storedDraftProject(draft) : null;
   const packageCopy = savedProject(p.package.name);
-  const existing = draft?.pending === null ? null : sameUuid ?? (draft ? packageCopy : null);
+  // An image-only draft has no pending elements, but its overlay is needed to rebuild a resumable upload.
+  const imageDraft = !!draft && (!!draft.publish_job || draftSyncStatus(draft).pixels);
+  const existing = draft?.pending === null && !imageDraft ? null : sameUuid ?? (draft ? packageCopy : null);
   if (packageCopy && !sameId(packageCopy.uuid, p.uuid) && !confirm(`This computer already has a project for ${p.package.name} (${packageCopy.uuid}). Replace it with this project from the server?`)) return;
   if (app.bundle) {
     app.remote = { ...remote, readOnly: false };

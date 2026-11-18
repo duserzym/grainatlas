@@ -10,8 +10,8 @@
   let choices = $state<Record<string, Resolution>>({});
   let publishImages = $state(true);
   const session = $derived(app.sync);
-  const action = $derived(session.staleOpen ? 'Review…' : session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Get latest changes' : session.state === 'both-changed' ? session.detailText === 'Database has more' ? 'Sync now' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync now');
-  const pillState = $derived(session.text === 'Needs your attention' ? 'needs-confirmation' : session.text === 'Syncing…' ? 'checking' : session.text === 'Up to date' ? 'in-sync' : session.text === 'Offline, will sync later' ? 'offline' : 'local-changes');
+  const action = $derived(session.staleOpen ? 'Review…' : session.imageDecision ? 'Review images' : session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Get latest changes' : session.state === 'both-changed' ? session.detailText === 'Database has more' ? 'Sync now' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync now');
+  const pillState = $derived(session.text === 'Needs your attention' ? 'needs-confirmation' : session.text.startsWith('Syncing') ? 'checking' : session.text === 'Up to date' ? 'in-sync' : session.text === 'Offline, will sync later' ? 'offline' : 'local-changes');
   const text = $derived(session.text);
   const revisionTitle = $derived(session.status ? `v${session.status.atlas_version ?? '—'} r${session.status.revision}` : '');
   const title = $derived([session.detailText, session.detailText.includes(revisionTitle) ? '' : revisionTitle, app.draftHere === 'unknown' ? 'Your draft here, base not checked' : app.draftHere !== null ? `Your draft here, based on r${app.draftHere}` : '', session.syncedAt ? `Last synced ${new Date(session.syncedAt).toLocaleString()}` : '', session.syncDisabledReason || session.error].filter(Boolean).join(' · '));
@@ -31,7 +31,7 @@
 
 {#if app.project}
   <div class="sync">
-    <button class="sync-pill state-{pillState}" data-testid="sync-chip" {title} aria-busy={session.busy} aria-expanded={detailsOpen} aria-controls={detailsOpen ? 'sync-details' : undefined} onclick={() => detailsOpen = !detailsOpen}>
+    <button class="sync-pill state-{pillState}" data-testid="sync-chip" {title} aria-busy={session.busy || session.imageBusy} aria-expanded={detailsOpen} aria-controls={detailsOpen ? 'sync-details' : undefined} onclick={() => detailsOpen = !detailsOpen}>
       <svg class:spinning={pillState === 'checking'} viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         {#if pillState === 'in-sync'}<path d="m3 8 3 3 7-7" />
         {:else if pillState === 'checking'}<path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" />
@@ -41,8 +41,8 @@
       </svg>
       <span aria-live="polite">{text}</span>
     </button>
-    {#if session.staleOpen || session.state !== 'in-sync' || session.confirmation || session.pixelsChanged}
-      <button class:primary={pillState !== 'checking' && pillState !== 'offline'} data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || app.loadingProject || (app.readOnly && session.state === 'local-changes')} onclick={() => { detailsOpen = false; void session.action(); }}>{action}</button>
+    {#if session.staleOpen || session.imageDecision || session.state !== 'in-sync' || session.confirmation || session.pixelsChanged}
+      <button class:primary={pillState !== 'checking' && pillState !== 'offline'} data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || session.imageBusy || app.loadingProject || (app.readOnly && session.state === 'local-changes')} onclick={() => { detailsOpen = false; void session.action(); }}>{action}</button>
     {/if}
   </div>
 {/if}
@@ -55,6 +55,15 @@
           {#snippet actions()}
             <button class="primary" disabled={session.busy || app.readOnly} onclick={() => session.bringBack()}>Bring them back</button>
             <button disabled={session.busy || app.readOnly} onclick={() => session.removeStale()}>Remove them</button>
+          {/snippet}
+        </SyncAttention>
+      {:else if session.dialog === 'replace-images'}
+        <SyncAttention title="Replace the current images?"
+          message="This mount already shows images from another project. Replace them with this project's images?"
+          spots="nothing; spots and grains are not changed by images.">
+          {#snippet actions()}
+            <button class="primary" onclick={() => session.keepImages()}>Keep the current images (recommended)</button>
+            <button onclick={() => session.replaceImages()}>Replace</button>
           {/snippet}
         </SyncAttention>
       {:else if session.dialog === 'bulk' && session.confirmation}

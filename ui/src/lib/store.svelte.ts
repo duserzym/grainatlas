@@ -576,6 +576,7 @@ class AppState {
   /** Keep unsaved changes per saved location, or per package for a package opened alone. */
   persist() {
     if (this.readOnly || this.loadingProject || this.storedCopy) return;
+    this.sync.imagesEdited();
     this.dirty = true;
     const uuid = this.project?.uuid;
     const path = this.projectPath?.path ?? null;

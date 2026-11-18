@@ -58,7 +58,7 @@ function readStoredZip(zip: Buffer): Map<string, Buffer> {
 }
 
 async function mockServer(page: Page, onLevelZero = () => {}, unregistered = false, beforeLevelZero: () => Promise<void> = async () => {},
-  quiet: { standalone?: boolean; failures?: number; bulk?: boolean; beforeReply?: () => Promise<void>; unresponsive?: boolean; staleCopy?: boolean } = {}) {
+  quiet: { standalone?: boolean; failures?: number; bulk?: boolean; beforeReply?: () => Promise<void>; unresponsive?: boolean; staleCopy?: boolean; images?: boolean; beforePut?: () => Promise<void> } = {}) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
@@ -109,6 +109,10 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
   const bundleRequests: { path: string; version: number }[] = [];
   let atlasVersion = 1;
   const databaseRequests: string[] = [];
+  const assets = new Map<string, Buffer>();
+  for (const f of atlas.files) assets.set(f.sha256, await readFile(path.join(generated, f.path)));
+  const imagePuts: string[] = [], imageStarts: string[] = [], imageStatuses: string[] = [], imageCommits: string[] = [];
+  const imageJobs = new Map<string, any>(), imageReplies = new Map<string, object>();
   await page.route(`${server}/**`, async route => {
     const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
     const json = (value: unknown, status = 200) => route.fulfill({ status, json: value, headers: { 'access-control-allow-origin': '*' } });
@@ -117,6 +121,42 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
       databaseRequests.push(pathname);
       // Leave the intercepted request pending: DNS resolves but no headers arrive.
       if (quiet.unresponsive) return;
+    }
+    if (pathname === '/v1/assets/check') return quiet.images ? json({ have: [] }) : json({ code: 'not_found' }, 404);
+    if (quiet.images && pathname === `/v1/mounts/${mountId}/atlas/uploads`) {
+      const key = request.headers()['idempotency-key'];
+      imageStarts.push(key);
+      const body = request.postDataJSON();
+      const id = `synthetic-upload-${key}`;
+      imageJobs.set(id, body.atlas);
+      return json({ upload_id: id, expires_at: '2099-01-01T00:00:00Z', missing: [...new Set<string>(body.atlas.files.map((f: any) => f.sha256))].filter(h => !assets.has(h)) }, 201);
+    }
+    const imageRoute = /^\/v1\/atlas\/uploads\/([^/]+)(?:\/(blobs|commit)(?:\/(.+))?)?$/.exec(pathname);
+    if (quiet.images && imageRoute) {
+      const [, id, action, hash] = imageRoute;
+      const manifest = imageJobs.get(id);
+      if (!manifest) return json({ code: 'not_found' }, 404);
+      if (action === 'blobs') {
+        imagePuts.push(hash);
+        const bytes = request.postDataBuffer()!;
+        const { createHash } = await import('node:crypto');
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(hash);
+        assets.set(hash, bytes);
+        await quiet.beforePut?.();
+        return json({ stored: true }, 201).catch(() => {}); // Reload may close a held request.
+      }
+      const missing = [...new Set<string>(manifest.files.map((f: any) => f.sha256))].filter(h => !assets.has(h));
+      if (!action) { imageStatuses.push(id); return json({ state: 'open', missing, received: manifest.files.filter((f: any) => assets.has(f.sha256)).length, total: manifest.files.length }); }
+      const key = request.headers()['idempotency-key'];
+      if (imageReplies.has(key)) return json(imageReplies.get(key));
+      if (missing.length) return json({ code: 'incomplete', missing }, 409);
+      imageCommits.push(key);
+      const files = new Map<string, Buffer>(manifest.files.map((f: any) => [f.path, assets.get(f.sha256)!]));
+      files.set('atlas.json', Buffer.from(JSON.stringify(manifest)));
+      uploads.push(files); atlasVersion++;
+      const reply = { version: atlasVersion, created: true, warnings: [] };
+      imageReplies.set(key, reply);
+      return json(reply);
     }
     if (pathname === '/v1/mounts') {
       if (request.method() === 'GET') return json(mounts);
@@ -197,7 +237,7 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
     unexpected.push(`${request.method()} ${pathname}`);
     return route.fulfill({ status: 404, json: { detail: 'Unexpected synthetic endpoint' } });
   });
-  return { project, atlas, syncBodies, syncRequests, unexpected, uploads, bundleRequests, createBodies, databaseRequests };
+  return { project, atlas, syncBodies, syncRequests, unexpected, uploads, bundleRequests, createBodies, databaseRequests, imagePuts, imageStarts, imageStatuses, imageCommits };
 }
 
 test('Canvas creates and selects a mount, and keeps duplicate-label errors in the form', async ({ page }) => {
@@ -621,4 +661,59 @@ test('quiet sync recovers the exact pending request after reloading mid-reply', 
   release();
   expect(mock.syncRequests).toHaveLength(2);
   expect(mock.syncRequests[1]).toEqual(first);
+});
+
+
+async function quietTone(page: Page) {
+  await openQuietEdit(page);
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Area', exact: true }).click();
+  await expect(page.getByTestId('low-pct')).toBeEnabled();
+  await page.getByTestId('low-pct').fill('12');
+  await expect(page.getByTestId('area-view')).toHaveAttribute('data-live', 'idle');
+}
+
+test('quiet images upload only changed tiles after idle and settle without a modal', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, images: true, beforePut: () => gate });
+  await quietTone(page);
+  const chip = page.getByTestId('sync-chip');
+  await expect(chip).toHaveText('Saved');
+  await expect(chip).toHaveText('Syncing images…', { timeout: 20000 });
+  await expect(chip).toHaveAttribute('title', /Syncing images….*files/);
+  await expect(page.getByTestId('busy')).toHaveCount(0);
+  await expect(page.getByTestId('low-pct')).toBeEnabled();
+  release();
+  await expect(chip).toHaveText('Up to date');
+  expect(mock.imageStarts).toHaveLength(1); expect(mock.imageCommits).toHaveLength(1);
+  const manifest = JSON.parse(mock.uploads[0].get('atlas.json')!.toString());
+  const previous = new Map(mock.atlas.files.map((f: any) => [f.path, f.sha256]));
+  const changed = [...new Set<string>(manifest.files.filter((f: any) => previous.get(f.path) !== f.sha256).map((f: any) => f.sha256))];
+  expect([...mock.imagePuts].sort()).toEqual(changed.sort());
+  expect(mock.syncRequests).toHaveLength(0); expect(mock.unexpected).toEqual([]);
+});
+test('quiet images resume a persisted upload after reload while a PUT is held and commit once', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, images: true, beforePut: () => gate });
+  await quietTone(page);
+  await expect.poll(() => mock.imagePuts.length).toBeGreaterThan(0);
+  // The first PUT starts only after the job ID has committed to the app's draft storage.
+  page.on('dialog', dialog => { void dialog.accept(); });
+  await openQuietEdit(page);
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Area', exact: true }).click();
+  await expect(page.getByTestId('low-pct')).toHaveValue('12');
+  release();
+  await expect(page.getByTestId('sync-chip')).toHaveText('Up to date', { timeout: 40000 });
+  expect(mock.imageStarts).toHaveLength(1);
+  expect(mock.imageStatuses.length).toBeGreaterThan(0);
+  expect(mock.imageCommits).toHaveLength(1); expect(mock.uploads).toHaveLength(1);
+  expect(mock.unexpected).toEqual([]);
+});
+test('quiet images fall back to one zip publish when the new routes are unavailable', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true });
+  await quietTone(page);
+  await expect(page.getByTestId('sync-chip')).toHaveText('Up to date', { timeout: 30000 });
+  expect(mock.uploads).toHaveLength(1); expect(mock.imagePuts).toHaveLength(0);
+  expect(mock.unexpected).toEqual([]);
 });

@@ -4,14 +4,15 @@ export class BackgroundSync {
   private failures = 0;
   private run: () => void;
   private random: () => number;
-  constructor(run: () => void, random: () => number = Math.random) { this.run = run; this.random = random; }
+  private editDelay: number;
+  constructor(run: () => void, random: () => number = Math.random, editDelay = 3000) { this.run = run; this.random = random; this.editDelay = editDelay; }
   get scheduled() { return this.timer !== undefined; }
-  edit() { this.schedule(3000); }
+  edit() { this.schedule(this.editDelay); }
   ensure() { if (!this.scheduled) this.edit(); }
-  retry() {
+  retry(after = 0) {
     if (this.scheduled) return;
     const delay = Math.min(300_000, 5000 * 2 ** Math.min(this.failures++, 6));
-    this.schedule(Math.min(300_000, delay * (0.8 + this.random() * 0.4)));
+    this.schedule(Math.max(after, Math.min(300_000, delay * (0.8 + this.random() * 0.4))));
   }
   wake() { this.cancel(); this.schedule(0); }
   reset() { this.failures = 0; this.cancel(); }

@@ -54,3 +54,20 @@ test('stopping the last reader aborts its network request; missing hashes still 
   t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([5])));
   assert.deepEqual(new Uint8Array(await publishedFile(r, 'unlisted.webp')), new Uint8Array([5]));
 });
+
+test('sign-out aborts readers and clears the image cache', async t => {
+  const { clearPublishedFiles } = await import('./published-files.ts');
+  const { imageCache } = await import('./tile-cache.ts');
+  const clear = t.mock.method(imageCache, 'clear', async () => true);
+  let began;
+  const started = new Promise(resolve => { began = resolve; });
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    began();
+    return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+  });
+  const loading = publishedFile(remote(), 'sign-out.webp');
+  const rejected = assert.rejects(loading, { name: 'AbortError' });
+  await started;
+  await clearPublishedFiles(); await rejected;
+  assert.equal(clear.mock.callCount(), 1);
+});

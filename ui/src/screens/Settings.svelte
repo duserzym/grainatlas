@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { clearPublishStatusCache } from '../lib/publish-engine';
+  import { clearPublishedFiles } from '../lib/published-files';
   import { clearSyncCache } from '../lib/sync-cache';
   import { onMount } from 'svelte';
   import { appStorage } from '../lib/app-storage';
@@ -63,6 +65,9 @@
   }
   function signOut() {
     clearSyncCache();
+    clearPublishStatusCache();
+    void clearPublishedFiles();
+    app.sessionToken = null; app.sessionServer = null;
     app.link.token = '';
     app.saveLink();
     signInText = 'Signed out on this computer.';

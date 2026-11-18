@@ -17,9 +17,9 @@ const hooks = registerHooks({
   load(url, context, next) {
     if (url.endsWith('/core/core.ts')) return { format: 'module', shortCircuit: true, source: 'export const newCore = () => Promise.resolve({}); export const isDesktop = () => false; export const isHosted = () => false;' };
     const result = next(url, context);
-    if (url.endsWith('.svelte.ts')) {
+    if (url.endsWith('.svelte.ts') || url.endsWith('/remote.ts')) {
       const source = ts.transpileModule(String(result.source), { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
-      return { format: 'module', shortCircuit: true, source: compileModule(source, { filename: new URL(url).pathname, generate: 'client' }).js.code };
+      return { format: 'module', shortCircuit: true, source: url.endsWith('.svelte.ts') ? compileModule(source, { filename: new URL(url).pathname, generate: 'client' }).js.code : source };
     }
     return result;
   },
@@ -653,4 +653,212 @@ test('renewed idempotency key is durable and keeps identical wire bytes after re
   assert.equal(writes[1].headers['Idempotency-Key'], writes[2].headers['Idempotency-Key']);
   assert.equal(writes[0].body, writes[1].body); assert.equal(writes[1].body, writes[2].body);
   assert.equal(restarted.error, ''); assert.equal(restarted.draft.pending_request, null);
+});
+
+test('image jobs use deferred draft writes, survive further tracking and restore the attention decision', async t => {
+  const { session } = quietSession('image-job-synthetic');
+  t.after(() => session.dispose());
+  const job = { server: 'https://quiet.test', mount: 'mount', account: 'synthetic-account', upload_id: 'synthetic-upload', atlas_sha256: 'manifest',
+    start_key: 'start', commit_key: 'commit', zip_key: 'zip', uploaded: 120, expires_at: '2099-01-01T00:00:00Z', exported: '2026-01-01T00:00:00Z',
+    replace_current: false, decision: 'ask', pixels_key: 'pixels' };
+  saved.length = 0;
+  session.savePublishJob(job);
+  assert.equal(saved.length, 0);
+  session.track(false); flushWrites();
+  const restored = JSON.parse(storage.get('grainatlas.draft.image-job-synthetic'));
+  assert.deepEqual(restored.publish_job, job);
+  const restarted = new SyncSession(app); app.sync = restarted;
+  t.after(() => restarted.dispose());
+  restarted.draft = restored;
+  assert.equal(restarted.text, 'Needs your attention');
+  restarted.showImageDecision(); assert.equal(restarted.dialog, 'replace-images');
+  restarted.keepImages(); flushWrites();
+  assert.equal(restarted.draft.publish_job.decision, 'keep');
+  assert.equal(restarted.draft.publish_job.replace_current, false);
+  assert.equal(restarted.dialog, null);
+  let run = 0;
+  restarted.publishImages = async () => { run++; };
+  restarted.draft = { ...restored, publish_job: job };
+  await restarted.replaceImages();
+  assert.equal(run, 1);
+  assert.equal(restarted.draft.publish_job.replace_current, true);
+  assert.notEqual(restarted.draft.publish_job.start_key, 'start');
+  assert.notEqual(restarted.draft.publish_job.zip_key, 'zip');
+});
+
+// STORE zip built in memory, using invented bytes only; no source packages or fixtures.
+function syntheticZip(files) {
+  const locals = [], directory = [];
+  let offset = 0;
+  for (const [path, bytes] of files) {
+    const name = Buffer.from(`synthetic.atlas/${path}`), local = Buffer.alloc(30), entry = Buffer.alloc(46);
+    local.writeUInt32LE(0x04034b50); local.writeUInt16LE(name.length, 26);
+    entry.writeUInt32LE(0x02014b50); entry.writeUInt32LE(bytes.length, 20); entry.writeUInt16LE(name.length, 28); entry.writeUInt32LE(offset, 42);
+    locals.push(local, name, bytes); directory.push(entry, name); offset += 30 + name.length + bytes.length;
+  }
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(offset, 16);
+  return new Uint8Array(Buffer.concat([...locals, ...directory, end]));
+}
+test('background bundle avoids the modal, preserves export time and verifies every file hash', async () => {
+  const { backgroundBundle, sha256Hex } = await import('./atlas.ts');
+  const bytes = Buffer.from('Invented image bytes');
+  const hash = await sha256Hex(bytes);
+  let corrupt = false, options;
+  const atlas = { project_id: 'synthetic', files: [{ path: 'tile.webp', size: bytes.length, sha256: hash }] };
+  const fake = { fullProject: () => structuredClone(source), stitched: {}, link: { nasRoot: '', quality: 100 },
+    run: () => { throw new Error('A background bundle must not open the modal'); },
+    core: Promise.resolve({ atlasZip: async (_p, opts) => {
+      options = opts;
+      return syntheticZip([['atlas.json', Buffer.from(JSON.stringify(atlas))], ['tile.webp', corrupt ? Buffer.alloc(bytes.length) : bytes]]);
+    } }),
+  };
+  const first = await backgroundBundle(fake, 'synthetic', '2026-01-01T00:00:00Z');
+  const second = await backgroundBundle(fake, 'synthetic', options.exported);
+  assert.equal(first.atlasSha256, second.atlasSha256);
+  assert.equal(options.exported, '2026-01-01T00:00:00Z');
+  assert.equal(first.files.length, 2);
+  corrupt = true;
+  await assert.rejects(backgroundBundle(fake, 'synthetic', options.exported), /checksum differs: tile.webp/);
+});
+
+test('shared publish tail preserves edits made during transfer and acknowledges only published pixels', async t => {
+  const { sha256Hex } = await import('./atlas.ts');
+  const { session } = quietSession('tail-synthetic');
+  const oldCore = app.core;
+  t.after(() => { session.dispose(); app.core = oldCore; app.pkg = null; app.stitched = {}; });
+  app.project.upbdb.mount_id = 'mount';
+  app.pkg = { name: 'Synthetic' };
+  app.stitched = { area: { mosaic: app.project.areas[0].mosaic } };
+  session.save({ pixels_base: pixelSignature(app.fullProject()) });
+  app.tone.area = { ...neutralTone(), gamma: 2 };
+  session.track(false);
+  assert.equal(session.pixelsChanged, true);
+  let published, recorded, records = 0, commits = 0, refreshes = 0;
+  app.core = Promise.resolve({
+    async atlasZip(p) {
+      published ??= p;
+      const bytes = Buffer.from(JSON.stringify(p));
+      const atlas = { project_id: p.uuid, files: [{ path: 'project.json', size: bytes.length, sha256: await sha256Hex(bytes) }] };
+      return syntheticZip([['atlas.json', Buffer.from(JSON.stringify(atlas))], ['project.json', bytes]]);
+    },
+    async recordPublished(rec) {
+      recorded = rec; records++;
+      // These are newer than the submitted snapshot and must survive its successful tail.
+      addQuietSpot(); app.tone.area = { ...neutralTone(), gamma: 3 };
+    },
+    async projectJson() { return JSON.stringify({ ...source, upbdb: { mount_id: 'mount', published: [recorded] } }); },
+  });
+  session.api = async () => ({ publishedProject: async () => { if (++refreshes === 1) throw new Error('Synthetic refresh outage'); return published; }, lookup: async () => ({ ...session.status, atlas_version: 2 }) });
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/v1/assets/check')) return Response.json({ have: [] });
+    if (String(url).endsWith('/atlas/uploads')) {
+      const savedJob = JSON.parse(storage.get('grainatlas.draft.tail-synthetic')).publish_job;
+      assert.equal(savedJob.start_key, init.headers['Idempotency-Key']);
+      return Response.json({ upload_id: 'tail-upload', missing: [], expires_at: '2099-01-01T00:00:00Z' });
+    }
+    const savedJob = JSON.parse(storage.get('grainatlas.draft.tail-synthetic')).publish_job;
+    assert.equal(savedJob.upload_id, 'tail-upload');
+    commits++; return Response.json({ version: 2 });
+  });
+  await session.publishImages();
+  assert.equal(session.draft.publish_job.result.version, 2);
+  assert.equal(session.imageDecision, false);
+  await session.publishImages();
+  assert.equal(commits, 1, 'a failed acknowledgement must not publish another version');
+  assert.equal(records, 1, 'recordPublished is also idempotent across acknowledgement recovery');
+  assert.equal(app.spots.at(-1).id, 'quiet-spot');
+  assert.equal(app.tone.area.gamma, 3);
+  assert.equal(session.draft.pixels_base, pixelSignature(published));
+  assert.equal(session.pixelsChanged, true);
+  assert.equal(session.draft.publish_job, null);
+  assert.equal(app.lastPublish.version, 2);
+});
+
+test('Edit restores an image-only draft with null pending elements so a held upload can resume', async t => {
+  const { editCopy } = await import('./remote.ts');
+  const { writeDraft } = await import('./drafts.ts');
+  const { session } = quietSession('image-reopen-synthetic');
+  const oldCore = app.core;
+  t.after(() => { session.dispose(); app.core = oldCore; app.remote = null; });
+  const local = app.fullProject();
+  local.grainatlas_ui.bundle_tone = { area: { curve: { ...neutralTone(), low_pct: 12 }, display: neutralTone(), on_sha256: 'pixels' } };
+  const key = 'grainatlas.project.Synthetic';
+  storage.set(key, JSON.stringify(local));
+  const draft = { ...session.draft, source_keys: [key], pending: null, pixels_base: pixelSignature(app.project), pixels_key: pixelSignature(local), pixels_changed: true };
+  writeDraft(draft);
+  app.remote = { server: 'https://quiet.test', projectId: local.uuid, readOnly: true, atlas: { name: 'Synthetic' } };
+  app.bundle = null;
+  app.core = Promise.resolve({ blank: async () => {}, loadProject: async () => {} });
+  t.mock.method(app, 'run', async (_title, work) => work());
+  t.mock.method(session, 'editBase', async () => {});
+  await editCopy(app);
+  assert.equal(app.project.grainatlas_ui.bundle_tone.area.curve.low_pct, 12);
+  assert.equal(app.readOnly, false);
+  assert.equal(session.draft.pending, null);
+});
+
+test('background images wait through stale, offline and remembered failures until a successful check', async t => {
+  const { forgetUnreachable } = await import('./sync-session.svelte.ts');
+  const { SyncNetworkError } = await import('./sync-api.ts');
+  forgetUnreachable();
+  const { session, base, hashes } = quietSession('image-offline-synthetic');
+  session.draft = { ...session.draft, server: 'https://image-offline-only.test' };
+  const oldCore = app.core;
+  t.after(() => { session.dispose(); forgetUnreachable(); app.core = oldCore; app.pkg = null; app.stitched = {}; });
+  session.uuid = app.project.uuid;
+  app.project.upbdb.mount_id = 'mount';
+  app.pkg = { name: 'Synthetic' };
+  app.stitched = { area: { mosaic: app.project.areas[0].mosaic } };
+  session.save({ pixels_base: pixelSignature(app.fullProject()) });
+  app.tone.area = { ...neutralTone(), gamma: 2 };
+  session.track(false); session.lastImageEdit = -Infinity;
+  let builds = 0;
+  app.core = Promise.resolve({ atlasZip: async () => { builds++; return null; } });
+  const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('No network call while paused'); });
+  assert.equal(session.imagePending, true);
+  session.staleOpen = { spots: ['shared-spot'], grains: [], labels: [] };
+  await session.publishImages(undefined, true);
+  assert.equal(session.imagePending, false); assert.equal(builds, 0);
+  session.staleOpen = null;
+  for (const reachable of [false, null]) {
+    session.reachable = reachable;
+    await session.publishImages(undefined, true);
+    assert.equal(session.imagePending, false); assert.equal(builds, 0);
+  }
+  session.api = async () => { throw new SyncNetworkError('Synthetic outage'); };
+  await session.check();
+  // Cached reachability in another copy cannot override the remembered failure.
+  session.reachable = true;
+  assert.equal(session.knownUnreachable, true);
+  await session.publishImages(undefined, true);
+  assert.equal(builds, 0); assert.equal(fetch.mock.callCount(), 0);
+  const status = session.status;
+  session.api = async () => ({ lookup: async () => status, elements: async () => ({ ...base, revision: 1, hashes }) });
+  await session.check();
+  assert.equal(session.knownUnreachable, false); assert.equal(session.imagePending, true);
+  await session.publishImages(undefined, true);
+  assert.equal(builds, 1);
+  // A guard raised while the worker builds must also stop the capability request.
+  for (const guard of ['stale', 'offline']) {
+    session.staleOpen = null; session.reachable = true;
+    app.core = Promise.resolve({ atlasZip: async () => {
+      if (guard === 'stale') session.staleOpen = { spots: ['shared-spot'], grains: [], labels: [] };
+      else session.reachable = false;
+      return syntheticZip([['atlas.json', Buffer.from(JSON.stringify({ project_id: app.project.uuid, files: [] }))]]);
+    } });
+    await session.publishImages(undefined, true);
+    assert.equal(session.imageBusy, false);
+    assert.equal(fetch.mock.callCount(), 0, guard);
+  }
+  session.staleOpen = null; session.reachable = true;
+  app.core = Promise.resolve({ atlasZip: async () => syntheticZip([
+    ['atlas.json', Buffer.from(JSON.stringify({ project_id: app.project.uuid, files: [] }))],
+  ]) });
+  await session.publishImages(undefined, true);
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(session.knownUnreachable, true);
+  assert.equal(session.text, 'Offline, will sync later');
+  assert.equal(session.imageTimer.scheduled, false);
+  await session.publishImages(undefined, true);
+  assert.equal(fetch.mock.callCount(), 1, 'a failed capability waits for a successful check before another upload');
 });

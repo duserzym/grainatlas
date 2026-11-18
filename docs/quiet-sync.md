@@ -1,4 +1,4 @@
-# Quiet element sync
+# Quiet sync
 
 Standalone editable projects sync 3 s after the last tracked edit and after opening
 with pending element work. Local saves still use the existing deferred write queue.
@@ -10,7 +10,8 @@ edit access and projects waiting for a choice do not sync automatically.
 | Status | Meaning |
 | --- | --- |
 | Saved | Local work is waiting, or a current server revision has not been established. |
-| Syncing… | A check or sync is running. |
+| Syncing… | A check or element sync is running. |
+| Syncing images… | An image bundle is being built, uploaded or acknowledged. |
 | Up to date | No work is pending and a checked server revision matches the local base. |
 | Offline, will sync later | A request could not complete because of a network or server failure. |
 | Needs your attention | A confirmation, conflict, held item or non-transient error needs a person. |
@@ -50,8 +51,9 @@ requires a person's choice, with the spots consequence shown in the prompt.
 `Keep them (recommended)` restores the targeted grains and spots locally from the
 database copy, clears the confirmation and resumes automatic sync of other edits.
 Only `Remove and sync` sends `confirm_bulk`.
-`SyncAttention.svelte` provides the shared prompt framing for the later atlas
-replacement work; this change does not implement or confirm `replace_confirm`.
+`SyncAttention.svelte` also frames image replacement decisions. Only an explicit
+Replace choice sets `replace_current: true`; keeping the images suppresses that
+snapshot until the local pixels change again.
 
 ## Server proposal: batch revision checks for Open
 
@@ -89,3 +91,85 @@ success path retains one sync POST and its existing canonical verification.
 The 4,000-draft unit check makes 0 requests and took 1.6 ms in the final full run.
 ETag tests verify conditional detail requests, 304 reuse, credential separation
 and clearing on sign-out. These checks do not measure a live server.
+
+
+## Background images
+
+Changed pixels publish after 10 s without edits, after element sync settles. The
+window must be visible, with no attention prompt, modal task, live render or Area
+image download running. Editing pauses the next file or part until 10 s idle.
+The existing automatic-sync preference and hosted/read-only gates still apply.
+Explicit Publish uses the same engine and retains the advisory checks.
+An older copy pauses image publishing too. Background images require a successful
+database check and wait while the database is known unreachable. The gates are
+checked again after bundle preparation and between requests, including retries
+and acknowledgement of a completed upload.
+
+The core builds its usual STORE zip in the wasm worker or native blocking task,
+without the task modal. The client extracts its files and checks every manifest
+size and SHA-256 with asynchronous Web Crypto. The draft's `publish_job` keeps a
+stable export time, credential fingerprint, server/mount, manifest hash, upload ID,
+creation/commit/zip keys, count and expiry. Tokens and image bytes are not in the
+draft. Critical identity changes commit to draft storage before sending a write;
+ordinary progress uses the deferred write queue. A storage failure stops sending.
+
+A session-cached empty asset check selects the new routes. Missing hashes upload
+with two workers and parts of 8 MiB for larger files. A restart rebuilds and checks
+the manifest, revalidates upload status with its ETag, and sends only the remaining
+hashes. Changed bundles and expired uploads start again; server blobs remain
+reusable. Each exact part has a reproducible UUID derived from the creation key,
+its hash and offset. Incomplete commits repair the listed hashes and use a fresh
+commit key because ADR-0010 caches 4xx replies. A durable successful reply allows
+local acknowledgement to resume without publishing another version.
+
+Unavailable routes (404, 405 or 501) select zip publishing. A network failure at
+capability check pauses publishing until a successful database check; it does not
+cache an unsupported capability or start a zip upload. The zip's multipart boundary
+and export time survive a restart, keeping the encoded bytes and Idempotency-Key
+stable. Both paths share overlay baking,
+recordPublished, published-project pixel acknowledgement, revision refresh and
+UPb Lab notice. Later local edits remain pending. Image failures remain in the
+status details and retry; image replacement alone requests an attention decision.
+Capability, session, blob, status, commit and zip requests use the existing HTTP
+helpers, with upload-scaled write deadlines. The header-only helper returns the
+original response; no response-body stream wrapper is added. A timed-out JSON
+reply remains a retryable image failure rather than a cancelled user action.
+
+Published file downloads have a 10 s response-header deadline and a 30 s deadline
+without bytes, with no overall transfer deadline. A failed file retries up to
+three times with 1 s, 2 s and 4 s delays. Sign-out stops readers before clearing
+the disposable image cache and upload-status cache.
+
+## Server proposals for ADR-0010 section 2
+
+The routes themselves are sufficient, subject to these details being made
+explicit and implemented. No server files were edited.
+
+- Bound every `missing` array to 5,000 distinct hashes. A subsequent status or
+  incomplete-commit reply must return the next remaining window after accepted
+  blobs disappear from the missing set, until all are present. Keep received/total
+  counts accurate for manifest paths, including repeated content hashes, and
+  include received/total in creation replies as well as status replies. The
+  client consumes successive incomplete windows; it does not require an unbounded
+  missing response or make a check request per tile. If cursor pagination is
+  preferred instead, its wire fields must be specified before this client can
+  follow them.
+- A chunk acknowledgement must return `308` with `Range: bytes=0-N` and no
+  Location header. After a crash, a repeated prefix must acknowledge the retained
+  contiguous offset rather than reject overlapping bytes. A full existing blob
+  returns 200/201. Include Content-Range in request identity validation (or otherwise
+  ensure a reused part key cannot silently describe another range).
+- Browser CORS must allow Authorization, Idempotency-Key, Content-Type,
+  Content-Range and If-None-Match, and expose Range, ETag, Retry-After and
+  Idempotent-Replayed. Proxies must preserve 308 and Range without redirecting.
+- Commit must recheck replacement permission if another project's images became
+  current after session creation. Return 409 `replace_confirm` in that race; the
+  client asks again and creates a new session with fresh keys after Replace.
+
+The added browser scenarios cover changed-tile deduplication, reload during a held
+PUT and zip fallback. They are prepared for the supervisor; browser execution,
+desktop smoke testing and a live implementation of the planned routes remain
+unverified. The 4,000-file unit mock compares one zip write (400,000 invented
+bundle bytes) with five requests including capability, creation, two one-byte
+blobs and commit. It asserts the request budget and records local orchestration
+time; these timings do not predict network throughput or count JSON overhead.
