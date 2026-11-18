@@ -460,14 +460,16 @@
   });
 
   onMount(() => {
-    const retry = () => { for (const tab of tabs.list) if (tab.project) void tab.sync.check(); };
-    const timer = window.setInterval(retry, 30_000);
+    const retry = () => { for (const tab of tabs.list) if (tab.project && !tab.sync.wakeAutomatic()) void tab.sync.check(); };
+    const focused = () => { if (!isHosted()) retry(); };
+    const timer = window.setInterval(() => { for (const tab of tabs.list) if (tab.project && !tab.sync.backgroundPending) void tab.sync.check(); }, 30_000);
     window.addEventListener('online', retry);
+    window.addEventListener('focus', focused);
     const closing = (event: BeforeUnloadEvent) => {
       if (tabs.list.some(tab => !tab.readOnly && (tab.dirty || tab.sync.unsynced))) { event.preventDefault(); event.returnValue = ''; }
     };
     window.addEventListener('beforeunload', closing);
-    return () => { clearInterval(timer); window.removeEventListener('online', retry); window.removeEventListener('beforeunload', closing); };
+    return () => { clearInterval(timer); window.removeEventListener('online', retry); window.removeEventListener('focus', focused); window.removeEventListener('beforeunload', closing); };
   });
 </script>
 

@@ -1,3 +1,5 @@
+import { isHosted } from '@lab/bridge';
+import { BackgroundSync } from './background-sync';
 import { bundlePixels, saveBundleTones } from './bundle-tone';
 import { deferredWrites, flushWrites } from './deferred-writes';
 import { canWrite } from './presentation';
@@ -10,12 +12,12 @@ import { canonicalJson } from './sync-hash';
 import { notifyUpbLab } from './upblab-notice';
 import { draftElements, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
-import { draftSyncStatus } from './sync-status';
+import { draftSyncStatus, plainSyncStatus } from './sync-status';
 import { appStorage } from './app-storage';
 import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-interface HeldSync { identity: string; mine: Elements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
+interface HeldSync { identity: string; mine: Elements; current: ReadElements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
 export class SyncSession {
   private app: AppState;
   draft = $state.raw<Draft | null>(null);
@@ -30,6 +32,25 @@ export class SyncSession {
   private heldSync: HeldSync | null = null;
   showConfirmation() { if (this.heldSync && this.heldSync.identity === this.identity && !this.app.readOnly) this.dialog = 'bulk'; }
   cancelConfirmation() { this.dialog = null; }
+  keepBulk() {
+    const held = this.heldSync;
+    if (!canWrite() || this.app.readOnly || this.busy || !held || held.identity !== this.identity) return;
+    const grainIds = new Set([...held.body.grains.retire, ...held.body.grains.delete,
+      ...held.body.grains.upsert.flatMap(g => [...(g.split_from ? [g.split_from] : []), ...(g.merged_from ?? [])])]);
+    const spotIds = new Set(held.body.spots.delete);
+    const database = storedElements(held.current);
+    const restored = { grains: database.grains.filter(g => grainIds.has(g.id)), spots: held.current.spots.filter(s => spotIds.has(s.id)), labels: [] };
+    // Keeping a parent also cancels the lineage instruction that would retire it.
+    const local = { ...clone(this.elements), spots: this.elements.spots.filter(s => !spotIds.has(s.id)),
+      grains: this.elements.grains.filter(g => !grainIds.has(g.id)).map(g => ({ ...g,
+        ...(g.split_from && grainIds.has(g.split_from) ? { split_from: undefined } : {}),
+        ...(g.merged_from ? { merged_from: g.merged_from.filter(id => !grainIds.has(id)) } : {}),
+      })) };
+    this.setElements(keepAdditions(local, restored));
+    this.save({ database_added: keepAdditions(this.databaseAdded, restored) });
+    this.confirmation = null; this.heldSync = null; this.dialog = null;
+    this.track(false); this.refreshAutomatic();
+  }
   async confirmBulk() {
     if (!canWrite()) return;
     const held = this.heldSync;
@@ -89,6 +110,7 @@ export class SyncSession {
   }
   keepDatabaseKind(kind: Kind) { if (this.app.readOnly || this.busy) return; this.keepDatabase({ ...emptyElements(), [kind]: this.databaseUnresolved[kind] }); }
   private setStatus(status: ProjectStatus | null) {
+    const checkedRevision = status?.revision;
     if (status) {
       // A visible revision must have its measured-spot list already in memory.
       if (this.elementsRevision === null) return;
@@ -96,6 +118,7 @@ export class SyncSession {
       status = { ...status, revision: Math.min(this.elementsRevision, Math.max(status.revision, acknowledged, this.status?.mount_id === status.mount_id ? this.status.revision : 0)) };
     }
     this.status = status;
+    if (checkedRevision != null) this.save({ checked_at: new Date().toISOString(), server_revision: checkedRevision, server_can_edit: status?.can_edit });
   }
   private snapshotNeeded = $state(false);
   private checkedElements: { identity: string; projectUuid: string; fetchedAt: number; elements: ReadElements } | null = null;
@@ -119,9 +142,43 @@ export class SyncSession {
   private viewBase = $state.raw<ReadElements | null>(null);
   private viewRevision = $state<number | null>(null);
   private pendingSync = false;
+  private automaticRunning = false;
+  private disposed = false;
+  private automatic = new BackgroundSync(() => { void this.runAutomatic(); });
+  private get automaticEnabled() {
+    return !this.disposed && canWrite() && !isHosted() && !this.app.hosted && this.app.link.syncAutomatically !== false
+      && this.ready && !this.app.readOnly && !!this.draft?.mount
+      && (this.registered === true && this.status?.can_edit === true || !!this.draft?.server_can_edit && !!this.draft?.pending_request)
+      && !this.confirmation && !this.review && !this.dialog && !this.held.length && !this.intentFailure
+      && !this.draft?.link_conflict && !(this.error && this.reachable !== false);
+  }
+  get backgroundPending() { return this.automaticEnabled && (!!this.draft?.pending_request || !!this.cachedSyncStatus?.elements || this.pendingSync); }
+  refreshAutomatic() {
+    if (!this.backgroundPending) { this.automatic.cancel(); return; }
+    if (!this.busy) {
+      if (this.reachable === false) this.automatic.retry();
+      else this.automatic.ensure();
+    }
+  }
+  wakeAutomatic() {
+    if (this.backgroundPending) { if (!this.busy) this.automatic.wake(); return true; }
+    return false;
+  }
+  dispose() { this.disposed = true; this.automatic.cancel(); }
+  private async runAutomatic() {
+    if (!this.backgroundPending || this.busy) return;
+    this.automaticRunning = true;
+    try { await this.sync(); }
+    finally { this.automaticRunning = false; }
+  }
   private idleWaiters: (() => void)[] = [];
   async settled() { flushWrites(); while (this.busy) await new Promise<void>(resolve => this.idleWaiters.push(resolve)); }
-  private finished() { this.busy = false; for (const resolve of this.idleWaiters.splice(0)) resolve(); }
+  private finished() {
+    this.busy = false;
+    for (const resolve of this.idleWaiters.splice(0)) resolve();
+    if (this.reachable === true && !this.pendingSync) this.automatic.reset();
+    this.refreshAutomatic();
+  }
   private serverHashes = $state.raw<ProjectStatus['hashes'] | null>(null);
   private elementsRevision = $state<number | null>(null);
   private viewHashes = $state.raw<ProjectStatus['hashes'] | null>(null);
@@ -180,7 +237,7 @@ export class SyncSession {
     const hashes = this.app.readOnly ? this.viewHashes : this.draft?.base_hashes;
     const serverChanged = hashes && this.serverHashes ? (['spots', 'grains', 'labels'] as const).some(k => hashes[k] !== this.serverHashes![k]) : undefined;
     return syncState({ firstSync: this.firstSync, serverChanged, registered: this.registered, reachable: this.reachable, baseRevision: this.app.readOnly ? this.viewRevision : this.draft?.base_revision ?? null, serverRevision: this.elementsRevision ?? this.status?.revision ?? null, localChanges: this.cachedSyncStatus?.elements ?? hasChanges(this.counts), pixelsChanged: this.pixelsChanged }); }
-  get text(): string {
+  get detailText(): string {
     if (this.confirmation) return 'Needs confirmation';
     if (this.draft?.link_conflict) return 'This project is linked to another mount';
     if (this.intentFailure) return `Local changes · ${this.intentFailure}`;
@@ -189,6 +246,17 @@ export class SyncSession {
     if (this.status?.can_edit === false) return 'Read-only access';
     if (this.held.length && !this.app.readOnly) return `${this.held.length} ${this.held.length === 1 ? 'item' : 'items'} held back`;
     return chipText(this.state, this.counts, this.status?.atlas_version ?? null, this.status?.revision ?? null, this.pixelsChanged, this.firstSync); // sync warnings show in the notice bar and the details drawer, not the pill
+  }
+  get text() {
+    return plainSyncStatus(this.draft ? { ...this.draft, held_back: this.held } : null, { pending: !!this.cachedSyncStatus?.pending }, {
+      busy: this.busy, reachable: this.reachable, error: !!this.error,
+      attention: !!this.confirmation || !!this.review || !!this.intentFailure || !!this.held.length,
+      serverRevision: this.draft?.server_revision ?? this.status?.revision, checked: this.reachable === true && !!this.status,
+    });
+  }
+  get registeredSpotConflict() {
+    return this.review?.merge.differences.some(d => d.collision && d.kind === 'spots' &&
+      (!!d.base || [d.mine, d.theirs].some(s => s && 'acquisition_ids' in s && s.acquisition_ids?.length))) ?? false;
   }
   get unsynced(): boolean {
     return !!this.app.project && !this.app.readOnly && (!!this.intentFailure || KINDS.some(k => this.databaseMore[k].length) || !this.draft?.synced || !this.draft?.base || !!this.cachedSyncStatus?.pending);
@@ -234,6 +302,7 @@ export class SyncSession {
     const status = draftSyncStatus(this.draft, undefined, { changes: this.counts, pixelsKey: this.pixelKey });
     this.storedSyncStatus = { pixels: status.pixels, unlinked: status.unlinked };
     this.save({ changes, pending, pending_at: pending ? now : null, ...(this.pixelKey !== null ? { pixels_key: this.pixelKey } : {}), pixels_changed: status.pixels, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
+    if (edited && this.backgroundPending && !this.busy) this.automatic.edit();
   }
   /** Every opening path calls this before returning. Later polling never replaces the base. */
   async check(): Promise<void> {
@@ -243,6 +312,7 @@ export class SyncSession {
     const identity = this.identity;
     if (!p || this.busy || this.app.loadingProject || this.app.storedCopy) return;
     if (p.uuid !== this.uuid) {
+      this.automatic.reset(); this.pendingSync = false;
       this.uuid = p.uuid; this.suppressDraft = false; this.confirmation = null; this.heldSync = null;
       const previous = listDrafts(this.app.remote?.server ?? this.app.server).find(d => d.uuid === p.uuid) ?? readDraft(p.uuid);
       const fresh = !previous;
@@ -276,7 +346,7 @@ export class SyncSession {
         return;
       }
       if (this.app.project) this.app.project.upbdb.mount_id = status.mount_id;
-      this.save({ server: this.app.remote?.server ?? this.app.server ?? this.draft?.server, mount: status.mount_id, link_conflict: false, synced: this.draft?.synced ?? false });
+      this.save({ server: this.app.remote?.server ?? this.app.server ?? this.draft?.server, mount: status.mount_id, checked_at: new Date().toISOString(), server_revision: status.revision, server_can_edit: status.can_edit, link_conflict: false, synced: this.draft?.synced ?? false });
       const theirs = await api.elements(status.project_uuid);
       if (!this.isCurrent(identity)) return;
       this.checkedElements = { identity, projectUuid: status.project_uuid, fetchedAt: Date.now(), elements: theirs };
@@ -304,10 +374,12 @@ export class SyncSession {
       }
       this.track(false);
     } catch (e) {
-      this.reachable = false;
+      this.reachable = e instanceof SyncApiError && e.status < 500;
       this.error = e instanceof Error ? e.message : String(e);
+      this.errorDetails = e instanceof SyncApiError ? e.raw : '';
     } finally { this.finished(); this.checking = false; if (this.identity !== identity) void this.check(); }
-    if (this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.sync(); }
+    this.refreshAutomatic();
+    if (!this.automaticEnabled && this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.sync(); }
   }
   dismissLink() { this.candidates = []; this.save({ link_offered: true, link_candidates: [] }); }
   showLink(): string {
@@ -433,6 +505,13 @@ export class SyncSession {
       else merge.differences.push({ kind, id, base: storedElements(base)[kind].find(e => e.id === id), mine: local[kind].find(e => e.id === id),
         theirs: storedElements(theirs)[kind].find(e => e.id === id), collision: true, bothAllowed: kind === 'labels' });
     }
+    if (this.automaticRunning && !merge.differences.some(d => d.collision)) {
+      this.setElements(merge.combined);
+      this.save({ base: clone(theirs), base_revision: revision, base_hashes: hashes ?? null });
+      this.track(false);
+      return;
+    }
+    for (const d of merge.differences) if (d.kind === 'spots' && d.base) d.bothAllowed = false;
     this.review = { merge, theirs: clone(theirs), revision, hashes };
     this.dialog = 'review';
   }
@@ -475,6 +554,17 @@ export class SyncSession {
   private mergeLocal(base: ReadElements, local: Elements, server: ReadElements): Merge {
     const known = this.knownGrains(server, base);
     const merge = mergeElements(base, withKnownLineage(local, known), server);
+    // Independent fields on the same row are safe to combine too. Deletion and
+    // same-field conflicts still require the existing explicit resolution.
+    const fields = firstSyncMerge(base, local, server, this.draft?.linked_uuid ?? this.app.project?.uuid ?? '');
+    for (const d of merge.differences) {
+      if (!d.collision || !d.base || !d.mine || !d.theirs || fields.conflicts.some(c => c.kind === d.kind && c.id === d.id)) continue;
+      const combined = fields.elements[d.kind].find(e => e.id === d.id);
+      if (combined) {
+        (merge.combined[d.kind] as import('./sync').Element[]) = merge.combined[d.kind].map(e => e.id === d.id ? combined : e);
+        d.collision = false;
+      }
+    }
     // Compare database fields, then carry local-only history back into the project.
     const originals = new Map(local.grains.map(g => [g.id, g]));
     const restore = (grain: Elements['grains'][number]) => {
@@ -494,8 +584,8 @@ export class SyncSession {
     this.errorDetails = e instanceof SyncApiError ? e.raw || e.messages.join('\n') : '';
     this.failureMessage = e instanceof SyncApiError ? lineageFailureMessage(e.messages) ?? e.messages[0] : this.error;
     this.validationFailed = e instanceof SyncApiError && e.status === 422;
-    this.app.error = this.errorHeadline;
-    this.reachable = e instanceof SyncApiError ? e.status < 500 : false;
+    if (!this.automaticRunning) this.app.error = this.errorHeadline;
+    this.reachable = e instanceof SyncApiError ? !e.transient : false;
   }
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
   async sync(publishPixels = false, shellCommand = false, approved?: HeldSync, reviewedBase?: ReadElements) {
@@ -512,6 +602,7 @@ export class SyncSession {
       this.app.spots = uiSpots([...this.app.spots, ...unique], this.elements.grains, this.app.spots);
       this.app.notice = 'This spot has measurements in the database; it cannot be deleted there';
     }
+    this.automatic.cancel();
     this.track(false);
     this.busy = true;
     const identity = this.identity;
@@ -519,7 +610,8 @@ export class SyncSession {
     const projectUuid = draft.linked_uuid ?? this.app.project.uuid;
     const checked = this.checkedElements;
     this.checkedElements = null; // A check result can only seed the next sync, never a retry or approval.
-    let mine = approved?.mine ?? clone(this.elements);
+    const recovery = !approved && draft.pending_request?.body && draft.pending_request.mine && draft.pending_request.current ? draft.pending_request : null;
+    let mine = recovery?.mine ?? approved?.mine ?? clone(this.elements);
     let retryMissing: Record<Kind, string[]> | null = null;
     try {
       const api = await this.api();
@@ -527,18 +619,18 @@ export class SyncSession {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const reuseChecked = !approved && attempt === 0 && checked?.identity === identity && checked.projectUuid === projectUuid && Date.now() - checked.fetchedAt < 2000;
-          const current = this.registered ? (reuseChecked ? checked.elements : await api.elements(projectUuid)) : this.serverElements ?? draft.base ?? emptyElements();
+          const current = recovery?.current ?? (this.registered ? (reuseChecked ? checked.elements : await api.elements(projectUuid)) : this.serverElements ?? draft.base ?? emptyElements());
           if (!this.isCurrent(identity)) return;
           this.serverElements = current;
           const additions = databaseAdditions(current, this.lastSeen, mine, projectUuid);
-          if (KINDS.some(k => additions[k].length)) {
+          if (!recovery && KINDS.some(k => additions[k].length)) {
             this.keepDatabase(additions); mine = keepAdditions(mine, additions);
             if (approved) { this.confirmation = null; this.heldSync = null; approved = undefined; }
           }
           const mode = approved?.body.mode ?? (this.firstSync || !draft.synced ? 'snapshot' : 'delta');
           // check() can seed base before any sync is acknowledged. That database
           // context is not the local baseline: use what was shown at first open.
-          if (!approved && mode === 'snapshot' && (!draft.synced || !draft.base || !KINDS.some(k => draft.base![k].length))
+          if (!recovery && !approved && mode === 'snapshot' && (!draft.synced || !draft.base || !KINDS.some(k => draft.base![k].length))
             && KINDS.some(k => projectElements(current, projectUuid)[k].length)) {
             const base = reviewedBase ?? draft.base_seen ?? mine;
             const merged = firstSyncMerge(base, mine, current, projectUuid);
@@ -553,6 +645,17 @@ export class SyncSession {
               this.track(false);
             }
           }
+          // Use the existing three-way merge for newer remote rows. Registered
+          // spot conflicts always need a person; other true collisions retain review.
+          if (!recovery && !approved && mode === 'delta' && draft.base && 'revision' in current && Number(current.revision) > (draft.base_revision ?? 0)) {
+            const merge = this.mergeLocal(draft.base, mine, current);
+            if (merge.differences.some(d => d.collision)) {
+              this.openReview(current, Number(current.revision), 'hashes' in current ? current.hashes as ProjectStatus['hashes'] : undefined);
+              return;
+            }
+            this.setElements(this.mergeLocal(mine, clone(this.elements), merge.combined).combined);
+            mine = merge.combined;
+          }
           const syncMine = this.syncElements(mine, current);
           const diff = approved?.body ?? syncChanges(mode, draft.base ?? emptyElements(), syncMine, current, projectUuid, this.lastSeen);
           if (retryMissing) for (const k of KINDS) {
@@ -560,11 +663,11 @@ export class SyncSession {
             if (k === 'grains') diff.grains.retire = [...new Set([...diff.grains.retire, ...removed])];
             else diff[k].delete = [...new Set([...diff[k].delete, ...removed])];
           }
-          try { validateLineage(draft.base ?? emptyElements(), syncMine, diff); }
+          try { if (!recovery) validateLineage(draft.base ?? emptyElements(), syncMine, diff); }
           catch (e) { throw new SyncApiError(422, [e instanceof Error ? e.message : String(e)]); }
           const sinceSeen = diffElements(draft.base ?? draft.base_seen ?? emptyElements(), current);
           const onlyAdditions = KINDS.every(k => !sinceSeen[k].delete.length && (k !== 'grains' || !sinceSeen.grains.retire.length) && sinceSeen[k].upsert.every(e => !(draft.base ?? draft.base_seen ?? emptyElements())[k].some(s => s.id === e.id)));
-          const body: SyncBody = approved?.body ?? { project_uuid: projectUuid, base_revision: onlyAdditions && KINDS.some(k => sinceSeen[k].upsert.length) && 'revision' in current ? Number(current.revision) : draft.base_revision ?? 0, mode, ...diff,
+          const body: SyncBody = recovery?.body ?? approved?.body ?? { project_uuid: projectUuid, base_revision: 'revision' in current && (mode === 'delta' && !approved || onlyAdditions && KINDS.some(k => sinceSeen[k].upsert.length)) ? Number(current.revision) : draft.base_revision ?? 0, mode, ...diff,
             spots: { ...diff.spots, upsert: diff.spots.upsert.map(s => mode === 'snapshot' ? { ...s, sample: mine.spots.find(local => local.id === s.id)?.sample } : s) } };
           const parents = new Set([...body.grains.retire, ...body.grains.delete, ...body.grains.upsert.flatMap(g => [...(g.split_from ? [g.split_from] : []), ...(g.merged_from ?? [])])]);
           const counts: AtlasSyncConfirmation = {
@@ -574,7 +677,7 @@ export class SyncSession {
             spotsTotal: this.status?.counts.spots ?? current.spots.length,
           };
           let bulk = counts.retireGrains > Math.max(3, counts.grainsTotal * .1) || counts.deleteSpots > Math.max(3, counts.spotsTotal * .1);
-          if (bulk || approved) {
+          if (!recovery && (bulk || approved)) {
             let preview;
             try { preview = await api.sync(draft.mount!, { ...body, dry_run: true }); }
             catch (e) {
@@ -585,34 +688,44 @@ export class SyncSession {
             if (preview && !preview.ok) { this.openReview(applyChanges(draft.base ?? emptyElements(), changesFromEvents(preview.changes, projectUuid)), preview.current_revision); return; }
           }
           const hold = () => {
-            this.heldSync = { identity, mine: syncMine, body, publishPixels, counts }; this.confirmation = counts;
+            this.heldSync = { identity, mine: syncMine, current, body, publishPixels, counts }; this.confirmation = counts;
             this.dialog = shellCommand ? null : 'bulk'; this.pendingSync = false;
             this.error = ''; this.failureMessage = ''; this.validationFailed = false;
           };
-          if (bulk && (!approved || JSON.stringify(approved.counts) !== JSON.stringify(counts))) {
+          if (!recovery && bulk && (!approved || JSON.stringify(approved.counts) !== JSON.stringify(counts))) {
             hold(); return;
           }
           this.confirmation = null; this.heldSync = null;
           let reply;
-          const sent: SyncBody = { ...body, ...(approved ? { confirm_bulk: true } : {}) };
+          const sent: SyncBody = recovery?.body ?? { ...body, ...(approved ? { confirm_bulk: true } : {}) };
           // One id per attempt; a retry of the same request after a lost reply reuses it (contract 2026-11, section 3).
-          let request = requestIdFor(draft.pending_request, canonicalJson(syncWireBody(sent)));
-          this.save({ pending_request: request }); flushWrites();
+          let request: import('./sync-api').PendingRequest = { ...requestIdFor(draft.pending_request, canonicalJson(syncWireBody(sent))), body: sent, mine: syncMine, current };
+          const persistRequest = async () => {
+            if (!this.isCurrent(identity)) throw new SyncApiError(409, ['The open project changed. Your previous changes are kept.']);
+            this.save({ pending_request: request }); flushWrites();
+            if (!this.draft || !await appStorage.trackDurable(this.app, 'draft', () => writeDraft(this.draft!))) throw new SyncApiError(422, ['Your changes could not be saved on this computer. Free some space, then try again.']);
+          };
+          await persistRequest();
+          if (!this.isCurrent(identity)) return;
+          const send = () => api.sync(draft.mount!, sent, request.id, async id => {
+            request = { ...request, wire_id: request.wire_id ?? request.id, id };
+            await persistRequest();
+          }, request.wire_id ?? request.id);
           try {
-            try { reply = await api.sync(draft.mount!, sent, request.id); }
+            try { reply = await send(); }
             catch (e) {
               if (!(e instanceof SyncApiError) || e.code !== 'request_id_reused') throw e;
-              request = requestIdFor(null, request.key);
-              this.save({ pending_request: request }); flushWrites();
-              reply = await api.sync(draft.mount!, sent, request.id);
+              console.warn('Legacy sync request id was already used; retrying once with a fresh id.');
+              request = { ...request, ...requestIdFor(null, request.key), wire_id: undefined };
+              await persistRequest();
+              reply = await send();
             }
           } catch (e) {
-            if (!(e instanceof SyncNetworkError) && !(e instanceof SyncApiError && e.status >= 500)) this.save({ pending_request: null });
+            if (this.isCurrent(identity) && !(e instanceof SyncNetworkError) && !(e instanceof SyncApiError && e.transient)) this.save({ pending_request: null });
             if (!(e instanceof SyncApiError) || !e.bulkConfirmation) throw e;
             if (this.isCurrent(identity)) { Object.assign(counts, e.confirmation); hold(); }
             return;
           }
-          this.save({ pending_request: null });
           if (!this.isCurrent(identity)) {
             // A different project opened during the POST. Never put the old response in its tab.
             // Leave the old draft conservative for a fresh check; its persisted content is intact.
@@ -620,6 +733,7 @@ export class SyncSession {
           }
           this.reachable = true;
           if (!reply.ok) {
+            this.save({ pending_request: null });
             const theirs = applyChanges(draft.base ?? emptyElements(), changesFromEvents(reply.changes, projectUuid));
             this.openReview(theirs, reply.current_revision);
             return;
@@ -656,7 +770,7 @@ export class SyncSession {
           if (this.app.error === this.errorHeadline) this.app.error = null;
           this.error = ''; this.failureMessage = ''; this.validationFailed = false;
           this.heldBack = held;
-          this.save({ incomplete: null, held_back: held, base: appliedMine, base_revision: reply.revision, base_hashes: null, synced: true, synced_at: new Date().toISOString() });
+          this.save({ pending_request: null, checked_at: new Date().toISOString(), server_revision: accepted.revision, incomplete: null, held_back: held, base: appliedMine, base_revision: reply.revision, base_hashes: null, synced: true, synced_at: new Date().toISOString() });
           if (accepted.revision === reply.revision) {
             // Edits made in flight remain above the submitted snapshot.
             const local = clone(this.elements);
@@ -724,7 +838,7 @@ export class SyncSession {
           approved = undefined;
         }
       }
-    } catch (e) { if (this.identity === identity) { this.pendingSync = !(e instanceof SyncApiError) || e.status >= 500; this.failed(e); this.track(false); } } finally { this.finished(); if (this.identity !== identity) void this.check(); }
+    } catch (e) { if (this.identity === identity) { this.pendingSync = !(e instanceof SyncApiError) || e.transient; this.failed(e); this.track(false); } } finally { this.finished(); if (this.identity !== identity) void this.check(); }
   }
   async afterSave() {
     flushWrites();

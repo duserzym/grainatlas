@@ -1,3 +1,5 @@
+import { syncCache } from './sync-cache.ts';
+import { idempotentWrite, type WriteIdentity } from './idempotency.ts';
 import { canWrite, requireWrite } from './presentation.ts';
 /** UPbDB B1 wire contract (docs/atlas-sync.md). */
 import type { Project } from './core/types';
@@ -32,6 +34,7 @@ export class SyncApiError extends Error {
   status: number;
   messages: string[];
   code: string | null = null;
+  get transient() { return this.status >= 500 || this.code === 'idempotency_in_progress'; }
   /** Raw status and body, for the details view and the console only. */
   raw = '';
   missing: Record<Kind, string[]> | null = null;
@@ -68,7 +71,11 @@ export function problemSummary(problems: string[], todo = 'Fix them here, then s
   return `${unique.length} problems: ${nameList(unique)}. ${todo}`;
 }
 /** A retry of the same request keeps its id so the server can replay its stored reply. */
-export interface PendingRequest { id: string; key: string }
+export interface PendingRequest {
+  id: string; key: string;
+  /** Exact request and acknowledgement context, durable before sending. Never rebuilt on retry. */
+  wire_id?: string; body?: SyncBody; mine?: import('./sync').Elements; current?: ReadElements;
+}
 export function requestIdFor(pending: PendingRequest | null | undefined, key: string, newId: () => string = () => crypto.randomUUID()): PendingRequest {
   return pending && pending.key === key ? pending : { id: newId(), key };
 }
@@ -137,13 +144,27 @@ export class SyncApi {
   private token: string | null;
   private access: string | null;
   constructor(server: string, token: string | null, access: string | null = null) { this.server = server; this.token = token; this.access = access; }
-  private async call(path: string, init: RequestInit = {}): Promise<Response> {
+  private async call(path: string, init: RequestInit = {}, identity: WriteIdentity = {}): Promise<Response> {
     if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
     const url = new URL(this.server + path);
     if (this.access && !init.method) url.searchParams.set('access', this.access);
+    const cache = syncCache(this.server, this.token, this.access);
+    const cacheable = !init.method || init.method === 'GET';
+    const cached = cacheable ? cache.get(url.href) : undefined;
     let r: Response;
-    try { r = await fetch(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(init.headers ?? {}) } }); }
-    catch (e) { console.warn(`Database request ${path} failed:`, e); throw new SyncNetworkError(errorSentence(0, null)); }
+    try {
+      const send = (key?: string) => fetch(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(cached ? { 'If-None-Match': cached.etag } : {}), ...(init.headers ?? {}), ...(key ? { 'Idempotency-Key': key } : {}) } });
+      r = init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase()) ? await idempotentWrite(send, identity) : await send();
+    }
+    catch (e) { if (e instanceof SyncApiError) throw e; console.warn(`Database request ${path} failed:`, e); throw new SyncNetworkError(errorSentence(0, null)); }
+    if (r.status === 304 && cached) return new Response(cached.body, { headers: cached.headers });
+    if (cacheable && r.ok) {
+      const etag = r.headers.get('ETag');
+      if (etag) {
+        cache.set(url.href, { etag, body: await r.clone().text(), headers: new Headers(r.headers) });
+        if (cache.size > 64) cache.delete(cache.keys().next().value!);
+      } else cache.delete(url.href);
+    }
     if (!r.ok && r.status !== 404 && r.status !== 409) {
       const raw = await r.text();
       let payload: Record<string, unknown> = {};
@@ -202,9 +223,9 @@ export class SyncApi {
     return r.json();
   }
   /** `requestId` (never for a dry run) lets the server answer a retried request with its stored reply. */
-  async sync(mount: string, body: SyncBody, requestId?: string): Promise<SyncReply> {
+  async sync(mount: string, body: SyncBody, requestId?: string, keyChanged?: WriteIdentity['keyChanged'], wireRequestId = requestId): Promise<SyncReply> {
     requireWrite();
-    const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...syncWireBody(body), ...(requestId && !body.dry_run ? { request_id: requestId } : {}) }) });
+    const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...syncWireBody(body), ...(wireRequestId && !body.dry_run ? { request_id: wireRequestId } : {}) }) }, { key: requestId, keyChanged });
     if (r.status !== 200 && r.status !== 409) throw new SyncApiError(r.status, [errorSentence(r.status, null)]);
     const reply = await r.json();
     if (r.status === 409 && !Array.isArray(reply?.changes)) {

@@ -133,7 +133,8 @@ export async function publish(app: AppState = current(), projectUuid = app.sync.
   const b = await bundleZip(app, projectUuid);
   if (!b) return;
   const tok = await authToken(app);
-  const res = await app.run(`Publishing to ${new URL(server).host}`, () => publishAtlas(server, tok, mount, b.project.uuid, b.zip));
+  const publishKey = crypto.randomUUID();
+  const res = await app.run(`Publishing to ${new URL(server).host}`, () => publishAtlas(server, tok, mount, b.project.uuid, b.zip, publishKey));
   if (!res) return;
   const atlas = unzipStored(b.zip)[0];
   const rec: Published = {

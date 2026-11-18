@@ -203,8 +203,9 @@ test('Open list, unloaded session and tracked draft agree on the same status fix
     session.track(false);
     assert.equal(session.pixelsChanged, f.pixels, f.name);
     assert.equal(session.unsynced, f.pending, f.name);
-    assert.equal(session.text.includes('New images not published'), f.pixels, f.name);
-    if (!f.pending) assert.equal(session.text, 'In sync · v1 r2', f.name);
+    assert.equal(session.detailText.includes('New images not published'), f.pixels, f.name);
+    assert.equal(session.text, f.pending ? 'Saved' : 'Up to date', f.name);
+    if (!f.pending) assert.equal(session.detailText, 'In sync · v1 r2', f.name);
     assert.equal(session.draft.pixels_changed, f.pixels, f.name);
     assert.deepEqual([...storage], before, 'tracking defers persistence until after paint');
     flushWrites();
@@ -259,7 +260,7 @@ test('unloaded session status reads do not flush a pending project serialisation
   app.persist();
   assert.equal(session.pixelsChanged, false);
   assert.equal(session.unsynced, true);
-  assert.equal(session.text.includes('New images not published'), false);
+  assert.equal(session.detailText.includes('New images not published'), false);
   assert.equal(saved.length, 0, 'status reads leave project and draft writes coalesced after paint');
   flushWrites();
   assert.deepEqual(saved, ['project', 'draft']);
@@ -281,9 +282,262 @@ test('opening a view resolves saved pixel status even though view mode does not 
     await session.check();
     assert.equal(session.pixelsChanged, true);
     assert.equal(hasPendingChanges(session.draft), true);
-    assert.equal(session.text.includes('New images not published'), true);
+    assert.equal(session.detailText.includes('New images not published'), true);
     assert.equal(session.unsynced, false, 'view mode still suppresses the quit warning');
     session.save({ pixels_base: null });
     assert.equal(session.pixelsChanged, false, 'a newly learned unknown base refreshes the view');
   } finally { app.viewMode = false; flushWrites(); }
+});
+
+function quietSession(uuid = 'quiet-synthetic') {
+  app.sync.dispose();
+  app.flushPersistence(); storage.clear(); saved.length = 0;
+  app.project = { ...structuredClone(source), uuid }; app.adopt(app.project);
+  app.pkg = null; app.bundle = null; app.remote = null; app.stitched = {};
+  app.viewMode = false; app.storedCopy = null; app.loadingProject = false;
+  app.link.syncAutomatically = true; app.error = null;
+  const session = new SyncSession(app);
+  app.sync = session;
+  const base = Object.fromEntries(Object.entries(JSON.parse(JSON.stringify(session.elements))).map(([kind, rows]) => [kind, rows.map(row => ({ ...row, project_uuid: uuid }))]));
+  const hashes = { spots: 's1', grains: 'g1', labels: 'l1' };
+  session.draft = { uuid, name: 'Synthetic', mount: 'mount', server: 'https://quiet.test', base, base_revision: 1, base_hashes: hashes,
+    synced: true, changes: { spots: 0, grains: 0, labels: 0 }, pending: null, pixels_base: null, updated_at: new Date().toISOString(), server_can_edit: true };
+  session.status = { project_uuid: uuid, mount_id: 'mount', revision: 1, atlas_version: 1, can_edit: true, counts: { spots: 0, grains: 1, labels: 0 }, hashes };
+  session.registered = true; session.reachable = true;
+  return { session, base, hashes };
+}
+function addQuietSpot() {
+  app.spots = [...app.spots, { id: 'quiet-spot', name: 'Synthetic spot', area_id: 'area', grain_id: 'grain', x_um: 2, y_um: 2, diameter_um: 1 }];
+}
+function quietReply(body, revision = 2) {
+  return { ok: true, revision, previous_revision: 1, mode: body.mode, applied: {
+    spots: { created: 1, updated: 0, deleted: 0 }, grains: { created: 0, adopted: 0, updated: 0, retired: 0 }, labels: { created: 0, updated: 0, retired: 0 } },
+    not_in_snapshot: { spots: [], grains: [], labels: [] }, complete: true, warnings: [], rebased_over: 0 };
+}
+test('real session coalesces automatic edits and stops for hosted, read-only, settings and attention', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { session } = quietSession();
+  let runs = 0;
+  session.sync = async () => { runs++; };
+  addQuietSpot(); session.track();
+  assert.equal(session.text, 'Saved');
+  t.mock.timers.tick(2000); session.track();
+  t.mock.timers.tick(2999); assert.equal(runs, 0);
+  t.mock.timers.tick(1); assert.equal(runs, 1);
+  for (const gate of ['hosted', 'readOnly', 'setting', 'confirmation', 'review', 'busy']) {
+    app.hosted = gate === 'hosted'; app.viewMode = gate === 'readOnly'; app.link.syncAutomatically = gate !== 'setting';
+    session.confirmation = gate === 'confirmation' ? {} : null;
+    session.review = gate === 'review' ? {} : null; session.busy = gate === 'busy';
+    session.refreshAutomatic(); session.track(); t.mock.timers.tick(3000);
+    assert.equal(runs, 1, gate);
+  }
+  session.dispose(); app.hosted = false; app.viewMode = false; app.link.syncAutomatically = true; session.busy = false;
+});
+test('actual session persists exact request before sending, replays after restart, preserves newer edits', async t => {
+  const { session, base, hashes } = quietSession('recovery-synthetic');
+  t.after(() => session.dispose());
+  const { SyncApi } = await import('./sync-api.ts');
+  const calls = []; let server = { ...base, revision: 1, hashes };
+  let fail = true;
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push([String(url), init]);
+    if (String(url).endsWith('/sync')) {
+      const persisted = JSON.parse(storage.get('grainatlas.draft.recovery-synthetic'));
+      assert.equal(persisted.pending_request.id, init.headers['Idempotency-Key']);
+      assert.deepEqual(persisted.pending_request.body.spots.upsert[0].name, 'Synthetic spot');
+      if (fail) return Response.json({ detail: 'Synthetic relay down' }, { status: 503 });
+      const body = JSON.parse(init.body);
+      server = { ...base, spots: body.spots.upsert.map(s => ({ ...s, project_uuid: 'recovery-synthetic' })), revision: 2, hashes: { ...hashes, spots: 's2' } };
+      return Response.json(quietReply(body), { headers: { 'Idempotent-Replayed': 'true' } });
+    }
+    if (String(url).endsWith('/elements')) return Response.json(server);
+    return Response.json({ ...session.status, revision: server.revision });
+  });
+  session.api = async () => new SyncApi('https://quiet.test', null);
+  addQuietSpot(); session.track();
+  await session.runAutomatic(); session.dispose(); flushWrites();
+  assert.equal(session.text, 'Offline, will sync later');
+  assert.equal(app.error, null, 'automatic transient failures stay out of the error banner');
+  const stored = JSON.parse(storage.get('grainatlas.draft.recovery-synthetic'));
+  assert.ok(stored.pending_request.body); assert.ok(stored.pending.spots.length);
+  // Edit after the failed request; recovery must send the old snapshot first.
+  app.spots = app.spots.map(s => ({ ...s, name: 'Newer local name' }));
+  const restarted = new SyncSession(app);
+  app.sync = restarted;
+  t.after(() => restarted.dispose());
+  restarted.draft = stored; restarted.status = session.status; restarted.registered = true; restarted.reachable = true;
+  restarted.api = session.api;
+  restarted.track(); fail = false;
+  const before = calls.length, start = performance.now();
+  await restarted.runAutomatic(); restarted.dispose();
+  const writes = calls.filter(([url]) => url.endsWith('/sync')).map(([, init]) => init);
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0].headers['Idempotency-Key'], writes[1].headers['Idempotency-Key']);
+  assert.equal(writes[0].body, writes[1].body);
+  assert.equal(app.spots[0].name, 'Newer local name'); assert.equal(restarted.text, 'Saved', restarted.error);
+  assert.equal(restarted.draft.pending_request, null); assert.equal(restarted.draft.base_revision, 2);
+  assert.equal(calls[before][0].endsWith('/sync'), true, 'recovery replays before fetching any new snapshot');
+  t.diagnostic(`Recovery: ${calls.length - before} requests, ${(performance.now() - start).toFixed(1)} ms; old rebuilt path requires 4 requests`);
+});
+test('sync on save retries after a successful check when automatic sync is off', async t => {
+  const { SyncNetworkError } = await import('./sync-api.ts');
+  const { session, base, hashes } = quietSession('save-check-synthetic');
+  t.after(() => { session.dispose(); app.link.syncAutomatically = true; });
+  app.link.syncAutomatically = false; app.link.syncOnSave = true;
+  let writes = 0;
+  const server = { ...base, revision: 1, hashes };
+  const status = session.status;
+  session.api = async () => ({ elements: async () => structuredClone(server), lookup: async () => ({ ...status, revision: server.revision }),
+    sync: async (_mount, body) => {
+      if (++writes === 1) throw new SyncNetworkError('Synthetic interruption');
+      server.spots = body.spots.upsert.map(s => ({ ...s, project_uuid: session.draft.uuid })); server.revision = 2;
+      return quietReply(body);
+    } });
+  session.track(false); await session.check();
+  addQuietSpot();
+  await session.afterSave();
+  assert.equal(writes, 1); assert.equal(session.pendingSync, true);
+  await session.check();
+  assert.equal(writes, 2); assert.equal(session.pendingSync, false);
+  assert.equal(session.text, 'Up to date', session.error);
+});
+test('exhausted in-progress replies back off and retry the same persisted write', async t => {
+  const { SyncApi } = await import('./sync-api.ts');
+  const { session, base, hashes } = quietSession('in-progress-synthetic');
+  t.after(() => session.dispose());
+  let pending = true;
+  const requests = [];
+  const server = { ...base, revision: 1, hashes };
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (!String(url).endsWith('/sync')) return Response.json(String(url).endsWith('/elements') ? server : { ...session.status, revision: server.revision });
+    requests.push([init.headers['Idempotency-Key'], init.body]);
+    if (pending) return Response.json({ code: 'idempotency_in_progress' }, { status: 409, headers: { 'Retry-After': '0' } });
+    const body = JSON.parse(init.body);
+    server.spots = body.spots.upsert.map(s => ({ ...s, project_uuid: session.draft.uuid })); server.revision = 2;
+    return Response.json(quietReply(body));
+  });
+  session.api = async () => new SyncApi('https://quiet.test', null);
+  addQuietSpot(); session.track();
+  await session.runAutomatic();
+  assert.equal(requests.length, 31);
+  assert.equal(session.text, 'Offline, will sync later');
+  assert.equal(app.error, null);
+  assert.equal(session.pendingSync, true);
+  assert.equal(session.backgroundPending, true);
+  assert.equal(session.draft.pending_request.id, requests[0][0]);
+  pending = false; await session.runAutomatic();
+  assert.equal(requests.length, 32);
+  assert.ok(requests.every(r => r[0] === requests[0][0] && r[1] === requests[0][1]));
+  assert.equal(session.draft.pending_request, null);
+  assert.equal(session.text, 'Up to date', session.error);
+});
+test('background sync combines non-overlapping remote edits, but registered spot collisions need attention', async t => {
+  for (const variant of ['rows', 'fields', 'collision']) {
+    const collision = variant === 'collision';
+    const { session, base, hashes } = quietSession(`merge-synthetic-${variant}`);
+    t.after(() => session.dispose());
+    const spot = { project_uuid: session.draft.uuid, id: 'registered-spot', name: 'Synthetic spot', area_id: 'area', grain_id: 'grain', x_um: 2, y_um: 2, diameter_um: 1, acquisition_ids: ['synthetic-acquisition'] };
+    base.spots = [spot]; session.draft = { ...session.draft, base };
+    app.spots = [{ ...spot, name: 'Local name' }];
+    const remote = { ...base, spots: collision ? [{ ...spot, name: 'Shared name' }] : variant === 'fields' ? [{ ...spot, diameter_um: 3 }] : base.spots,
+      labels: variant !== 'rows' ? [] : [{ project_uuid: session.draft.uuid, id: 'remote-label', area_id: 'area', x_um: 0, y_um: 0, text: 'Shared label' }], revision: 2, hashes };
+    let writes = 0;
+    session.api = async () => ({ elements: async () => remote, sync: async (_mount, body) => {
+      writes++; remote.spots = body.spots.upsert.map(s => ({ ...s, project_uuid: session.draft.uuid })); remote.revision = 3; return quietReply(body, 3);
+    }, lookup: async () => ({ ...session.status, revision: remote.revision }) });
+    session.track(); await session.runAutomatic(); session.dispose();
+    if (collision) { assert.equal(writes, 0); assert.equal(session.text, 'Needs your attention'); assert.equal(session.registeredSpotConflict, true); }
+    else { assert.equal(writes, 1); if (variant === 'rows') assert.equal(app.labels[0].text, 'Shared label'); else assert.equal(app.spots[0].diameter_um, 3); assert.equal(app.spots[0].name, 'Local name'); assert.equal(session.text, 'Up to date', session.error); }
+  }
+});
+test('a server bulk guard stops automatic sync without confirming anything', async () => {
+  const { SyncApiError } = await import('./sync-api.ts');
+  const { session, base, hashes } = quietSession('bulk-synthetic');
+  let writes = 0;
+  session.api = async () => ({ elements: async () => ({ ...base, revision: 1, hashes }), sync: async (_mount, body) => {
+    writes++; assert.equal(body.confirm_bulk, undefined);
+    const error = new SyncApiError(422, ['Confirm this change']);
+    error.bulkConfirmation = true; error.confirmation = { retireGrains: 0, grainsTotal: 1, deleteSpots: 0, spotsTotal: 0 }; throw error;
+  } });
+  addQuietSpot(); session.track(); await session.runAutomatic(); session.dispose();
+  assert.equal(writes, 1); assert.equal(session.text, 'Needs your attention'); assert.ok(session.confirmation);
+  assert.equal(session.draft.pending_request, null); assert.ok(session.draft.pending.spots.length);
+});
+test('keeping a bulk removal restores database grains and spots and preserves other edits', async t => {
+  const { SyncApiError } = await import('./sync-api.ts');
+  for (const variant of ['remove', 'split', 'merge']) {
+    const { session, base, hashes } = quietSession(`keep-bulk-${variant}`);
+    t.after(() => session.dispose());
+    const original = { id: 'original', name: 'Database spot', area_id: 'area', grain_id: variant === 'remove' ? 'grain' : null, x_um: 1, y_um: 1, diameter_um: 1, project_uuid: session.draft.uuid };
+    base.spots = [original]; session.draft = { ...session.draft, base };
+    const server = { ...base, revision: 1, hashes };
+    const bodies = [];
+    session.api = async () => ({ elements: async () => structuredClone(server), lookup: async () => ({ ...session.status, revision: server.revision }),
+      sync: async (_mount, body) => {
+        bodies.push(body);
+        assert.equal(body.confirm_bulk, undefined);
+        if (bodies.length === 1) {
+          const error = new SyncApiError(422, ['Confirm this change']); error.bulkConfirmation = true; throw error;
+        }
+        assert.deepEqual(body.spots.delete, []); assert.deepEqual(body.grains.retire, []); assert.deepEqual(body.grains.delete, []);
+        server.spots = [...base.spots, ...body.spots.upsert.map(s => ({ ...s, project_uuid: session.draft.uuid }))];
+        server.grains = [...base.grains, ...body.grains.upsert.map(g => ({ ...g, project_uuid: session.draft.uuid }))];
+        server.labels = body.labels.upsert.map(l => ({ ...l, project_uuid: session.draft.uuid })); server.revision = 2;
+        return quietReply(body);
+      } });
+    const parent = app.grains.area[0];
+    app.grains = { area: variant === 'remove' ? [] : [{ ...parent, id: 'child', number: 2,
+      ...(variant === 'split' ? { split_from: parent.id } : { merged_from: [parent.id] }) }] };
+    addQuietSpot(); app.spots = app.spots.map(s => ({ ...s, grain_id: variant === 'remove' ? null : 'child' }));
+    session.track(); await session.runAutomatic();
+    assert.equal(session.text, 'Needs your attention');
+    assert.ok(bodies.length, `${variant}: ${session.error}`);
+    assert.deepEqual(bodies[0].spots.delete, [original.id], variant);
+    app.labels = [{ id: 'later-label', area_id: 'area', x_um: 1, y_um: 1, text: 'Later edit' }];
+    const started = performance.now();
+    session.keepBulk();
+    assert.equal(session.confirmation, null); assert.equal(session.dialog, null);
+    assert.equal(app.spots.find(s => s.id === original.id).name, original.name);
+    assert.deepEqual(app.grains.area.find(g => g.id === parent.id).polygon_um, parent.polygon_um);
+    assert.equal(app.labels[0].text, 'Later edit');
+    assert.equal(session.backgroundPending, true);
+    await session.runAutomatic();
+    assert.equal(bodies.length, 2); assert.equal(session.text, 'Up to date', session.error);
+    t.diagnostic(`Keep bulk (${variant}): 1 guarded POST before the choice, 1 resumed POST after; ${(performance.now() - started).toFixed(1)} ms to restore and sync locally`);
+    session.dispose();
+  }
+});
+
+test('renewed idempotency key is durable and keeps identical wire bytes after restart', async t => {
+  const { SyncApi } = await import('./sync-api.ts');
+  const { session, base, hashes } = quietSession('renewal-synthetic');
+  t.after(() => session.dispose());
+  const writes = []; let server = { ...base, revision: 1, hashes };
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/sync')) {
+      writes.push(init);
+      if (writes.length === 1) return Response.json({ code: 'idempotency_key_reused' }, { status: 422 });
+      const persisted = JSON.parse(storage.get('grainatlas.draft.renewal-synthetic')).pending_request;
+      assert.equal(persisted.id, init.headers['Idempotency-Key']);
+      assert.equal(persisted.wire_id, JSON.parse(init.body).request_id);
+      if (writes.length === 2) return Response.json({ detail: 'Synthetic relay down' }, { status: 503 });
+      const body = JSON.parse(init.body);
+      server = { ...base, spots: body.spots.upsert.map(s => ({ ...s, project_uuid: 'renewal-synthetic' })), revision: 2, hashes };
+      return Response.json(quietReply(body));
+    }
+    return Response.json(String(url).endsWith('/elements') ? server : { ...session.status, revision: 2 });
+  });
+  session.api = async () => new SyncApi('https://quiet.test', null);
+  addQuietSpot(); session.track(); await session.sync(); session.dispose(); flushWrites();
+  assert.equal(writes.length, 2); assert.notEqual(writes[0].headers['Idempotency-Key'], writes[1].headers['Idempotency-Key']);
+  const restored = JSON.parse(storage.get('grainatlas.draft.renewal-synthetic'));
+  const restarted = new SyncSession(app); app.sync = restarted; t.after(() => restarted.dispose());
+  restarted.draft = restored; restarted.status = session.status; restarted.registered = true; restarted.reachable = true; restarted.api = session.api;
+  await restarted.sync(); restarted.dispose();
+  assert.equal(writes.length, 3);
+  assert.equal(writes[1].headers['Idempotency-Key'], writes[2].headers['Idempotency-Key']);
+  assert.equal(writes[0].body, writes[1].body); assert.equal(writes[1].body, writes[2].body);
+  assert.equal(restarted.error, ''); assert.equal(restarted.draft.pending_request, null);
 });

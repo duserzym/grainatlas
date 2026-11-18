@@ -57,11 +57,15 @@ function readStoredZip(zip: Buffer): Map<string, Buffer> {
   return files;
 }
 
-async function mockServer(page: Page, onLevelZero = () => {}, unregistered = false, beforeLevelZero: () => Promise<void> = async () => {}) {
+async function mockServer(page: Page, onLevelZero = () => {}, unregistered = false, beforeLevelZero: () => Promise<void> = async () => {},
+  quiet: { standalone?: boolean; failures?: number; bulk?: boolean; beforeReply?: () => Promise<void> } = {}) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
   const syncBodies: any[] = [];
+  const syncRequests: { key: string | undefined; body: string }[] = [];
+  const replies = new Map<string, object>();
+  let failures = quiet.failures ?? 0;
   const createBodies: any[] = [];
   const mounts = unregistered ? [] : [{ id: mountId, label: 'Synthetic mount', mount_type: 'epoxy_1in', grain_count: 2, spot_count: 3, can_edit: true }];
   const unexpected: string[] = [];
@@ -72,20 +76,21 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
     spots: ui.spots.map((s: any) => ({ ...s, project_uuid: projectId, kind: 'spot', acquisition_ids: [] })),
     labels: ui.labels.map((l: any) => ({ ...l, project_uuid: projectId })),
   };
-  await page.addInitScript(({ server }) => {
+  await page.addInitScript(({ server, standalone }) => {
     const w = window as any;
     // Exercise the real hosted bridge command route while keeping all image work in wasm.
-    w.__LAB_SHELL__ = { module: 'grainatlas' };
+    if (!standalone) w.__LAB_SHELL__ = { module: 'grainatlas' };
     w.__commands = [];
     w.__events = [];
-    w.__TAURI_INTERNALS__ = { invoke: async (cmd: string, args: any) => {
+    if (!standalone) w.__TAURI_INTERNALS__ = { invoke: async (cmd: string, args: any) => {
       if (cmd === 'bridge_take_command') return w.__commands.shift() ?? null;
       if (cmd === 'bridge_notify') { w.__events.push(args.event); return null; }
       if (cmd === 'bridge_token') return 'synthetic-token';
       return null;
     } };
     localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: true, quality: 100, nasRoot: '' }));
-  }, { server });
+    sessionStorage.setItem('grainatlas.upbdb.token', 'synthetic-token');
+  }, { server, standalone: quiet.standalone ?? false });
   const uploads: Map<string, Buffer>[] = [];
   const bundleRequests: { path: string; version: number }[] = [];
   let atlasVersion = 1;
@@ -149,19 +154,30 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
     }
     if (pathname === `/v1/mounts/${mountId}/sync`) {
       const body = request.postDataJSON(); syncBodies.push(body);
-      for (const kind of ['spots', 'grains', 'labels'] as const) {
-        const upserts = body[kind].upsert;
-        elements[kind] = elements[kind].map((e: any) => ({ ...e, ...upserts.find((u: any) => u.id === e.id) }));
+      const key = request.headers()['idempotency-key'];
+      syncRequests.push({ key, body: request.postData()! });
+      if (failures-- > 0) return json({ detail: 'Synthetic relay unavailable' }, 503);
+      if (quiet.bulk && body.spots.delete.length && !body.confirm_bulk) return json({ code: 'bulk_change', message: 'Confirm this change',
+        confirm: { retireGrains: 0, grainsTotal: 2, deleteSpots: body.spots.delete.length, spotsTotal: elements.spots.length } }, 422);
+      if (key && replies.has(key)) return route.fulfill({ status: 200, json: replies.get(key), headers: { 'access-control-allow-origin': '*', 'Idempotent-Replayed': 'true' } });
+      if (!body.dry_run) for (const kind of ['spots', 'grains', 'labels'] as const) {
+        const rows = new Map<string, any>(elements[kind].map((e: any) => [e.id, e] as [string, any]));
+        for (const id of body[kind].delete) rows.delete(id);
+        for (const upsert of body[kind].upsert) rows.set(upsert.id, { ...rows.get(upsert.id), ...upsert, project_uuid: projectId });
+        elements[kind] = [...rows.values()] as any;
       }
-      revision++;
-      return json({ ok: true, mount_id: mountId, project_uuid: projectId, mode: body.mode, previous_revision: revision-1, revision,
-        applied: { spots: { created: 0, updated: 0, deleted: 0, unchanged: 3 }, grains: { created: 0, adopted: 0, updated: 0, retired: 0, unchanged: 2 }, labels: { created: 0, updated: 0, retired: 0, unchanged: 1 } },
-        ids: { spots: {}, grains: {}, labels: {} }, acquisitions_linked: 0, complete: true, warnings: [], rebased_over: 0, not_in_snapshot: { spots: [], grains: [], labels: [] } });
+      if (!body.dry_run) revision++;
+      const reply = { ok: true, mount_id: mountId, project_uuid: projectId, mode: body.mode, previous_revision: revision-1, revision,
+        applied: { spots: { created: 0, updated: body.spots.upsert.length, deleted: body.spots.delete.length, unchanged: 3 }, grains: { created: 0, adopted: 0, updated: 0, retired: 0, unchanged: 2 }, labels: { created: 0, updated: 0, retired: 0, unchanged: 1 } },
+        ids: { spots: {}, grains: {}, labels: {} }, acquisitions_linked: 0, complete: true, warnings: [], rebased_over: 0, not_in_snapshot: { spots: [], grains: [], labels: [] } };
+      if (key) replies.set(key, reply);
+      await quiet.beforeReply?.();
+      return json(reply);
     }
     unexpected.push(`${request.method()} ${pathname}`);
     return route.fulfill({ status: 404, json: { detail: 'Unexpected synthetic endpoint' } });
   });
-  return { project, atlas, syncBodies, unexpected, uploads, bundleRequests, createBodies };
+  return { project, atlas, syncBodies, syncRequests, unexpected, uploads, bundleRequests, createBodies };
 }
 
 test('Canvas creates and selects a mount, and keeps duplicate-label errors in the form', async ({ page }) => {
@@ -304,7 +320,8 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   await low.fill('12');
   await expect(page.getByTestId('area-view')).toHaveAttribute('data-live', 'idle');
   await expect(histogram).not.toHaveAttribute('d', originalHistogram!);
-  await expect(chip).toContainText('New images not published');
+  await expect(chip).toHaveText('Saved');
+  await expect(chip).toHaveAttribute('title', /New images not published/);
 
   await page.getByTestId('sync-action').click();
   const dialog = page.getByRole('dialog', { name: 'Sync to database' });
@@ -334,8 +351,9 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   }
 
   // v2 means lookup has refreshed after the uploaded project acknowledged pixels.
-  await expect(chip).toContainText('In sync · v2');
-  await expect(chip).not.toContainText('New images not published');
+  await expect(chip).toHaveText('Up to date');
+  await expect(chip).toHaveAttribute('title', /v2/);
+  await expect(chip).not.toHaveAttribute('title', /New images not published/);
   await expect(low).toBeEnabled();
   await expect(low).toHaveValue('0');
   await expect(page.getByTestId('busy')).toHaveCount(0);
@@ -346,8 +364,9 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   const saved = JSON.parse(await downloadText(page, () => page.getByTestId('save-project').click()));
   expect(saved.grainatlas_ui).not.toHaveProperty('bundle_tone');
   await expect.poll(() => syncBodies.length).toBe(syncsBeforeSave + 1);
-  await expect(chip).toContainText(`In sync · v2 r${syncBodies.length + 1}`);
-  await expect(chip).not.toContainText('New images not published');
+  await expect(chip).toHaveText('Up to date');
+  await expect(chip).toHaveAttribute('title', new RegExp(`v2 r${syncBodies.length + 1}`));
+  await expect(chip).not.toHaveAttribute('title', /New images not published/);
 
   const beforeReload = bundleRequests.length;
   // The app drops the deep-link query once handled: open the same link again.
@@ -365,8 +384,9 @@ test('publishing a tone change bakes the overlay and reopens the new images with
   expect(bundleRequests.slice(beforeReload)).toEqual(expect.arrayContaining([
     { path: 'atlas.json', version: 2 }, { path: 'project.json', version: 2 },
   ]));
-  await expect(chip).toContainText('In sync · v2');
-  await expect(chip).not.toContainText('New images not published');
+  await expect(chip).toHaveText('Up to date');
+  await expect(chip).toHaveAttribute('title', /v2/);
+  await expect(chip).not.toHaveAttribute('title', /New images not published/);
   expect(uploads).toHaveLength(1);
   expect(unexpected).toEqual([]);
 });
@@ -428,4 +448,102 @@ test('published pixels load without a modal, can stop and retry, and survive a r
   await expect(status).toHaveCount(0);
   expect(levelZeroRequests - beforeReload).toBe(0);
   expect(unexpected).toEqual([]);
+});
+
+
+async function openQuietEdit(page: Page) {
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  await page.getByTestId('edit-copy').click();
+  await expect(page.getByTestId('tool-spot')).toBeEnabled();
+}
+async function placeQuietSpot(page: Page, project: any) {
+  const before = await page.getByTestId('spot').count();
+  const layers = page.locator('details.layers');
+  await layers.evaluate((element: HTMLDetailsElement) => { element.open = true; });
+  await page.getByLabel('info panel', { exact: true }).uncheck();
+  await page.getByTestId('side-collapse').click();
+  await page.getByTestId('tool-spot').click();
+  await page.getByRole('button', { name: '+', exact: true }).click();
+  // Inside the first grain but clear of its existing spots (a click on a spot selects it).
+  const [gx] = project.grainatlas_ui.grains.a[0].centroid_um;
+  const target = [gx, 150];
+  const point = () => page.getByTestId('canvas-um-space').evaluate((g: SVGGElement, point: number[]) => {
+    const p = new DOMPoint(point[0], point[1]).matrixTransform(g.getScreenCTM()!);
+    const bounds = g.closest('[data-view]')!.getBoundingClientRect();
+    return { x: p.x, y: p.y, cx: (bounds.left + bounds.right) / 2, cy: (bounds.top + bounds.bottom) / 2 };
+  }, target);
+  let p = await point();
+  await page.mouse.move(p.cx, p.cy); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(p.cx + p.cx - p.x, p.cy + p.cy - p.y, { steps: 5 }); await page.mouse.up({ button: 'middle' });
+  p = await point(); await page.mouse.click(p.x, p.y);
+  await expect(page.getByTestId('spot')).toHaveCount(before + 1);
+}
+
+test('quiet sync saves, syncs and settles with one idempotent write', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, beforeReply: () => gate });
+  await openQuietEdit(page); await placeQuietSpot(page, mock.project);
+  const chip = page.getByTestId('sync-chip');
+  await expect(chip).toHaveText('Saved');
+  await expect(chip).toHaveText('Syncing…', { timeout: 10000 });
+  release(); await expect(chip).toHaveText('Up to date');
+  expect(mock.syncRequests).toHaveLength(1);
+  expect(mock.syncRequests[0].key).toMatch(/^[0-9a-f-]{36}$/);
+  expect(mock.unexpected).toEqual([]);
+});
+test('quiet sync retries two 503 replies with the same key and body', async ({ page }) => {
+  test.setTimeout(60000);
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, failures: 2 });
+  await openQuietEdit(page); await placeQuietSpot(page, mock.project);
+  await expect(page.getByTestId('sync-chip')).toHaveText('Offline, will sync later', { timeout: 10000 });
+  await expect(page.getByTestId('sync-chip')).toHaveText('Up to date', { timeout: 40000 });
+  expect(mock.syncRequests).toHaveLength(3);
+  expect(new Set(mock.syncRequests.map(r => r.key)).size).toBe(1);
+  expect(new Set(mock.syncRequests.map(r => r.body)).size).toBe(1);
+  expect(mock.syncRequests[0].key).toMatch(/^[0-9a-f-]{36}$/);
+});
+test('quiet sync leaves a bulk guard for a person and never confirms it', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, bulk: true });
+  await openQuietEdit(page); await placeQuietSpot(page, mock.project);
+  await page.getByTestId('side-expand').click();
+  const removed = mock.project.grainatlas_ui.spots.slice(0, 2);
+  await page.locator(`tr[data-spot-id="${removed[0].id}"]`).click();
+  await page.locator(`tr[data-spot-id="${removed[1].id}"]`).click({ modifiers: ['Shift'] });
+  await page.keyboard.press('Delete');
+  await expect(page.getByTestId('spot')).toHaveCount(2);
+  await expect(page.getByTestId('sync-chip')).toHaveText('Needs your attention', { timeout: 10000 });
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('button').first()).toHaveText('Keep them (recommended)');
+  await expect(dialog.getByText(/^What happens to your spots:/)).toBeVisible();
+  await page.evaluate(() => { window.dispatchEvent(new Event('online')); window.dispatchEvent(new Event('focus')); });
+  expect(mock.syncRequests).toHaveLength(1);
+  expect(mock.syncBodies[0].spots.delete.sort()).toEqual(removed.map((s: any) => s.id).sort());
+  await dialog.getByRole('button', { name: 'Keep them (recommended)', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('spot')).toHaveCount(4);
+  for (const spot of removed) await expect(page.locator(`tr[data-spot-id="${spot.id}"]`)).toBeVisible();
+  await expect(page.getByTestId('sync-chip')).toHaveText('Up to date', { timeout: 10000 });
+  expect(mock.syncRequests).toHaveLength(2);
+  for (const kind of ['spots', 'grains', 'labels']) expect(mock.syncBodies[1][kind].delete).toEqual([]);
+  // The wire body sends grain retirement as grains.delete (checked above).
+  expect(mock.syncBodies.every(body => !Object.hasOwn(body, 'confirm_bulk'))).toBe(true);
+  expect(mock.unexpected).toEqual([]);
+});
+test('quiet sync recovers the exact pending request after reloading mid-reply', async ({ page }) => {
+  let release!: () => void; let held = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true, beforeReply: async () => { held = true; await gate; } });
+  await openQuietEdit(page); await placeQuietSpot(page, mock.project);
+  await expect.poll(() => held).toBe(true);
+  expect(mock.syncRequests).toHaveLength(1);
+  const first = mock.syncRequests[0];
+  // A direct open returns to View; explicitly resume Edit so the read-only gate stays respected.
+  page.on('dialog', dialog => { void dialog.accept(); });
+  await openQuietEdit(page);
+  await expect(page.getByTestId('sync-chip')).toHaveText('Up to date', { timeout: 10000 });
+  release();
+  expect(mock.syncRequests).toHaveLength(2);
+  expect(mock.syncRequests[1]).toEqual(first);
 });

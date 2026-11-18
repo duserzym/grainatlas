@@ -1,3 +1,4 @@
+import { idempotentWrite } from './idempotency.ts';
 import { canWrite, requireWrite } from './presentation.ts';
 import { errorSentence } from './sync-api.ts';
 // Links and hand-overs to UPbDB (the sessions database), through the UPb
@@ -60,6 +61,7 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[], gra
 /** The user's UPbDB settings on this computer (never in the project). */
 export interface LinkSettings {
   syncOnSave: boolean;
+  syncAutomatically: boolean;
   /** Base URL of the UPbDB service, e.g. `http://localhost:8000`; empty = none. */
   server: string;
   /** Bearer token pasted when grainatlas runs on its own (hosted, the shell's token is used). */
@@ -75,7 +77,7 @@ export interface LinkSettings {
 const LINK_KEY = 'grainatlas.upbdb';
 const TOKEN_KEY = 'grainatlas.upbdb.token';
 
-export const DEFAULT_LINK: LinkSettings = { server: '', token: '', rememberToken: false, quality: 100, nasRoot: '', syncOnSave: true };
+export const DEFAULT_LINK: LinkSettings = { server: '', token: '', rememberToken: false, quality: 100, nasRoot: '', syncOnSave: true, syncAutomatically: true };
 
 export function loadLink(): LinkSettings {
   const out = { ...DEFAULT_LINK };
@@ -166,7 +168,8 @@ async function call<T>(base: string, path: string, token: string | null, init: R
   if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
   let r: Response;
   try {
-    r = await fetch(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined) } });
+    const send = (key?: string) => fetch(`${base}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> | undefined), ...(key ? { 'Idempotency-Key': key } : {}) } });
+    r = init.method === 'POST' ? await idempotentWrite(send, { key: new Headers(init.headers).get('Idempotency-Key') ?? undefined }) : await send();
   } catch (e) {
     console.warn(`${what}: cannot reach ${base}`, e);
     throw new ApiError(0, `${what}: ${errorSentence(0, null)}`);
@@ -211,10 +214,14 @@ export interface AtlasPublishOut {
   [k: string]: unknown;
 }
 
-export function publishAtlas(base: string, token: string | null, mountId: string, projectId: string, zip: Uint8Array): Promise<AtlasPublishOut> {
+export async function publishAtlas(base: string, token: string | null, mountId: string, projectId: string, zip: Uint8Array, key = crypto.randomUUID()): Promise<AtlasPublishOut> {
   const form = new FormData();
   form.append('bundle', new Blob([zip as BlobPart], { type: 'application/zip' }), `${projectId}.atlas.zip`);
-  return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/atlas`, token, { method: 'POST', body: form }, 'Publishing the atlas');
+  // Encode once: fetch(FormData) would choose a new multipart boundary on every retry.
+  const encoded = new Response(form);
+  const body = await encoded.blob();
+  return call(base, `/v1/mounts/${encodeURIComponent(mountId)}/atlas`, token, { method: 'POST', body,
+    headers: { 'Idempotency-Key': key, 'Content-Type': encoded.headers.get('Content-Type')! } }, 'Publishing the atlas');
 }
 
 /** URL of a file of a published bundle. */

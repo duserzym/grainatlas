@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
+  import SyncAttention from './SyncAttention.svelte';
   import MountPicker from './MountPicker.svelte';
   import SyncLinkOffer from './SyncLinkOffer.svelte';
   import { describeChange, elementLabel, type Difference, type Resolution } from '../lib/sync';
@@ -9,10 +10,11 @@
   let choices = $state<Record<string, Resolution>>({});
   let publishImages = $state(true);
   const session = $derived(app.sync);
-  const action = $derived(session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Update from database' : session.state === 'both-changed' ? session.text === 'Database has more' ? 'Sync to database' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync to database');
-  const pillState = $derived(session.confirmation ? 'needs-confirmation' : session.checking ? 'checking' : session.state === 'in-sync' && session.pixelsChanged ? 'local-changes' : session.state);
-  const text = $derived(session.text + (app.draftHere === 'unknown' ? ' · Your draft here, base not checked' : app.draftHere !== null ? ` · Your draft here, based on r${app.draftHere}` : ''));
-  const title = $derived([text, session.syncedAt ? `Last synced ${new Date(session.syncedAt).toLocaleString()}` : '', session.syncDisabledReason || session.error].filter(Boolean).join(' · '));
+  const action = $derived(session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Get latest changes' : session.state === 'both-changed' ? session.detailText === 'Database has more' ? 'Sync now' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync now');
+  const pillState = $derived(session.text === 'Needs your attention' ? 'needs-confirmation' : session.text === 'Syncing…' ? 'checking' : session.text === 'Up to date' ? 'in-sync' : session.text === 'Offline, will sync later' ? 'offline' : 'local-changes');
+  const text = $derived(session.text);
+  const revisionTitle = $derived(session.status ? `v${session.status.atlas_version ?? '—'} r${session.status.revision}` : '');
+  const title = $derived([session.detailText, session.detailText.includes(revisionTitle) ? '' : revisionTitle, app.draftHere === 'unknown' ? 'Your draft here, base not checked' : app.draftHere !== null ? `Your draft here, based on r${app.draftHere}` : '', session.syncedAt ? `Last synced ${new Date(session.syncedAt).toLocaleString()}` : '', session.syncDisabledReason || session.error].filter(Boolean).join(' · '));
   const kindName = (d: Difference) => d.kind === 'labels' ? 'Annotation' : d.kind === 'grains' ? 'Grain' : 'Spot';
   const nameOf = (d: Difference) => elementLabel(d.kind, d.id, { [d.kind]: [d.mine, d.theirs, d.base].filter(e => !!e) }, session.draft?.base);
   const grainName = (id: string | null | undefined) => id ? session.label('grains', id) : 'none';
@@ -29,15 +31,12 @@
 
 {#if app.project}
   <div class="sync">
-    <button class="sync-pill state-{pillState}" data-testid="sync-chip" {title} aria-busy={session.checking} aria-expanded={detailsOpen} aria-controls={detailsOpen ? 'sync-details' : undefined} onclick={() => detailsOpen = !detailsOpen}>
+    <button class="sync-pill state-{pillState}" data-testid="sync-chip" {title} aria-busy={session.busy} aria-expanded={detailsOpen} aria-controls={detailsOpen ? 'sync-details' : undefined} onclick={() => detailsOpen = !detailsOpen}>
       <svg class:spinning={pillState === 'checking'} viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         {#if pillState === 'in-sync'}<path d="m3 8 3 3 7-7" />
         {:else if pillState === 'checking'}<path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" />
-        {:else if pillState === 'server-newer'}<path d="M8 2v11m-4-4 4 4 4-4" />
-        {:else if pillState === 'both-changed'}<path d="m3 5 3-3 3 3M6 2v9m1 0 3 3 3-3m-3 3V5" />
         {:else if pillState === 'needs-confirmation'}<path d="M8 2 1.5 14h13L8 2Zm0 4v4m0 2v.1" />
         {:else if pillState === 'offline'}<path d="m2 2 12 12M5 5a5 5 0 0 0-2 3m5-5a5 5 0 0 1 5 5M5 11a4 4 0 0 1 4-1m-1 3v.1" />
-        {:else if pillState === 'unregistered'}<circle cx="8" cy="8" r="5" />
         {:else}<circle cx="8" cy="8" r="2" fill="currentColor" />{/if}
       </svg>
       <span aria-live="polite">{text}</span>
@@ -50,9 +49,14 @@
 {#if session.dialog}
     <dialog bind:this={dialogElement} class="glass panel review" oncancel={() => session.cancelConfirmation()} onkeydown={e => e.stopPropagation()} aria-modal="true" aria-label={session.dialog === 'bulk' ? 'Confirm sync' : session.dialog === 'review' ? 'Review differences' : session.dialog === 'register' ? 'Register project' : 'Sync to database'} tabindex="-1">
       {#if session.dialog === 'bulk' && session.confirmation}
-        <h2>Confirm sync</h2>
-        <p>This retires {session.confirmation.retireGrains} of {session.confirmation.grainsTotal} grains and deletes {session.confirmation.deleteSpots} spots. Continue?</p>
-        <div class="actions"><button onclick={() => session.cancelConfirmation()}>Cancel</button><button class="primary" disabled={session.busy} onclick={() => session.confirmBulk()}>Continue</button></div>
+        <SyncAttention title="Keep these grains and spots?"
+          message={`This change removes ${session.confirmation.retireGrains} grains and ${session.confirmation.deleteSpots} spots from the shared project.`}
+          spots={`${session.confirmation.deleteSpots} spots would be removed. Spots with measurements are kept.`}>
+          {#snippet actions()}
+            <button class="primary" disabled={session.busy} onclick={() => session.keepBulk()}>Keep them (recommended)</button>
+            <button disabled={session.busy} onclick={() => session.confirmBulk()}>Remove and sync</button>
+          {/snippet}
+        </SyncAttention>
       {:else if session.dialog === 'register'}
         <h2>Register project</h2>
         <SyncLinkOffer />
@@ -66,22 +70,27 @@
         <label class="check"><input type="checkbox" bind:checked={publishImages} /> Publish a new atlas version with these images</label>
         <div class="actions"><button onclick={() => session.dialog = null}>Cancel</button><button class="primary" onclick={() => { session.dialog = null; void session.sync(publishImages); }}>Sync to database</button></div>
       {:else if session.review}
-        <h2>Review differences</h2>
-        <p>Choose each conflicting element. Other changes are combined automatically. Deleted elements are shown as deleted.</p>
+        {#if session.registeredSpotConflict}
+          <SyncAttention title="A saved spot changed in two places" message="Choose which version to keep. Other changes are combined automatically."
+            spots="Nothing changes until you choose. Spots with measurements cannot be deleted." />
+        {:else}
+          <h2>Review differences</h2>
+          <p>Choose which version to keep. Other changes are combined automatically.</p>
+        {/if}
         <div class="differences">
           {#each session.review.merge.differences as d (`${d.kind}:${d.id}`)}
             <section class="panel" data-testid={d.collision ? 'sync-collision' : 'sync-combined'}>
               <strong data-testid="sync-difference-name">{kindName(d)} {nameOf(d)}</strong>
               <p class="faint small">{d.collision ? 'Both changed' : 'Combined automatically'}</p>
-              <div class="versions"><div><b>Mine</b><p data-testid="sync-mine-change">{sideText(d, 'mine')}</p></div><div><b>Database</b><p data-testid="sync-theirs-change">{sideText(d, 'theirs')}</p></div></div>
+              <div class="versions"><div><b>Mine</b><p data-testid="sync-mine-change">{sideText(d, 'mine')}</p></div><div><b>Shared version</b><p data-testid="sync-theirs-change">{sideText(d, 'theirs')}</p></div></div>
               <details><summary class="faint small">Details</summary>
                 <p class="faint small mono">{d.kind} {d.id}</p>
                 <div class="versions"><pre>{d.mine ? JSON.stringify(d.mine, null, 2) : 'Deleted'}</pre><pre>{d.theirs ? JSON.stringify(d.theirs, null, 2) : 'Deleted'}</pre></div>
               </details>
               {#if d.collision}
                 <div class="actions">
-                  {#each ['mine', 'theirs', ...(d.bothAllowed ? ['both'] : [])] as option}
-                    <label class="check"><input type="radio" name={`resolve-${d.kind}-${d.id}`} value={option} checked={choices[`${d.kind}:${d.id}`] === option} onchange={() => choices[`${d.kind}:${d.id}`] = option as Resolution} />{option === 'mine' ? 'Mine' : option === 'theirs' ? 'Theirs' : 'Both (keep a separate copy)'}</label>
+                  {#each ['theirs', 'mine', ...(d.bothAllowed && !(d.kind === 'spots' && d.base) ? ['both'] : [])] as option}
+                    <label class="check"><input type="radio" name={`resolve-${d.kind}-${d.id}`} value={option} checked={choices[`${d.kind}:${d.id}`] === option} onchange={() => choices[`${d.kind}:${d.id}`] = option as Resolution} />{option === 'mine' ? 'Keep my version' : option === 'theirs' ? 'Keep shared version (recommended)' : 'Keep both as separate copies'}</label>
                   {/each}
                 </div>
               {/if}
@@ -89,7 +98,7 @@
           {/each}
         </div>
         {#if session.pixelsChanged}<label class="check"><input type="checkbox" bind:checked={publishImages} /> Publish a new atlas version with these images</label>{/if}
-        <div class="actions"><button onclick={() => session.dialog = null}>Cancel</button><button class="primary" disabled={!complete || session.busy} data-testid="sync-apply" onclick={() => session.apply(choices, session.pixelsChanged && publishImages)}>Apply</button></div>
+        <div class="actions"><button class="primary" onclick={() => session.dialog = null}>Keep working (recommended)</button><button disabled={!complete || session.busy} data-testid="sync-apply" onclick={() => session.apply(choices, session.pixelsChanged && publishImages)}>Apply</button></div>
       {/if}
     </dialog>
 {/if}

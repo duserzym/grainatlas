@@ -22,6 +22,7 @@
 </script>
 
 <section id="sync-details" class="panel" data-testid="sync-details" aria-label="Sync details">
+  <p>{session.detailText}</p>
   <HeldItems />
   <div class="changes">
     {#each [{ label: 'Local changes', changes: session.localChanges }, { label: 'Database changes', changes: session.databaseChanges }] as group}

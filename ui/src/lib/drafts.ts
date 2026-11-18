@@ -26,6 +26,8 @@ export interface Draft {
   /** Items the last partial sync held back (contract 2026-11); they stay in the pending changes. */
   held_back?: import('./sync').HeldItem[];
   /** The sync request awaiting a reply: a retry of the same body reuses its id. */
+  /** Last lightweight revision check. This never acknowledges local edits. */
+  checked_at?: string; server_revision?: number; server_can_edit?: boolean;
   pending_request?: import('./sync-api').PendingRequest | null;
 }
 export type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'length' | 'key'>>;

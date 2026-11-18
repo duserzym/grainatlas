@@ -93,7 +93,9 @@ test('createMount posts JSON with a bearer token and returns the 201 mount', asy
   const fetch = t.mock.method(globalThis, 'fetch', async (url, init) => {
     assert.equal(url, 'https://upbdb.test/v1/mounts');
     assert.equal(init.method, 'POST');
-    assert.deepEqual(init.headers, { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' });
+    assert.match(init.headers['Idempotency-Key'], /^[0-9a-f-]{36}$/);
+    const { ['Idempotency-Key']: key, ...headers } = init.headers;
+    assert.deepEqual(headers, { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' });
     assert.deepEqual(JSON.parse(init.body), body);
     return Response.json(mount, { status: 201 });
   });

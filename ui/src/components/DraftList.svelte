@@ -1,6 +1,6 @@
 <script lang="ts">
   import { existingProject } from '../lib/open-target';
-  import { draftSyncStatus } from '../lib/sync-status';
+  import { draftSyncStatus, plainSyncStatus } from '../lib/sync-status';
   import { appStorage } from '../lib/app-storage';
   import { storageFullMessage } from '../lib/storage-failure';
   import { onMount } from 'svelte';
@@ -14,13 +14,19 @@
   let drafts = $state<Draft[]>([]);
   let busy = $state<string | null>(null);
   let note = $state('');
+  let offline = $state<Record<string, boolean>>({});
+
   onMount(() => {
     const refresh = () => { drafts = listDrafts(app.server).filter(d => hasPendingChanges(d)); };
     refresh(); window.addEventListener(DRAFTS_CHANGED, refresh);
     return () => window.removeEventListener(DRAFTS_CHANGED, refresh);
   });
+  function statusFor(draft: Draft) {
+    const owner = tabs.list.find(tab => tab.project?.uuid === draft.uuid && tab.sync.draft?.uuid === draft.uuid);
+    return (busy !== draft.uuid ? owner?.sync.text : null) ?? plainSyncStatus(draft, draftSyncStatus(draft), { busy: busy === draft.uuid, reachable: offline[draft.uuid] ? false : undefined });
+  }
   async function check(draft: Draft) {
-    busy = draft.uuid; note = '';
+    busy = draft.uuid; note = ''; offline[draft.uuid] = false;
     try {
       const elements = draftElements(draft) ?? draft.base;
       if (!elements) throw new Error('The pending changes are unavailable. Open the project file to check.');
@@ -33,13 +39,13 @@
       const base = draft.base ?? (theirs ? { spots: theirs.spots, grains: theirs.grains, labels: theirs.labels } : emptyElements());
       const changes = changeCounts(diffElements(base, elements));
       const pending = !draft.base || !status || hasChanges(changes) ? pendingElements(elements) : null;
-      const updated = { ...draft, server, mount: status?.mount_id ?? draft.mount, base: draft.base, base_revision: draft.base_revision ?? theirs?.revision ?? null, base_hashes: draft.base_hashes ?? null, synced: draft.synced ?? false, changes, pending, pending_at: pending ? draft.pending_at ?? draft.updated_at : null };
+      const updated = { ...draft, checked_at: new Date().toISOString(), server_revision: status?.revision, server_can_edit: status?.can_edit, server, mount: status?.mount_id ?? draft.mount, base: draft.base, base_revision: draft.base_revision ?? theirs?.revision ?? null, base_hashes: draft.base_hashes ?? null, synced: draft.synced ?? false, changes, pending, pending_at: pending ? draft.pending_at ?? draft.updated_at : null };
       const owner = tabs.list.find(tab => tab.project?.uuid === draft.uuid);
       const kept = owner ? appStorage.track(owner, 'draft', () => writeDraft(updated)) : await appStorage.commit(() => writeDraft(updated));
       drafts = drafts.map(d => d.uuid === draft.uuid ? updated : d).filter(d => hasPendingChanges(d));
       if (!kept) note = storageFullMessage(draft.name);
       else if (!hasChanges(updated.changes)) note = `${draft.name}: no element changes waiting to sync.`;
-    } catch (e) { note = `${draft.name}: ${e instanceof Error ? e.message : e}. Changes kept here.`; }
+    } catch (e) { offline[draft.uuid] = true; note = `${draft.name}: ${e instanceof Error ? e.message : e}. Changes kept here.`; }
     finally { busy = null; }
   }
   async function sync(draft: Draft) {
@@ -92,10 +98,10 @@
 
 {#if drafts.length || note}
   <section class="glass panel" data-testid="draft-list">
-    <h2>Changes not yet in the database</h2>
+    <h2>Work waiting to sync</h2>
     {#each drafts as draft (draft.uuid)}
       <div class="draft" data-testid="draft-row">
-        <div><strong>{draft.name}</strong><p class="faint small">{draft.changes === null ? 'Changes may not be in the database: check' : describeChanges(draft.changes) || 'No element changes'}{draftSyncStatus(draft).pixels ? ' · New images not published' : ''} · {new Date(draft.updated_at).toLocaleString()}</p></div>
+        <div><strong>{draft.name}</strong> · <span class="faint small" data-testid="draft-status">{statusFor(draft)}</span><p class="faint small">{new Date(draft.updated_at).toLocaleString()}</p></div>
         <button disabled={busy !== null} onclick={() => draft.changes === null ? check(draft) : sync(draft)}>{draft.changes === null ? 'Check' : 'Sync'}</button>
         <button disabled={busy !== null} onclick={() => discard(draft)}>Discard</button>
       </div>

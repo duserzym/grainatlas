@@ -372,6 +372,7 @@ class AppState {
     this.sync = new SyncSession(this);
     this.core = newCore(id);
     this.stopNumbering = $effect.root(() => {
+      $effect(() => { this.sync.refreshAutomatic(); });
       let context: { area: string | null; sample: string } | null = null;
       let project: string | null = null;
       $effect(() => {
@@ -673,6 +674,7 @@ class Tabs {
     if (i < 0) return;
     const [t] = this.list.slice(i, i + 1);
     t.stopNumbering();
+    t.sync.dispose();
     const list = this.list.filter((x) => x.id !== id);
     this.list = list;
     if (this.activeId === id) {

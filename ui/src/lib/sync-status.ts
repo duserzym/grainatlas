@@ -33,3 +33,21 @@ export function draftSyncStatus(draft: Draft, storage?: DraftStorage, live?: {
   const unlinked = live?.stored?.unlinked ?? (!draft.mount && (!!draft.link_candidates?.length || !!storedDraftProject(draft, storage)));
   return { elements, pixels, unlinked, pending: elements || pixels || unlinked };
 }
+
+export type PlainSyncStatus = 'Saved' | 'Syncing…' | 'Up to date' | 'Offline, will sync later' | 'Needs your attention';
+export interface SyncFlags {
+  busy?: boolean; reachable?: boolean | null; error?: boolean;
+  attention?: boolean; serverRevision?: number | null; checked?: boolean;
+}
+/** The sole plain-language status table, shared by live sessions and stored drafts.
+ * A revision check can establish freshness, but can never acknowledge pending work. */
+export function plainSyncStatus(draft: Draft | null, work: { pending: boolean }, flags: SyncFlags = {}): PlainSyncStatus {
+  if (flags.attention || draft?.incomplete || draft?.link_conflict || draft?.held_back?.length) return 'Needs your attention';
+  if (flags.busy) return 'Syncing…';
+  if (flags.reachable === false) return 'Offline, will sync later';
+  if (flags.error) return 'Needs your attention';
+  if (work.pending || draft?.pending_request) return 'Saved';
+  const revision = flags.serverRevision ?? draft?.server_revision;
+  const checked = flags.checked ?? (!!draft?.checked_at && Date.now() - Date.parse(draft.checked_at) < 600_000);
+  return checked && revision != null && revision === draft?.base_revision ? 'Up to date' : 'Saved';
+}
