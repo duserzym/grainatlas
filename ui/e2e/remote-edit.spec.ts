@@ -276,6 +276,9 @@ test('registration creates and selects a mount when the mount list is empty', as
   await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
   await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
   await page.getByTestId('edit-copy').click();
+  // Register is also offered in View; finish the edit transition before opening it.
+  await expect(page.getByTestId('edit-copy')).toHaveText('View');
+  await expect(page.getByTestId('edit-copy')).toBeEnabled();
   await expect(page.getByTestId('sync-action')).toHaveText('Register…');
   await page.getByTestId('sync-action').click();
   const dialog = page.getByRole('dialog', { name: 'Register project' });

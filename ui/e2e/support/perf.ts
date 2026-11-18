@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Grain, Spot } from '../../src/lib/core/types';
+import { mockSessionRead } from '../mock-session';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const generated = path.join(root, 'target/large-bundle');
@@ -97,6 +98,8 @@ export async function mockLargeServer(page: Page) {
       };
       const json = (value: unknown) => fulfill(Buffer.from(JSON.stringify(value)), 'application/json');
       if (request.method === 'OPTIONS') { await fulfill(Buffer.alloc(0), 'text/plain', 204); return; }
+      const session = mockSessionRead(request.method, pathname);
+      if (session !== undefined) { await json(session); return; }
       if (request.method === 'GET') {
         if (pathname.startsWith(`/atlas/projects/${projectId}/`)) {
           const relative = pathname.slice(`/atlas/projects/${projectId}/`.length);

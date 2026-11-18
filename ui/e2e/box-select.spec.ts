@@ -1,5 +1,6 @@
 // Invented large bundle only. The supervisor runs these tests with a preview server.
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect } from './mock-session';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
