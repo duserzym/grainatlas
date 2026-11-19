@@ -1,5 +1,5 @@
 import type { Grain } from './core/types';
-import type { View } from './canvas/view';
+import { toMosaic, toScreen, type View } from './canvas/view.ts';
 
 type Point = readonly [number, number];
 type Bounds = readonly [number, number, number, number];
@@ -10,24 +10,13 @@ export interface SelectionBox {
 
 /** Convert once on release. Keep the rotated box, not just its axis-aligned bounds. */
 export function canvasBox(view: View, umPerPx: number, start: Point, end: Point): SelectionBox {
-  const c = Math.cos(view.rot), s = Math.sin(view.rot), scale = umPerPx / view.zoom;
-  const left = Math.min(start[0], end[0]), top = Math.min(start[1], end[1]);
-  const dx = left - view.w / 2, dy = top - view.h / 2;
-  const x = view.cx * umPerPx + (c * dx + s * dy) * scale;
-  const y = view.cy * umPerPx + (-s * dx + c * dy) * scale;
-  const width = Math.abs(end[0] - start[0]) * scale, height = Math.abs(end[1] - start[1]) * scale;
-  const xs = [x, x + c * width, x + s * height, x + c * width + s * height];
-  const ys = [y, y - s * width, y + c * height, y - s * width + c * height];
-  // SVG renders transforms at lower precision than the view's doubles. A rendered
-  // centroid can fall just outside a box started on it in view coordinates.
-  // Keep inclusive edges within 0.0001 CSS px, plus inverse-transform roundoff.
-  const eps = 1e-4 * scale + 1e-9 * Math.max(1, width, height);
+  const left = Math.min(start[0], end[0]), right = Math.max(start[0], end[0]);
+  const top = Math.min(start[1], end[1]), bottom = Math.max(start[1], end[1]);
+  const points = [[left,top],[right,top],[right,bottom],[left,bottom]].map(([x,y]) => toMosaic(view,x,y).map(n => n*umPerPx));
+  const eps=1e-4, margin=eps*umPerPx/view.zoom+1e-9;
   return {
-    bounds: [Math.min(...xs) - eps, Math.min(...ys) - eps, Math.max(...xs) + eps, Math.max(...ys) + eps],
-    contains(px, py) {
-      const u = c * (px - x) - s * (py - y), v = s * (px - x) + c * (py - y);
-      return u >= -eps && u <= width + eps && v >= -eps && v <= height + eps;
-    },
+    bounds: [Math.min(...points.map(p=>p[0]))-margin,Math.min(...points.map(p=>p[1]))-margin,Math.max(...points.map(p=>p[0]))+margin,Math.max(...points.map(p=>p[1]))+margin],
+    contains(px,py) { const [x,y]=toScreen(view,px/umPerPx,py/umPerPx); return x>=left-eps && x<=right+eps && y>=top-eps && y<=bottom+eps; },
   };
 }
 

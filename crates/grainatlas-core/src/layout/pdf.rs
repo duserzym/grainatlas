@@ -200,15 +200,15 @@ impl PdfBuilder {
         // (and layer order) for its images instead of decoding them in svg2pdf.
         let mut nodes = Vec::new();
         for node in root.children().filter(|n| n.is_element()) {
-            if node.attribute("data-piece").is_some() {
-                if let Some(matrix) = node.attribute("transform").and_then(piece_matrix) {
-                    nodes.extend(
-                        node.children()
-                            .filter(|n| n.is_element())
-                            .map(|child| (child, Some(matrix))),
-                    );
-                    continue;
-                }
+            if node.attribute("data-piece").is_some()
+                && let Some(matrix) = node.attribute("transform").and_then(piece_matrix)
+            {
+                nodes.extend(
+                    node.children()
+                        .filter(|n| n.is_element())
+                        .map(|child| (child, Some(matrix))),
+                );
+                continue;
             }
             nodes.push((node, None));
         }

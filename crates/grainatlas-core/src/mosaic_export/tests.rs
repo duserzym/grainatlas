@@ -553,3 +553,22 @@ fn reduced_png_samples_and_world_file_share_the_same_grid() {
     assert_eq!(world[4], t[2] + t[0] / 2.);
     assert_eq!(world[5], t[5] + t[4] / 2.);
 }
+
+#[test]
+fn image_recipe_changes_only_display_levels_in_mosaic_exports() {
+    let (mut s,mut p)=crate::grain_export::synthetic::mount();
+    let mut baseline=Export::begin(&s,&p.to_json(),&options(Values::Original,false)).unwrap();
+    let original=collect(&mut baseline,&mut s);
+    let mut baseline=Export::begin(&s,&p.to_json(),&options(Values::Displayed,false)).unwrap();
+    let display=collect(&mut baseline,&mut s);
+    p.image_edits=Some(serde_json::from_value(serde_json::json!({"version":1,"areas":{"a":{"rotate_deg":90,"flip_h":true,"flip_v":true,"crop":{"kind":"rect","points_um":[[0,0],[1,1]]},"levels":{"black":30,"white":210},"masks":[{"points_um":[[0,0],[500,500]],"radius_um":500}]}}})).unwrap());
+    let mut job=Export::begin(&s,&p.to_json(),&options(Values::Original,false)).unwrap();let after=collect(&mut job,&mut s);
+    let name="Synthetic mount_Synthetic a_mosaic.tiff";
+    assert_eq!(after[name],original[name],"original pixels, dimensions and stage alignment stay identical");
+    let mut job=Export::begin(&s,&p.to_json(),&options(Values::Displayed,false)).unwrap();let after=collect(&mut job,&mut s);
+    let mut d=Decoder::new(Cursor::new(&display[name])).unwrap();let dimensions=d.dimensions().unwrap();
+    let DecodingResult::U8(before)=d.read_image().unwrap() else {panic!("8-bit displayed")};
+    let mut d=Decoder::new(Cursor::new(&after[name])).unwrap();assert_eq!(d.dimensions().unwrap(),dimensions);
+    let DecodingResult::U8(after)=d.read_image().unwrap() else {panic!("8-bit displayed")};
+    for (a,b) in before.into_iter().zip(after) { let expected=((a as f64-30.0)*255.0/180.0).round().clamp(0.0,255.0) as u8; assert!(b.abs_diff(expected)<=1,"levels follow the display LUT without spatial edits"); }
+}

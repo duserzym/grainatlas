@@ -144,6 +144,8 @@ export function storePrintEdits(app: { project: Project | null; readOnly: boolea
 /** Core recomputes refresh the record; print edits are held by the UI until Save. */
 export function keepPrintEdits(record: Project, current: Project | null): Project {
   if (current?.uuid === record.uuid) {
+    if (current.image_edits !== undefined) record.image_edits = current.image_edits;
+    else delete record.image_edits;
     if (current.print_sheets !== undefined) record.print_sheets = current.print_sheets;
     else delete record.print_sheets;
   }

@@ -228,7 +228,7 @@ fn apply_one(plan: &mut SheetPlan, edit: &StripEdit, areas: &[SheetArea], grains
                 let r=[blocks.iter().map(|r|r[0]).fold(f64::INFINITY,f64::min),blocks.iter().map(|r|r[1]).fold(f64::INFINITY,f64::min),blocks.iter().map(|r|r[2]).fold(f64::NEG_INFINITY,f64::max),blocks.iter().map(|r|r[3]).fold(f64::NEG_INFINITY,f64::max)];
                 if r[2]-r[0]>body[2]-body[0]+1e-7 || r[3]-r[1]>body[3]-body[1]+1e-7 { return Err("piece group does not fit below the header".into()); }
                 let delta=[(body[0]-r[0]).max((body[2]-r[2]).min(0.0)),(body[1]-r[1]).max((body[3]-r[3]).min(0.0))];
-                for s in candidate.strips.iter_mut().filter(|s|s.sheet==sheet && seen.contains(&s.key)) { for d in 0..2 {s.origin_mm[d]+=delta[d];} }
+                for s in candidate.strips.iter_mut().filter(|s|s.sheet==sheet && seen.contains(&s.key)) { for (origin, shift) in s.origin_mm.iter_mut().zip(delta) { *origin+=shift; } }
             }
             // Refuse the whole group atomically. Bounding boxes intentionally keep
             // clearance around rotated corners and labels as well as their pixels.

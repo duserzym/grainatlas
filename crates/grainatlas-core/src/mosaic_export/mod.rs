@@ -567,6 +567,12 @@ impl Export {
                 .display_tone
                 .get(id)
                 .unwrap_or(&rec.params.tone);
+            let levels = if self.options.values == Values::Displayed {
+                self.project.image_edits.as_ref().filter(|e| e.version == 1)
+                    .and_then(|e| e.areas.get(id)).and_then(|e| e.levels.as_ref())
+                    .filter(|l| l.white > l.black)
+                    .map(|l| (l.black as f64, (l.white - l.black) as f64))
+            } else { None };
             let min_y = corners[0][1].min(corners[1][1]).floor().max(0.) as usize;
             let max_y = (corners[0][1].max(corners[1][1]).floor().max(0.) as usize + 1).min(dims.1);
             // Match the output strip's phase. For flipped areas, cache the
@@ -626,7 +632,10 @@ impl Export {
                                 {
                                     continue;
                                 }
-                                let v = pixels.at((sy as usize - origin_y) * w + sx as usize);
+                                let mut v = pixels.at((sy as usize - origin_y) * w + sx as usize);
+                                if let Some((black, span)) = levels {
+                                    v = ((v * 255.0 - black) / span).clamp(0.0, 1.0);
+                                }
                                 if !v.is_finite() {
                                     return Err(invalid("Non-finite mosaic pixel."));
                                 }

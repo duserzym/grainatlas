@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { areaImageEdits, levelsLut } from '../lib/image-edits';
   import { bundlePixels, neutralTone } from '../lib/bundle-tone';
   import { grainNumber } from '../lib/grain-lineage';
   // Area screen: the area in the shared image view (tile thumbnails at their
@@ -18,7 +19,9 @@
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
   let viewer = $state<ReturnType<typeof Viewer>>();
+  const imageEdits=$derived(areaImageEdits(app.project,app.areaId));
   let lut = $state<Uint8Array>(Uint8Array.from({ length: 256 }, (_, i) => i));
+  const imageLut=$derived(levelsLut(lut,imageEdits));
 
   let thumbs = $state<Record<string, string>>({});
   let tileSel = $state<number | null>(null);
@@ -167,7 +170,7 @@
       <div class="grid" data-testid="area-view" data-live={app.liveBusy[meta.id] ? 'busy' : 'idle'}>
         {#if core}
           {#key `${meta.id}/${summary ? 'mosaic' : 'tiles'}`}
-            <Viewer bind:this={viewer} core={!bundle && app.remoteTiles ? app.remoteTiles : core} areaId={meta.id} mosaic={summary?.mosaic ?? null} extent={frame} {lut} version={app.pixelsVersion}
+            <Viewer bind:this={viewer} core={!bundle && app.remoteTiles ? app.remoteTiles : core} areaId={meta.id} mosaic={summary?.mosaic ?? null} extent={frame} lut={imageLut} {imageEdits} umPerPx={summary?.mosaic?.um_per_px??meta.pixel_size_nm/1000} version={app.pixelsVersion}
               preview={app.preview[meta.id] ?? null} onlevel={(l) => (app.drawLevel = l)} onclick={tileClick}>
               {#snippet overlay(v)}
                 {#each boxes as b (b.i)}

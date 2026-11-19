@@ -16,7 +16,7 @@ fn edits_replay_export_left_off_report_drops_and_block_invalid_output() {
     std::fs::write(folder.join("mosaic/a/0/0_0.png"),grainatlas_core::image::encode_png_gray(support::W,support::H,&px)).unwrap();
     let gs:BTreeMap<String,Vec<grainatlas_core::segment::Grain>>=serde_json::from_value(project.extra["grainatlas_ui"]["grains"].clone()).unwrap();
     let p=SheetParams {packing:Packing::Packed,um_per_mm:8.0,enhance:Default::default(),..Default::default()};let params=temp.path().join("params.json");std::fs::write(&params,serde_json::to_vec(&p).unwrap()).unwrap();
-    let rec=&project.areas[0];let areas=[SheetArea {rec,img:AreaImage {id:&rec.id,name:&rec.name,sample:&rec.sample,w:support::W,h:support::H,px:&px,lut:std::array::from_fn(|i|i as u8),um_per_px:1.0}}];
+    let rec=&project.areas[0];let areas=[SheetArea {rec,img:AreaImage { source_size_um: None, edits: None,id:&rec.id,name:&rec.name,sample:&rec.sample,w:support::W,h:support::H,px:&px,lut:std::array::from_fn(|i|i as u8),um_per_px:1.0}}];
     let plan=sheets::plan_sheets(&p,&areas,&gs,&Ownership::default(),&SheetMeta::default());let strip=plan.strips[0].key.clone();let file=temp.path().join("edits.json");
     let mut stored=PrintEdits {version:1,um_per_mm:plan.um_per_mm,params:p.clone(),edits:vec![StripEdit::Hide {strip:strip.clone()}]};std::fs::write(&file,serde_json::to_vec(&stored).unwrap()).unwrap();
     let out=temp.path().join("print-a");let result=invoke(&folder,&out,&params,&file);assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));

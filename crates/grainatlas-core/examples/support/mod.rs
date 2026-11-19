@@ -1,5 +1,8 @@
 //! Invented pixels and stable identifiers only; no instrument or project data.
-use grainatlas_core::{project::{Project, session::Session}, readers::{AreaMeta, PackageInfo}};
+use grainatlas_core::{
+    project::{Project, session::Session},
+    readers::{AreaMeta, PackageInfo},
+};
 use serde_json::json;
 
 pub const PROJECT_ID: &str = "10000000-0000-4000-8000-000000000001";
@@ -8,10 +11,28 @@ pub const W: usize = 384;
 pub const H: usize = 320;
 
 pub fn synthetic() -> (Session, Project, Vec<u8>) {
-    let pixels: Vec<u8> = (0..W*H).map(|i| (35 + ((i % W + i / W) % 190)) as u8).collect();
-    let area = AreaMeta { id: "a".into(), name: "Synthetic area".into(), grid: None, pixel_size_nm: 1000.0,
-        field_um: None, pitch_um: None, stage_sign: [1.0, 1.0], tiles: vec![], meta: Default::default() };
-    let info = PackageInfo { reader: "synthetic".into(), kind: "package".into(), name: "Synthetic mount".into(), areas: vec![area], meta: Default::default(), navigation: None };
+    let pixels: Vec<u8> = (0..W * H)
+        .map(|i| (35 + ((i % W + i / W) % 190)) as u8)
+        .collect();
+    let area = AreaMeta {
+        id: "a".into(),
+        name: "Synthetic area".into(),
+        grid: None,
+        pixel_size_nm: 1000.0,
+        field_um: None,
+        pitch_um: None,
+        stage_sign: [1.0, 1.0],
+        tiles: vec![],
+        meta: Default::default(),
+    };
+    let info = PackageInfo {
+        reader: "synthetic".into(),
+        kind: "package".into(),
+        name: "Synthetic mount".into(),
+        areas: vec![area],
+        meta: Default::default(),
+        navigation: None,
+    };
     let mut project = Project::new(&info, "", "2026-01-01T00:00:00Z");
     project.uuid = PROJECT_ID.parse().unwrap();
     project.areas[0].uuid = "30000000-0000-4000-8000-000000000001".parse().unwrap();
@@ -35,7 +56,9 @@ pub fn synthetic() -> (Session, Project, Vec<u8>) {
         "tone": {"a": project.areas[0].params.tone} }));
     let mut session = Session::new("synthetic");
     session.load_project(&project.to_json()).unwrap();
-    let mosaic = serde_json::from_str(&session.load_bundle_area("a", W, H, pixels.clone()).unwrap()).unwrap();
+    let mosaic =
+        serde_json::from_str(&session.load_bundle_area("a", W, H, pixels.clone()).unwrap())
+            .unwrap();
     project.areas[0].mosaic = Some(mosaic);
     session.load_project(&project.to_json()).unwrap();
     session.set_package_digest(&"d".repeat(64), 1);
@@ -47,9 +70,25 @@ pub fn synthetic() -> (Session, Project, Vec<u8>) {
 pub fn print_edit() -> (Session, Project) {
     let w = 1600;
     let h = 2400;
-    let area = AreaMeta { id: "a".into(), name: "A1".into(), grid: None, pixel_size_nm: 1000.0,
-        field_um: None, pitch_um: None, stage_sign: [1.0, 1.0], tiles: vec![], meta: Default::default() };
-    let info = PackageInfo { reader: "synthetic".into(), kind: "package".into(), name: "mount A".into(), areas: vec![area], meta: Default::default(), navigation: None };
+    let area = AreaMeta {
+        id: "a".into(),
+        name: "A1".into(),
+        grid: None,
+        pixel_size_nm: 1000.0,
+        field_um: None,
+        pitch_um: None,
+        stage_sign: [1.0, 1.0],
+        tiles: vec![],
+        meta: Default::default(),
+    };
+    let info = PackageInfo {
+        reader: "synthetic".into(),
+        kind: "package".into(),
+        name: "mount A".into(),
+        areas: vec![area],
+        meta: Default::default(),
+        navigation: None,
+    };
     let mut project = Project::new(&info, "", "2026-01-01T00:00:00Z");
     project.uuid = PROJECT_ID.parse().unwrap();
     project.areas[0].uuid = "30000000-0000-4000-8000-000000000001".parse().unwrap();
@@ -68,11 +107,16 @@ pub fn print_edit() -> (Session, Project) {
     for i in 0..30 {
         let x = 160 + (i % 5) * 200;
         let y = 160 + ((i / 5) % 2) * 180 + (i / 10) * 800;
-        for row in y..y+80 { for col in x..x+80 { pixels[row*w+col] = (160 + (row + col) % 60) as u8; } }
+        for row in y..y + 80 {
+            for col in x..x + 80 {
+                pixels[row * w + col] = (160 + (row + col) % 60) as u8;
+            }
+        }
     }
     let mut session = Session::new("synthetic");
     session.load_project(&project.to_json()).unwrap();
-    project.areas[0].mosaic = Some(serde_json::from_str(&session.load_bundle_area("a", w, h, pixels).unwrap()).unwrap());
+    project.areas[0].mosaic =
+        Some(serde_json::from_str(&session.load_bundle_area("a", w, h, pixels).unwrap()).unwrap());
     session.load_project(&project.to_json()).unwrap();
     session.set_package_digest(&"e".repeat(64), 1);
     (session, project)

@@ -14,11 +14,11 @@ export function revision(value: object | null | undefined): number {
 }
 export function printFingerprint(inputs: {
   identity: unknown; controls: unknown; areas: unknown; tone: unknown;
-  grains: Record<string, object | undefined>; spots?: object; labels?: object; edits: unknown;
+  grains: Record<string, object | undefined>; spots?: object; labels?: object; edits: unknown; image_edits?: unknown;
 }): string {
   return JSON.stringify([inputs.identity, inputs.controls, inputs.areas, inputs.tone,
     Object.keys(inputs.grains).sort().map(id => [id, revision(inputs.grains[id])]),
-    revision(inputs.spots), revision(inputs.labels), inputs.edits]);
+    revision(inputs.spots), revision(inputs.labels), inputs.edits, inputs.image_edits]);
 }
 
 /** A taken entry belongs to the mounted screen; only idle results consume this budget. */

@@ -94,3 +94,9 @@ times separately. Large-mount and raster timing tests are ignored by default:
 cargo test -p grainatlas-core grain_export::tests::large_synthetic_mount_export -- --ignored
 cargo test -p grainatlas-core grain_export::tests::scanline_raster_timing -- --ignored --nocapture
 ```
+
+Canvas image crops, masks, rotation and flips do not change grain exports.
+Exports use original stage-aligned pixels and the full eligible grain set for
+the chosen export scope, including grains left off print sheets by image edits.
+Image recipe levels are display and print settings; they do not alter the
+original grain pixels or grain coordinates.

@@ -421,6 +421,11 @@ pub struct BandRecord {
     pub mosaic_rect_um: [f64; 4],
     /// "kept", "stripped", or why it was kept.
     pub background: String,
+    /// SVG affine [a,b,c,d,e,f]: sheet mm to original mount µm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper_to_mount: Option<[f64; 6]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_crop: Option<crate::project::image_edits::ImageCrop>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -766,7 +771,7 @@ fn piece_rect(gs: &[&Grain], pad: f64, img: &AreaImage) -> [f64; 4] {
     let x1 = gs.iter().map(|g| g.bbox_um[2]).fold(f64::NEG_INFINITY, f64::max) + pad;
     let y1 = gs.iter().map(|g| g.bbox_um[3]).fold(f64::NEG_INFINITY, f64::max) + pad;
     let (px0, py0) = ((x0 / u).floor().max(0.0), (y0 / u).floor().max(0.0));
-    let (px1, py1) = ((x1 / u).ceil().min(img.w as f64), (y1 / u).ceil().min(img.h as f64));
+    let (px1, py1) = ((x1 / u).ceil().min(img.display_size()[0] as f64), (y1 / u).ceil().min(img.display_size()[1] as f64));
     [px0 * u, py0 * u, px1.max(px0 + 1.0) * u, py1.max(py0 + 1.0) * u]
 }
 
@@ -862,7 +867,7 @@ fn clusters_of<'g>(gs: &[&'g Grain], c: f64, p: &SheetParams, img: &AreaImage, s
         clusters[i].grains.extend(other.grains);
         clusters[i].rect = piece_rect(&clusters[i].grains, p.pad_um, img);
     }
-    let d = usize::from(img.w <= img.h);
+    let d = usize::from(img.display_size()[0] <= img.display_size()[1]);
     clusters.sort_by(|a, b| a.rect[d].total_cmp(&b.rect[d]).then(a.rect[1 - d].total_cmp(&b.rect[1 - d])));
     clusters
 }
@@ -1270,7 +1275,7 @@ fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<Str
                 false
             });
             merge_intersections(&mut clusters, p.pad_um, img);
-            let d = usize::from(img.w <= img.h);
+            let d = usize::from(img.display_size()[0] <= img.display_size()[1]);
             clusters.sort_by(|a, b| a.rect[d].total_cmp(&b.rect[d]).then(a.rect[1 - d].total_cmp(&b.rect[1 - d])));
             unit.retain(|g| !strays.iter().any(|s| s.area == areas[ai].rec.id && s.id == g.id));
             let work = SampleUnit { area: ai, grains: unit, clusters, context: (r, c) };
@@ -1287,7 +1292,7 @@ fn cut_sheets<'g>(p: &SheetParams, areas: &[SheetArea], grains: &'g BTreeMap<Str
     // Samples, top of the mount first (mean "SEM view" y of their printed grains).
     let geo: Vec<Option<crate::ownership::AreaGeometry>> = areas.iter().map(|a| crate::ownership::AreaGeometry::new(a.rec)).collect();
     let view = |ai: usize, g: &Grain| -> Option<[f64; 2]> {
-        let s = geo[ai].as_ref()?.to_stage(g.centroid_um);
+        let s = geo[ai].as_ref()?.to_stage(crate::project::image_edits::apply(crate::project::image_edits::inverse(areas[ai].img.image_transform()),g.centroid_um));
         let sg = areas[ai].rec.stage_sign;
         Some([sg[0] * s[0] / 1000.0, sg[1] * s[1] / 1000.0])
     };
@@ -1505,9 +1510,16 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     let (_, spots_off) = key_spots(&p.spot_sizes_um, k);
     let mut stats = plan.cut_stats.clone();
     let printed: Vec<Vec<&Grain>> = areas.iter().map(|a| plan.targets[&a.rec.id].iter().map(|id| grains[&a.rec.id].iter().find(|g| g.id == *id).expect("plan target in source grains")).collect()).collect();
-    let mut spots_by_area: BTreeMap<&str,Vec<&crate::spots::Spot>> = BTreeMap::new();
-    for spot in plan.print_spots.as_deref().unwrap_or(&[]) { spots_by_area.entry(&spot.area_id).or_default().push(spot); }
-    for spots in spots_by_area.values_mut() { spots.sort_by(|a,b|a.x_um.total_cmp(&b.x_um)); }
+    // Index disposable display positions; the plan retains original mount coordinates.
+    let images: BTreeMap<_,_> = areas.iter().map(|a| (a.rec.id.as_str(), &a.img)).collect();
+    let mut spots_by_area: BTreeMap<&str,Vec<(&crate::spots::Spot,[f64;2])>> = BTreeMap::new();
+    for spot in plan.print_spots.as_deref().unwrap_or(&[]) {
+        let Some(img)=images.get(spot.area_id.as_str()) else {continue;};
+        let p=[spot.x_um,spot.y_um];
+        if img.edits.is_some_and(|e|!e.visible(p)) {continue;}
+        spots_by_area.entry(&spot.area_id).or_default().push((spot,arrange::point(img.image_transform(),p)));
+    }
+    for spots in spots_by_area.values_mut() { spots.sort_by(|a,b|a.1[0].total_cmp(&b.1[0])); }
     let runs: Vec<Run> = plan.strips.iter().map(|r| {
         let ai = areas.iter().position(|a| a.rec.id == r.area).expect("plan area in source areas");
         let pieces = r.bands.iter().map(|q| Piece {
@@ -1519,7 +1531,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     let shown: Vec<Vec<&Grain>> = areas.iter().enumerate().map(|(ai, a)| printed[ai].iter().copied().filter(|g| plan.strips.iter().filter(|s| s.area == a.rec.id).flat_map(|s| &s.bands).any(|b| b.grains.contains(&g.id))).collect()).collect();
     let geo: Vec<Option<crate::ownership::AreaGeometry>> = areas.iter().map(|a| crate::ownership::AreaGeometry::new(a.rec)).collect();
     let view = |ai: usize, g: &Grain| -> Option<[f64; 2]> {
-        let s = geo[ai].as_ref()?.to_stage(g.centroid_um);
+        let s = geo[ai].as_ref()?.to_stage(crate::project::image_edits::apply(crate::project::image_edits::inverse(areas[ai].img.image_transform()),g.centroid_um));
         let sg = areas[ai].rec.stage_sign;
         Some([sg[0] * s[0] / 1000.0, sg[1] * s[1] / 1000.0])
     };
@@ -1680,6 +1692,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                 if strip.transform.is_some() {
                     let _ = write!(s, r#"<image x="{px}" y="{iy}" width="{pw}" height="{ph}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png));
                 } else { let _ = write!(s, r#"<image x="{px:.3}" y="{iy:.3}" width="{pw:.3}" height="{ph:.3}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png)); }
+                if strip.transform.is_none() { image_axes(&mut s, &a.img, [px,iy,px+pw,iy+ph]); }
                 let repeated = strip.bands[qi].repeated_um.clone().unwrap_or_else(|| q.repeated(&printed[run.area], p.pad_um));
                 draw_repeated(&mut s, q, &repeated, [px, iy], k, p.pad_um, j);
                 let owned_w = (q.core[2].min(q.rect[2]) - q.core[0].max(q.rect[0])) / k;
@@ -1708,8 +1721,8 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                     let _ = write!(s, r#"<path d="M{cx:.3} {cy:.3} h{:.2} M{cx:.3} {cy:.3} v{:.2}" stroke="{GREY}" stroke-width="0.15"/>"#, dx * 1.6, dy * 1.6);
                 }
                 if let Some(t) = strip.transform {
-                    arrange_annotations(&mut s, q, [px, iy], k, t);
-                    arrange_spots(&mut s, spots_by_area.get(strip.area.as_str()).map_or(&[],Vec::as_slice), q, [px,iy], k, t.scale, j);
+                    arrange_annotations(&mut s, q, [px, iy], k, t, &a.img);
+                    arrange_spots(&mut s, spots_by_area.get(strip.area.as_str()).map_or(&[],Vec::as_slice), q, [px,iy], k, t.scale, j, &a.img);
                 }
                 if let Some(gap) = q.gap_after_um {
                     let gx = px + pw + PIECE_GAP_MM / 2.0;
@@ -1727,8 +1740,15 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                     .filter(|g| !q.grains.iter().any(|own| own.id == g.id) && (repeated.iter().any(|r| intersects(*r, g.bbox_um)) || (plan.edit_summary.is_some() && contains(q.rect, g.bbox_um) && plan.strips.iter().flat_map(|s| &s.bands).any(|b| b.grains.contains(&g.id)))))
                     .map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() })
                     .collect();
+                let transform = strip.transform.map(|_| {
+                    let mut t=arrange::band_transform(strip,&strip.bands[qi],k);
+                    t.mount_to_paper=crate::project::image_edits::compose(t.mount_to_paper,a.img.image_transform());
+                    t.paper_to_mount=arrange::inverse(t.mount_to_paper);
+                    t
+                });
+                let mapping=transform.as_ref().map(|t|t.paper_to_mount).or_else(||a.img.edits.map(|_|paper_to_mount(&a.img,q.rect,[px,iy],k)));
                 reg.bands.push(BandRecord {
-                    transform: strip.transform.map(|_| arrange::band_transform(strip, &strip.bands[qi], k)),
+                    transform,
                     sheet: pi + 1,
                     sample: run.sample.clone(),
                     area: a.rec.id.clone(),
@@ -1740,6 +1760,8 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                     cut_sources: q.cut_sources.clone(),
                     context,
                     background: bg.clone(),
+                    paper_to_mount: mapping,
+                    image_crop: a.img.edits.and_then(|e| e.crop.clone()),
                 });
             }
             if !strip.neighbours.is_empty() {
@@ -1810,7 +1832,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     stats.grains_unmarked = check.unmarked;
     stats.bands_outside_body = check.outside_body;
     stats.bands_overlapping = check.bands_overlapping;
-    if plan.strips.iter().any(|s|s.transform.is_some()) { reg.mapping="Use bands[].transform.paper_to_mount (SVG affine [a,b,c,d,e,f]); crop_um is the source rectangle in mount µm".into(); }
+    if plan.strips.iter().any(|s|s.transform.is_some()) { reg.mapping="Use bands[].transform.paper_to_mount or bands[].paper_to_mount (SVG affine [a,b,c,d,e,f]) for paper mm to original mount µm. crop_um and mosaic_rect_um are in the image display frame; image_crop is in mount µm.".into(); }
     let problems = edit::problems(plan, &reg, &printed, areas);
     SheetResult { pages: svgs, registration: reg, stats, audit: check, left_off_summary: LeftOffSummary { cropped: plan.left_off.iter().filter(|g| g.reason == "cropped").count(), hidden: plan.left_off.iter().filter(|g| g.reason == "hidden").count() }, problems, plan: source_plan.clone(), dropped: Vec::new(), left_off: plan.left_off.clone() }
 }
@@ -1880,6 +1902,24 @@ pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetAre
     result
 }
 
+/// A mount-axis key for image orientation; scale and paper layout remain independent.
+pub(crate) fn image_axes(s: &mut String, img: &AreaImage, rect: [f64;4]) {
+    let Some(e)=img.edits else {return;};
+    if e.rotate_deg.abs()<1e-8 && !e.flip_h && !e.flip_v {return;}
+    let m=img.image_transform();
+    let x=rect[0]+4.0; let y=rect[1]+5.0;
+    let ex=x+m[2]*2.5; let ey=y+m[3]*2.5;
+    let label=format!("mount +y · {:.1}°{}{}",e.rotate_deg,if e.flip_h {" H"} else {""},if e.flip_v {" V"} else {""});
+    let _=write!(s,r#"<g class="mount-axis" fill="black" stroke="white" stroke-width="0.6" paint-order="stroke"><path d="M{x:.3} {y:.3} L{ex:.3} {ey:.3}" stroke="black" stroke-width="0.3"/><circle cx="{ex:.3}" cy="{ey:.3}" r="0.35"/><text x="{:.3}" y="{:.3}" font-size="1.6">{label}</text></g>"#,x+3.5,y);
+}
+
+/// Compose the inverse image orientation with the band's scale and translation.
+pub fn paper_to_mount(img: &AreaImage, rect: [f64;4], paper: [f64;2], k: f64) -> [f64;6] {
+    let m=crate::project::image_edits::inverse(img.image_transform());
+    let p=crate::project::image_edits::apply(m,[rect[0]-paper[0]*k,rect[1]-paper[1]*k]);
+    [m[0]*k,m[1]*k,m[2]*k,m[3]*k,p[0],p[1]]
+}
+
 /// One band: the mosaic crop with the display LUT, enhanced as asked, as PNG; and what happened
 /// to its background.
 pub fn band_png(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhanceParams) -> (Vec<u8>, String) {
@@ -1890,16 +1930,18 @@ pub fn band_png(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhancePa
 /// Unencoded band pixels, also used to separate enhancement and encoding in benchmarks.
 pub fn band_pixels(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhanceParams) -> (usize, usize, Vec<u8>, String) {
     let u = img.um_per_px;
-    let (x0, y0) = ((rect[0] / u).round() as usize, (rect[1] / u).round() as usize);
-    let (x1, y1) = (((rect[2] / u).round() as usize).min(img.w), ((rect[3] / u).round() as usize).min(img.h));
-    let (cw, ch) = (x1.saturating_sub(x0).max(1), y1.saturating_sub(y0).max(1));
-    let mut g = Gray::new(cw, ch);
-    for y in 0..ch {
-        for x in 0..cw {
-            let (sx, sy) = ((x0 + x).min(img.w - 1), (y0 + y).min(img.h - 1));
-            g.px[y * cw + x] = img.lut[img.px[sy * img.w + sx] as usize] as f32 / 255.0;
-        }
-    }
+    let size = img.display_size();
+    let (x0,y0)=((rect[0]/u).round() as usize,(rect[1]/u).round() as usize);
+    let (x1,y1)=(((rect[2]/u).round() as usize).min(size[0]),((rect[3]/u).round() as usize).min(size[1]));
+    let (cw,ch)=(x1.saturating_sub(x0).max(1),y1.saturating_sub(y0).max(1));
+    let inv=crate::project::image_edits::inverse(img.image_transform());
+    let background=if e.strip { e.strip_grey } else { 255 };
+    let mut g=Gray::new(cw,ch);
+    for y in 0..ch { for x in 0..cw {
+        let p=crate::project::image_edits::apply(inv,[(x0+x) as f64*u+u/2.0,(y0+y) as f64*u+u/2.0]);
+        let value=img.sample_mount(p,background);
+        g.px[y*cw+x]=value as f32/255.0;
+    } }
     let mut g = if e.denoise || e.sharpen { enhance::denoise_sharpen(&g, e) } else { g };
     let mut bg = "kept".to_string();
     if e.strip {
@@ -1911,6 +1953,11 @@ pub fn band_pixels(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &Enhanc
             },
         };
     }
+    if let Some(edits)=img.edits { for y in 0..ch { for x in 0..cw {
+        let p=crate::project::image_edits::apply(inv,[(x0+x) as f64*u+u/2.0,(y0+y) as f64*u+u/2.0]);
+        if !edits.in_crop(p) || p[0]<0.0 || p[1]<0.0 || p[0]>=img.w as f64*u || p[1]>=img.h as f64*u { g.px[y*cw+x]=background as f32/255.0; }
+        else if let Some(value)=edits.mask_pixel(p) { g.px[y*cw+x]=value as f32/255.0; }
+    } } }
     (cw, ch, g.to_u8(), bg)
 }
 
@@ -2342,7 +2389,7 @@ fn mount_map(
     );
 }
 
-fn arrange_annotations(s: &mut String, q: &Piece, origin: [f64;2], k: f64, t: arrange::PieceTransform) {
+fn arrange_annotations(s: &mut String, q: &Piece, origin: [f64;2], k: f64, t: arrange::PieceTransform, img: &AreaImage) {
     let [x,y] = origin;
     let font = 2.5_f64.max(2.116667/t.scale);
     for g in &q.grains {
@@ -2351,27 +2398,35 @@ fn arrange_annotations(s: &mut String, q: &Piece, origin: [f64;2], k: f64, t: ar
         let label = g.label.clone().unwrap_or_else(|| g.number.to_string());
         let _ = write!(s,r#"<text x="{gx}" y="{gy}" font-size="{font}" fill="white" stroke="black" stroke-width="0.3" paint-order="stroke" text-anchor="middle">{}</text>"#,esc(&label));
     }
-    if t.rotation_deg.abs()>1e-7 {
+    if t.rotation_deg.abs()>1e-7 || img.edits.is_some_and(|e|e.rotate_deg.abs()>1e-7||e.flip_h||e.flip_v) {
         let gx = x+q.w(k)/2.0;
-        let _ = write!(s,r#"<g data-orientation="{}" stroke="white" fill="white"><path d="M{gx} {} v6 m-1.5 -2 l1.5 2 l1.5 -2" fill="none" stroke-width="0.4"/><text x="{}" y="{}" font-size="{font}" stroke="black" stroke-width="0.25" paint-order="stroke">mount +y · {}°</text></g>"#,t.rotation_deg,y+3.0,gx+2.0,y+5.0,t.rotation_deg);
+        let m=img.image_transform();
+        let (tx,ty)=(gx+6.0*m[2],y+3.0+6.0*m[3]);
+        let label=img.edits.map_or_else(||format!("mount +y · {}°",t.rotation_deg),|e|format!("mount +y · paper {}° · image {}°{}{}",t.rotation_deg,e.rotate_deg,if e.flip_h {" H"} else {""},if e.flip_v {" V"} else {""}));
+        let _ = write!(s,r#"<g data-orientation="{}" stroke="white" fill="white"><path d="M{gx} {} L{tx} {ty} M{} {} L{tx} {ty} L{} {}" fill="none" stroke-width="0.4"/><text x="{}" y="{}" font-size="{font}" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text></g>"#,t.rotation_deg,y+3.0,tx-2.0*m[2]-1.5*m[0],ty-2.0*m[3]-1.5*m[1],tx-2.0*m[2]+1.5*m[0],ty-2.0*m[3]+1.5*m[1],gx+2.0,y+5.0,esc(&label));
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn arrange_spots(s:&mut String, spots:&[&crate::spots::Spot], q:&Piece, origin:[f64;2], k:f64, scale:f64, index:usize) {
+fn arrange_spots(s:&mut String, spots:&[(&crate::spots::Spot,[f64;2])], q:&Piece, origin:[f64;2], k:f64, scale:f64, index:usize, img:&AreaImage) {
     let [x,y]=origin;
     let font=2.5_f64.max(2.116667/scale);
     let _ = write!(s,r#"<clipPath id="arrange-spots-{index}"><rect x="{x}" y="{y}" width="{}" height="{}"/></clipPath><g clip-path="url(#arrange-spots-{index})" fill="none" stroke="white" stroke-width="0.3">"#,q.w(k),q.h(k));
-    let first=spots.partition_point(|spot|spot.x_um<q.rect[0]);let last=spots.partition_point(|spot|spot.x_um<=q.rect[2]);
-    for spot in spots[first..last].iter().filter(|spot|spot.y_um>=q.rect[1] && spot.y_um<=q.rect[3]) {
-        let sx=x+(spot.x_um-q.rect[0])/k;let sy=y+(spot.y_um-q.rect[1])/k;
+    let first=spots.partition_point(|(_,p)|p[0]<q.rect[0]);let last=spots.partition_point(|(_,p)|p[0]<=q.rect[2]);
+    let image=img.image_transform();
+    let paper=|p:[f64;2]| {let p=arrange::point(image,p);[x+(p[0]-q.rect[0])/k,y+(p[1]-q.rect[1])/k]};
+    for (spot,p) in spots[first..last].iter().filter(|(_,p)|p[1]>=q.rect[1] && p[1]<=q.rect[3]) {
+        let sx=x+(p[0]-q.rect[0])/k;let sy=y+(p[1]-q.rect[1])/k;
         let radius=spot.diameter_um/k/2.0;
-        let ex=x+(spot.x2_um.unwrap_or(spot.x_um)-q.rect[0])/k;
-        let ey=y+(spot.y2_um.unwrap_or(spot.y_um)-q.rect[1])/k;
+        let end=[spot.x2_um.unwrap_or(spot.x_um),spot.y2_um.unwrap_or(spot.y_um)];
+        let [ex,ey]=paper(end);
         match spot.kind {
             crate::spots::SpotKind::Spot => {let _=write!(s,r#"<circle cx="{sx}" cy="{sy}" r="{radius}"/>"#);}
             crate::spots::SpotKind::Line => {let _=write!(s,r#"<path d="M{sx} {sy} L{ex} {ey}"/>"#);}
-            crate::spots::SpotKind::Raster => {let _=write!(s,r#"<rect x="{}" y="{}" width="{}" height="{}"/>"#,sx.min(ex),sy.min(ey),(ex-sx).abs(),(ey-sy).abs());}
+            crate::spots::SpotKind::Raster => {
+                let points=[[spot.x_um,spot.y_um],[end[0],spot.y_um],end,[spot.x_um,end[1]]].map(paper);
+                let _=write!(s,r#"<polygon points="{}"/>"#,points.iter().map(|p|format!("{},{}",p[0],p[1])).collect::<Vec<_>>().join(" "));
+            }
         }
         let _=write!(s,r#"<text data-spot-label="{}" x="{}" y="{}" font-size="{font}" fill="white" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text>"#,spot.id,sx+radius+0.8,sy,esc(&spot.name));
     }

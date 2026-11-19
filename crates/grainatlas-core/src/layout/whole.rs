@@ -221,7 +221,7 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
         w_mm: portrait.h_mm,
         h_mm: portrait.w_mm,
     };
-    let size = [a.w as f64 * a.um_per_px, a.h as f64 * a.um_per_px];
+    let size = [a.display_size()[0] as f64 * a.um_per_px, a.display_size()[1] as f64 * a.um_per_px];
     if !size.iter().all(|v| v.is_finite())
         || portrait.w_mm - 2.0 * p.margin_mm <= 2.0 * GUTTER_MM + HEADER_MM + 1.0 + FOOTER_MM
     {
@@ -262,8 +262,8 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
     let (w, h) = (size[0] / k, size[1] / k);
     let (x, y) = ((b[0] + b[2] - w) / 2.0, (b[1] + b[3] - h) / 2.0);
     let rect = [x, y, x + w, y + h];
-    let ow = ((w * p.dpi / 25.4).round() as usize).clamp(1, a.w);
-    let oh = ((h * p.dpi / 25.4).round() as usize).clamp(1, a.h);
+    let ow = ((w * p.dpi / 25.4).round() as usize).clamp(1, a.display_size()[0]);
+    let oh = ((h * p.dpi / 25.4).round() as usize).clamp(1, a.display_size()[1]);
     let png = image(a, ow, oh);
     let step = p.grid.then(|| round_bar_um(40.0 * k));
     let corners = [[0.0, 0.0], [size[0], 0.0], [0.0, size[1]], size];
@@ -290,6 +290,7 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
         smallest_detail_300_um: 2.0 * 25.4 / 300.0 * k,
         smallest_detail_600_um: 2.0 * 25.4 / 600.0 * k,
         stage_corners_mm: corners.map(|c| {
+            let c=crate::project::image_edits::apply(crate::project::image_edits::inverse(a.image_transform()),c);
             area.rec
                 .stage_of(c[0], c[1])
                 .map(|v| [v[0] / 1e6, v[1] / 1e6])
@@ -345,6 +346,8 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
             sheet_rect_mm: rect,
             mosaic_rect_um: [0.0, 0.0, size[0], size[1]],
             background: "kept".into(),
+            paper_to_mount: a.edits.map(|_| super::sheets::paper_to_mount(a, [0.0,0.0,size[0],size[1]], [rect[0],rect[1]], k)),
+            image_crop: a.edits.and_then(|e| e.crop.clone()),
         }],
     };
     let mut s = format!(
@@ -357,6 +360,7 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
         r#"<image id="whole-mosaic" x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#,
         base64(&png)
     );
+    super::sheets::image_axes(&mut s, a, rect);
     coordinates(&mut s, rect, size, k, step);
     orientation(&mut s, area, &stats, page.w_mm - p.margin_mm);
     let fy = page.h_mm - p.margin_mm - 2.5;
@@ -400,18 +404,20 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
 /// Exact box-area filter, with fractional weights at source pixel boundaries. Applies the
 /// tone LUT before averaging, and allocates only the downsampled grey output.
 fn area_png(a: &AreaImage, ow: usize, oh: usize) -> Vec<u8> {
+    let size=a.display_size();
+    let inv=crate::project::image_edits::inverse(a.image_transform());
     let mut px = vec![0; ow * oh];
-    let (sx, sy) = (a.w as f64 / ow as f64, a.h as f64 / oh as f64);
+    let (sx, sy) = (size[0] as f64 / ow as f64, size[1] as f64 / oh as f64);
     for y in 0..oh {
-        let (y0, y1) = (y as f64 * sy, ((y + 1) as f64 * sy).min(a.h as f64));
+        let (y0, y1) = (y as f64 * sy, ((y + 1) as f64 * sy).min(size[1] as f64));
         for x in 0..ow {
-            let (x0, x1) = (x as f64 * sx, ((x + 1) as f64 * sx).min(a.w as f64));
+            let (x0, x1) = (x as f64 * sx, ((x + 1) as f64 * sx).min(size[0] as f64));
             let mut sum = 0.0;
-            for yy in y0.floor() as usize..(y1.ceil() as usize).min(a.h) {
+            for yy in y0.floor() as usize..(y1.ceil() as usize).min(size[1]) {
                 let wy = (y1.min((yy + 1) as f64) - y0.max(yy as f64)).max(0.0);
-                for xx in x0.floor() as usize..(x1.ceil() as usize).min(a.w) {
+                for xx in x0.floor() as usize..(x1.ceil() as usize).min(size[0]) {
                     let wx = (x1.min((xx + 1) as f64) - x0.max(xx as f64)).max(0.0);
-                    sum += a.lut[a.px[yy * a.w + xx] as usize] as f64 * wx * wy;
+                    sum += a.sample_mount(crate::project::image_edits::apply(inv,[(xx as f64+0.5)*a.um_per_px,(yy as f64+0.5)*a.um_per_px]),255) as f64 * wx * wy;
                 }
             }
             px[y * ow + x] = (sum / ((x1 - x0) * (y1 - y0))).round() as u8;
@@ -514,8 +520,8 @@ fn header(
             "Mosaic {} x {} px · {:.3} x {:.3} mm of sample",
             a.w,
             a.h,
-            a.w as f64 * a.um_per_px / 1000.0,
-            a.h as f64 * a.um_per_px / 1000.0
+            a.display_size()[0] as f64 * a.um_per_px / 1000.0,
+            a.display_size()[1] as f64 * a.um_per_px / 1000.0
         ),
     );
     text(
@@ -639,11 +645,8 @@ fn orientation(s: &mut String, area: &SheetArea, st: &WholeStats, page_right: f6
     s.push_str(r#"<g stroke="white" stroke-width="0.65" paint-order="stroke">"#);
     for axis in 0..2 {
         let dir = area.rec.stage_sign[axis];
-        let (dx, dy) = if axis == 0 {
-            (dir * 8.0, 0.0)
-        } else {
-            (0.0, dir * 8.0)
-        };
+        let m=area.img.image_transform();
+        let (dx,dy)=if axis==0 { (dir*8.0*m[0],dir*8.0*m[1]) } else { (dir*8.0*m[2],dir*8.0*m[3]) };
         let (ex, ey) = (ox + dx, oy + dy);
         let (hx, hy) = (ex - dx * 0.23, ey - dy * 0.23);
         let _ = write!(

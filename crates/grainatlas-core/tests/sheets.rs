@@ -560,7 +560,7 @@ fn sheets_print_owned_grains_with_a_registration() {
         .zip(&px)
         .map(|(rec, px)| SheetArea {
             rec,
-            img: AreaImage {
+            img: AreaImage { source_size_um: None, edits: None,
                 id: &rec.id,
                 name: &rec.name,
                 sample: &rec.sample,
@@ -948,7 +948,7 @@ fn field_sheets_at_pixel(
             let m = rec.placement.as_ref().unwrap();
             SheetArea {
                 rec,
-                img: AreaImage {
+                img: AreaImage { source_size_um: None, edits: None,
                     id: &rec.id,
                     name: &rec.name,
                     sample: &rec.sample,
@@ -1953,7 +1953,7 @@ fn old_sheet_json_defaults_and_audit_checks_ownership_not_visibility() {
     let pixels = vec![128; 400 * 300];
     let sa = SheetArea {
         rec: &a,
-        img: AreaImage {
+        img: AreaImage { source_size_um: None, edits: None,
             id: &a.id,
             name: &a.name,
             sample: &a.sample,
@@ -2484,7 +2484,7 @@ fn audit_detects_a_band_outside_paper_even_when_mosaic_owners_are_whole() {
     let pixels = vec![128; 400 * 300];
     let areas = [SheetArea {
         rec: &a,
-        img: AreaImage {
+        img: AreaImage { source_size_um: None, edits: None,
             id: &a.id,
             name: &a.name,
             sample: &a.sample,
@@ -2762,7 +2762,7 @@ fn audit_uses_the_sheet_body_before_its_legacy_envelope() {
     let pixels = vec![128; 400 * 300];
     let areas = [SheetArea {
         rec: &a,
-        img: AreaImage {
+        img: AreaImage { source_size_um: None, edits: None,
             id: &a.id,
             name: &a.name,
             sample: &a.sample,
@@ -3238,7 +3238,7 @@ fn sheet_plan_round_trips_and_renders_at_strip_origins() {
     }).collect();
     let areas: Vec<_> = recs.iter().zip(&pixels).map(|(rec, px)| {
         let m = rec.placement.as_ref().unwrap();
-        SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px, lut: std::array::from_fn(|i| i as u8), um_per_px: 1.0 } }
+        SheetArea { rec, img: AreaImage { source_size_um: None, edits: None, id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px, lut: std::array::from_fn(|i| i as u8), um_per_px: 1.0 } }
     }).collect();
     let own = ownership::assign(&recs, &gs, &OwnershipParams::default());
     let plan = sheets::plan_sheets(&p, &areas, &gs, &own, &SheetMeta::default());
@@ -3445,7 +3445,7 @@ fn field_plan(p: &SheetParams, recs: &[AreaRecord], gs: &BTreeMap<String, Vec<Gr
     // Planning is pixel-free: only the source image dimensions and resolution matter.
     let areas: Vec<_> = recs.iter().map(|rec| {
         let m = rec.placement.as_ref().unwrap();
-        SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px: &[], lut: [128; 256], um_per_px: 1.0 } }
+        SheetArea { rec, img: AreaImage { source_size_um: None, edits: None, id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px: &[], lut: [128; 256], um_per_px: 1.0 } }
     }).collect();
     let own = ownership::assign(recs, gs, &OwnershipParams::default());
     sheets::plan_sheets(p, &areas, gs, &own, &SheetMeta::default())
@@ -3521,7 +3521,7 @@ fn packed_oversized_images_and_labels_keep_their_scale_and_fail_bounds_audit() {
         let g = if label_only { grain(1000.0, 1000.0, 60.0) } else { grain(3200.0, 3200.0, 4000.0) };
         let gs = BTreeMap::from([(rec.id.clone(), vec![g.clone()])]);
         let own = ownership::assign(std::slice::from_ref(&rec), &gs, &OwnershipParams::default());
-        let areas = [SheetArea { rec: &rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: 64, h: 64, px: &px, lut: [128; 256], um_per_px: 100.0 } }];
+        let areas = [SheetArea { rec: &rec, img: AreaImage { source_size_um: None, edits: None, id: &rec.id, name: &rec.name, sample: &rec.sample, w: 64, h: 64, px: &px, lut: [128; 256], um_per_px: 100.0 } }];
         let p = SheetParams { packing: Packing::Packed, ..fast_sheets() };
         let result = sheets::sheets(&p, &areas, &gs, &own, &SheetMeta::default());
         assert_eq!((result.stats.sheets, result.stats.bands, result.stats.grains), (1, 1, 1));
@@ -3596,7 +3596,7 @@ fn compact_headers_bound_many_long_labels_and_preserve_acquisition_values() {
     }
     for paper in ["letter", "tabloid"] {
         let params = SheetParams { packing: Packing::Packed, paper: paper.into(), title: "Synthetic mount title with enough words to need abbreviation".into(), ..fast_sheets() };
-        let areas: Vec<_> = recs.iter().map(|rec| SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: 400, h: 300, px: &[], lut: [128; 256], um_per_px: 1.0 } }).collect();
+        let areas: Vec<_> = recs.iter().map(|rec| SheetArea { rec, img: AreaImage { source_size_um: None, edits: None, id: &rec.id, name: &rec.name, sample: &rec.sample, w: 400, h: 300, px: &[], lut: [128; 256], um_per_px: 1.0 } }).collect();
         let meta = SheetMeta { instrument: "Synthetic instrument".into(), serial: "0000".into(), detector: "Synthetic detector".into(), kv: Some(15.0), emission_ua: Some(42.0), wd_mm: Some(10.0), scan: "Synthetic scan with detailed settings preserved across the compact grid column".into(), magnification: "100".into(), tile_px: Some([400, 300]), package: "Synthetic package".into(), comment: "Acquisition text stays complete even when it needs another line".into(), ..Default::default() };
         let own = ownership::assign(&recs, &gs, &OwnershipParams::default());
         let mut plan = sheets::plan_sheets(&params, &areas, &gs, &own, &meta);
@@ -3634,7 +3634,7 @@ fn mixed_sample_field() -> (Vec<AreaRecord>, BTreeMap<String, Vec<Grain>>) {
 fn sample_field_areas(recs: &[AreaRecord]) -> Vec<SheetArea<'_>> {
     recs.iter().map(|rec| {
         let m = rec.placement.as_ref().unwrap();
-        SheetArea { rec, img: AreaImage { id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px: &[], lut: [128; 256], um_per_px: 1.0 } }
+        SheetArea { rec, img: AreaImage { source_size_um: None, edits: None, id: &rec.id, name: &rec.name, sample: &rec.sample, w: m.width, h: m.height, px: &[], lut: [128; 256], um_per_px: 1.0 } }
     }).collect()
 }
 

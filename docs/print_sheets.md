@@ -896,10 +896,58 @@ use SVG order `[a,b,c,d,e,f]`: `x' = a*x + c*y + e`,
 `y' = b*x + d*y + f`. Mount positions are the area's mosaic µm, and paper
 positions are sheet mm from the top left, y down. `sheet_rect_mm` is the rotated
 image's bounding box; use the matrices for registration, not that box's edges.
+The matrices include Canvas rotation and flips before the piece's paper
+transform. `transform.rotation_deg` is the additional paper rotation;
+`transform.crop_um` and `mosaic_rect_um` are in the image display frame, while
+`image_crop` retains the original mount crop. The top-level `paper_to_mount`
+matches `transform.paper_to_mount` on arranged bands.
 The same SVG geometry drives preview, full-quality print and PDF. PDF embeds
 the registration and uses the transformed PNGs without resampling their pixels.
 
-The `project::printable_grains(area, grains, edits)` boundary is an identity
-stub pending Brief A. The grain-sheet and edited-plan entry points call it.
-Canvas crop/mask filtering and image orientation must replace that stub when
-Brief A is merged; whole-area printing currently has no grain target list.
+Canvas crop and mask filtering also apply to arranged pieces. Each band uses
+the image recipe before its paper transform; the registered source geometry
+stays in mount µm.
+
+## Canvas image recipes
+
+Canvas → Edit image saves a version 1 `image_edits` recipe per area. Rectangle
+and polygon crops and mask strokes use mount µm. A grain is left off print
+sheets when its centroid is outside the crop or inside a mask stroke, including
+the round ends and joins. Its geometry, name, links and registered spots remain
+in the project. Reset restores eligibility. The Canvas grain table dims these
+grains and reports how many have registered spots.
+
+The crop is defined before rotation and flips. Rotation is about the crop
+centre (the image centre without a crop); flips use the mount axes. Image
+levels follow the display LUT. Cropped pixels print as the sheet background.
+Masks replace the whole brush path with light grey and a hatched border, in
+both the view and print bands, after enhancement too. The hatch stays aligned
+with the mount when the view is rotated or flipped. Automatic packing runs on a temporary
+oriented copy of eligible grains; the stored geometry never changes. The
+context-first rules above still govern automatic cuts in that view.
+
+Each registration band includes `paper_to_mount`, a six-number SVG affine
+`[a,b,c,d,e,f]`: `mount_x = a*paper_x + c*paper_y + e`,
+`mount_y = b*paper_x + d*paper_y + f`. Paper inputs are mm; mount outputs are
+µm. This composes image rotation and flips with band scale and translation.
+`mosaic_rect_um` is the band's rectangle in the oriented display frame;
+`image_crop` remains in original mount µm. Consumers must use the affine when
+present; the older rectangle-only mapping still applies to older registrations.
+Whole-area sheets carry the same affine.
+
+Manual arrangement may rotate pieces on paper and give pieces different scales.
+Those choices depart from automatic layout's shared scale and mount orientation;
+the user explicitly chooses them. Auto-arrange restores the packed automatic
+layout. Canvas image orientation is part of the area's view and remains in
+that automatic layout. The saved `paper_to_mount` already includes the piece's
+paper transform; consumers must not apply it a second time.
+
+Recipes survive Save, local recovery, undo/redo, tab changes and published
+project JSON. Mirror copies retain the full project record and the publication
+outbox tracks recipe changes using the existing project publication route.
+The annotation sync endpoint carries spots, grains and labels; recipes travel
+in the versioned project publication, as print recipes do. No per-grain server
+request is made by image editing.
+The histogram uses resident pixels, or at most four tiles from the published
+overview when full-resolution pixels are not loaded. Levels Auto uses that
+sample; opening the editor never downloads the full mosaic for a histogram.

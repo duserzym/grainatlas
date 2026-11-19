@@ -1,7 +1,9 @@
+import { applyAffine, composeAffine, identity, inverseAffine, type Affine } from '../image-edits.ts';
 // View transform of the infinite canvas: mosaic pixel → screen CSS pixel.
 // screen = R(rot) · (p − c) · zoom + (W/2, H/2)
 
 export interface View {
+  image?: Affine;
   cx: number;
   cy: number;
   zoom: number; // screen px per mosaic px
@@ -11,6 +13,7 @@ export interface View {
 }
 
 export function toScreen(v: View, x: number, y: number): [number, number] {
+  [x, y] = applyAffine(v.image ?? identity, [x, y]);
   const c = Math.cos(v.rot), s = Math.sin(v.rot);
   const dx = (x - v.cx) * v.zoom, dy = (y - v.cy) * v.zoom;
   return [c * dx - s * dy + v.w / 2, s * dx + c * dy + v.h / 2];
@@ -19,21 +22,21 @@ export function toScreen(v: View, x: number, y: number): [number, number] {
 export function toMosaic(v: View, sx: number, sy: number): [number, number] {
   const c = Math.cos(v.rot), s = Math.sin(v.rot);
   const dx = sx - v.w / 2, dy = sy - v.h / 2;
-  return [(c * dx + s * dy) / v.zoom + v.cx, (-s * dx + c * dy) / v.zoom + v.cy];
+  return applyAffine(inverseAffine(v.image ?? identity), [(c * dx + s * dy) / v.zoom + v.cx, (-s * dx + c * dy) / v.zoom + v.cy]);
 }
 
 /** Canvas/SVG matrix (a b c d e f) for this view, times `k` (device pixel ratio for canvas). */
 export function matrix(v: View, k = 1): [number, number, number, number, number, number] {
   const c = Math.cos(v.rot) * v.zoom, s = Math.sin(v.rot) * v.zoom;
-  return [k * c, k * s, -k * s, k * c, k * (v.w / 2 - (c * v.cx - s * v.cy)), k * (v.h / 2 - (s * v.cx + c * v.cy))];
+  return composeAffine([k * c, k * s, -k * s, k * c, k * (v.w / 2 - (c * v.cx - s * v.cy)), k * (v.h / 2 - (s * v.cx + c * v.cy))], v.image ?? identity);
 }
 
 /** Zoom about a screen point, keeping the mosaic point under it fixed. */
 export function zoomAt(v: View, sx: number, sy: number, factor: number, min = 1 / 64, max = 64): View {
   const z = Math.min(max, Math.max(min, v.zoom * factor));
-  const [mx, my] = toMosaic(v, sx, sy);
+  const [mx, my] = applyAffine(v.image ?? identity, toMosaic(v, sx, sy));
   const nv = { ...v, zoom: z };
-  const [ax, ay] = toMosaic(nv, sx, sy);
+  const [ax, ay] = applyAffine(nv.image ?? identity, toMosaic(nv, sx, sy));
   return { ...nv, cx: nv.cx + (mx - ax), cy: nv.cy + (my - ay) };
 }
 
@@ -45,9 +48,9 @@ export function panBy(v: View, dx: number, dy: number): View {
 
 /** Rotate about a screen point. */
 export function rotateAt(v: View, sx: number, sy: number, dRot: number): View {
-  const [mx, my] = toMosaic(v, sx, sy);
+  const [mx, my] = applyAffine(v.image ?? identity, toMosaic(v, sx, sy));
   const nv = { ...v, rot: v.rot + dRot };
-  const [ax, ay] = toMosaic(nv, sx, sy);
+  const [ax, ay] = applyAffine(nv.image ?? identity, toMosaic(nv, sx, sy));
   return { ...nv, cx: nv.cx + (mx - ax), cy: nv.cy + (my - ay) };
 }
 

@@ -87,7 +87,7 @@ fn measure(
             let m = rec.mosaic.as_ref().unwrap();
             SheetArea {
                 rec,
-                img: layout::AreaImage {
+                img: layout::AreaImage { source_size_um: None, edits: None,
                     id: &rec.id,
                     name: &rec.name,
                     sample: &rec.sample,

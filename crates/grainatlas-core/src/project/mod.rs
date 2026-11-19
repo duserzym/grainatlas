@@ -5,7 +5,7 @@
 
 pub mod pipeline;
 pub mod image_edits;
-pub use image_edits::{AreaImageEdits, printable_grains};
+pub use image_edits::{ImageEdits, AreaImageEdits, printable_grains};
 pub mod session;
 
 use std::collections::BTreeMap;
@@ -44,6 +44,8 @@ pub struct Project {
     pub laser: crate::laser::LaserRegistration,
     #[serde(default, deserialize_with = "stored_print_edits", skip_serializing_if = "Option::is_none")]
     pub print_sheets: Option<StoredPrintEdits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_edits: Option<ImageEdits>,
     /// Keys this version does not know are kept verbatim.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -175,6 +177,7 @@ impl Project {
             settings: Settings::default(),
             laser: Default::default(),
             print_sheets: None,
+            image_edits: None,
             extra: BTreeMap::new(),
         }
     }

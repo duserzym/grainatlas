@@ -208,7 +208,7 @@ export async function editCopy(app: AppState = current()) {
   const draft = listDrafts(remote.server).find(d => d.uuid === p.uuid && (!d.server || normalizeServer(d.server) === normalizeServer(remote.server)));
   const sameUuid = draft ? storedDraftProject(draft) : null;
   const packageCopy = savedProject(p.package.name);
-  // An image-only draft has no pending elements, but its overlay is needed to rebuild a resumable upload.
+  // Image and recipe drafts can have no pending elements. Keep their complete local project record for the resumable publication.
   const imageDraft = !!draft && (!!draft.publish_job || draftSyncStatus(draft).pixels);
   const existing = draft?.pending === null && !imageDraft ? null : sameUuid ?? (draft ? packageCopy : null);
   if (packageCopy && !sameId(packageCopy.uuid, p.uuid) && !confirm(`This computer already has a project for ${p.package.name} (${packageCopy.uuid}). Replace it with this project from the server?`)) return;

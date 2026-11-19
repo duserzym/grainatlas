@@ -294,6 +294,8 @@ pub fn build(project: &Project, areas: &[AreaPixels], package: &PackageDigest, o
         ui.remove("bundle_tone");
     }
     canonical(&mut saved);
+    // Recipes retain full mount-coordinate precision across publication.
+    if let Some(edits) = &project.image_edits { saved["image_edits"] = serde_json::to_value(edits).map_err(|e| Error::Invalid(e.to_string()))?; }
     // Unknown strip edits are opaque project data, including their numeric precision.
     if let Some(crate::project::StoredPrintEdits::Raw(raw)) = &project.print_sheets { saved["print_sheets"] = raw.clone(); }
     files.push(("project.json".into(), serde_json::to_vec_pretty(&saved).map_err(|e| Error::Invalid(e.to_string()))?));

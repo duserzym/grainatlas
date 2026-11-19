@@ -257,6 +257,7 @@ export interface Project {
   settings: Settings;
   /** May contain edits from a newer version or hand-edited JSON; preserve until edited. */
   print_sheets?: unknown;
+  image_edits?: ImageEdits;
   [k: string]: unknown;
 }
 
@@ -356,6 +357,8 @@ export interface BandRecord {
   cut_sources: string[];
   sheet_rect_mm: [number, number, number, number];
   mosaic_rect_um: [number, number, number, number];
+  paper_to_mount?: [number, number, number, number, number, number];
+  image_crop?: AreaImageEdits['crop'];
   background: string;
 }
 
@@ -532,3 +535,13 @@ export interface Finding {
 /** Resident core image buffers; pyramid excludes the shared base level. */
 export interface AreaMemory { base: number; source: number; pyramid: number; linear: number; coverage: number; work: number; small: number; total: number }
 export interface MemoryReport { areas: Record<string, AreaMemory>; total: number; budget: number; wasmBytes?: number }
+
+export interface AreaImageEdits {
+  crop?: { kind: 'rect' | 'polygon'; points_um: [number, number][] };
+  rotate_deg: number;
+  flip_h: boolean;
+  flip_v: boolean;
+  levels?: { black: number; white: number };
+  masks: { points_um: [number, number][]; radius_um: number }[];
+}
+export interface ImageEdits { version: 1; areas: Record<string, AreaImageEdits> }

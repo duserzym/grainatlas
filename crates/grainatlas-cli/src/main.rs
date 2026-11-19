@@ -964,7 +964,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
                 let rec = project.areas.iter().find(|a| &a.id == id)?;
                 Some(grainatlas_core::layout::sheets::SheetArea {
                     rec,
-                    img: grainatlas_core::layout::AreaImage {
+                    img: grainatlas_core::layout::AreaImage { source_size_um: None, edits: None,
                         id: &rec.id,
                         name: &rec.name,
                         sample: if rec.sample.is_empty() {
@@ -1109,7 +1109,7 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits
         .iter()
         .map(|(rec, m, px)| SheetArea {
             rec,
-            img: grainatlas_core::layout::AreaImage {
+            img: grainatlas_core::layout::AreaImage { source_size_um: Some([m.w as f64*m.um_per_px,m.h as f64*m.um_per_px]), edits: project.image_edits.as_ref().filter(|e| e.version==1).and_then(|e| e.areas.get(&rec.id)),
                 id: &rec.id,
                 name: &rec.name,
                 sample: if rec.sample.is_empty() {
@@ -1125,6 +1125,11 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits
             },
         })
         .collect();
+    let source_grains = &grains;
+    let grains = areas.iter().map(|a| {
+        let gs=grainatlas_core::project::printable_grains(a.rec,grains.get(&a.rec.id).map_or(&[],Vec::as_slice),a.img.edits);
+        (a.rec.id.clone(),grainatlas_core::project::image_edits::oriented_grains(&gs,a.img.image_transform()))
+    }).collect();
     let plan = sheets::plan_sheets(&p, &areas, &grains, &own, &meta);
     let edited = if let Some(file) = edits {
         let stored: sheets::PrintEdits = serde_json::from_slice(&std::fs::read(file).with_context(|| file.display().to_string())?)?;
@@ -1133,12 +1138,20 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits
     for dropped in &edited.dropped { eprintln!("edit {} dropped: {}", dropped.index, dropped.reason); }
     if !edited.problems.is_empty() { bail!("cannot export sheets: {}", edited.problems.iter().map(|p| p.message.as_str()).collect::<Vec<_>>().join("; ")); }
     let mut r = sheets::render_plan(&edited.plan, &areas, &grains, &own);
+    for area in &areas {
+        for g in source_grains.get(&area.rec.id).into_iter().flatten().filter(|g| area.img.edits.is_some_and(|e| !e.visible(g.centroid_um))) {
+            let off = sheets::LeftOff { grain: sheets::StrayGrain { area: area.rec.id.clone(), id: g.id, number: g.number, label: g.label.clone(), eq_diameter_um: g.eq_diameter_um, centroid_um: g.centroid_um, bbox_um: g.bbox_um }, reason: "cropped".into() };
+            r.left_off.push(off.clone()); r.registration.left_off.push(off);
+            r.left_off_summary.cropped += 1;
+        }
+    }
     r.registration.project_uuid = Some(project.uuid);
     r.registration.project_path = abs(&folder);
+    if areas.iter().any(|a| a.img.edits.is_some()) { r.registration.mapping = "mount_um = band.paper_to_mount × [sheet_x_mm, sheet_y_mm, 1]; SVG affine order [a,b,c,d,e,f]".into(); }
     let mut files = vec![
         (
             format!("{name}_grain_sheets_{}.pdf", p.paper),
-            grainatlas_core::layout::pdf::pdf_from_svgs(&r.pages)?,
+            whole::registered_pdf(&r.pages, &r.registration)?,
         ),
         (
             p.registration_file.clone(),

@@ -260,3 +260,25 @@ test('two concurrent tab jobs share the two-upload budget', async t => {
   await Promise.all([first.run(), second.run()]);
   assert.equal(maximum, 2);
 });
+
+test('recipe-only project publications reuse 4000 existing image assets and return the saved recipe', async t => {
+  const s=setup(t,4001);
+  for(const f of s.atlas.files.slice(0,4000))s.have.add(f.sha256);
+  const projectFile=s.files[4000], entry=s.atlas.files[4000];
+  projectFile.path=entry.path='project.json';
+  let stored;
+  s.handler(c=>{
+    if(c.method==='PUT' && c.path.endsWith(entry.sha256))stored=JSON.parse(new TextDecoder().decode(c.init.body));
+  });
+  const measurements=[];
+  for(const image_edits of [undefined,{version:1,areas:{a:{rotate_deg:90,flip_h:true,flip_v:false,crop:{kind:'rect',points_um:[[0,0],[100,100]]},levels:{black:18,white:236},masks:[{points_um:[[1,2],[3,4]],radius_um:5}]}}}]) {
+    s.have.delete(entry.sha256);projectFile.bytes=new TextEncoder().encode(JSON.stringify({schema_version:1,uuid:'synthetic',image_edits}));entry.size=projectFile.bytes.length;
+    const start=s.calls.length,time=performance.now();await s.run();
+    const calls=s.calls.slice(start),ms=performance.now()-time;
+    assert.equal(calls.filter(c=>c.method==='PUT').length,1);assert.deepEqual(stored.image_edits,image_edits);
+    assert.equal(calls.some(c=>c.path.includes('/elements')),false);
+    measurements.push({recipe:!!image_edits,requests:calls.length,uploadedBytes:projectFile.bytes.length,ms:Number(ms.toFixed(2))});
+    s.job={...s.job,upload_id:undefined,start_key:'recipe-start',commit_key:'recipe-commit'};
+  }
+  t.diagnostic(`4000 reused image assets, before/after recipe: ${JSON.stringify(measurements)} (mock timings; capability cached after first publication).`);
+});

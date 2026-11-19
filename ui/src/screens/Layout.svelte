@@ -136,6 +136,7 @@
       spots: c.style === 'layout' && c.params.show_spots ? app.spots : undefined,
       labels: c.style === 'layout' && c.params.show_labels ? app.labels : undefined,
       edits: app.project?.print_sheets,
+      image_edits: app.project?.image_edits,
     });
   }
   let madeWith = $state('');
@@ -210,6 +211,7 @@
     const { liveIdle } = await import('../lib/actions');
     for (const id of stitchedIds) await liveIdle(id);
     const core = await app.core;
+    if (app.project) await core.loadProject(JSON.stringify($state.snapshot({ ...app.project, grainatlas_ui: undefined })));
     const p = $state.snapshot(sheet) as SheetParams;
     const name = app.pkg?.name ?? app.project?.package.name ?? 'grainatlas';
     p.spot_sizes_um = spotText.split(/[,\s]+/).map(Number).filter((v) => v > 0);
@@ -272,6 +274,7 @@
     const { liveIdle } = await import('../lib/actions');
     for (const id of stitchedIds) await liveIdle(id);
     const core = await app.core;
+    if (app.project) await core.loadProject(JSON.stringify($state.snapshot({ ...app.project, grainatlas_ui: undefined })));
     const p = $state.snapshot(params) as LayoutParams;
     if (!p.area_ids.length) p.area_ids = stitchedIds;
     sheets = null;
@@ -293,6 +296,7 @@
   async function pdf() {
     if (!result || exportBlocked) return;
     const core = await app.core;
+    if (app.project) await core.loadProject(JSON.stringify($state.snapshot({ ...app.project, grainatlas_ui: undefined })));
     let cancelled = false;
     app.cancelTask = () => { cancelled = true; cancelQuality(); };
     try {
@@ -313,6 +317,7 @@
     app.cancelTask = () => { cancelled = true; cancelQuality(); };
     try {
       const core = await app.core;
+    if (app.project) await core.loadProject(JSON.stringify($state.snapshot({ ...app.project, grainatlas_ui: undefined })));
       const pages = await app.run('Preparing print quality', async progress => {
         if (quality) await quality.wait(progress, () => cancelled || destroyed || stale);
         return quality ? core.printPages(quality.job) : result!.pages;

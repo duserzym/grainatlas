@@ -422,7 +422,7 @@ export class SyncSession {
       tone: (this.app.project.grainatlas_ui as { tone?: unknown } | undefined)?.tone,
       bundle_tone: (this.app.project.grainatlas_ui as { bundle_tone?: unknown } | undefined)?.bundle_tone,
     } }) as unknown as import('./core/types').Project;
-    const p = $state.snapshot({ areas: this.app.project.areas, grainatlas_ui: { tone: this.app.tone } }) as unknown as import('./core/types').Project;
+    const p = $state.snapshot({ areas: this.app.project.areas, image_edits: this.app.project.image_edits, grainatlas_ui: { tone: this.app.tone } }) as unknown as import('./core/types').Project;
     saveBundleTones(p, $state.snapshot(this.app.bundle), $state.snapshot(this.app.params), $state.snapshot(this.app.tone), adopted);
     if (!this.app.bundle) p.areas = p.areas.map(a => ({ ...a, params: this.app.params[a.id] ?? a.params, mosaic: this.app.stitched[a.id]?.mosaic ?? a.mosaic }));
     return pixelSignature(p);

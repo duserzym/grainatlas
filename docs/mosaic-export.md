@@ -166,3 +166,9 @@ Playwright uses the invented large bundle, checks the 1280 × 800 dialog, valida
 a downloaded TIFF package and exercises folder streaming, cancellation, retry,
 PNG multi-area automatic naming with one folder pick, and JPG size preflight.
 The supervisor runs it with the usual preview server.
+
+Canvas image recipes do not crop, mask, rotate or flip exported mosaics. Mosaic
+exports retain original stage-aligned pixels, dimensions and all grain geometry,
+including grains left off print sheets. “As displayed” applies the recipe's
+black and white levels after the display LUT; it applies no spatial image edits.
+Original-value modes ignore the image recipe entirely.

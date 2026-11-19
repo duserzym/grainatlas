@@ -9,6 +9,7 @@ use crate::ownership::{self, OwnershipParams};
 use crate::photometric::ToneParams;
 use crate::photometric::enhance::{self, EnhanceParams};
 use crate::segment::Grain;
+use crate::project::image_edits::{printable_grains, oriented_grains};
 use crate::{Error, Result};
 
 fn parse<T: serde::de::DeserializeOwned + Default>(s: &str) -> Result<T> {
@@ -39,7 +40,7 @@ impl Session {
             .ok_or_else(|| Error::Invalid(format!("area {} has no stitched mosaic", rec.id)))?;
         let area = SheetArea {
             rec,
-            img: super::pipeline::area_image(rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)),
+            img: print_image(project, rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)),
         };
         let mut meta = self.meta()?;
         if let Ok(pkg) = self.pkg() {
@@ -55,9 +56,10 @@ impl Session {
                 let target = (img.w as f64 / w.min(1600) as f64).max(img.h as f64 / h.min(1600) as f64);
                 let level = o.pyramid.levels.iter().find(|(i, _)| i.scale as f64 >= target).unwrap_or_else(|| o.pyramid.levels.last().unwrap());
                 let img = crate::layout::AreaImage { w: level.0.w, h: level.0.h, px: &level.1, um_per_px: img.um_per_px * level.0.scale as f64, ..*img };
-                sheets::band_png(&img, [0.0,0.0,img.w as f64*img.um_per_px,img.h as f64*img.um_per_px], &[], &EnhanceParams::default()).0
+                sheets::band_png(&img, [0.0,0.0,img.display_size()[0] as f64*img.um_per_px,img.display_size()[1] as f64*img.um_per_px], &[], &EnhanceParams::default()).0
             })?
         } else { crate::layout::whole::whole_sheet(&p, &area, &meta)? };
+        if project.image_edits.is_some() { r.registration.mapping="mount_um = band.paper_to_mount × [sheet_x_mm, sheet_y_mm, 1]; SVG affine order [a,b,c,d,e,f]. mosaic_rect_um is in the oriented display frame; image_crop is in mount µm".into(); }
         r.registration.project_uuid = Some(project.uuid);
         r.registration.project_path = self.project_path.clone();
         if preview { self.fallback_job(FullRequest::Whole { params: params_json.into(), tone: tone_json.into() }, serde_json::to_value(r).map_err(invalid)?) }
@@ -117,15 +119,18 @@ impl Session {
     }
 
     fn render_sheets(&self, params: Option<SheetParams>, plan: Option<sheets::SheetPlan>, edits: &str, grains_json: &str, tone_json: &str, preview: bool) -> Result<String> {
-        let source_grains: BTreeMap<String, Vec<Grain>> = parse(grains_json)?;
-        let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
-        let grains: BTreeMap<String, Vec<Grain>> = project.areas.iter().map(|area| (area.id.clone(), crate::project::printable_grains(area, source_grains.get(&area.id).map_or(&[],Vec::as_slice), None))).collect();
+        let grains: BTreeMap<String, Vec<Grain>> = parse(grains_json)?;
         let tone: BTreeMap<String, ToneParams> = parse(tone_json)?;
         let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
         let own = ownership::assign(&project.areas, &grains, &OwnershipParams::default());
+        let grains: BTreeMap<String, Vec<Grain>> = project.areas.iter().map(|rec| {
+            let gs=printable_grains(rec,grains.get(&rec.id).map_or(&[],Vec::as_slice),project.image_edits.as_ref().filter(|e| e.version==1).and_then(|e| e.areas.get(&rec.id)));
+            let gs=if let Some(o)=self.outputs.get(&rec.id) { oriented_grains(&gs,print_image(project,rec,o,tone.get(&rec.id).unwrap_or(&rec.params.tone)).image_transform()) } else { gs };
+            (rec.id.clone(),gs)
+        }).collect();
         let areas: Vec<SheetArea> = project.areas.iter().filter_map(|rec| {
             let o = self.outputs.get(&rec.id)?;
-            Some(SheetArea { rec, img: super::pipeline::area_image(rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)) })
+            Some(SheetArea { rec, img: print_image(project, rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)) })
         }).collect();
         if areas.is_empty() { return Err(Error::Invalid("no stitched area to print".into())); }
         let mut plan = match plan { Some(plan) => plan, None => sheets::plan_sheets(&params.expect("parameters or plan"), &areas, &grains, &own, &self.meta()?) };
@@ -144,6 +149,8 @@ impl Session {
             if preview { return preview_band(a, rect, &self.outputs[&a.rec.id], edited.plan.um_per_mm, edited.plan.paper_mm); }
             self.sheet_images.image(&a.img, rect, &styles[ai], &self.outputs[&a.rec.id].base, grains.get(&a.rec.id).map_or(&[], Vec::as_slice), &edited.plan.params.enhance)
         });
+        add_image_left_off(&mut r, project, grains_json)?;
+        if project.image_edits.is_some() { r.registration.mapping="mount_um = band.paper_to_mount × [sheet_x_mm, sheet_y_mm, 1]; SVG affine order [a,b,c,d,e,f]. mosaic_rect_um is in the oriented display frame; image_crop is in mount µm".into(); }
         r.registration.project_uuid = Some(project.uuid);
         r.registration.project_path = self.project_path.clone();
         r.dropped = edited.dropped;
@@ -165,11 +172,12 @@ impl Session {
     }
     pub fn layout_preview(&self, params: &str, grains: &str, spots: &str, labels: &str, tone: &str) -> Result<String> {
         let p: crate::layout::LayoutParams = serde_json::from_str(params).map_err(invalid)?;
-        let gs = parse(grains)?; let ss: Vec<crate::spots::Spot> = parse(spots)?; let ls: Vec<crate::spots::Label> = parse(labels)?;
+        let gs: BTreeMap<String,Vec<Grain>> = parse(grains)?; let ss: Vec<crate::spots::Spot> = parse(spots)?; let ls: Vec<crate::spots::Label> = parse(labels)?;
         let tones: BTreeMap<String,ToneParams> = parse(tone)?;
         let project = self.project.as_ref().ok_or_else(|| invalid("no project"))?;
-        let areas: Vec<_> = project.areas.iter().filter_map(|rec| Some(SheetArea { rec, img: super::pipeline::area_image(rec, self.outputs.get(&rec.id)?, tones.get(&rec.id).unwrap_or(&rec.params.tone)) })).collect();
+        let areas: Vec<_> = project.areas.iter().filter_map(|rec| Some(SheetArea { rec, img: print_image(project, rec, self.outputs.get(&rec.id)?, tones.get(&rec.id).unwrap_or(&rec.params.tone)) })).collect();
         let imgs = areas.iter().map(|a| crate::layout::AreaImage { ..a.img }).collect::<Vec<_>>();
+        let gs=areas.iter().map(|a| (a.rec.id.clone(),oriented_grains(&printable_grains(a.rec,gs.get(&a.rec.id).map_or(&[],Vec::as_slice),a.img.edits),a.img.image_transform()))).collect();
         let paper = p.page();
         let r = crate::layout::layout_with_images(&p, &imgs, &gs, &ss, &ls, &|a, rect, k| {
             let area = areas.iter().find(|v| v.rec.id == a.id).unwrap();
@@ -198,7 +206,7 @@ impl Session {
             if page != job.next || page >= total { return Err(invalid("invalid print page order")); }
             if let Some(plan) = &job.plan {
                 let project = self.project.as_ref().ok_or_else(|| invalid("no project"))?;
-                let areas: Vec<_> = project.areas.iter().filter_map(|rec| Some(SheetArea { rec, img: super::pipeline::area_image(rec, self.outputs.get(&rec.id)?, job.tone.get(&rec.id).unwrap_or(&rec.params.tone)) })).collect();
+                let areas: Vec<_> = project.areas.iter().filter_map(|rec| Some(SheetArea { rec, img: print_image(project, rec, self.outputs.get(&rec.id)?, job.tone.get(&rec.id).unwrap_or(&rec.params.tone)) })).collect();
                 let bands: Vec<_> = plan.strips.iter().filter(|s| !s.hidden && s.sheet == page).flat_map(|s| s.bands.iter().map(move |b| (&s.area, b.mosaic_rect_um))).collect();
                 let images = crate::util::par_map(bands.len(), |i| {
                     let (id, rect) = bands[i]; let a = areas.iter().find(|a| &a.rec.id == id).unwrap();
@@ -208,9 +216,15 @@ impl Session {
                 });
                 job.full.extend(images);
                 if page + 1 == plan.sheet_bodies.len() {
-                    let own = ownership::assign(&project.areas, &job.grains, &OwnershipParams::default());
+                    // Ownership was measured in the original mount frame, before display orientation.
+                    let own: ownership::Ownership = serde_json::from_value(job.result["ownership"].clone()).map_err(invalid)?;
                     let mut r = sheets::render_plan_with_images(plan, &areas, &job.grains, &own, &|ai, rect| job.full[&band_key(&areas[ai].rec.id, rect)].clone());
-                    r.registration.project_uuid = Some(project.uuid); r.registration.project_path = self.project_path.clone();
+                    if project.image_edits.is_some() { r.registration.mapping="mount_um = band.paper_to_mount × [sheet_x_mm, sheet_y_mm, 1]; SVG affine order [a,b,c,d,e,f]. mosaic_rect_um is in the oriented display frame; image_crop is in mount µm".into(); }
+        r.registration.project_uuid = Some(project.uuid); r.registration.project_path = self.project_path.clone();
+                    if let Some(off)=job.result.get("left_off").and_then(|v| v.as_array()) {
+                        for value in off { let item: sheets::LeftOff=serde_json::from_value(value.clone()).map_err(invalid)?; if !r.left_off.iter().any(|o| o.grain.id==item.grain.id) { r.registration.left_off.push(item.clone()); r.left_off.push(item); } }
+                        r.left_off_summary.cropped=r.left_off.iter().filter(|o| o.reason=="cropped").count();
+                    }
                     r.dropped = job.result.get("dropped").map(|v| serde_json::from_value(v.clone()).map_err(invalid)).transpose()?.unwrap_or_default();
                     job.result = serde_json::to_value(r).map_err(invalid)?;
                     job.result["ownership"] = serde_json::to_value(own).map_err(invalid)?;
@@ -264,8 +278,9 @@ impl Session {
     /// Strip dragging uses the same reduced-resolution, unenhanced preview as pages.
     pub fn print_band_preview(&self, area_id: &str, rect: [f64;4], tone_json: &str) -> Result<Vec<u8>> {
         let tone: BTreeMap<String,ToneParams> = parse(tone_json)?;
+        let project = self.project.as_ref().ok_or_else(|| invalid("no project"))?;
         let rec = self.rec(area_id)?; let output = self.out(area_id)?;
-        let area = SheetArea { rec, img: super::pipeline::area_image(rec, output, tone.get(area_id).unwrap_or(&rec.params.tone)) };
+        let area = SheetArea { rec, img: print_image(project, rec, output, tone.get(area_id).unwrap_or(&rec.params.tone)) };
         let guard = self.sheet_images.job.lock().unwrap();
         let plan = guard.as_ref().and_then(|j| j.plan.as_ref()).ok_or_else(|| invalid("make sheets before editing strips"))?;
         Ok(preview_band(&area, rect, output, plan.um_per_mm, plan.paper_mm).0)
@@ -274,10 +289,11 @@ impl Session {
     /// Pixels identical to the last sheet render for this rectangle and display tone.
     pub fn print_band_image(&self, area_id: &str, rect: [f64; 4], tone_json: &str) -> Result<Vec<u8>> {
         let tone: BTreeMap<String, ToneParams> = parse(tone_json)?;
+        let project = self.project.as_ref().ok_or_else(|| invalid("no project"))?;
         let rec = self.rec(area_id)?;
         let o = self.out(area_id)?;
-        let img = super::pipeline::area_image(rec, o, tone.get(area_id).unwrap_or(&rec.params.tone));
-        if rect.iter().any(|v| !v.is_finite()) || rect[0] < 0.0 || rect[1] < 0.0 || rect[2] > img.w as f64 * img.um_per_px || rect[3] > img.h as f64 * img.um_per_px || rect[0] >= rect[2] || rect[1] >= rect[3] { return Err(Error::Invalid("invalid band rectangle".into())); }
+        let img = print_image(project, rec, o, tone.get(area_id).unwrap_or(&rec.params.tone));
+        if rect.iter().any(|v| !v.is_finite()) || rect[0] < 0.0 || rect[1] < 0.0 || rect[2] > img.display_size()[0] as f64 * img.um_per_px || rect[3] > img.display_size()[1] as f64 * img.um_per_px || rect[0] >= rect[2] || rect[1] >= rect[3] { return Err(Error::Invalid("invalid band rectangle".into())); }
         let last = self.sheet_images.last.lock().unwrap();
         let defaults = LastSheet::default();
         let last = last.as_ref().unwrap_or(&defaults);
@@ -350,6 +366,7 @@ impl BandImageCache {
 fn image_style(enhance: &EnhanceParams, img: &crate::layout::AreaImage, grains: &[Grain]) -> String {
     let mut bytes = serde_json::to_vec(enhance).expect("enhancement serializes");
     bytes.extend_from_slice(&img.lut);
+    bytes.extend(serde_json::to_vec(&img.edits).expect("edits serialize"));
     if enhance.strip { bytes.extend(serde_json::to_vec(grains).expect("grains serialize")); }
     crate::util::sha256_hex(&bytes)
 }
@@ -361,6 +378,23 @@ fn validate_plan(plan: &sheets::SheetPlan, areas: &[SheetArea], grains: &BTreeMa
         && plan.lines.as_ref().is_none_or(|lines| lines.iter().all(|ln| ln.sheet < plan.sheet_bodies.len() && ln.strips.iter().all(|i| *i < plan.strips.len())))
         && plan.strips.iter().all(|s| !s.hidden && s.key.area == s.area && s.sheet < plan.sheet_bodies.len() && s.origin_mm.iter().chain(&s.size_mm).all(|v| v.is_finite()) && plan.targets.get(&s.area).is_some_and(|ids| s.bands.iter().all(|b| b.key.area == s.area && b.mosaic_rect_um.iter().all(|v| v.is_finite()) && b.mosaic_rect_um[0] < b.mosaic_rect_um[2] && b.mosaic_rect_um[1] < b.mosaic_rect_um[3] && b.grains.iter().all(|id| ids.contains(id)))));
     if valid { Ok(()) } else { Err(Error::Invalid("invalid plan or source grains changed; make sheets again".into())) }
+}
+
+pub(super) fn print_image<'a>(project: &'a crate::project::Project, rec: &'a crate::project::AreaRecord, out: &'a super::pipeline::AreaOutput, tone: &ToneParams) -> crate::layout::AreaImage<'a> {
+    let mut img=super::pipeline::area_image(rec,out,tone);
+    img.source_size_um=Some([img.w as f64*img.um_per_px,img.h as f64*img.um_per_px]);
+    img.edits=project.image_edits.as_ref().filter(|e| e.version==1).and_then(|e| e.areas.get(&rec.id)); img
+}
+fn add_image_left_off(r: &mut sheets::SheetResult, project: &crate::project::Project, source: &str) -> Result<()> {
+    let grains: BTreeMap<String,Vec<Grain>>=parse(source)?;
+    for area in &project.areas {
+        let e=project.image_edits.as_ref().filter(|e| e.version==1).and_then(|e| e.areas.get(&area.id));
+        for g in grains.get(&area.id).into_iter().flatten().filter(|g| e.is_some_and(|e| !e.visible(g.centroid_um))) {
+            let off=sheets::LeftOff { grain: sheets::StrayGrain { area:area.id.clone(),id:g.id,number:g.number,label:g.label.clone(),eq_diameter_um:g.eq_diameter_um,centroid_um:g.centroid_um,bbox_um:g.bbox_um },reason:"cropped".into() };
+            r.left_off.push(off.clone()); r.registration.left_off.push(off);
+        }
+    }
+    r.left_off_summary.cropped=r.left_off.iter().filter(|o| o.reason=="cropped").count(); Ok(())
 }
 
 fn band_key(area: &str, rect: [f64; 4]) -> String { format!("{area}:{:?}", rect.map(f64::to_bits)) }
@@ -397,7 +431,7 @@ mod tests {
     #[test]
     fn band_cache_evicts_the_least_recently_used_and_refuses_oversized_images() {
         let source = std::sync::Arc::new(vec![128; 64*64]);
-        let img = crate::layout::AreaImage { id:"a",name:"a",sample:"a",w:64,h:64,px:&source,lut:std::array::from_fn(|i| i as u8),um_per_px:1.0 };
+        let img = crate::layout::AreaImage { source_size_um: None, edits: None, id:"a",name:"a",sample:"a",w:64,h:64,px:&source,lut:std::array::from_fn(|i| i as u8),um_per_px:1.0 };
         let e = EnhanceParams::default(); let style = image_style(&e,&img,&[]);
         let a = [0.0,0.0,16.0,16.0]; let b = [16.0,0.0,32.0,16.0]; let c = [32.0,0.0,48.0,16.0];
         let bytes = sheets::band_png(&img,a,&[],&e).0.len();
@@ -417,7 +451,7 @@ mod tests {
     fn band_images_reuse_enhancement_and_invalidate_source_tone_and_rectangle() {
         let cache = BandImageCache::default();
         let source = std::sync::Arc::new((0..64*64).map(|i| (i % 255) as u8).collect::<Vec<_>>());
-        let mut img = crate::layout::AreaImage { id: "A1", name: "zr-1", sample: "zr-1", w: 64, h: 64, px: &source, lut: std::array::from_fn(|i| i as u8), um_per_px: 1.0 };
+        let mut img = crate::layout::AreaImage { source_size_um: None, edits: None, id: "A1", name: "zr-1", sample: "zr-1", w: 64, h: 64, px: &source, lut: std::array::from_fn(|i| i as u8), um_per_px: 1.0 };
         let e = EnhanceParams { denoise: true, sharpen: true, ..Default::default() };
         let rect = [0.0, 0.0, 50.0, 50.0];
         let style = image_style(&e, &img, &[]);

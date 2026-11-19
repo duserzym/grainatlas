@@ -1,4 +1,8 @@
 <script lang="ts">
+  import ImageEditPanel, { type ImageTool } from '../components/ImageEditPanel.svelte';
+  import ImageEditOverlay from '../components/ImageEditOverlay.svelte';
+  import { areaImageEdits, imagePointVisible, levelsLut, overviewHistogram, pointBounds, inverseAffine, storeImageEdits, type Point } from '../lib/image-edits';
+  import type { AreaImageEdits } from '../lib/core/types';
   import { oversightSession } from '../lib/oversight';
   import { bundlePixels } from '../lib/bundle-tone';
   // Canvas screen: the infinite canvas with grains and spots.
@@ -10,7 +14,7 @@
   import { setMode, undoDiscard } from '../lib/hosted-actions';
   import { app, current, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
-  import { toMosaic, toScreen, type View } from '../lib/canvas/view';
+  import { toMosaic, toScreen, matrix, type View } from '../lib/canvas/view';
   import { onDestroy, tick } from 'svelte';
   import { pick, selectAll, addMany, toggleMany, clickHow, type PickHow, type Sel } from '../lib/selection';
   import { canvasBox, grainGrid } from '../lib/grain-selection';
@@ -98,6 +102,91 @@
   }
   function changeArea(id: string) {
     if (id !== app.areaId) app.areaId = id;
+  }
+  let editImage = $state(false);
+  let imageTool = $state<ImageTool>(null);
+  let brushRadius = $state(12);
+  let imageDraft = $state<AreaImageEdits | null>(null);
+  let polygonPoints = $state<Point[]>([]);
+  let imageDrag: { start: Point; base: AreaImageEdits; handle: string | null; angle: number; centre: Point } | null = null;
+  const imageEdits = $derived(imageDraft ?? areaImageEdits(app.project, areaId));
+  let rawImageHist = $state<Uint32Array | null>(null);
+  $effect(() => {
+    app.pixelsVersion;
+    const id=areaId, c=core, source=tiles, image=mosaic, editing=editImage; let cancelled=false;
+    rawImageHist=null;
+    if (id && c && editing) void (async()=>{
+      try { const h=await c.histogram(id); if(!cancelled)rawImageHist=h; }
+      catch { if(!cancelled && source && image) try { const h=await overviewHistogram(source,id,image,()=>cancelled);if(!cancelled)rawImageHist=h; } catch { /* Levels remain editable while overview pixels are unavailable. */ } }
+    })();
+    return ()=>{cancelled=true;};
+  });
+  $effect(() => { areaId; imageDraft=null; polygonPoints=[]; imageDrag=null; });
+  function changeImage(e: AreaImageEdits) {
+    if (!areaId || ro) return;
+    const orientChanged=imageEdits.rotate_deg!==e.rotate_deg || imageEdits.flip_h!==e.flip_h || imageEdits.flip_v!==e.flip_v;
+    imageDraft=null;
+    storeImageEdits(current(),areaId,$state.snapshot(e));
+    if(orientChanged) void tick().then(()=>viewer?.fitAll());
+  }
+  function finishImagePolygon() {
+    if (polygonPoints.length>=3) { changeImage({...imageEdits,crop:{kind:'polygon',points_um:$state.snapshot(polygonPoints)}}); polygonPoints=[]; }
+  }
+  function eraseImage(e: AreaImageEdits,p:Point): AreaImageEdits {
+    // Split strokes at the eraser, sampling at a fraction of either brush radius.
+    const radius=Math.max(1,Number.isFinite(brushRadius)?brushRadius:12);
+    const masks: AreaImageEdits['masks']=[];
+    for (const stroke of e.masks) {
+      let part:Point[]=[];
+      const flush=()=>{if(part.length)masks.push({...stroke,points_um:part});part=[];};
+      for(let i=0;i<stroke.points_um.length;i++) {
+        const a=stroke.points_um[i], b=stroke.points_um[i+1]??a;
+        const n=Math.max(1,Math.ceil(Math.hypot(b[0]-a[0],b[1]-a[1])/Math.max(0.1,Math.min(radius,stroke.radius_um)/3)));
+        for(let j=0;j<n;j++) {const q:Point=[a[0]+(b[0]-a[0])*j/n,a[1]+(b[1]-a[1])*j/n]; if(Math.hypot(q[0]-p[0],q[1]-p[1])<=radius+stroke.radius_um)flush();else part.push(q);}
+      } flush();
+    } return {...e,masks};
+  }
+  function imagePress(p:CanvasPoint):boolean {
+    if(!editImage || ro) return false;
+    const pt:Point=[p.x*umPerPx,p.y*umPerPx];
+    const handle=p.ev.target instanceof Element?p.ev.target.getAttribute('data-image-handle'):null;
+    if(imageTool==='polygon' && handle===null) {
+      if(polygonPoints.length>=3 && Math.hypot(pt[0]-polygonPoints[0][0],pt[1]-polygonPoints[0][1])<10*k) finishImagePolygon();
+      else polygonPoints=[...polygonPoints,pt];
+      return true;
+    }
+    if(!imageTool && handle===null) return false;
+    const base=structuredClone($state.snapshot(imageEdits));
+    const box=base.crop?pointBounds(base.crop.points_um):[0,0,(mosaic?.w??1)*umPerPx,(mosaic?.h??1)*umPerPx];
+    const centre:Point=[(box[0]+box[2])/2,(box[1]+box[3])/2];
+    const screenCentre=view?toScreen(view,centre[0]/umPerPx,centre[1]/umPerPx):[0,0];
+    imageDrag={start:pt,base,handle,angle:Math.atan2(p.sy-screenCentre[1],p.sx-screenCentre[0]),centre};
+    if(imageTool==='mask' && handle===null) imageDraft={...base,masks:[...base.masks,{points_um:[pt],radius_um:Math.max(1,Number.isFinite(brushRadius)?brushRadius:12)}]};
+    else if(imageTool==='erase' && handle===null) imageDraft=eraseImage(base,pt);
+    else if(handle===null) imageDraft={...base,crop:{kind:'rect',points_um:[pt,pt]}};
+    return true;
+  }
+  function imageMove(p:CanvasPoint) {
+    if(!imageDrag) return;
+    cursorScreen=[p.sx,p.sy];
+    const pt:Point=[p.x*umPerPx,p.y*umPerPx], {base,handle}=imageDrag;
+    if(handle==='rotate' && view) {
+      const c=toScreen(view,imageDrag.centre[0]/umPerPx,imageDrag.centre[1]/umPerPx);
+      imageDraft={...base,rotate_deg:base.rotate_deg+(Math.atan2(p.sy-c[1],p.sx-c[0])-imageDrag.angle)*180/Math.PI};
+    } else if(handle!==null && base.crop) {
+      const i=Number(handle);
+      if(base.crop.kind==='polygon') {const pts=base.crop.points_um.map((q,j)=>j===i?pt:q);imageDraft={...base,crop:{...base.crop,points_um:pts}};}
+      else {
+        const b=pointBounds(base.crop.points_um);
+        if([0,3,7].includes(i))b[0]=pt[0];if([1,2,5].includes(i))b[2]=pt[0];
+        if([0,1,4].includes(i))b[1]=pt[1];if([2,3,6].includes(i))b[3]=pt[1];
+        imageDraft={...base,crop:{kind:'rect',points_um:[[Math.min(b[0],b[2]),Math.min(b[1],b[3])],[Math.max(b[0],b[2]),Math.max(b[1],b[3])]]}};
+      }
+    } else if(imageTool==='mask' && imageDraft) {
+      const masks=imageDraft.masks, last=masks[masks.length-1];
+      if(Math.hypot(pt[0]-last.points_um.at(-1)![0],pt[1]-last.points_um.at(-1)![1])>Math.max(0.2,brushRadius/4)) imageDraft={...imageDraft,masks:[...masks.slice(0,-1),{...last,points_um:[...last.points_um,pt]}]};
+    } else if(imageTool==='erase') imageDraft=eraseImage(imageDraft??base,pt);
+    else imageDraft={...base,crop:{kind:'rect',points_um:[imageDrag.start,pt]}};
   }
   const insetMosaics = $derived(Object.fromEntries(Object.entries(app.stitched).flatMap(([id, s]) => (s?.mosaic ? [[id, s.mosaic]] : []))));
   const insetSpots = $derived(app.spots.filter((s) => app.selection.includes(s.id)));
@@ -302,6 +391,13 @@
   });
   const areaSpots = $derived(app.spots.filter((s) => s.area_id === areaId));
   const spots = $derived(areaSpots.filter((s) => !reviewVisible || reviewVisible.has(s.id)));
+  const imageHist=$derived.by(()=>{
+    if(!rawImageHist)return null;
+    const h=new Uint32Array(256);for(let i=0;i<256;i++)h[lut[i]]+=rawImageHist[i];return h;
+  });
+  const imageLut = $derived(levelsLut(lut, imageEdits));
+  const cropExcluded = $derived(new Set(grains.filter(g => !imagePointVisible(g.centroid_um, imageEdits)).map(g=>g.id)));
+  const cropRegistered = $derived(new Set(areaSpots.filter(s=>s.grain_id && cropExcluded.has(s.grain_id)).map(s=>s.grain_id)).size);
   const tableSpots = $derived(spotSort === 'name' ? [...spots].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
     : spotSort === 'diameter' ? [...spots].sort((a, b) => a.diameter_um - b.diameter_um) : spots);
   const tableArtifacts = $derived(artifacts.filter((g) => !showOnlyNew || g.added));
@@ -404,6 +500,10 @@
   const refOverlay = $derived(areaId ? (app.overlays[areaId] ?? null) : null);
   /** screen px → um at the current zoom */
   const k = $derived(view ? umPerPx / view.zoom : 1);
+  function screenLabel(x:number,y:number) {
+    const m=inverseAffine(view?matrix(view):[1,0,0,1,0,0]);
+    return `translate(${x} ${y}) matrix(${m[0]*umPerPx} ${m[1]*umPerPx} ${m[2]*umPerPx} ${m[3]*umPerPx} 0 0)`;
+  }
   const rotDeg = $derived(view ? (view.rot * 180) / Math.PI : 0);
   const selSpots = $derived(areaSpots.filter((s) => app.selection.includes(s.id)));
   const selectedHere = $derived(selSpots.length);
@@ -543,7 +643,8 @@
 
   $effect(() => {
     const t = areaId ? app.tone[areaId] : null;
-    if (!t || !core) return;
+    if (!core) return;
+    if (!t) { lut=Uint8Array.from({length:256},(_,i)=>i); return; }
     const snap = $state.snapshot(t);
     core.toneLut(snap).then((l) => (lut = l));
   });
@@ -921,6 +1022,7 @@
   // ---- pointer --------------------------------------------------------------------
   function press(p: CanvasPoint, allowBox = true): boolean {
     if (app.busy) return false;
+    if (imagePress(p)) return true;
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const ev = p.ev as PointerEvent;
     collapseSpot = null;
@@ -1005,6 +1107,7 @@
   }
 
   function drag(p: CanvasPoint) {
+    if (imageDrag) { imageMove(p); return; }
     if (isViewer) return;
     if (rectangle) {
       rectangle = { ...rectangle, x2: p.sx, y2: p.sy, moved: rectangle.moved || Math.hypot(p.sx - rectangle.x, p.sy - rectangle.y) > CLICK_SLOP };
@@ -1060,6 +1163,11 @@
   }
 
   async function release(p: CanvasPoint) {
+    if (imageDrag) {
+      const next=imageDraft; imageDrag=null;
+      if(next) { const b=next.crop?pointBounds(next.crop.points_um):null; if(!b || b[2]-b[0]>0.01 && b[3]-b[1]>0.01) changeImage($state.snapshot(next)); else imageDraft=null; }
+      return;
+    }
     if (isViewer) return;
     snapHint = null;
     if (rectangle) {
@@ -1132,6 +1240,7 @@
   }
 
   function cancelGesture() {
+    imageDrag=null; imageDraft=null;
     // A native drag, lost capture, window blur or second finger is not a release.
     // Restore live spot/label moves without changing their names or grain links.
     if (gesture?.dirty) {
@@ -1171,6 +1280,7 @@
   }
 
   async function click(p: CanvasPoint) {
+    if (editImage && imageTool) return;
     if (isViewer) return;
     if (app.busy) return;
     const ev = p.ev as MouseEvent;
@@ -1298,6 +1408,7 @@
 
   /** Double-click a spot or label to rename it; elsewhere the view fits (gestures.ts). */
   function dblclick(p: CanvasPoint): boolean {
+    if (editImage && imageTool==='polygon') { finishImagePolygon(); return true; }
     if (lasso) {
       void finishLasso();
       return true;
@@ -1408,6 +1519,11 @@
     if (mod && e.key.toLowerCase() === 'y') {
       e.preventDefault();
       app.redo();
+      return;
+    }
+    if (editImage) {
+      if(e.key==='Escape') { imageDraft=null; imageDrag=null; polygonPoints=[]; imageTool=null; }
+      if(e.key==='Enter' && imageTool==='polygon') { e.preventDefault(); finishImagePolygon(); }
       return;
     }
     if (lasso && (e.key === 'Enter' || e.key === 'Escape' || e.key === 'Backspace' || e.key === 'Delete')) {
@@ -1522,9 +1638,16 @@
     {/if}
     {#key areaId}
       {@const viewerArea = areaId}
-      <Viewer bind:this={viewer} bind:view={() => view, (next) => setAreaView(viewerArea, next)} core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
+      <Viewer bind:this={viewer} bind:view={() => view, (next) => setAreaView(viewerArea, next)} core={tiles!} {areaId} {mosaic} lut={imageLut} {imageEdits} {umPerPx} version={app.pixelsVersion} cursor={editImage && imageTool ? 'crosshair' : cursor}
         preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={() => scheduleContrast(true)} canNudge={() => isViewer || !selSpots.length}
         onpress={press} ondrag={drag} onrelease={release} oncancel={cancelGesture} onclick={click} ondblclick={dblclick} onhover={hover}>
+        {#snippet imageControls()}
+          <g transform="scale({1 / umPerPx})">
+            {#if editImage && !ro}<ImageEditOverlay edits={imageEdits} width={(mosaic?.w??1)*umPerPx} height={(mosaic?.h??1)*umPerPx} handles {k} />
+            {#if cursorUm && (imageTool==='mask' || imageTool==='erase')}<circle cx={cursorUm[0]} cy={cursorUm[1]} r={brushRadius} fill="none" stroke="var(--accent)" pointer-events="none" />{/if}
+            {#if polygonPoints.length}<polyline points={polygonPoints.map(p=>p.join(',')).join(' ')} fill="none" stroke="var(--accent)" />{/if}{/if}
+          </g>
+        {/snippet}
         {#snippet overlay()}
           <g transform="scale({1 / umPerPx})" data-testid="canvas-um-space">
             {#if refOverlay?.url && refOverlay.visible}
@@ -1536,7 +1659,7 @@
                 {@const m = refOverlay.matrix}
                 {@const ix = m[0] * pr[0][0] + m[2] * pr[0][1] + m[4]}
                 {@const iy = m[1] * pr[0][0] + m[3] * pr[0][1] + m[5]}
-                <g class="pairmark"><line x1={ix} y1={iy} x2={pr[1][0]} y2={pr[1][1]} /><circle cx={pr[1][0]} cy={pr[1][1]} r={5 * k} /><text transform="translate({pr[1][0]} {pr[1][1]}) rotate({-rotDeg}) scale({k})" dx="7" dy="-5">{i + 1}</text></g>
+                <g class="pairmark"><line x1={ix} y1={iy} x2={pr[1][0]} y2={pr[1][1]} /><circle cx={pr[1][0]} cy={pr[1][1]} r={5 * k} /><text transform={screenLabel(pr[1][0], pr[1][1])} dx="7" dy="-5">{i + 1}</text></g>
               {/each}
             {/if}
             {#if app.layers.outlines && app.layers.artifacts}
@@ -1547,7 +1670,7 @@
             {#if isViewer || app.layers.outlines}
               {#each outlinedGrains as g (g.id)}
                 {@const own = owners.get(g.id)}
-                <polygon class="grain" class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} style:--grain-owner={own?.duplicate_of ? ownerColourToken(own.owner_area, app.project?.areas ?? []) : undefined} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined} />
+                <polygon class="grain" class:cropped={cropExcluded.has(g.id)} class:added={!!g.added} class:sel={selGrains.includes(g.id)} class:hov={hoverId === g.id} class:dup={!!own?.duplicate_of} style:--grain-owner={own?.duplicate_of ? ownerColourToken(own.owner_area, app.project?.areas ?? []) : undefined} class:cut={!!own?.cut && !own?.duplicate_of} points={g.polygon_um.map((p) => p.join(',')).join(' ')} data-testid={own?.duplicate_of ? 'grain-dup' : undefined} />
               {/each}
             {/if}
             {#if flashingSpot}
@@ -1559,15 +1682,15 @@
             {#if app.layers.scalebars}
               {#each outlinedGrains as g (g.id)}
                 {@const y = g.bbox_um[3] + 6 * k}
-                <g class="gbar">
+                <g class="gbar" class:cropped={cropExcluded.has(g.id)}>
                   <line x1={g.bbox_um[0]} x2={g.bbox_um[0] + g.scale_bar_um} y1={y} y2={y} />
-                  <text transform="translate({g.bbox_um[0]} {y + 12 * k}) rotate({-rotDeg}) scale({k})">{g.scale_bar_um} µm</text>
+                  <text transform={screenLabel(g.bbox_um[0], y + 12 * k)}>{g.scale_bar_um} µm</text>
                 </g>
               {/each}
             {/if}
             {#if app.layers.numbers}
               {#each outlinedGrains as g (g.id)}
-                <text class="gnum" class:sel={selGrains.includes(g.id)} transform="translate({g.bbox_um[0]} {g.bbox_um[1]}) rotate({-rotDeg}) scale({k})" dy="-3">{grainNumber(g)}</text>
+                <text class="gnum" class:cropped={cropExcluded.has(g.id)} class:sel={selGrains.includes(g.id)} transform={screenLabel(g.bbox_um[0], g.bbox_um[1])} dy="-3">{grainNumber(g)}</text>
               {/each}
             {/if}
             {#if (isViewer || app.layers.results) && range}
@@ -1609,7 +1732,7 @@
                     <circle class="dot" cx={s.x_um} cy={s.y_um} r={1.2 * k} />
                   {/if}
                   {#if app.layers.labels && editing?.id !== s.id}
-                    <text transform="translate({s.x_um + s.diameter_um / 2 + 3 * k} {s.y_um}) rotate({-rotDeg}) scale({k})" dy="4">{s.name}</text>
+                    <text transform={screenLabel(s.x_um + s.diameter_um / 2 + 3 * k, s.y_um)} dy="4">{s.name}</text>
                   {/if}
                 </g>
               {/each}
@@ -1617,7 +1740,7 @@
             {#if app.layers.labels}
               {#each labels as l (l.id)}
                 {#if editing?.id !== l.id}
-                  <text class="flabel" class:sel={app.selection.includes(l.id)} transform="translate({l.x_um} {l.y_um}) rotate({-rotDeg}) scale({k})">{l.text}</text>
+                  <text class="flabel" class:sel={app.selection.includes(l.id)} transform={screenLabel(l.x_um, l.y_um)}>{l.text}</text>
                 {/if}
               {/each}
             {/if}
@@ -1636,12 +1759,12 @@
                 <line class="drawing" x1={drawing.x} y1={drawing.y} x2={drawing.x2} y2={drawing.y2} />
               {/if}
               {#if drawing.kind === 'measure'}
-                <text class="mlabel" transform="translate({drawing.x2} {drawing.y2}) rotate({-rotDeg}) scale({k})" dx="8" dy="-6">{Math.hypot(drawing.x2 - drawing.x, drawing.y2 - drawing.y).toFixed(1)} µm</text>
+                <text class="mlabel" transform={screenLabel(drawing.x2, drawing.y2)} dx="8" dy="-6">{Math.hypot(drawing.x2 - drawing.x, drawing.y2 - drawing.y).toFixed(1)} µm</text>
               {/if}
             {/if}
             {#if measure}
               <line class="measure" x1={measure[0]} y1={measure[1]} x2={measure[2]} y2={measure[3]} />
-              <text class="mlabel" transform="translate({measure[2]} {measure[3]}) rotate({-rotDeg}) scale({k})" dx="8" dy="-6">{Math.hypot(measure[2] - measure[0], measure[3] - measure[1]).toFixed(1)} µm</text>
+              <text class="mlabel" transform={screenLabel(measure[2], measure[3])} dx="8" dy="-6">{Math.hypot(measure[2] - measure[0], measure[3] - measure[1]).toFixed(1)} µm</text>
             {/if}
             {#if splitLine}
               <line class="splitline" x1={splitLine[0]} y1={splitLine[1]} x2={splitLine[2]} y2={splitLine[3]} />
@@ -1682,6 +1805,7 @@
       <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
     {:else}
     <div class="glass toolbar" data-ui>
+      <button aria-pressed={editImage} disabled={ro} data-testid="edit-image" onclick={()=>{editImage=!editImage;imageTool=null;}}>Edit image</button>
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
       {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
       <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
@@ -1833,7 +1957,11 @@
     {/if}
 
     {#if !isViewer}
-    {#if app.layout.sideCollapsed}
+    {#if editImage}
+      <aside class="glass side image-editor" data-ui aria-label="Edit image controls">
+        <ImageEditPanel edits={imageEdits} bind:tool={imageTool} bind:radius={brushRadius} hist={imageHist} leftOff={cropExcluded.size} registered={cropRegistered} canUndo={app.canUndo} canRedo={app.canRedo} change={changeImage} undo={()=>app.undo()} redo={()=>app.redo()} close={()=>{editImage=false;imageTool=null;polygonPoints=[];}} finishPolygon={finishImagePolygon} polygonCount={polygonPoints.length} readOnly={ro} />
+      </aside>
+    {:else if app.layout.sideCollapsed}
       <aside class="glass side-mini" data-ui>
         <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" aria-expanded={false} data-testid="side-expand">‹ Panel</button>
       </aside>
@@ -2080,7 +2208,7 @@
             <thead><tr><th>Grain</th><th>⌀ µm</th><th>L × W µm</th><th>spots</th><th>owner</th></tr></thead>
             <tbody>
               {#each tableGrains as g (g.id)}
-                <tr data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
+                <tr class:cropped={cropExcluded.has(g.id)} title={cropExcluded.has(g.id)?'Left off print sheets by image crop or mask':undefined} data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
                   <td>{grainNumber(g)}</td><td class="num">{fmt(g.eq_diameter_um)}</td><td class="num">{fmt(g.major_um)} × {fmt(g.minor_um)}</td><td class="num">{grainSpotCounts.get(g.id) || ''}</td>
                   <td class="owner" title={ownerNote(g)}>{#if owners.get(g.id)?.duplicate_of}{@const o = owners.get(g.id)!}→ {areaLabel(o.owner_area)}{:else if owners.get(g.id)?.cut}cut{/if}</td>
                 </tr>
@@ -2097,7 +2225,7 @@
               <thead><tr><th>why</th><th>⌀ µm</th><th></th></tr></thead>
               <tbody>
                 {#each tableArtifacts as g (g.id)}
-                  <tr data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
+                  <tr class:cropped={cropExcluded.has(g.id)} title={cropExcluded.has(g.id)?'Left off print sheets by image crop or mask':undefined} data-grain-id={g.id} class:selected={selGrains.includes(g.id)} onclick={(e) => grainRow(g, e)}>
                     <td title={ARTIFACT_LABELS[g.artifact!]}>{g.artifact}</td><td class="num">{fmt(g.eq_diameter_um)}</td>
                     <td><button class="link" onclick={(e) => { e.stopPropagation(); keepAsGrain(g.id); }} data-testid="keep-artifact">Keep as grain</button></td>
                   </tr>
@@ -2203,6 +2331,8 @@
   .check-row { display: grid; gap: var(--space-1); margin-bottom: var(--space-2); }
   .finding { text-align: left; white-space: normal; overflow-wrap: anywhere; }
 
+  tr.cropped {opacity:0.4}
+  .side.image-editor {overflow:hidden;font-size:0.8rem}
   .canvas {
     --side-width:clamp(12rem, 37%, 21rem);
     position: absolute;

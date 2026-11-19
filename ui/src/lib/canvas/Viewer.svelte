@@ -9,6 +9,9 @@
   // nudge; a click without movement goes to the active tool.
   import { onMount, untrack, type Snippet } from 'svelte';
   import type { Core, RawImage } from '../core/core';
+  import { imageTransform, identity, applyAffine, pointBounds } from '../image-edits';
+  import ImageEditOverlay from '../../components/ImageEditOverlay.svelte';
+  import type { AreaImageEdits } from '../core/types';
   import type { MosaicJson } from '../core/types';
   import { TileCache } from './tiles';
   import { type View, fit, matrix, rotateAt, toMosaic, zoomAt } from './view';
@@ -31,6 +34,7 @@
     view = $bindable(),
     cursor = 'default',
     overlay,
+    imageControls,
     screenOverlay,
     onpress,
     ondrag,
@@ -41,6 +45,8 @@
     onhover,
     canNudge,
     rotate = true,
+    imageEdits,
+    umPerPx = 1,
   }: {
     /** Where pyramid tiles come from: the core, or a published bundle on a server. */
     core: Pick<Core, 'pyramidTile'>;
@@ -59,6 +65,8 @@
     view?: View;
     cursor?: string;
     overlay?: Snippet<[View]>;
+    /** Crop handles and brush cursor stay above image shading. */
+    imageControls?: Snippet<[View]>;
     screenOverlay?: Snippet<[View]>;
     onpress?: (p: CanvasPoint) => boolean;
     ondrag?: (p: CanvasPoint) => void;
@@ -72,6 +80,8 @@
     canNudge?: () => boolean;
     /** Rotation gestures (default on). */
     rotate?: boolean;
+    imageEdits?: AreaImageEdits;
+    umPerPx?: number;
   } = $props();
 
   let host: HTMLDivElement;
@@ -81,7 +91,17 @@
   let raf = 0;
 
   const ext = $derived(mosaic ? { w: mosaic.w, h: mosaic.h } : (extent ?? { w: 1, h: 1 }));
-  const v = $derived<View>(view ?? fit(size.w, size.h, ext.w, ext.h));
+  const orientation = $derived(imageEdits ? imageTransform(imageEdits, [ext.w, ext.h], umPerPx) : identity);
+  const v = $derived<View>({ ...(view ?? fittedView()), image: orientation });
+  $effect(() => {
+    const m=orientation;
+    if (view && JSON.stringify(view.image) !== JSON.stringify(m)) {
+      const old=view.image??identity;
+      // Moving crop handles changes the pivot, not the image under the pointer.
+      const sameAxes=old.slice(0,4).every((n,i)=>Math.abs(n-m[i])<1e-12);
+      view={...view,cx:view.cx+(sameAxes?m[4]-old[4]:0),cy:view.cy+(sameAxes?m[5]-old[5]:0),image:m};
+    }
+  });
   let previewBmp: ImageBitmap | null = null;
   let previewFor: unknown = null;
   let lastLevel = -1;
@@ -243,7 +263,7 @@
       const old = size;
       size = { w: Math.max(1, r.width), h: Math.max(1, r.height) };
       if (view) view = { ...view, w: size.w, h: size.h };
-      else view = fit(size.w, size.h, ext.w, ext.h);
+      else view = fittedView();
       if (old.w !== size.w || old.h !== size.h) schedule();
     });
     ro.observe(host);
@@ -282,11 +302,16 @@
   export function rotateBy(rad: number) {
     setView(rotateAt(v, size.w / 2, size.h / 2, rad));
   }
+  function fittedView(): View {
+    const b=pointBounds([[0,0],[ext.w,0],[0,ext.h],[ext.w,ext.h]].map(p => applyAffine(orientation,p as [number,number])));
+    return {...fit(size.w,size.h,b[2]-b[0],b[3]-b[1]),cx:(b[0]+b[2])/2,cy:(b[1]+b[3])/2,image:orientation};
+  }
   export function fitAll() {
-    setView(fit(size.w, size.h, ext.w, ext.h, 0));
+    setView(fittedView());
   }
   export function centerOn(x: number, y: number, zoom?: number) {
-    setView({ ...v, cx: x, cy: y, zoom: zoom ?? v.zoom });
+    const p=applyAffine(orientation,[x,y]);
+    setView({ ...v, cx: p[0], cy: p[1], zoom: zoom ?? v.zoom });
   }
   export function oneToOne() {
     setView(zoomAt(v, size.w / 2, size.h / 2, 1 / (v.zoom * (window.devicePixelRatio || 1))));
@@ -305,6 +330,8 @@
   <svg class="overlay" width={size.w} height={size.h}>
     <g transform="matrix({m.join(' ')})">
       {@render overlay?.(v)}
+      {#if imageEdits}<g transform="scale({1/umPerPx})"><ImageEditOverlay edits={imageEdits} width={ext.w*umPerPx} height={ext.h*umPerPx} /></g>{/if}
+      {@render imageControls?.(v)}
     </g>
     {@render screenOverlay?.(v)}
   </svg>

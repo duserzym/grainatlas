@@ -33,7 +33,7 @@ pub(super) fn render(folder: &Path, out: &Path, mut p: WholeParams, svg: bool) -
     p.printed = now_rfc3339();
     let area = SheetArea {
         rec,
-        img: grainatlas_core::layout::AreaImage {
+        img: grainatlas_core::layout::AreaImage { source_size_um: Some([m.w as f64*m.um_per_px,m.h as f64*m.um_per_px]), edits: project.image_edits.as_ref().filter(|e| e.version==1).and_then(|e| e.areas.get(&rec.id)),
             id: &rec.id,
             name: &rec.name,
             sample: if rec.sample.is_empty() {
@@ -67,10 +67,11 @@ pub(super) fn export(
     let mut r = whole_sheet(&p, area, meta)?;
     r.registration.project_uuid = Some(project.uuid);
     r.registration.project_path = abs(folder);
+    if area.img.edits.is_some() { r.registration.mapping = "mount_um = band.paper_to_mount × [sheet_x_mm, sheet_y_mm, 1]; SVG affine order [a,b,c,d,e,f]".into(); }
     let mut files = vec![
         (
             format!("{stem}.pdf"),
-            grainatlas_core::layout::pdf::pdf_from_svgs(&r.pages)?,
+            registered_pdf(&r.pages, &r.registration)?,
         ),
         (
             p.registration_file,
@@ -106,4 +107,12 @@ pub(super) fn export(
         r.stats.orientation, r.stats.um_per_mm, r.stats.embedded_px[0], r.stats.embedded_px[1]
     );
     Ok(())
+}
+
+pub(super) fn registered_pdf(pages: &[String], registration: &grainatlas_core::layout::sheets::PrintRegistration) -> Result<Vec<u8>> {
+    let mut pdf = grainatlas_core::layout::pdf::PdfBuilder::new();
+    pdf.attach(&registration.registration_file, serde_json::to_vec_pretty(registration)?);
+    for page in pages { pdf.prepare(page)?; }
+    for page in pages { pdf.push(page)?; }
+    Ok(pdf.finish())
 }

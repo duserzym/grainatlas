@@ -376,6 +376,7 @@ impl Session {
         if self.project.as_ref().is_none_or(|old| old.uuid != project.uuid) {
             self.project_path.clear();
         }
+        if self.project.as_ref().is_some_and(|old| old.image_edits != project.image_edits) { self.sheet_images.clear(); }
         self.project = Some(project);
         Ok(())
     }
@@ -1198,8 +1199,13 @@ impl Session {
         let imgs: Vec<crate::layout::AreaImage> = project
             .areas
             .iter()
-            .filter_map(|rec| Some(pipeline::area_image(rec, self.outputs.get(&rec.id)?, tone.get(&rec.id).unwrap_or(&rec.params.tone))))
+            .filter_map(|rec| Some(self::sheets::print_image(project, rec, self.outputs.get(&rec.id)?, tone.get(&rec.id).unwrap_or(&rec.params.tone))))
             .collect();
+        let grains=imgs.iter().map(|img| {
+            let rec=project.areas.iter().find(|a| a.id==img.id).expect("project area");
+            let gs=crate::project::printable_grains(rec,grains.get(img.id).map_or(&[],Vec::as_slice),img.edits);
+            (img.id.to_string(),crate::project::image_edits::oriented_grains(&gs,img.image_transform()))
+        }).collect();
         let result = if let Some(page) = page { crate::layout::layout_page(&p, &imgs, &grains, &spots, &labels, page) }
             else { crate::layout::layout(&p, &imgs, &grains, &spots, &labels) };
         serde_json::to_string(&result).map_err(invalid)

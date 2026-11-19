@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { areaImageEdits, printViewGrains, imageTransform, applyAffine, pointBounds } from '../lib/image-edits';
   import { onDestroy, onMount, type Snippet } from 'svelte';
   import { current } from '../lib/store.svelte';
   import type { PrintEditorState } from '../lib/print-cache';
@@ -9,6 +10,10 @@
   import StripPage from './StripPage.svelte';
 
   const app = current();
+  const displayGrains=$derived(Object.fromEntries(Object.entries(app.grains).map(([id,gs])=>{
+    const a=app.project?.areas.find(a=>a.id===id),m=app.stitched[id]?.mosaic??a?.mosaic;
+    return [id,m?printViewGrains(gs,areaImageEdits(app.project,id),[m.w*m.um_per_px,m.h*m.um_per_px]):gs];
+  })));
   let { base, result, urls, controls, droppedNotice, history, editorState = $bindable(), storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange, onautomatic = () => {} }: {
     onautomatic?:()=>void; editorState: PrintEditorState;
     base: SheetPlan; result: SheetResult; urls: string[]; controls: HTMLElement; history: StripHistory; page?: number; enabled: boolean;
@@ -34,7 +39,10 @@
     const rects: Record<string, SheetRect> = {};
     for (const [area, summary] of Object.entries(app.stitched)) {
       const m = summary.mosaic;
-      rects[area] = [0, 0, m.w * m.um_per_px, m.h * m.um_per_px];
+      const size:[number,number]=[m.w*m.um_per_px,m.h*m.um_per_px];
+      const image=imageTransform(areaImageEdits(app.project,area),size);
+      const b=pointBounds([[0,0],[size[0],0],size,[0,size[1]]].map(p=>applyAffine(image,p as [number,number])));
+      rects[area] = [0, 0, Math.ceil((b[2]-b[0])/m.um_per_px-1e-8)*m.um_per_px, Math.ceil((b[3]-b[1])/m.um_per_px-1e-8)*m.um_per_px];
     }
     return rects;
   });
@@ -144,5 +152,5 @@
 
 {#if enabled}
   <StripControls bind:this={stripControls} arrange={editorState.arrange} selections={editorState.selections??[]} {selectMany} target={controls} {droppedNotice} {result} {selected} {select} {edit} {undo} {redo} {automatic} {count} {canUndo} {canRedo} split={editorState.splitting} setSplit={v => editorState.splitting = v} axis={editorState.axis} setAxis={v => editorState.axis = v} {pairs} {page} />
-  <StripPage bind:this={view} arrange={editorState.arrange} pages={result.pages} selections={editorState.selections??[]} {selectMany} snap={editorState.snap??true} setSnap={v=>editorState.snap=v} {undo} {redo} {canUndo} {canRedo} automatic={confirmAutomatic} plan={result.plan} {urls} bind:page selected={editorState.selection} {select} {edit} {images} grains={app.grains} {bounds} split={editorState.splitting} axis={editorState.axis} cancelSplit={() => editorState.splitting = false} />
+  <StripPage bind:this={view} arrange={editorState.arrange} pages={result.pages} selections={editorState.selections??[]} {selectMany} snap={editorState.snap??true} setSnap={v=>editorState.snap=v} {undo} {redo} {canUndo} {canRedo} automatic={confirmAutomatic} plan={result.plan} {urls} bind:page selected={editorState.selection} {select} {edit} {images} grains={displayGrains} {bounds} split={editorState.splitting} axis={editorState.axis} cancelSplit={() => editorState.splitting = false} />
 {/if}

@@ -102,6 +102,8 @@ impl LayoutParams {
 
 /// One area's pixels for printing: the 8-bit base mosaic with its display LUT.
 pub struct AreaImage<'a> {
+    pub source_size_um: Option<[f64; 2]>,
+    pub edits: Option<&'a crate::project::AreaImageEdits>,
     pub id: &'a str,
     pub name: &'a str,
     pub sample: &'a str,
@@ -110,6 +112,32 @@ pub struct AreaImage<'a> {
     pub px: &'a [u8],
     pub lut: [u8; 256],
     pub um_per_px: f64,
+}
+
+impl AreaImage<'_> {
+    /// Sample a displayed pixel centre without materialising an oriented mosaic.
+    pub fn sample(&self, display_um: [f64;2], background: u8) -> u8 {
+        let p=crate::project::image_edits::apply(crate::project::image_edits::inverse(self.image_transform()),display_um);
+        self.sample_mount(p,background)
+    }
+    pub fn sample_mount(&self, p: [f64;2], background:u8) -> u8 {
+        let (x,y)=((p[0]/self.um_per_px).floor() as isize,(p[1]/self.um_per_px).floor() as isize);
+        if x<0 || y<0 || x>=self.w as isize || y>=self.h as isize { return background; }
+        if let Some(e)=self.edits {
+            if !e.in_crop(p) { return background; }
+            if let Some(value)=e.mask_pixel(p) { return value; }
+        }
+        let v=self.lut[self.px[y as usize*self.w+x as usize] as usize]; self.edits.map_or(v, |e| e.level(v))
+    }
+    pub fn image_transform(&self) -> [f64;6] {
+        self.edits.map_or([1.0,0.0,0.0,1.0,0.0,0.0], |e| e.transform(self.source_size_um.unwrap_or([self.w as f64*self.um_per_px,self.h as f64*self.um_per_px])))
+    }
+    pub fn display_size(&self) -> [usize;2] {
+        let m=self.image_transform(); let u=self.um_per_px;
+        let size=self.source_size_um.unwrap_or([self.w as f64*u,self.h as f64*u]);
+        let b=crate::project::image_edits::bounds(&[[0.0,0.0],[size[0],0.0],[0.0,size[1]],size].map(|p| crate::project::image_edits::apply(m,p)));
+        [((b[2]-b[0])/u-1e-8).ceil().max(1.0) as usize,((b[3]-b[1])/u-1e-8).ceil().max(1.0) as usize]
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -159,11 +187,11 @@ fn layout_pages(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String,
     for &ai in &selected {
         let a = &areas[ai];
         match p.items {
-            Items::Areas => items.push(Item { area: ai, rect: [0.0, 0.0, a.w as f64 * a.um_per_px, a.h as f64 * a.um_per_px], label: format!("{} ({})", a.name, a.id), grain: None, tile: None }),
+            Items::Areas => items.push(Item { area: ai, rect: [0.0, 0.0, a.display_size()[0] as f64 * a.um_per_px, a.display_size()[1] as f64 * a.um_per_px], label: format!("{} ({})", a.name, a.id), grain: None, tile: None }),
             Items::Grains => {
                 for g in grains.get(a.id).map(|v| v.as_slice()).unwrap_or(&[]).iter().filter(|g| g.is_grain()) {
                     let m = p.grain_margin_um;
-                    let rect = [(g.bbox_um[0] - m).max(0.0), (g.bbox_um[1] - m).max(0.0), (g.bbox_um[2] + m).min(a.w as f64 * a.um_per_px), (g.bbox_um[3] + m).min(a.h as f64 * a.um_per_px)];
+                    let rect = [(g.bbox_um[0] - m).max(0.0), (g.bbox_um[1] - m).max(0.0), (g.bbox_um[2] + m).min(a.display_size()[0] as f64 * a.um_per_px), (g.bbox_um[3] + m).min(a.display_size()[1] as f64 * a.um_per_px)];
                     items.push(Item { area: ai, rect, label: format!("{} #{}", a.sample, g.display_number()), grain: Some(g.clone()), tile: None });
                 }
             }
@@ -302,21 +330,29 @@ fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages
             }).collect();
             let _ = write!(s, r##"<polygon points="{}" fill="none" stroke="#56b4e9" stroke-width="0.2"/>"##, pts.join(" "));
         }
+        let m=a.image_transform();
+        let tr_mount=|ux:f64,uy:f64| {let p=crate::project::image_edits::apply(m,[ux,uy]);tr(p[0],p[1])};
         if p.show_spots {
             for sp in spots.iter().filter(|sp| sp.area_id == a.id) {
-                let inside = sp.x_um >= it.rect[0] && sp.x_um <= it.rect[2] && sp.y_um >= it.rect[1] && sp.y_um <= it.rect[3];
+                let centre=crate::project::image_edits::apply(m,[sp.x_um,sp.y_um]);
+                let inside = centre[0] >= it.rect[0] && centre[0] <= it.rect[2] && centre[1] >= it.rect[1] && centre[1] <= it.rect[3] && a.edits.is_none_or(|e| e.visible([sp.x_um,sp.y_um]));
                 if !inside {
                     continue;
                 }
-                let (cx, cy) = tr(sp.x_um, sp.y_um);
+                let (cx, cy) = tr_mount(sp.x_um, sp.y_um);
                 match (sp.kind, sp.x2_um, sp.y2_um) {
                     (SpotKind::Line, Some(x2), Some(y2)) => {
-                        let (ex, ey) = tr(x2, y2);
+                        let (ex, ey) = tr_mount(x2, y2);
                         let _ = write!(s, r##"<line x1="{cx:.3}" y1="{cy:.3}" x2="{ex:.3}" y2="{ey:.3}" stroke="#3fd3a4" stroke-opacity="0.5" stroke-width="{:.3}" stroke-linecap="round"/>"##, sp.diameter_um / um_per_mm);
                     }
                     (SpotKind::Raster, Some(x2), Some(y2)) => {
-                        let (ex, ey) = tr(x2, y2);
-                        let _ = write!(s, r##"<rect x="{cx:.3}" y="{cy:.3}" width="{:.3}" height="{:.3}" fill="none" stroke="#cc79a7" stroke-width="0.25"/>"##, ex - cx, ey - cy);
+                        if a.edits.is_some() {
+                            let points=[[sp.x_um,sp.y_um],[x2,sp.y_um],[x2,y2],[sp.x_um,y2]].map(|p| {let (x,y)=tr_mount(p[0],p[1]);format!("{x:.3},{y:.3}")}).join(" ");
+                            let _=write!(s,r##"<polygon points="{points}" fill="none" stroke="#cc79a7" stroke-width="0.25"/>"##);
+                        } else {
+                            let (ex, ey) = tr_mount(x2, y2);
+                            let _ = write!(s, r##"<rect x="{cx:.3}" y="{cy:.3}" width="{:.3}" height="{:.3}" fill="none" stroke="#cc79a7" stroke-width="0.25"/>"##, ex - cx, ey - cy);
+                        }
                     }
                     _ => {
                         let _ = write!(s, r##"<circle cx="{cx:.3}" cy="{cy:.3}" r="{:.3}" fill="none" stroke="#ff8c42" stroke-width="0.25"/>"##, sp.diameter_um / 2.0 / um_per_mm);
@@ -325,7 +361,7 @@ fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages
                 let _ = write!(s, r##"<text x="{:.3}" y="{:.3}" font-size="1.8" fill="#ffd27a" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text>"##, cx + sp.diameter_um / 2.0 / um_per_mm + 0.5, cy + 0.6, esc(&sp.name));
             }
             for l in labels.iter().filter(|l| l.area_id == a.id) {
-                let (lx, ly) = tr(l.x_um, l.y_um);
+                let (lx, ly) = tr_mount(l.x_um, l.y_um);
                 let _ = write!(s, r##"<text x="{lx:.3}" y="{ly:.3}" font-size="2" fill="white" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text>"##, esc(&l.text));
             }
         }
@@ -374,10 +410,11 @@ fn fmt_num(v: f64) -> String {
 
 /// Crops a rectangle (um) of an area at the print resolution, LUT applied, as PNG.
 fn crop_png(a: &AreaImage, rect: [f64; 4], um_per_mm: f64, dpi: f64) -> (Vec<u8>, usize, usize) {
+    let size=a.display_size();let inv=crate::project::image_edits::inverse(a.image_transform());
     let x0 = (rect[0] / a.um_per_px).floor().max(0.0) as usize;
     let y0 = (rect[1] / a.um_per_px).floor().max(0.0) as usize;
-    let x1 = ((rect[2] / a.um_per_px).ceil() as usize).min(a.w);
-    let y1 = ((rect[3] / a.um_per_px).ceil() as usize).min(a.h);
+    let x1 = ((rect[2] / a.um_per_px).ceil() as usize).min(size[0]);
+    let y1 = ((rect[3] / a.um_per_px).ceil() as usize).min(size[1]);
     let (cw, ch) = (x1.saturating_sub(x0).max(1), y1.saturating_sub(y0).max(1));
     // Image pixels per paper mm vs. target pixels per mm.
     let px_per_mm = um_per_mm / a.um_per_px;
@@ -390,7 +427,7 @@ fn crop_png(a: &AreaImage, rect: [f64; 4], um_per_mm: f64, dpi: f64) -> (Vec<u8>
             let (mut sum, mut n) = (0u32, 0u32);
             for yy in y0 + y * k..(y0 + (y + 1) * k).min(y1) {
                 for xx in x0 + x * k..(x0 + (x + 1) * k).min(x1) {
-                    sum += a.lut[a.px[yy * a.w + xx] as usize] as u32;
+                    sum += a.sample_mount(crate::project::image_edits::apply(inv,[(xx as f64+0.5)*a.um_per_px,(yy as f64+0.5)*a.um_per_px]),255) as u32;
                     n += 1;
                 }
             }

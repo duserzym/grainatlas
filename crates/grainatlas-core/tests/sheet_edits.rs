@@ -18,7 +18,7 @@ impl Fixture {
         }).collect();
         Self { rec, px: vec![110; 1600*300], gs: BTreeMap::from([("A1".into(), gs)]), params: SheetParams { packing: Packing::Packed, um_per_mm: 8.0, context_um: 180.0, pad_um: 10.0, min_cluster_grains: 0, min_cut_grains: 1, enhance: Default::default(), ..Default::default() } }
     }
-    fn areas(&self) -> Vec<SheetArea<'_>> { vec![SheetArea { rec: &self.rec, img: AreaImage { id: "A1", name: "zr-1", sample: "zr-1", w:1600, h:300, px:&self.px, lut:std::array::from_fn(|i| i as u8), um_per_px:1.0 } }] }
+    fn areas(&self) -> Vec<SheetArea<'_>> { vec![SheetArea { rec: &self.rec, img: AreaImage { source_size_um: None, edits: None, id: "A1", name: "zr-1", sample: "zr-1", w:1600, h:300, px:&self.px, lut:std::array::from_fn(|i| i as u8), um_per_px:1.0 } }] }
     fn plan(&self) -> SheetPlan { plan_sheets(&self.params, &self.areas(), &self.gs, &Ownership::default(), &SheetMeta { package:"mount A".into(), ..Default::default() }) }
     fn apply(&self, plan: &SheetPlan, edits: &[StripEdit]) -> EditedPlan { apply_edits(plan, edits, &self.areas(), &self.gs) }
     fn render(&self, p: &SheetPlan) -> SheetResult { render_plan(p, &self.areas(), &self.gs, &Ownership::default()) }
@@ -385,7 +385,7 @@ fn arranged_resize_rotation_and_registration_round_trip_keep_mount_coordinates()
                 let g=f.gs[&b.area].iter().find(|g|g.id==grain.id).unwrap();
                 let paper=arrange::point(t.mount_to_paper,g.centroid_um);
                 let mount=arrange::point(t.paper_to_mount,paper);
-                for d in 0..2 {assert!((mount[d]-g.centroid_um[d]).abs()<0.01);}
+                for (actual, expected) in mount.into_iter().zip(g.centroid_um) {assert!((actual-expected).abs()<0.01);}
             }
             assert_eq!(t.crop_um,b.mosaic_rect_um);
             assert!((t.um_per_mm-base.um_per_mm/0.73).abs()<1e-10);
