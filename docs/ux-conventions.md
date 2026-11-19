@@ -38,6 +38,15 @@ uses one module with one set of constants
 | double-click on empty space | fit |
 | arrows (Shift: more), `+` `-` `0` | nudge 60 / 240 px, zoom 1.5×, fit |
 
+**Keyboard zoom.** Cmd (macOS) or Ctrl (Windows/Linux) with `=` / `+` or
+`-` zooms the current Canvas, Area or print view about its centre by 1.5×;
+`0` fits it. Numpad Add, Subtract and 0 work too. In the desktop app, with
+no view or while editing a text field, these keys change the interface size
+instead; `0` restores 100 %. Add Option/Alt to change the interface size
+from any screen. Interface sizes run from 50 % to 200 % and are remembered
+per user. On the web, interface zoom stays with the browser.
+The desktop **View** menu offers the same view and interface zoom actions.
+
 Engines differ, so classify each wheel event: Chromium (and WebView2)
 report a pinch as `ctrlKey` + small `deltaY`; WebKit (Safari, WKWebView in
 Tauri on macOS) sends `gesturestart/change/end` instead; a trackpad scroll

@@ -8,6 +8,7 @@
   // Chromium, gesture events in WebKit), drag pans, double-click fits, arrows
   // nudge; a click without movement goes to the active tool.
   import { onMount, untrack, type Snippet } from 'svelte';
+  import { registerZoomView } from '../zoom';
   import type { Core, RawImage } from '../core/core';
   import { imageTransform, identity, applyAffine, pointBounds } from '../image-edits';
   import ImageEditOverlay from '../../components/ImageEditOverlay.svelte';
@@ -258,6 +259,7 @@
   });
 
   onMount(() => {
+    const unregisterZoom = registerZoomView(host, { zoomBy, fit: fitAll });
     const ro = new ResizeObserver(() => {
       const r = host.getBoundingClientRect();
       const old = size;
@@ -283,6 +285,7 @@
       canNudge: () => canNudge?.() ?? true,
     });
     return () => {
+      unregisterZoom();
       ro.disconnect();
       detach();
       cancelAnimationFrame(raf);

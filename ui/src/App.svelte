@@ -38,6 +38,9 @@
   import { hostedSync } from './lib/hosted-sync';
   import { reportHostedStatus } from './lib/hosted-actions';
   import { DRAFTS_CHANGED, listDrafts } from './lib/drafts';
+  import { commandDeduper, type CommandSource } from './lib/menu-command';
+  import { InterfaceZoom } from './lib/interface-zoom';
+  import { dispatchZoom, matchZoomKey, zoomMenuCommand, zoomViews, type ZoomCommand } from './lib/zoom';
 
   const isViewer = $derived(presentation.current === 'viewer');
   onMount(() => presentation.beforeViewer(async () => {
@@ -247,14 +250,27 @@
     void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(windowTitle)).catch(() => {});
   });
 
-  // Cmd+T / Cmd+W arrive as a keydown and, from the menu bar, as a menu event: act once.
-  let lastTabCmd = { what: '', at: 0 };
-  function tabCommand(what: 'new-tab' | 'close-tab') {
-    const now = performance.now();
-    if (lastTabCmd.what === what && now - lastTabCmd.at < 400) return;
-    lastTabCmd = { what, at: now };
+  // Tab and zoom commands arrive as a keydown and as a menu event: act once.
+  const actOnce = commandDeduper();
+  function tabCommand(what: 'new-tab' | 'close-tab', source: CommandSource) {
+    if (!actOnce(what, source)) return;
     if (what === 'new-tab') tabs.add();
     else tabBar?.requestClose(current());
+  }
+
+  const interfaceZoom = new InterfaceZoom(async factor => {
+    const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+    await getCurrentWebview().setZoom(factor);
+  });
+  function zoomError(error: unknown) {
+    app.error = `Could not change interface zoom: ${error instanceof Error ? error.message : error}`;
+  }
+  function zoomCommand(command: ZoomCommand, source: CommandSource, target: EventTarget | null): boolean {
+    return dispatchZoom(command, target, {
+      views: zoomViews, desktop,
+      interfaceZoom: action => { void interfaceZoom.change(action).catch(zoomError); },
+      actOnce: () => actOnce(`zoom:${command.interface}:${command.action}`, source),
+    });
   }
 
   /** Desktop start-up: `grainatlas A.grainatlas B.grainatlas … [--stitch] [--segment]` opens one tab per folder. */
@@ -343,6 +359,14 @@
   onMount(() => {
     const unwatch = watchTheme();
     const undo: (() => void)[] = [];
+    if (desktop) void interfaceZoom.restore().catch(zoomError);
+    const zoomKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const command = matchZoomKey(e);
+      if (command && zoomCommand(command, 'key', e.composedPath()[0] ?? e.target)) e.preventDefault();
+    };
+    window.addEventListener('keydown', zoomKey, true);
+    undo.push(() => window.removeEventListener('keydown', zoomKey, true));
     undo.push(startScheduler());
     const authWatch = setInterval(() => void authToken().catch(() => {}), 5000);
     undo.push(() => clearInterval(authWatch));
@@ -399,7 +423,13 @@
       })();
       if (tabKeys)
         void import('@tauri-apps/api/event').then(({ listen }) =>
-          listen<string>('grainatlas://menu', (e) => { if (e.payload === 'new-tab' || e.payload === 'close-tab') tabCommand(e.payload); else if (e.payload === 'export-grains' && !current().busy) { current().screen = 'canvas'; current().grainExportPrompt = true; } else if (e.payload === 'export-mosaic' && !current().busy) { current().screen = 'canvas'; current().mosaicExportPrompt = true; } }).then((f) => undo.push(f)),
+          listen<string>('grainatlas://menu', (e) => {
+            const zoom = zoomMenuCommand(e.payload);
+            if (zoom) zoomCommand(zoom, 'menu', document.activeElement);
+            else if (e.payload === 'new-tab' || e.payload === 'close-tab') tabCommand(e.payload, 'menu');
+            else if (e.payload === 'export-grains' && !current().busy) { current().screen = 'canvas'; current().grainExportPrompt = true; }
+            else if (e.payload === 'export-mosaic' && !current().busy) { current().screen = 'canvas'; current().mosaicExportPrompt = true; }
+          }).then((f) => undo.push(f)),
         );
     }
     // Files dropped on UPb Lab's window or opened through the OS (rule 4): the
@@ -424,12 +454,12 @@
         const k = e.key.toLowerCase();
         if (k === 't' && !e.shiftKey) {
           e.preventDefault();
-          tabCommand('new-tab');
+          tabCommand('new-tab', 'key');
           return;
         }
         if (k === 'w' && !e.shiftKey) {
           e.preventDefault();
-          tabCommand('close-tab');
+          tabCommand('close-tab', 'key');
           return;
         }
         if (/^[1-9]$/.test(e.key)) {

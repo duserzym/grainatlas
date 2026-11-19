@@ -5,6 +5,7 @@
   import { onMount, type Snippet } from 'svelte';
   import { attachGestures, type GestureOptions } from './gestures';
   import { type View, fit, matrix, zoomAt } from './view';
+  import { registerZoomView } from '../zoom';
 
   let { w, h, fitKey = '', label = 'Preview', children, gestures = {} }: { w: number; h: number; fitKey?: string; label?: string; children: Snippet; gestures?: Partial<Pick<GestureOptions, 'onpress' | 'ondrag' | 'onrelease' | 'oncancel' | 'ondblclick' | 'canNudge'>> } = $props();
 
@@ -25,6 +26,7 @@
   });
 
   onMount(() => {
+    const unregisterZoom = registerZoomView(host, { zoomBy, fit: fitAll });
     const ro = new ResizeObserver(() => {
       const r = host.getBoundingClientRect();
       const first = size.w === 800 && size.h === 600;
@@ -37,6 +39,7 @@
       onpress: p => gestures.onpress?.(p) ?? false, ondrag: p => gestures.ondrag?.(p), onrelease: p => gestures.onrelease?.(p),
       oncancel: () => gestures.oncancel?.(), ondblclick: p => gestures.ondblclick?.(p), canNudge: () => gestures.canNudge?.() ?? true });
     return () => {
+      unregisterZoom();
       ro.disconnect();
       detach();
     };

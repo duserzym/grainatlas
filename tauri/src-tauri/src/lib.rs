@@ -1010,6 +1010,14 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let export_mosaic = MenuItemBuilder::with_id("export-mosaic", "Export mosaic...").build(app)?;
     let file = SubmenuBuilder::new(app, "File").item(&new_tab).item(&close_tab).separator().item(&export_grains).item(&export_mosaic).separator().item(&close_window).build()?;
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
+    let zoom_in = MenuItemBuilder::with_id("zoom-in", "Zoom In").accelerator("CmdOrCtrl+=").build(app)?;
+    let zoom_out = MenuItemBuilder::with_id("zoom-out", "Zoom Out").accelerator("CmdOrCtrl+-").build(app)?;
+    let zoom_fit = MenuItemBuilder::with_id("zoom-fit", "Zoom to Fit").accelerator("CmdOrCtrl+0").build(app)?;
+    let interface_larger = MenuItemBuilder::with_id("interface-larger", "Interface Larger").accelerator("CmdOrCtrl+Alt+=").build(app)?;
+    let interface_smaller = MenuItemBuilder::with_id("interface-smaller", "Interface Smaller").accelerator("CmdOrCtrl+Alt+-").build(app)?;
+    let interface_reset = MenuItemBuilder::with_id("interface-reset", "Actual Interface Size").accelerator("CmdOrCtrl+Alt+0").build(app)?;
+    let view = SubmenuBuilder::new(app, "View").item(&zoom_in).item(&zoom_out).item(&zoom_fit)
+        .separator().item(&interface_larger).item(&interface_smaller).item(&interface_reset).build()?;
     let window = SubmenuBuilder::new(app, "Window").minimize().maximize().separator().fullscreen().build()?;
     let mut m = MenuBuilder::new(app);
     #[cfg(target_os = "macos")]
@@ -1024,7 +1032,7 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (AboutMetadata::default(), PredefinedMenuItem::separator(app)?);
-    m.item(&file).item(&edit).item(&window).build()
+    m.item(&file).item(&edit).item(&view).item(&window).build()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1059,7 +1067,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(menu)
         .on_menu_event(|app, ev| match ev.id().as_ref() {
-            "new-tab" | "close-tab" | "export-grains" | "export-mosaic" => {
+            "new-tab" | "close-tab" | "export-grains" | "export-mosaic"
+            | "zoom-in" | "zoom-out" | "zoom-fit"
+            | "interface-larger" | "interface-smaller" | "interface-reset" => {
                 let _ = app.emit("grainatlas://menu", ev.id().as_ref());
             }
             "close-window" | "quit-app" => {
