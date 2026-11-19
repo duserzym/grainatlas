@@ -4,6 +4,8 @@
 //! manual edits are stored as parameters, never as baked pixels.
 
 pub mod pipeline;
+pub mod image_edits;
+pub use image_edits::{AreaImageEdits, printable_grains};
 pub mod session;
 
 use std::collections::BTreeMap;

@@ -14,7 +14,7 @@ import { imagesMayRun } from './image-idle';
 import { SyncApi, SyncApiError, SyncNetworkError, lineageFailureMessage, changesFromEvents, problemSummary, requestIdFor, syncWireBody, type Candidate, type ProjectStatus, type SyncBody } from './sync-api';
 import { canonicalJson } from './sync-hash';
 import { notifyUpbLab } from './upblab-notice';
-import { draftElements, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
+import { draftElements, draftPrintRecipe, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
 import { draftSyncStatus, plainSyncStatus } from './sync-status';
 import { appStorage } from './app-storage';
@@ -509,7 +509,7 @@ export class SyncSession {
     // rendered getters, to keep status reads from serialising a project per edit.
     const status = draftSyncStatus(this.draft, undefined, { changes: this.counts, pixelsKey: this.pixelKey });
     this.storedSyncStatus = { pixels: status.pixels, unlinked: status.unlinked };
-    this.save({ changes, pending, pending_at: pending ? now : null, ...(this.pixelKey !== null ? { pixels_key: this.pixelKey } : {}), pixels_changed: status.pixels, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
+    this.save({ ...draftPrintRecipe(p,this.draft), changes, pending, pending_at: pending ? now : null, ...(this.pixelKey !== null ? { pixels_key: this.pixelKey } : {}), pixels_changed: status.pixels, updated_at: edited ? now : this.draft.updated_at, source_keys: [...new Set([...(this.draft.source_keys ?? []), key])] });
     if (edited) this.imagesEdited();
     if (edited && this.backgroundPending && !this.busy) this.automatic.edit();
   }

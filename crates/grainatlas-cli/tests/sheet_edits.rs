@@ -18,7 +18,7 @@ fn edits_replay_export_left_off_report_drops_and_block_invalid_output() {
     let p=SheetParams {packing:Packing::Packed,um_per_mm:8.0,enhance:Default::default(),..Default::default()};let params=temp.path().join("params.json");std::fs::write(&params,serde_json::to_vec(&p).unwrap()).unwrap();
     let rec=&project.areas[0];let areas=[SheetArea {rec,img:AreaImage {id:&rec.id,name:&rec.name,sample:&rec.sample,w:support::W,h:support::H,px:&px,lut:std::array::from_fn(|i|i as u8),um_per_px:1.0}}];
     let plan=sheets::plan_sheets(&p,&areas,&gs,&Ownership::default(),&SheetMeta::default());let strip=plan.strips[0].key.clone();let file=temp.path().join("edits.json");
-    let mut stored=PrintEdits {um_per_mm:plan.um_per_mm,params:p.clone(),edits:vec![StripEdit::Hide {strip:strip.clone()}]};std::fs::write(&file,serde_json::to_vec(&stored).unwrap()).unwrap();
+    let mut stored=PrintEdits {version:1,um_per_mm:plan.um_per_mm,params:p.clone(),edits:vec![StripEdit::Hide {strip:strip.clone()}]};std::fs::write(&file,serde_json::to_vec(&stored).unwrap()).unwrap();
     let out=temp.path().join("print-a");let result=invoke(&folder,&out,&params,&file);assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));
     let reg:PrintRegistration=serde_json::from_slice(&std::fs::read(out.join("Synthetic mount_print_registration.json")).unwrap()).unwrap();assert_eq!(reg.layout,"edited");assert_eq!(reg.left_off.len(),2);assert!(reg.bands.is_empty());assert!(out.join("Synthetic mount_grain_sheets_tabloid.pdf").exists());assert!(out.join("Synthetic mount_sheet_stats.json").exists());
     let bare=temp.path().join("print-b");

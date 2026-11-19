@@ -1,4 +1,4 @@
-import { test as base, expect, type Request, type Route } from '@playwright/test';
+import { test as base, expect, type ConsoleMessage, type Request, type Route } from '@playwright/test';
 import { createHash } from 'node:crypto';
 
 /** This one read-only POST is legitimate; every other endpoint stays guarded. */
@@ -27,7 +27,26 @@ export function mockSessionRead(method: string, pathname: string): unknown | und
   return undefined;
 }
 
-export const test = base.extend<{ sessionRequestCounts: void }>({
+export const test = base.extend<{ sessionRequestCounts: void; browserErrors: void }>({
+  browserErrors: [async ({ page }, use, testInfo) => {
+    const errors: string[] = [];
+    const log = (message: string) => {
+      errors.push(message);
+      console.error(`[${testInfo.file.split('/').at(-1)}: ${testInfo.title}] ${message}`);
+    };
+    const consoleError = (message: ConsoleMessage) => {
+      if (message.type() === 'error') log(`console.error: ${message.text()}\n${JSON.stringify(message.location())}`);
+    };
+    const pageError = (error: Error) => log(`pageerror: ${error.stack ?? error.message}`);
+    page.on('console', consoleError);
+    page.on('pageerror', pageError);
+    try { await use(); }
+    finally {
+      page.off('console', consoleError);
+      page.off('pageerror', pageError);
+      if (errors.length) await testInfo.attach('browser-errors', { body: errors.join('\n\n'), contentType: 'text/plain' });
+    }
+  }, { auto: true }],
   sessionRequestCounts: [async ({ page }, use, testInfo) => {
     let document = 0;
     const counts = new Map<string, number>();

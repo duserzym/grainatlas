@@ -101,7 +101,7 @@ fn packed_key(p: &SheetParams, k: f64, width: f64) -> HeaderKey {
             y: 2.0,
             size: 1.8,
             bold: false,
-            text: "LASER SPOT Ø (µm)".into(),
+            text: if p.spot_sizes_um.is_empty() { "Spot sizes are shown with each piece".into() } else { "LASER SPOT Ø (µm)".into() },
         }],
         height: 2.5,
     };
@@ -226,14 +226,24 @@ pub(super) fn heights(plan: &SheetPlan) -> [f64; 2] {
         plan.um_per_mm,
         &scale_note(plan.auto_scale.as_ref(), plan.um_per_mm),
     );
-    let (_, grid_end) = packed_grid(&kv, width);
+    let (_, mut grid_end) = packed_grid(&kv, width);
     // Counts may change after edits. Reserve their longest possible form so a
     // newly isolated target cannot make a wrapped stats line invade the grid.
     let mut counts = plan.cut_stats.clone();
     counts.bands = plan.strips.iter().map(|s| s.bands.len()).sum();
     counts.isolated = counts.grains;
     let (_, extra) = first_heading(&plan.params, &plan.meta, page, &counts);
-    let key = packed_key(&plan.params, plan.um_per_mm, width);
+    let mut key = packed_key(&plan.params, plan.um_per_mm, width);
+    if plan.strips.iter().any(|s|s.transform.is_some()) {
+        let scales:Vec<_>=plan.strips.iter().filter(|s|!s.hidden).map(|s|plan.um_per_mm/s.transform.unwrap_or_default().scale).collect();
+        let mixed=scales.first().is_some_and(|first|scales.iter().any(|v|(v-first).abs()>1e-7));
+        let k=if mixed {plan.um_per_mm} else {scales.first().copied().unwrap_or(plan.um_per_mm)};
+        let params=SheetParams {spot_sizes_um:if mixed {Vec::new()} else {key_spots(&plan.params.spot_sizes_um,k).0},..plan.params.clone()};
+        let note=if mixed {"Per-piece scale; see each scale bar".into()} else {scale_note(None,k)};
+        let (values,_)=header_values(&params,&plan.meta,k,&note);
+        grid_end=grid_end.max(packed_grid(&values,width).1);
+        key.height=key.height.max(packed_key(&params,k,width).height);
+    }
     [
         (grid_end + extra + 5.2 + key.height + 0.8).max(PACKED_FIRST_HEADER_MM),
         (15.0 + key.height + 0.8).max(PACKED_LATER_HEADER_MM),

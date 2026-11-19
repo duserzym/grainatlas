@@ -11,7 +11,6 @@
   import { readPrintEdits, storePrintEdits, StripHistory } from '../lib/strip-edit';
   import { onDestroy } from 'svelte';
   import { printCache, printFingerprint, revision, type PrintControls, type PrintEditorState } from '../lib/print-cache';
-  import Busy from '../components/Busy.svelte';
   import { PrintQuality, printPdfName } from '../lib/print-quality';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
 
@@ -79,8 +78,9 @@
   let urls = $state<string[]>([]);
   let history = $state.raw(new StripHistory());
   let automaticPlan = $state.raw<SheetPlan | null>(null);
-  let editMode = $state(false);
-  let editor = $state<PrintEditorState>({ selection: null, splitting: false, axis: 'x' });
+  let editMode = $state(savedPrint?.version === 2);
+  let stripEditor = $state<ReturnType<typeof StripEditor>>();
+  let editor = $state<PrintEditorState>({ arrange: savedPrint?.version === 2, selections: [], snap: true, selection: null, splitting: false, axis: 'x' });
   let pending = $state(false);
   let savedDrops = $state<DroppedEdit[]>([]);
   const droppedEdits = $derived(savedDrops.length ? savedDrops : sheets?.dropped ?? []);
@@ -232,6 +232,7 @@
       : await app.run('Laying out print sheets', () => core.printSheets(p, $state.snapshot(app.grains) as Record<string, Grain[]>, tones));
     if (!r) return;
     if ('ownership' in r) {
+      r.plan = { ...r.plan, print_spots: $state.snapshot(app.spots) };
       app.ownership = r.ownership;
       whole = null;
       const replayed = stored?.edits.length
@@ -352,24 +353,36 @@
   {/if}
 {/snippet}
 
-{#if qualityState && !qualityState.ready && !qualityCancelled && !qualityState.error && !stale && !pending && !app.busy}
-  <Busy task={{ label: 'Preparing print quality', progress: { stage: `page ${Math.min(qualityState.next + 1, qualityState.total)} of ${qualityState.total}`, fraction: qualityState.next / qualityState.total } }} onCancel={cancelQuality} testId="print-quality-busy" />
-{/if}
+{#snippet qualityProgress()}
+  {#if qualityState && !qualityState.ready && !qualityCancelled && !qualityState.error && !stale && !pending && !app.busy}
+    <div class="quality-progress" role="status" data-testid="print-quality-busy">
+      <progress aria-label="Preparing print quality" value={qualityState.next} max={qualityState.total}></progress>
+      <button onclick={cancelQuality}>Pause</button>
+    </div>
+  {/if}
+{/snippet}
 <div class="layout" class:folded={app.layout.printCollapsed}>
   {#if app.layout.printCollapsed}
     <aside class="glass folded-side"><button class="icon" title="Show print controls" aria-label="Show print controls" onclick={() => { app.layout.printCollapsed = false; app.saveLayout(); }}>»</button></aside>
   {/if}
-  <aside class="glass side" class:concealed={app.layout.printCollapsed}>
+  <aside class="glass side" class:arranging={sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange} class:concealed={app.layout.printCollapsed}>
+    <div class="side-content" class:arranging={sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange} data-testid="print-controls-scroll">
     <button class="icon fold" title="Fold print controls" aria-label="Fold print controls" onclick={() => { app.layout.printCollapsed = true; app.saveLayout(); }}>«</button>
     {#if sheets && style === 'sheets' && sheetMode === 'grains'}
-      <label class="check"><input type="checkbox" bind:checked={editMode} disabled={app.readOnly} data-testid="edit-strips" /> Edit strips</label>
+      <div class="seg" role="group" aria-label="Print arrangement">
+        <button aria-label="Switch to automatic layout" aria-pressed={!editor.arrange} onclick={()=>{if(!editor.arrange)return;if(history.count)stripEditor?.confirmAutomatic();else{editMode=false;editor.arrange=false;}}}>Automatic</button>
+        <button data-testid="arrange-mode" aria-pressed={!!editor.arrange} disabled={app.readOnly} onclick={()=>{editor.arrange=true;editMode=true;}}>Arrange</button>
+      </div>
+      {#if !editor.arrange}<label class="check"><input type="checkbox" bind:checked={editMode} disabled={app.readOnly} data-testid="edit-strips" /> Edit strips</label>{/if}
     {/if}
     <div bind:this={editorControls}></div>
+    {#if !(sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange)}
     <h2>Print layout</h2>
     {#if result}
       <p class="faint small" data-testid="preview-note">Preview uses reduced resolution without export enhancement. PDF and print use full quality.</p>
       {#if stale}<p class="faint small">Inputs changed; make sheets again.</p>{/if}
       <p class="faint small" data-testid="print-quality" data-ready={qualityState?.ready ?? true}>{qualityState?.error ? qualityState.error.message : qualityState?.ready || !qualityState ? 'Print quality ready' : qualityCancelled ? 'Print quality paused; export resumes it.' : `Preparing print quality: page ${Math.min(qualityState.next + 1, qualityState.total)} of ${qualityState.total}`}</p>
+      {@render qualityProgress()}
     {/if}
     {#if sheets?.problems?.length}
       <p class="faint small" role="status" data-testid="export-blocked">Export blocked: {sheets.problems[0].message}. {sheets.problems.some(p => p.kind === 'outside_body') ? 'Increase the scale value or paper size, or edit the strips.' : 'Fix the strip problems before exporting.'}</p>
@@ -517,11 +530,21 @@
       </div>
     {/if}
     {/if}
+    {/if}
+    </div>
+    {#if sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange}
+      <footer class="arrange-export" data-testid="arrange-footer">
+        <p class="faint small" data-testid="print-quality" data-ready={qualityState?.ready??true}>{pending?'Rendering pieces':qualityState?.error?qualityState.error.message:qualityState?.ready||!qualityState?'Print quality ready':qualityCancelled?'Print quality paused; export resumes it.':`Preparing print quality: page ${Math.min(qualityState.next+1,qualityState.total)} of ${qualityState.total}`}</p>
+        {@render qualityProgress()}
+        <div class="two"><button class="primary" onclick={pdf} disabled={exportBlocked} title={exportReason} data-testid="export-pdf">Save PDF</button><button onclick={browserPrint} disabled={exportBlocked} title={exportReason}>Print…</button></div>
+        <button onclick={registration} disabled={exportBlocked} title={exportReason} data-testid="export-registration">Registration</button>
+      </footer>
+    {/if}
   </aside>
   <section class="preview" data-testid="layout-view">
     {#if sheets && automaticPlan && editorControls && style === 'sheets' && sheetMode === 'grains'}
       {#key automaticPlan}
-        <StripEditor base={automaticPlan} result={sheets} {urls} controls={editorControls} {droppedNotice} {history} bind:editorState={editor} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
+        <StripEditor bind:this={stripEditor} onautomatic={()=>{if(editor.arrange){editor.arrange=false;editMode=false;}}} base={automaticPlan} result={sheets} {urls} controls={editorControls} {droppedNotice} {history} bind:editorState={editor} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
       {/key}
     {/if}
     {#if result && urls[pageIdx] && !(editMode && sheets && style === 'sheets' && sheetMode === 'grains')}
@@ -559,12 +582,32 @@
   .fold { align-self: flex-end; }
   .side {
     min-width: 0;
+    min-height: 0;
     padding: var(--space-4);
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     overflow: auto;
   }
+  /* Automatic retains the original sidebar scroll owner. Arrange alone needs
+     an inner scroller so its export footer stays outside the scrolling content. */
+  .side.arranging {padding:0;gap:0;overflow:hidden;}
+  .side-content {display:contents;}
+  .side-content.arranging {
+    min-height: 0;
+    flex: 1;
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    overflow: auto;
+  }
+  .side-content > :global(*) { flex-shrink:0; }
+  .arrange-export {padding:var(--space-2) var(--space-4) var(--space-4);display:grid;gap:var(--space-1);flex:none;background:var(--bg);border-top:1px solid var(--hairline);}
+  .arrange-export p {margin:var(--space-1) 0;}
+  .quality-progress {display:flex;align-items:center;gap:var(--space-2);}
+  .quality-progress progress {flex:1;min-width:0;accent-color:var(--accent);}
+  .quality-progress button {padding:var(--space-1) var(--space-2);}
   .two {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

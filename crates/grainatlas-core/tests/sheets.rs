@@ -3755,7 +3755,7 @@ fn explicit_area_samples_and_empty_samples_preserve_svg_bytes_and_edits() {
             let plan = field_plan(&p, &recs, &explicit);
             assert_eq!(original, plan);
             assert_eq!(baseline, render_sample_plan(&plan, &recs, &explicit).pages);
-            let replay = sheets::replay(&plan, &sheets::PrintEdits { params: p.clone(), um_per_mm: plan.um_per_mm, edits: edits.to_vec() }, &sample_field_areas(&recs), &explicit);
+            let replay = sheets::replay(&plan, &sheets::PrintEdits {version:1, params: p.clone(), um_per_mm: plan.um_per_mm, edits: edits.to_vec() }, &sample_field_areas(&recs), &explicit);
             assert_eq!(replay.applied, 1);
             assert_eq!(edited_svg, render_sample_plan(&replay.plan, &recs, &explicit).pages);
         }
@@ -3773,7 +3773,7 @@ fn mixed_samples_stay_separate_after_split_move_and_replay() {
         sheets::StripEdit::Move { strip: strip.key.clone(), sheet: 0, origin_mm: Some(strip.origin_mm) },
         sheets::StripEdit::Repack {},
     ];
-    let replay = sheets::replay(&plan, &sheets::PrintEdits { params: p, um_per_mm: plan.um_per_mm, edits }, &sample_field_areas(&recs), &gs);
+    let replay = sheets::replay(&plan, &sheets::PrintEdits {version:1, params: p, um_per_mm: plan.um_per_mm, edits }, &sample_field_areas(&recs), &gs);
     assert_eq!(replay.applied, 3, "{:?}", replay.dropped);
     assert_sample_owners(&replay.plan, &gs);
     assert!(replay.left_off.is_empty());

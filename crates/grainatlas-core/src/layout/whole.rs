@@ -333,6 +333,7 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
         left_off: Vec::new(),
         edits: None,
         bands: vec![BandRecord {
+            transform: None,
             sheet: 1,
             sample: a.sample.into(),
             area: area.rec.id.clone(),

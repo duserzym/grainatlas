@@ -288,9 +288,9 @@ shown strips around them. **Back to automatic** drops every edit after a
 confirmation that gives the edit count. Undo and redo apply to the whole edit
 list, using the buttons or Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z.
 
-There is no rotation or scaling of single strips. Every band uses the same
-`um_per_mm`, the mapping has no rotation, and the scale bar and spot key apply
-to the whole sheet. Crop edges and split lines may not cross printed grains.
+The legacy Edit strips controls keep a shared `um_per_mm` without rotation.
+Arrange mode below adds per-piece scale and rotation. Crop edges and split
+lines in the legacy editor may not cross printed grains.
 
 After each edit, a shown band keeps its existing owners wherever it still
 holds their whole boxes. A grain that loses its owner can be adopted by
@@ -835,3 +835,71 @@ grains, with auto, landscape or portrait orientation, automatic fit or a fixed
 µm/mm scale, and a grid checkbox. PDF and registration use the same export
 controls as grain sheets. Both the desktop blocking pool and browser worker
 call `Session::print_whole`; the base mosaic remains available after eviction.
+
+## Arrange mode
+
+Layout → Print sheets offers Automatic and Arrange. Arrange makes each image
+band in the packed layout an object on paper,
+including its sample label, scale bar and spot-size references. Runs with
+several bands become separate objects with continuation notes. It uses the
+existing strip edit replay and the same MaxRects packing algorithm as Packed.
+No registered grain, spot, name or link
+moves in mount or stage coordinates, and source pixels are never changed.
+
+Manual arrangement is an explicit departure from automatic context rules:
+whole pieces may rotate on paper and each piece may have its own uniform
+scale. Grains within a piece retain their neighbours and their aspect ratio.
+The orientation arrow marks mount +y and the paper rotation angle. Automatic
+cutting, ownership, repeated context and stray rules are unchanged. Auto-arrange
+restores the packed automatic scale and orientation for all, selected or
+unselected pieces, reserving space occupied by the others. Back to automatic
+asks before discarding the edit list.
+
+Click selects a piece; Shift-click adds or removes it. Dragging on empty paper
+selects a box. Drag moves the selection and corner handles scale the whole
+selection proportionally about the opposite corner. Snap guides follow body
+margins and other pieces' edges and centres; Alt temporarily disables Snap.
+Arrows nudge 1 mm, or 10 mm with Shift. Align and Distribute use paper mm.
+The side panel also edits position, dimensions, scale and rotation, and moves
+pieces to another sheet. A drop on a page thumbnail moves the selection there.
+
+The header is fixed. A selection is clamped below it as a group. Overlapping
+drops are refused atomically, with a message; they never enter saved edits or
+undo history. Collision checks conservatively use the full rotated bounding
+box, including labels and references, so rotated pieces also keep clearance
+at their corners. An oversized group is refused instead of distorted.
+
+Each piece's spot circles use its exact physical scale, and each band has a
+1–2–5 scale bar labelled in µm. Grain and reference labels scale with the piece
+with a 6 pt minimum. A reserved reference row keeps spot circles off neighbouring
+pieces. When scales differ, the fixed header says “Spot sizes are shown with
+each piece”; otherwise it shows the shared scale key.
+
+New arrangements use version 2 of `project.print_sheets`; version 1 and older
+unversioned strip edit lists still replay. The field travels in the existing
+complete project records used for save, recovery, mirror mode and atlas bundle
+publishing, and participates in the print cache fingerprint. Element sync
+preserves the local recipe when refreshing core records. The draft also retains
+the recipe independently of pending elements, so reopening an older server
+bundle with a clean outbox cannot discard it. An explicit reset is retained too.
+UPbDB’s current
+element-sync schema has no project recipe field, so recipe-only edits need
+atlas publishing to reach another computer; automatic recipe-only outbox sync
+needs the contract extension specified in [sync-client.md](sync-client.md#print-recipes-and-local-recovery).
+Version 1 strip edits use these same paths. Undo and redo store atomic group operations.
+Unknown edits or versions are retained as raw project data rather than dropped
+on save.
+
+For manual bands, registration includes `transform.crop_um`, `um_per_mm`,
+`rotation_deg`, `mount_to_paper` and `paper_to_mount`. The two affine matrices
+use SVG order `[a,b,c,d,e,f]`: `x' = a*x + c*y + e`,
+`y' = b*x + d*y + f`. Mount positions are the area's mosaic µm, and paper
+positions are sheet mm from the top left, y down. `sheet_rect_mm` is the rotated
+image's bounding box; use the matrices for registration, not that box's edges.
+The same SVG geometry drives preview, full-quality print and PDF. PDF embeds
+the registration and uses the transformed PNGs without resampling their pixels.
+
+The `project::printable_grains(area, grains, edits)` boundary is an identity
+stub pending Brief A. The grain-sheet and edited-plan entry points call it.
+Canvas crop/mask filtering and image orientation must replace that stub when
+Brief A is merged; whole-area printing currently has no grain target list.

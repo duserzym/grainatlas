@@ -18,6 +18,9 @@ export interface Draft {
   incomplete?: { reason: string; omissions: Record<keyof Elements, string[]> } | null;
   /** Narrowed unsynced elements. Missing fields identify legacy records. */
   pending?: Elements | null; pending_at?: string | null;
+  /** Local print recipe, independent of the element outbox. An empty envelope
+   * records an explicit reset; a missing envelope identifies an older draft. */
+  print_recipe?: Pick<Project, 'print_sheets'>;
   /** Legacy pre-B1 alias. New links always register the local UUID. */
   linked_uuid?: string; link_offered?: boolean; link_conflict?: boolean; link_candidates?: import('./sync-api').Candidate[];
   /** Opaque hashes returned by the server, never computed by the browser. */
@@ -114,6 +117,26 @@ export function storedDraftProject(draft: Draft, storage?: DraftStorage): Projec
     });
     return projects.sort((a, b) => b.when.localeCompare(a.when))[0]?.project ?? null;
   } catch { return null; }
+}
+/** Track recipes without marking pixels or elements as changed. Preserve raw,
+ * newer versions too. Keep an empty envelope after Reset to prevent resurrection. */
+// This is saved JSON and can be a Svelte proxy. structuredClone rejects proxies;
+// copy through the same JSON representation used by project and draft storage.
+const copyPrintJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+export function draftPrintRecipe(project: Project, draft: Draft): Pick<Draft, 'print_recipe'> {
+  if (project.uuid !== draft.uuid || project.print_sheets === undefined && draft.print_recipe === undefined) return {};
+  return { print_recipe: copyPrintJson(project.print_sheets === undefined ? {} : { print_sheets: project.print_sheets }) };
+}
+/** A published project is not an acknowledgement of this computer's recipe.
+ * Never restore the stored copy's elements here: the database supplies those. */
+export function keepDraftPrintRecipe(project: Project, draft: Draft | null, storage?: DraftStorage): Project {
+  if (!draft || project.uuid !== draft.uuid) return project;
+  const recipe = draft.print_recipe ?? storedDraftProject(draft, storage);
+  if (recipe && (draft.print_recipe !== undefined || recipe.print_sheets !== undefined)) {
+    if (recipe.print_sheets === undefined) delete project.print_sheets;
+    else project.print_sheets = copyPrintJson(recipe.print_sheets);
+  }
+  return project;
 }
 /** Keep exactly the upsert fields, including new-grain lineage, without UI metadata. */
 export function pendingElements(elements: ReadElements): Elements {

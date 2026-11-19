@@ -1,18 +1,22 @@
 <script lang="ts">
+  import ArrangePage from './ArrangePage.svelte';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
   import { CLICK_SLOP, type ViewPoint } from '../lib/canvas/gestures';
   import type { Grain, SheetBand, SheetPlan, SheetRect, SheetStrip, StripEdit, StripKey } from '../lib/core/types';
   import { bandImageKey, bandRect, bodyOrigin, cropRect, grainChanges, keyId, sameKey, snapGap, snapOrigin, stripBlock, targetGrains } from '../lib/strip-edit';
-  let { plan, urls, page = $bindable(0), selected, select, edit, images, grains, bounds, split, axis, cancelSplit }: {
+  let { plan, urls, page = $bindable(0), selected, select, edit, images, grains, bounds, split, axis, cancelSplit, arrange = false, pages = [], selections = [], selectMany, snap = true, setSnap = () => {}, undo = () => {}, redo = () => {}, canUndo = false, canRedo = false, automatic = () => {} }: {
+    arrange?:boolean;pages?:string[];selections?:StripKey[];selectMany?:(keys:StripKey[])=>void;snap?:boolean;setSnap?:(v:boolean)=>void;
+    undo?:()=>void;redo?:()=>void;canUndo?:boolean;canRedo?:boolean;automatic?:()=>void;
     plan: SheetPlan; urls: string[]; page?: number; selected: StripKey | null; select: (key: StripKey | null) => void; edit: (e: StripEdit, destination?: number) => void;
     images: Record<string, string>; grains: Record<string, Grain[]>; bounds: Record<string, SheetRect>; split: boolean; axis: 'x' | 'y'; cancelSplit: () => void;
   } = $props();
   const PX = 6;
-  let panzoom: ReturnType<typeof PanZoom>;
+  let panzoom = $state<ReturnType<typeof PanZoom>>();
   type Drag = { strip: SheetStrip; band?: SheetBand; edge?: number; start: [number, number]; screen: [number, number]; origin: [number, number]; rect?: SheetRect; splitAt?: number | null; moved: boolean };
   let drag = $state<Drag | null>(null);
   const strips = $derived(plan.strips.filter(s => !s.hidden && s.sheet === page));
-  export function cancel() { drag = null; }
+  let arrangeView = $state<ReturnType<typeof ArrangePage>>();
+  export function cancel() { drag = null; arrangeView?.cancel(); }
   function press(p: ViewPoint) {
     const el = (p.ev.target as Element).closest('[data-strip]');
     const s = strips.find(s => keyId(s.key) === el?.getAttribute('data-strip'));
@@ -73,6 +77,9 @@
   function rectStyle(r: SheetRect) { return `left:${r[0] * PX}px;top:${r[1] * PX}px;width:${(r[2] - r[0]) * PX}px;height:${(r[3] - r[1]) * PX}px`; }
 </script>
 
+{#if arrange && selectMany}
+  <ArrangePage bind:this={arrangeView} {plan} {pages} {urls} bind:page {selections} select={selectMany} {edit} {snap} {setSnap} {undo} {redo} {canUndo} {canRedo} {automatic}/>
+{:else}
 <div class="editor-view">
   <nav class="thumbs" aria-label="Print pages" data-ui>
     {#each urls as url, i}<button data-testid="page-thumb" data-sheet={i} aria-label="Page {i + 1}" aria-current={page === i ? 'page' : undefined} onclick={() => page = i}><img src={url} alt="" /><span>{i + 1}</span></button>{/each}
@@ -128,9 +135,10 @@
         {/if}
       </svg>
     </PanZoom>
-    <div class="tools glass" data-ui><button onclick={() => panzoom.zoomBy(1 / 1.5)} aria-label="Zoom out">−</button><button onclick={() => panzoom.zoomBy(1.5)} aria-label="Zoom in">+</button><button onclick={() => panzoom.fitAll()}>Fit</button></div>
+    <div class="tools glass" data-ui><button onclick={() => panzoom?.zoomBy(1 / 1.5)} aria-label="Zoom out">−</button><button onclick={() => panzoom?.zoomBy(1.5)} aria-label="Zoom in">+</button><button onclick={() => panzoom?.fitAll()}>Fit</button></div>
   </div>
 </div>
+{/if}
 <style>
   .editor-view { position: absolute; inset: 0; display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: var(--space-2); }
   .thumbs { overflow: auto; display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; margin-top: var(--notice-bottom, 0px); padding: var(--space-1); }

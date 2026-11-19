@@ -85,12 +85,7 @@ impl PdfBuilder {
     pub fn prepare(&mut self, svg: &str) -> Result<()> {
         let doc = roxmltree::Document::parse(svg).map_err(|e| Error::Invalid(e.to_string()))?;
         let opening = &svg[..svg.find('>').unwrap() + 1];
-        let vector: String = doc
-            .root_element()
-            .children()
-            .filter(|n| n.is_element() && n.tag_name().name() != "image")
-            .map(|n| &svg[n.range()])
-            .collect();
+        let vector = without_images(svg, doc.root_element());
         let tree = usvg::Tree::from_str(&format!("{opening}{vector}</svg>"), options())
             .map_err(|e| Error::Invalid(e.to_string()))?;
         self.font_samples(tree.root());
@@ -201,8 +196,24 @@ impl PdfBuilder {
             .collect();
         let mut layers = Vec::<(Ref, [f32; 6])>::new();
         let mut vector = String::new();
+        // Our piece wrapper carries one affine matrix. Keep direct PNG reuse
+        // (and layer order) for its images instead of decoding them in svg2pdf.
+        let mut nodes = Vec::new();
         for node in root.children().filter(|n| n.is_element()) {
-            if node.tag_name().name() == "defs" {
+            if node.attribute("data-piece").is_some() {
+                if let Some(matrix) = node.attribute("transform").and_then(piece_matrix) {
+                    nodes.extend(
+                        node.children()
+                            .filter(|n| n.is_element())
+                            .map(|child| (child, Some(matrix))),
+                    );
+                    continue;
+                }
+            }
+            nodes.push((node, None));
+        }
+        for (node, transform) in nodes {
+            if node.tag_name().name() == "defs" && transform.is_none() {
                 continue;
             }
             let png = if node.tag_name().name() == "image"
@@ -250,17 +261,24 @@ impl PdfBuilder {
                 let (x, y, w, h) = (attr("x"), attr("y"), attr("width"), attr("height"));
                 layers.push((
                     id,
-                    [
-                        w / wmm * wpt,
-                        0.0,
-                        0.0,
-                        h / hmm * hpt,
-                        x / wmm * wpt,
-                        (1.0 - (y + h) / hmm) * hpt,
-                    ],
+                    image_matrix(
+                        transform.unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+                        [x, y, w, h],
+                        [wmm, hmm],
+                        [wpt, hpt],
+                    ),
                 ));
             } else {
-                vector.push_str(&svg[node.range()]);
+                if let Some(m) = transform {
+                    vector.push_str(&format!(
+                        "<g transform=\"matrix({} {} {} {} {} {})\">",
+                        m[0], m[1], m[2], m[3], m[4], m[5]
+                    ));
+                    vector.push_str(&svg[node.range()]);
+                    vector.push_str("</g>");
+                } else {
+                    vector.push_str(&svg[node.range()]);
+                }
             }
         }
         if !vector.is_empty() {
@@ -448,5 +466,120 @@ mod tests {
         assert_eq!(count(b"/FontFile2"), 1);
         assert_eq!(count(b"/EmbeddedFiles"), 1);
         assert_eq!(count(json), 1);
+    }
+}
+
+fn piece_matrix(value: &str) -> Option<[f32; 6]> {
+    let values: Vec<_> = value
+        .strip_prefix("matrix(")?
+        .strip_suffix(')')?
+        .split_whitespace()
+        .map(str::parse::<f32>)
+        .collect::<std::result::Result<_, _>>()
+        .ok()?;
+    values.try_into().ok()
+}
+/// Same affine as the SVG, converting downwards sheet mm to upwards PDF pt.
+fn image_matrix(m: [f32; 6], r: [f32; 4], mm: [f32; 2], pt: [f32; 2]) -> [f32; 6] {
+    let [x, y, w, h] = r;
+    let sx = pt[0] / mm[0];
+    let sy = pt[1] / mm[1];
+    [
+        m[0] * w * sx,
+        -m[1] * w * sy,
+        -m[2] * h * sx,
+        m[3] * h * sy,
+        (m[0] * x + m[2] * (y + h) + m[4]) * sx,
+        (mm[1] - m[1] * x - m[3] * (y + h) - m[5]) * sy,
+    ]
+}
+fn without_images(svg: &str, root: roxmltree::Node) -> String {
+    let mut out = String::new();
+    let mut at = root.range().start;
+    for node in root
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "image")
+    {
+        let r = node.range();
+        out.push_str(&svg[at..r.start]);
+        at = r.end;
+    }
+    out.push_str(&svg[at..root.range().end]);
+    // Caller supplies the root opening and closing tags.
+    out[out.find('>').unwrap() + 1..out.len() - 6].into()
+}
+
+#[cfg(test)]
+mod arrange_tests {
+    use super::*;
+    #[test]
+    fn rotated_rescaled_png_pdf_geometry_equals_screen_and_reuses_pixels() {
+        use crate::layout::sheets::arrange::point;
+        let (sin, cos) = 23.125_f64.to_radians().sin_cos();
+        let m = [
+            cos * 0.73,
+            sin * 0.73,
+            -sin * 0.73,
+            cos * 0.73,
+            83.12345,
+            91.65432,
+        ];
+        let r = [12.345, 17.654, 50.123, 28.456];
+        let mm = [431.8, 279.4];
+        let pt = [1224.0, 792.0];
+        let pdf = image_matrix(m.map(|v| v as f32), r, mm, pt);
+        for uv in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.3, 0.8]] {
+            let screen = point(
+                m,
+                [
+                    (r[0] + uv[0] * r[2]) as f64,
+                    (r[1] + (1.0 - uv[1]) * r[3]) as f64,
+                ],
+            );
+            let from_pdf = [
+                (pdf[0] * uv[0] + pdf[2] * uv[1] + pdf[4]) * mm[0] / pt[0],
+                mm[1] - (pdf[1] * uv[0] + pdf[3] * uv[1] + pdf[5]) * mm[1] / pt[1],
+            ];
+            for d in 0..2 {
+                assert!((screen[d] - from_pdf[d] as f64).abs() * 8.0 < 0.01);
+            }
+        }
+        let png = crate::image::encode_png_gray(12, 10, &[128; 120]);
+        let (_, _, idat) = png_stream(&crate::layout::base64(&png)).unwrap();
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="431.8mm" height="279.4mm" viewBox="0 0 431.8 279.4"><g data-piece="test" transform="matrix({} {} {} {} {} {})"><image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/><text x="10" y="10" font-size="3">100 µm</text></g></svg>"#,
+            m[0],
+            m[1],
+            m[2],
+            m[3],
+            m[4],
+            m[5],
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+            crate::layout::base64(&png)
+        );
+        let bytes = pdf_from_svgs(&[svg]).unwrap();
+        assert!(bytes.windows(idat.len()).any(|b| b == idat));
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches("/Subtype /Image").count(), 1);
+        let matrices: Vec<Vec<f32>> = text
+            .lines()
+            .filter(|line| line.ends_with(" cm"))
+            .filter_map(|line| {
+                line.trim_end_matches(" cm")
+                    .split_whitespace()
+                    .map(str::parse)
+                    .collect::<std::result::Result<_, _>>()
+                    .ok()
+            })
+            .collect();
+        assert!(
+            matrices.iter().any(
+                |mat| mat.len() == 6 && mat.iter().zip(pdf).all(|(a, b)| (a - b).abs() < 0.001)
+            ),
+            "PDF paints the same affine matrix"
+        );
     }
 }

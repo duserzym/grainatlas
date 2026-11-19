@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte';
   import type { SheetResult, SheetStrip, StripEdit, StripKey } from '../lib/core/types';
+  import ArrangeControls from './ArrangeControls.svelte';
   import { sameKey } from '../lib/strip-edit';
-  let { target, droppedNotice, result, selected, select, edit, undo, redo, automatic, count, canUndo, canRedo, split, setSplit, axis, setAxis, pairs, page }: {
+  let { target, droppedNotice, result, selected, select, edit, undo, redo, automatic, count, canUndo, canRedo, split, setSplit, axis, setAxis, pairs, page, arrange = false, selections = [], selectMany }: {
+    arrange?: boolean; selections?: StripKey[]; selectMany?: (keys:StripKey[])=>void;
     target: HTMLElement; result: SheetResult; selected: SheetStrip | undefined; select: (key: StripKey) => void;
     droppedNotice: Snippet<[boolean]>;
     edit: (e: StripEdit, page?: number) => void; undo: () => void; redo: () => void; automatic: () => void; count: number; canUndo: boolean; canRedo: boolean;
@@ -11,12 +13,17 @@
   } = $props();
   let panel: HTMLDivElement;
   let dialog: HTMLDialogElement;
+  export function confirmAutomatic() { dialog.showModal(); }
   const plan = $derived(result.plan);
   const join = $derived(pairs.find(p => selected?.bands.some(b => p.some(k => sameKey(k, b.key))) && p.every(k => plan.strips.some(s => s.bands.some(b => sameKey(k, b.key))))));
   onMount(() => { target.append(panel); return () => panel.remove(); });
 </script>
 
 <div bind:this={panel} class="controls" role="region" aria-label="Strip controls" data-ui>
+  {#if arrange && selectMany}
+    <ArrangeControls {result} {selections} select={selectMany} {edit} {page}/>
+    {@render droppedNotice(true)}
+  {:else}
   <h3>Strips</h3>
   <div class="two">
     <button onclick={undo} disabled={!canUndo}>Undo</button><button onclick={redo} disabled={!canRedo}>Redo</button>
@@ -52,6 +59,7 @@
     <div data-testid="strip-problems" role="status"><h3>Fix before export</h3>
       {#each result.problems as problem}<p class="small">{problem.message} {#each problem.strips as key}<button onclick={() => select(key)}>Show strip</button>{/each}</p>{/each}
     </div>
+  {/if}
   {/if}
 </div>
 <dialog bind:this={dialog} class="glass panel" aria-label="Back to automatic">

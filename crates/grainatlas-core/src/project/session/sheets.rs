@@ -117,7 +117,9 @@ impl Session {
     }
 
     fn render_sheets(&self, params: Option<SheetParams>, plan: Option<sheets::SheetPlan>, edits: &str, grains_json: &str, tone_json: &str, preview: bool) -> Result<String> {
-        let grains: BTreeMap<String, Vec<Grain>> = parse(grains_json)?;
+        let source_grains: BTreeMap<String, Vec<Grain>> = parse(grains_json)?;
+        let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
+        let grains: BTreeMap<String, Vec<Grain>> = project.areas.iter().map(|area| (area.id.clone(), crate::project::printable_grains(area, source_grains.get(&area.id).map_or(&[],Vec::as_slice), None))).collect();
         let tone: BTreeMap<String, ToneParams> = parse(tone_json)?;
         let project = self.project.as_ref().ok_or_else(|| Error::Invalid("no project".into()))?;
         let own = ownership::assign(&project.areas, &grains, &OwnershipParams::default());
@@ -126,7 +128,10 @@ impl Session {
             Some(SheetArea { rec, img: super::pipeline::area_image(rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)) })
         }).collect();
         if areas.is_empty() { return Err(Error::Invalid("no stitched area to print".into())); }
-        let plan = match plan { Some(plan) => plan, None => sheets::plan_sheets(&params.expect("parameters or plan"), &areas, &grains, &own, &self.meta()?) };
+        let mut plan = match plan { Some(plan) => plan, None => sheets::plan_sheets(&params.expect("parameters or plan"), &areas, &grains, &own, &self.meta()?) };
+        if plan.print_spots.is_none() {
+            plan.print_spots = project.extra.get("grainatlas_ui").and_then(|ui|ui.get("spots")).and_then(|spots|serde_json::from_value(spots.clone()).ok());
+        }
         // Reject stale or malformed host plans before the renderer dereferences their ids.
         validate_plan(&plan, &areas, &grains)?;
         let edited = if edits.trim().is_empty() { sheets::apply_edits(&plan, &[], &areas, &grains) }

@@ -47,7 +47,7 @@ fn project_print_edits_round_trip_preserves_registered_data_and_unknown_keys() {
     let legacy=project.to_json();let reopened=Project::from_json(&legacy).unwrap();
     assert!(reopened.print_sheets.is_none());assert!(!serde_json::to_value(&reopened).unwrap().as_object().unwrap().contains_key("print_sheets"));assert_eq!(reopened.to_json(),legacy);
     let f=Fixture::new();let plan=f.plan();let (strip,band)=keys(&plan);
-    let stored=PrintEdits {params:plan.params.clone(),um_per_mm:plan.um_per_mm,edits:vec![StripEdit::Label {strip:strip.clone(),text:"zr-1".into()},split_edit(&band),StripEdit::Hide {strip}]};
+    let stored=PrintEdits {version:1,params:plan.params.clone(),um_per_mm:plan.um_per_mm,edits:vec![StripEdit::Label {strip:strip.clone(),text:"zr-1".into()},split_edit(&band),StripEdit::Hide {strip}]};
     // Simulate the previously untyped extra key as it appears in an existing project.json.
     let mut old:serde_json::Value=serde_json::from_str(&legacy).unwrap();old["print_sheets"]=serde_json::to_value(&stored).unwrap();
     let typed=Project::from_json(&old.to_string()).unwrap();assert_eq!(typed.print_sheets,Some(stored.into()));assert!(!typed.extra.contains_key("print_sheets"));
@@ -89,7 +89,7 @@ fn reopened_project_replays_the_same_registration_and_survives_all_save_records(
     let params=SheetParams {packing:Packing::Packed,um_per_mm:8.0,enhance:Default::default(),..Default::default()};let params_json=serde_json::to_string(&params).unwrap();
     let automatic:serde_json::Value=serde_json::from_str(&session.print_sheets(&params_json,&gs,"{}").unwrap()).unwrap();
     let plan:SheetPlan=serde_json::from_value(automatic["plan"].clone()).unwrap();
-    project.print_sheets=Some(PrintEdits {params:plan.params.clone(),um_per_mm:plan.um_per_mm,edits:vec![StripEdit::AddSheet {at:1},StripEdit::Move {strip:plan.strips[0].key.clone(),sheet:1,origin_mm:Some([20.0,90.0])}]}.into());
+    project.print_sheets=Some(PrintEdits {version:1,params:plan.params.clone(),um_per_mm:plan.um_per_mm,edits:vec![StripEdit::AddSheet {at:1},StripEdit::Move {strip:plan.strips[0].key.clone(),sheet:1,origin_mm:Some([20.0,90.0])}]}.into());
     let edits=serde_json::to_string(project.print_sheets.as_ref().unwrap()).unwrap();
     let before:serde_json::Value=serde_json::from_str(&session.print_plan_render(&automatic["plan"].to_string(),&edits,&gs,"{}").unwrap()).unwrap();assert!(before.get("dropped").is_none_or(|d|d.as_array().unwrap().is_empty()));assert_eq!(before["registration"]["bands"][0]["sheet"],2);
     let saved=project.to_json();
@@ -181,7 +181,7 @@ fn overlap_bounds_and_header_problems_agree_with_audit() {
 #[test]
 fn replay_reports_parameter_and_missing_key_changes() {
     let f=Fixture::new();let p=f.plan();let (strip,_)=keys(&p);let edits=vec![StripEdit::Hide {strip}];
-    let mut stored=PrintEdits {um_per_mm:p.um_per_mm,params:p.params.clone(),edits:edits.clone()};stored.params.um_per_mm=16.0;
+    let mut stored=PrintEdits {version:1,um_per_mm:p.um_per_mm,params:p.params.clone(),edits:edits.clone()};stored.params.um_per_mm=16.0;
     let r=replay(&p,&stored,&f.areas(),&f.gs);assert_eq!(r.applied,0);assert_eq!(r.dropped[0].reason,"parameters changed (um_per_mm)");
     let mut changed=p.clone();changed.strips[0].key.grains_hash="removed".into();
     let r=f.apply(&changed,&edits);assert_eq!(r.dropped[0].reason,"strip no longer exists (grains or context changed)");
@@ -273,7 +273,7 @@ fn cached_session_move_on_three_hundred_bands() {
 #[test]
 fn replay_detects_resolved_auto_scale_drift_and_accepts_unknown_or_roundoff() {
     let mut f=Fixture::new();f.params.um_per_mm=0.0;let p=f.plan();let (strip,band)=keys(&p);
-    let stored=PrintEdits {params:p.params.clone(),um_per_mm:p.um_per_mm,edits:vec![StripEdit::Hide {strip},StripEdit::Label {strip:p.strips[0].key.clone(),text:"area A1".into()}]};
+    let stored=PrintEdits {version:1,params:p.params.clone(),um_per_mm:p.um_per_mm,edits:vec![StripEdit::Hide {strip},StripEdit::Label {strip:p.strips[0].key.clone(),text:"area A1".into()}]};
     for g in f.gs.get_mut("A1").unwrap() { g.eq_diameter_um*=2.0; }
     let changed=f.plan();assert_ne!(changed.um_per_mm,p.um_per_mm);assert_eq!(changed.params,p.params);assert_eq!(changed.strips[0].bands[0].key,band);
     let r=replay(&changed,&stored,&f.areas(),&f.gs);assert_eq!(r.applied,0);assert_eq!(r.plan,changed);assert_eq!(r.dropped.len(),2);
@@ -363,4 +363,139 @@ fn note_allowance_returns_on_separate_and_can_report_new_overlap() {
     let grown = f.apply(&stacked, &[StripEdit::Separate { strip: stacked.strips[0].key.clone() }]);
     assert!(grown.problems.iter().any(|p| p.kind == ProblemKind::Overlap));
     f.check(&grown.plan);
+}
+
+#[test]
+fn arranged_resize_rotation_and_registration_round_trip_keep_mount_coordinates() {
+    use sheets::arrange::{self, PiecePlacement};
+    let f=Fixture::new();let base=f.plan();
+    let arranged=f.apply(&base,&[StripEdit::Arrange{}]);assert!(arranged.dropped.is_empty());
+    let s=&arranged.plan.strips[0];
+    for angle in [0.0,90.0,180.0,270.0,23.125,-17.75] {
+        let placement=PiecePlacement{strip:s.key.clone(),sheet:0,origin_mm:[80.123456,80.654321],scale:0.73,rotation_deg:angle};
+        let result=f.apply(&base,&[StripEdit::Arrange{},StripEdit::Transform{pieces:vec![placement]}]);
+        assert!(result.dropped.is_empty(),"{angle}: {:?}",result.dropped);
+        let transformed=&result.plan.strips[0];
+        assert_eq!(transformed.bands,s.bands,"source crops and owners never move");
+        assert_eq!(transformed.size_mm,s.size_mm,"uniform scaling keeps source aspect");
+        let rendered=f.render(&result.plan);assert!(rendered.problems.is_empty(),"{:?}",rendered.problems);
+        for b in &rendered.registration.bands {
+            let t=b.transform.as_ref().unwrap();
+            for grain in &b.grains {
+                let g=f.gs[&b.area].iter().find(|g|g.id==grain.id).unwrap();
+                let paper=arrange::point(t.mount_to_paper,g.centroid_um);
+                let mount=arrange::point(t.paper_to_mount,paper);
+                for d in 0..2 {assert!((mount[d]-g.centroid_um[d]).abs()<0.01);}
+            }
+            assert_eq!(t.crop_um,b.mosaic_rect_um);
+            assert!((t.um_per_mm-base.um_per_mm/0.73).abs()<1e-10);
+            for (a,b) in arrange::bounds(t.mount_to_paper,b.mosaic_rect_um).iter().zip(b.sheet_rect_mm) { assert!((a-b).abs()*t.um_per_mm<0.01); }
+        }
+        let doc=roxmltree::Document::parse(&rendered.pages[0]).unwrap();
+        let group=doc.descendants().find(|n|n.attribute("data-piece").is_some()).unwrap();
+        assert!(group.attribute("transform").unwrap().starts_with("matrix("));
+        if angle!=0.0 {assert!(rendered.pages[0].contains("mount +y"));}
+    }
+}
+
+#[test]
+fn arranged_group_scaling_clamps_together_and_overlap_refuses_atomically() {
+    use sheets::arrange::PiecePlacement;
+    let mut f=Fixture::new();f.params.context_um=1.0;f.params.min_group=0;
+    let base=f.plan();let arranged=f.apply(&base,&[StripEdit::Arrange{}]);let p=&arranged.plan;
+    assert!(p.strips.len()>2);
+    let anchor=p.strips[0].origin_mm;
+    let pieces=p.strips.iter().map(|s|PiecePlacement{strip:s.key.clone(),sheet:0,origin_mm:[anchor[0]+(s.origin_mm[0]-anchor[0])*0.5,anchor[1]+(s.origin_mm[1]-anchor[1])*0.5-500.0],scale:0.5,rotation_deg:0.0}).collect();
+    let scaled=f.apply(&base,&[StripEdit::Arrange{},StripEdit::Transform{pieces}]);assert!(scaled.dropped.is_empty());
+    let top=p.sheet_bodies[0].body_rect_mm[1];
+    assert!((scaled.plan.strips.iter().map(|s|s.origin_mm[1]).fold(f64::INFINITY,f64::min)-top).abs()<1e-8);
+    for (s,old) in scaled.plan.strips.iter().zip(&p.strips) {
+        assert_eq!(s.transform.unwrap().scale,0.5);
+        assert!((s.origin_mm[0]-anchor[0]-(old.origin_mm[0]-anchor[0])*0.5).abs()<1e-8);
+        assert!((s.origin_mm[1]-scaled.plan.strips[0].origin_mm[1]-(old.origin_mm[1]-anchor[1])*0.5).abs()<1e-8);
+    }
+    let a=&p.strips[0];let b=&p.strips[1];
+    let refused=f.apply(&base,&[StripEdit::Arrange{},StripEdit::Transform{pieces:vec![PiecePlacement{strip:a.key.clone(),sheet:b.sheet,origin_mm:b.origin_mm,scale:1.0,rotation_deg:0.0}]}]);
+    assert_eq!(refused.dropped.len(),1);assert!(refused.dropped[0].reason.contains("drop refused"));assert_eq!(refused.plan,*p);
+}
+
+#[test]
+fn auto_arrange_scope_restores_packed_geometry_and_preserves_the_other_pieces() {
+    use sheets::arrange::PiecePlacement;
+    let mut f=Fixture::new();f.params.context_um=1.0;f.params.min_group=0;
+    let base=f.plan();let initial=f.apply(&base,&[StripEdit::Arrange{}]);let s=&initial.plan.strips[0];
+    let transform=StripEdit::Transform{pieces:vec![PiecePlacement{strip:s.key.clone(),sheet:0,origin_mm:s.origin_mm,scale:0.5,rotation_deg:0.0}]};
+    let moved=f.apply(&base,&[StripEdit::Arrange{},transform.clone()]);
+    let others=moved.plan.strips.iter().skip(1).map(|s|s.key.clone()).collect();
+    let unselected=f.apply(&base,&[StripEdit::Arrange{},transform.clone(),StripEdit::AutoArrange{strips:others}]);
+    assert_eq!(unselected.plan.strips[0],moved.plan.strips[0]);
+    let all=base.strips.iter().map(|s|s.key.clone()).collect();
+    let restored=f.apply(&base,&[StripEdit::Arrange{},transform,StripEdit::AutoArrange{strips:all}]);
+    for (a,b) in initial.plan.strips.iter().zip(&restored.plan.strips) {assert_eq!(a.origin_mm,b.origin_mm);assert_eq!(a.transform,b.transform);}
+    assert!(f.render(&restored.plan).problems.is_empty());
+}
+
+#[test]
+fn version_two_arrangement_survives_save_mirror_and_staged_pdf_geometry() {
+    use grainatlas_core::project::Project;
+    let (session,mut project)=support::print_edit();
+    let grains=project.extra["grainatlas_ui"]["grains"].to_string();
+    let params=json!({"packing":"packed","um_per_mm":8,"enhance":{"denoise":false,"sharpen":false}}).to_string();
+    let initial:serde_json::Value=serde_json::from_str(&session.print_sheets(&params,&grains,"{}").unwrap()).unwrap();
+    let plan:SheetPlan=serde_json::from_value(initial["plan"].clone()).unwrap();
+    let edits=PrintEdits{version:2,params:plan.params.clone(),um_per_mm:plan.um_per_mm,edits:vec![StripEdit::Arrange{},StripEdit::AddSheet{at:1},StripEdit::Transform{pieces:vec![sheets::arrange::PiecePlacement{strip:plan.strips[0].key.clone(),sheet:1,origin_mm:[20.0,80.0],scale:0.6,rotation_deg:17.5}]}]};
+    let baseline=project.clone();project.print_sheets=Some(edits.clone().into());
+    let reopened=Project::from_json(&project.to_json()).unwrap();assert_eq!(reopened.print_sheets,project.print_sheets);
+    let mut without=reopened.clone();without.print_sheets=None;assert_eq!(without,baseline);
+    let files=session.atlas_files(&reopened.to_json(),"").unwrap();
+    let mirror:serde_json::Value=serde_json::from_slice(&files.iter().find(|(name,_)|name=="project.json").unwrap().1).unwrap();
+    assert_eq!(mirror["print_sheets"]["version"],2);
+    let edit_json=serde_json::to_string(&edits).unwrap();
+    let preview:serde_json::Value=serde_json::from_str(&session.print_plan_preview(&initial["plan"].to_string(),&edit_json,&grains,"{}").unwrap()).unwrap();
+    let full:serde_json::Value=serde_json::from_str(&session.print_plan_render(&initial["plan"].to_string(),&edit_json,&grains,"{}").unwrap()).unwrap();
+    assert!(full.get("dropped").is_none_or(|v|v.as_array().unwrap().is_empty()));
+    assert!(full["registration"]["bands"].as_array().unwrap().iter().any(|b|b["sheet"]==2 && b["transform"]["rotation_deg"]==17.5));
+    assert_eq!(preview["registration"],full["registration"]);
+    let id=preview["job_id"].as_u64().unwrap() as usize;
+    for i in 0..preview["pages"].as_array().unwrap().len(){session.print_task(id,"quality",i).unwrap();}
+    let staged:serde_json::Value=serde_json::from_slice(&session.print_task(id,"full",0).unwrap()).unwrap();
+    assert_eq!(staged["pages"],full["pages"]);assert_eq!(staged["registration"],full["registration"]);
+    session.print_task(id,"pdf_begin",0).unwrap();
+    for action in ["pdf_prepare","pdf_page"] {for i in 0..staged["pages"].as_array().unwrap().len(){session.print_task(id,action,i).unwrap();}}
+    let pdf=session.print_task(id,"pdf_finish",0).unwrap();assert!(pdf.starts_with(b"%PDF"));assert!(pdf.windows(14).any(|b|b==b"/EmbeddedFiles"));
+}
+
+#[test]
+fn arranged_spot_labels_follow_piece_transform_with_six_point_minimum() {
+    let f=Fixture::new();let mut base=f.plan();let g=&f.gs["A1"][0];
+    let spot:grainatlas_core::spots::Spot=serde_json::from_value(json!({"id":"70000000-0000-4000-8000-000000000001","area_id":"A1","name":"Spot 1","grain_id":g.id,"grain_number":g.number,"x_um":g.centroid_um[0],"y_um":g.centroid_um[1],"diameter_um":15.0})).unwrap();
+    base.print_spots=Some(vec![spot.clone()]);
+    let result=f.apply(&base,&[StripEdit::Arrange{},StripEdit::Transform{pieces:vec![sheets::arrange::PiecePlacement{strip:base.strips[0].key.clone(),sheet:0,origin_mm:[20.0,80.0],scale:0.5,rotation_deg:90.0}]}]);
+    assert!(result.dropped.is_empty());let rendered=f.render(&result.plan);
+    let doc=roxmltree::Document::parse(&rendered.pages[0]).unwrap();let label=doc.descendants().find(|n|n.attribute("data-spot-label")==Some(spot.id.to_string().as_str())).unwrap();
+    let size:f64=label.attribute("font-size").unwrap().parse().unwrap();assert!(size*0.5>=6.0*25.4/72.0);
+    assert_eq!(label.text(),Some("Spot 1"));assert_eq!(result.plan.print_spots,Some(vec![spot]));
+}
+
+#[test]
+fn arrange_turns_each_band_into_an_independent_piece_without_recutting() {
+    let f=Fixture::new();let base=f.plan();let (_,band)=keys(&base);
+    let split=f.apply(&base,&[split_edit(&band)]);assert!(split.plan.strips.iter().any(|s|s.bands.len()>1));
+    let arranged=f.apply(&base,&[split_edit(&band),StripEdit::Arrange{}]);assert!(arranged.dropped.is_empty());
+    assert!(arranged.plan.strips.iter().all(|s|s.bands.len()==1));
+    let sources=|p:&SheetPlan|p.strips.iter().flat_map(|s|s.bands.iter().map(|b|(b.key.clone(),b.mosaic_rect_um,b.grains.clone()))).collect::<Vec<_>>();
+    assert_eq!(sources(&split.plan),sources(&arranged.plan));assert!(f.render(&arranged.plan).problems.is_empty());
+}
+
+#[test]
+fn enlarged_shared_scale_key_is_measured_before_header_clamping() {
+    let mut f=Fixture::new();f.params.spot_sizes_um=vec![120.0];
+    let base=f.plan();let arranged=f.apply(&base,&[StripEdit::Arrange{}]);
+    assert_eq!(arranged.plan.strips.len(),1);
+    let s=&arranged.plan.strips[0];
+    let enlarged=f.apply(&base,&[StripEdit::Arrange{},StripEdit::Transform{pieces:vec![sheets::arrange::PiecePlacement{strip:s.key.clone(),sheet:0,origin_mm:[8.0,-100.0],scale:2.0,rotation_deg:0.0}]}]);
+    assert!(enlarged.dropped.is_empty(),"{:?}",enlarged.dropped);
+    assert!(enlarged.plan.sheet_bodies[0].header_mm>arranged.plan.sheet_bodies[0].header_mm);
+    assert!(enlarged.plan.strips[0].origin_mm[1]>=enlarged.plan.sheet_bodies[0].body_rect_mm[1]);
+    assert!(f.render(&enlarged.plan).problems.is_empty());
 }

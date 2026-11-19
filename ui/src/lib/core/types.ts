@@ -345,6 +345,7 @@ export interface SheetParams {
 }
 
 export interface BandRecord {
+  transform?: { um_per_mm:number; rotation_deg:number; crop_um:SheetRect; mount_to_paper:[number,number,number,number,number,number]; paper_to_mount:[number,number,number,number,number,number] };
   sheet: number;
   sample: string;
   area: string;
@@ -444,16 +445,19 @@ export type StripEdit =
   | { op: 'join'; band_a: StripKey; band_b: StripKey }
   | { op: 'separate' | 'hide' | 'show'; strip: StripKey }
   | { op: 'label'; strip: StripKey; text: string }
-  | { op: 'repack' };
-export interface PrintEdits { params: SheetParams; um_per_mm: number; edits: StripEdit[] }
+  | { op: 'repack' | 'arrange' }
+  | { op: 'transform'; pieces: PiecePlacement[] }
+  | { op: 'auto_arrange'; strips: StripKey[] };
+export interface PiecePlacement { strip: StripKey; sheet: number; origin_mm: [number, number]; scale: number; rotation_deg: number }
+export interface PrintEdits { version?: 1 | 2; params: SheetParams; um_per_mm: number; edits: StripEdit[] }
 export interface DroppedEdit { index: number; reason: string }
 export interface SheetProblem { kind: 'overlap' | 'outside_body' | 'grain_cut' | 'printed_twice'; strips: StripKey[]; message: string }
 export type LeftOff = PrintRegistration['strays'][number] & { reason: 'cropped' | 'hidden' };
 export interface EditSummary { moves: number; crops: number; splits: number; joins: number; separations: number; label_changes: number; hidden_strips: number; sheets_added: number; sheets_removed: number; sheets_reordered: number; repacks: number }
 export interface SheetBand { key: StripKey; offset_mm: number; grains: string[]; mosaic_rect_um: SheetRect; core_um: SheetRect; cuts: [number, number][]; cut_sources: string[]; gap_after_um: number | null; repeated_um?: SheetRect[] }
-export interface SheetStrip { key: StripKey; sheet: number; origin_mm: [number, number]; size_mm: [number, number]; sample: string; area: string; row: number; cont: boolean; labelled: boolean; label: string; bands: SheetBand[]; hidden?: boolean; neighbours?: StripKey[]; shares_gap_with?: StripKey | null }
+export interface SheetStrip { transform?: { scale: number; rotation_deg: number }; key: StripKey; sheet: number; origin_mm: [number, number]; size_mm: [number, number]; sample: string; area: string; row: number; cont: boolean; labelled: boolean; label: string; bands: SheetBand[]; hidden?: boolean; neighbours?: StripKey[]; shares_gap_with?: StripKey | null }
 export interface SheetPlan {
-  params: SheetParams; meta: Record<string, unknown>; paper_mm: [number, number]; um_per_mm: number;
+  params: SheetParams; print_spots?: Spot[]; meta: Record<string, unknown>; paper_mm: [number, number]; um_per_mm: number;
   auto_scale: PrintRegistration['auto_scale'] | null; sheet_bodies: PrintRegistration['sheet_bodies']; strips: SheetStrip[];
   lines: { sheet: number; origin_mm: [number, number]; band_height_mm: number; right_mm: number; strips: number[] }[] | null;
   targets: Record<string, string[]>; strays: PrintRegistration['strays']; cut_stats: SheetStats; edit_summary?: EditSummary; left_off?: LeftOff[];

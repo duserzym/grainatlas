@@ -9,7 +9,7 @@ import { canWrite } from './presentation';
 
 import { isBridgeCommand } from '@lab/bridge';
 import { hostedSync, ATLAS_EVENTS } from './hosted-sync';
-import { draftElements, listDrafts, storedDraftProject } from './drafts';
+import { draftElements, keepDraftPrintRecipe, listDrafts, storedDraftProject } from './drafts';
 import { draftSyncStatus } from './sync-status';
 import { groupedGrains, uiSpots } from './sync';
 import type { RawImage } from './core/core';
@@ -156,6 +156,9 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
     });
   } finally { if (app.cancelTask === cancel) app.cancelTask = null; }
   if (!r || controller.signal.aborted) return false;
+  // A clean element outbox can still carry a newer local print recipe.
+  const openedProject = r.project;
+  keepDraftPrintRecipe(openedProject, listDrafts(server).find(d => d.uuid === openedProject.uuid && (!d.server || normalizeServer(d.server) === server)) ?? null);
   const remote: Remote = { server, projectId, atlas: r.atlas, version: at.version, readOnly: true, token, access, mount };
   app.cancelPixelsLoad?.();
   app.pixelsLoad = null;
@@ -202,7 +205,7 @@ export async function editCopy(app: AppState = current()) {
   const remote = app.remote;
   const p = app.project;
   if (!remote || !p) return;
-  const draft = listDrafts(remote.server).find(d => d.uuid === p.uuid);
+  const draft = listDrafts(remote.server).find(d => d.uuid === p.uuid && (!d.server || normalizeServer(d.server) === normalizeServer(remote.server)));
   const sameUuid = draft ? storedDraftProject(draft) : null;
   const packageCopy = savedProject(p.package.name);
   // An image-only draft has no pending elements, but its overlay is needed to rebuild a resumable upload.
@@ -227,6 +230,7 @@ export async function editCopy(app: AppState = current()) {
   app.adopt(p);
   app.remote = { ...remote, readOnly: false };
   if (existing && sameId(existing.uuid, p.uuid)) { app.project = existing; app.adopt(existing); }
+  keepDraftPrintRecipe(app.project!, draft ?? null);
   app.tone = {}; // Server tiles already carry the raw display tone.
   const pending = draft ? draftElements(draft) : null;
   if (pending) {

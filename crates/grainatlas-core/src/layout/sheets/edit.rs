@@ -20,13 +20,22 @@ pub enum StripEdit {
     Hide { strip: StripKey },
     Show { strip: StripKey },
     Repack {},
+    Arrange {},
+    Transform { pieces: Vec<arrange::PiecePlacement> },
+    AutoArrange { strips: Vec<StripKey> },
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Axis { X, Y }
 /// Resolved scale when the edits were made; zero means unknown in older edit lists.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct PrintEdits { pub params: SheetParams, #[serde(default)] pub um_per_mm: f64, pub edits: Vec<StripEdit> }
+pub struct PrintEdits { #[serde(default = "legacy_version", deserialize_with = "print_version", skip_serializing_if = "is_legacy_version")] pub version: u32, pub params: SheetParams, #[serde(default)] pub um_per_mm: f64, pub edits: Vec<StripEdit> }
+fn legacy_version() -> u32 { 1 }
+fn is_legacy_version(v: &u32) -> bool { *v == 1 }
+fn print_version<'de,D:serde::Deserializer<'de>>(d:D)->Result<u32,D::Error> {
+    let v=u32::deserialize(d)?;
+    if v==1 || v==2 {Ok(v)} else {Err(serde::de::Error::custom("unsupported print arrangement version"))}
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DroppedEdit { pub index: usize, pub reason: String }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,6 +62,10 @@ pub struct EditedPlan {
 /// One source of block geometry for rendering, packing, snapping and validation.
 /// A shared-label lines strip reserves its divider to the left without moving pixels.
 pub fn strip_block(s: &SheetStrip) -> SheetBlock {
+    if s.transform.is_some() {
+        let size = arrange::size(s);
+        return SheetBlock { sheet:s.sheet+1,rect_mm:[s.origin_mm[0],s.origin_mm[1],s.origin_mm[0]+size[0],s.origin_mm[1]+size[1]] };
+    }
     SheetBlock { sheet: s.sheet + 1, rect_mm: [s.origin_mm[0] - if s.labelled { 0.0 } else { PIECE_GAP_MM / 2.0 }, s.origin_mm[1], s.origin_mm[0] + s.size_mm[0], s.origin_mm[1] + s.size_mm[1]] }
 }
 pub(super) fn note_height(s: &SheetStrip) -> f64 {
@@ -182,6 +195,51 @@ fn apply_one(plan: &mut SheetPlan, edit: &StripEdit, areas: &[SheetArea], grains
     let k = plan.um_per_mm;
     let n = plan.sheet_bodies.len();
     match edit {
+        StripEdit::Arrange {} => {
+            // A packed run may contain several image bands separated by a gap.
+            // Each becomes its own paper object, retaining continuation context.
+            let runs=plan.strips.iter().filter(|s|!s.hidden && s.bands.len()>1).map(|s|s.key.clone()).collect::<Vec<_>>();
+            for strip in runs { apply_one(plan,&StripEdit::Separate{strip},areas,grains,state,summary)?; }
+            let keys = plan.strips.iter().filter(|s| !s.hidden).map(|s|s.key.clone()).collect::<Vec<_>>();
+            auto_arrange(plan,&keys)?;
+            summary.repacks += 1;
+        }
+        StripEdit::AutoArrange { strips } => { auto_arrange(plan,strips)?; summary.repacks += 1; }
+        StripEdit::Transform { pieces } => {
+            if pieces.is_empty() { return Err("select a piece".into()); }
+            let mut candidate = plan.clone();
+            let mut seen = BTreeSet::new();
+            for p in pieces {
+                if !seen.insert(p.strip.clone()) || p.sheet>=n || !p.scale.is_finite() || p.scale<=0.0 || !p.rotation_deg.is_finite() || p.origin_mm.iter().any(|v| !v.is_finite()) { return Err("invalid piece transform".into()); }
+                let i = strip(&candidate,&p.strip)?;
+                let s = &mut candidate.strips[i];
+                s.sheet=p.sheet; s.origin_mm=p.origin_mm;
+                s.transform=Some(arrange::PieceTransform {scale:p.scale,rotation_deg:p.rotation_deg.rem_euclid(360.0)});
+                s.shares_gap_with=None; s.labelled=true;
+            }
+            refresh_notes(&mut candidate);
+            candidate.cut_stats.header_mm=compact::heights(&candidate); bodies(&mut candidate,n);
+            if candidate.strips.iter().filter(|s|!s.hidden && !seen.contains(&s.key)).any(|s|s.origin_mm[1]<candidate.sheet_bodies[s.sheet].body_rect_mm[1]-1e-7) {return Err("Shared scale key needs more header space; move the other pieces down first".into());}
+            if candidate.strips.iter().filter(|s|seen.contains(&s.key)).any(|s|s.bands.iter().any(|b|arrange::band_transform(s,b,k).paper_to_mount.iter().any(|v|!v.is_finite()))) { return Err("invalid piece transform".into()); }
+            // Clamp a selection as one rigid group, preserving its relative positions.
+            for sheet in pieces.iter().map(|p|p.sheet).collect::<BTreeSet<_>>() {
+                let body=candidate.sheet_bodies[sheet].body_rect_mm;
+                let blocks:Vec<_>=candidate.strips.iter().filter(|s|s.sheet==sheet && seen.contains(&s.key)).map(|s|strip_block(s).rect_mm).collect();
+                let r=[blocks.iter().map(|r|r[0]).fold(f64::INFINITY,f64::min),blocks.iter().map(|r|r[1]).fold(f64::INFINITY,f64::min),blocks.iter().map(|r|r[2]).fold(f64::NEG_INFINITY,f64::max),blocks.iter().map(|r|r[3]).fold(f64::NEG_INFINITY,f64::max)];
+                if r[2]-r[0]>body[2]-body[0]+1e-7 || r[3]-r[1]>body[3]-body[1]+1e-7 { return Err("piece group does not fit below the header".into()); }
+                let delta=[(body[0]-r[0]).max((body[2]-r[2]).min(0.0)),(body[1]-r[1]).max((body[3]-r[3]).min(0.0))];
+                for s in candidate.strips.iter_mut().filter(|s|s.sheet==sheet && seen.contains(&s.key)) { for d in 0..2 {s.origin_mm[d]+=delta[d];} }
+            }
+            // Refuse the whole group atomically. Bounding boxes intentionally keep
+            // clearance around rotated corners and labels as well as their pixels.
+            for a in candidate.strips.iter().filter(|s|seen.contains(&s.key) && !s.hidden) {
+                for b in candidate.strips.iter().filter(|s|!s.hidden && s.sheet==a.sheet && s.key!=a.key) {
+                    if packed::overlaps(strip_block(a).rect_mm,strip_block(b).rect_mm) { return Err("Pieces overlap; drop refused".into()); }
+                }
+            }
+            for s in candidate.strips.iter().filter(|s|seen.contains(&s.key)) { state.touch(s); }
+            *plan=candidate; summary.moves += pieces.len();
+        }
         StripEdit::Move { strip: key, sheet, origin_mm } => {
             let i = strip(plan, key)?;
             if *sheet >= n || origin_mm.is_some_and(|xy| xy.iter().any(|v| !v.is_finite())) { return Err("invalid sheet or origin".into()); }
@@ -389,6 +447,11 @@ fn reconcile(plan: &mut SheetPlan, grains: &BTreeMap<String, Vec<Grain>>, state:
 
 /// Ignore display/header parameters. Report every cutting or placement difference by name.
 pub fn replay(plan: &SheetPlan, stored: &PrintEdits, areas: &[SheetArea], grains: &BTreeMap<String, Vec<Grain>>) -> EditedPlan {
+    if stored.version != 1 && stored.version != 2 {
+        let mut result = apply_edits(plan,&[],areas,grains);
+        result.dropped = stored.edits.iter().enumerate().map(|(index,_)|DroppedEdit {index,reason:"unsupported print arrangement version".into()}).collect();
+        return result;
+    }
     let old = serde_json::to_value(&stored.params).expect("parameters serialize");
     let new = serde_json::to_value(&plan.params).expect("parameters serialize");
     let fields = ["paper", "landscape", "margin_mm", "um_per_mm", "target_grain_mm", "pad_um", "gap_break_um", "context_um", "min_group", "min_cluster_grains", "overlap_um", "min_cut_grains", "max_repeated_fraction", "min_grain_um", "max_grain_um", "packing"];
@@ -475,8 +538,43 @@ pub(super) fn continuation_note(plan: &SheetPlan, strip: &SheetStrip) -> String 
     strip.neighbours.iter().filter_map(|key| plan.strips.iter().find(|s| &s.key == key && !s.hidden)).map(|s| format!("continues on sheet {}", s.sheet + 1)).collect::<Vec<_>>().join(" · ")
 }
 fn refresh_notes(plan: &mut SheetPlan) {
-    let widths: Vec<_> = plan.strips.iter().map(|s| text_w(&continuation_note(plan, s), 1.9, false)).collect();
+    let widths: Vec<_> = plan.strips.iter().map(|s| text_w(&continuation_note(plan,s),1.9,false)).collect();
     for (s, width) in plan.strips.iter_mut().zip(widths) {
-        if !s.neighbours.is_empty() { measure(s, plan.um_per_mm); s.size_mm[0] = s.size_mm[0].max(width); }
+        if !s.neighbours.is_empty() || s.transform.is_some() {
+            let reserved=if s.transform.is_some() {s.size_mm[0]} else {0.0};
+            measure(s, plan.um_per_mm); s.size_mm[0] = s.size_mm[0].max(width).max(reserved);
+            if s.transform.is_some() {arrange::references(s,plan.um_per_mm,&plan.params.spot_sizes_um);}
+        }
     }
+}
+
+/// Same MaxRects algorithm and ordering as Automatic, with fixed pieces reserved.
+fn auto_arrange(plan: &mut SheetPlan, keys: &[StripKey]) -> Result<(),String> {
+    let mut next = plan.clone();
+    let mut indices = Vec::new();
+    for key in keys { let i=strip(&next,key)?; if !next.strips[i].hidden && !indices.contains(&i) { indices.push(i); } }
+    for &i in &indices {
+        let s=&mut next.strips[i]; s.transform=Some(arrange::PieceTransform::default());
+        s.shares_gap_with=None; s.labelled=true;
+    }
+    clear_shared_gaps(&mut next,&keys.iter().cloned().collect());
+    refresh_notes(&mut next);
+    // Packing can allocate one new page per piece. Reserve the widest page
+    // number now, then keep that width during subsequent moves and resizes.
+    let page_limit=next.sheet_bodies.len()+next.strips.len();
+    for &i in &indices {
+        let s=&mut next.strips[i];
+        let note=vec![format!("continues on sheet {page_limit}");s.neighbours.len()].join(" · ");
+        s.size_mm[0]=s.size_mm[0].max(text_w(&note,1.9,false));
+    }
+    next.cut_stats.header_mm=compact::heights(&next);
+    let taken:Vec<_>=next.strips.iter().enumerate().filter(|(i,s)|!s.hidden && !indices.contains(i)).map(|(_,s)|strip_block(s)).collect();
+    if taken.iter().any(|b|b.rect_mm[1]<body(&next,b.sheet-1).body_rect_mm[1]-1e-7) {return Err("Shared scale key needs more header space; move the other pieces down first".into());}
+    let sizes:Vec<_>=indices.iter().map(|&i|next.strips[i].size_mm).collect();
+    let placed=packed::pack_rectangles(&sizes,[body(&next,0).body_rect_mm,body(&next,1).body_rect_mm],&taken);
+    let count=placed.iter().chain(&taken).map(|b|b.sheet).max().unwrap_or(1).max(1);
+    for (&i,b) in indices.iter().zip(placed) { next.strips[i].sheet=b.sheet-1; next.strips[i].origin_mm=[b.rect_mm[0],b.rect_mm[1]]; }
+    bodies(&mut next,count);
+    for s in &mut next.strips { s.sheet=s.sheet.min(count-1); }
+    *plan=next; Ok(())
 }

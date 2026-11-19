@@ -105,7 +105,9 @@ function readableEdit(v: unknown): boolean {
     case 'join': return stripKey(v.band_a) && stripKey(v.band_b);
     case 'separate': case 'hide': case 'show': return stripKey(v.strip);
     case 'label': return stripKey(v.strip) && typeof v.text === 'string';
-    case 'repack': return true;
+    case 'repack': case 'arrange': return true;
+    case 'auto_arrange': return Array.isArray(v.strips) && v.strips.every(stripKey);
+    case 'transform': return Array.isArray(v.pieces) && v.pieces.length > 0 && v.pieces.every(p => object(p) && stripKey(p.strip) && index(p.sheet) && tuple(p.origin_mm,2) && number(p.scale) && (p.scale as number)>0 && number(p.rotation_deg));
     default: return false;
   }
 }
@@ -113,6 +115,7 @@ function readableEdit(v: unknown): boolean {
 /** Guard raw project JSON before using it for controls or replay. Never change the stored value. */
 export function readPrintEdits(v: unknown): PrintEdits | null {
   if (!object(v) || !object(v.params) || !Array.isArray(v.edits) || !v.edits.every(readableEdit)) return null;
+  if (v.version !== undefined && v.version !== 1 && v.version !== 2) return null;
   if (v.um_per_mm !== undefined && !number(v.um_per_mm)) return null;
   const p = v.params;
   const fields = (o: Record<string, unknown>, names: string[], valid: (v: unknown) => boolean) => names.every(k => o[k] === undefined || valid(o[k]));
@@ -133,7 +136,7 @@ export function readPrintEdits(v: unknown): PrintEdits | null {
 /** Store only on the open project; the usual Save writes the record on both hosts. */
 export function storePrintEdits(app: { project: Project | null; readOnly: boolean; dirty: boolean }, plan: SheetPlan, edits: StripEdit[]) {
   if (!app.project || app.readOnly) return;
-  if (edits.length) app.project.print_sheets = structuredClone({ params: plan.params, um_per_mm: plan.um_per_mm, edits });
+  if (edits.length) app.project.print_sheets = structuredClone({ ...(edits.some(e=>['arrange','transform','auto_arrange'].includes(e.op)) ? {version:2} : {}), params: plan.params, um_per_mm: plan.um_per_mm, edits });
   else delete app.project.print_sheets;
   app.dirty = true;
 }

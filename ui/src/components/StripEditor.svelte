@@ -3,13 +3,14 @@
   import { current } from '../lib/store.svelte';
   import type { PrintEditorState } from '../lib/print-cache';
   import type { Grain, SheetPlan, SheetRect, SheetResult, StripEdit, StripKey, ToneParams } from '../lib/core/types';
+  import { chosen, nudge, placed } from '../lib/arrange';
   import { bandImageKey, nudgeOrigin, sameKey, splitPairs, StripHistory } from '../lib/strip-edit';
   import StripControls from './StripControls.svelte';
   import StripPage from './StripPage.svelte';
 
   const app = current();
-  let { base, result, urls, controls, droppedNotice, history, editorState = $bindable(), storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange }: {
-    editorState: PrintEditorState;
+  let { base, result, urls, controls, droppedNotice, history, editorState = $bindable(), storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange, onautomatic = () => {} }: {
+    onautomatic?:()=>void; editorState: PrintEditorState;
     base: SheetPlan; result: SheetResult; urls: string[]; controls: HTMLElement; history: StripHistory; page?: number; enabled: boolean;
     droppedNotice: Snippet<[boolean]>;
     storedDropped?: number; onresult: (r: SheetResult) => void; onpending: (v: boolean) => void; onchange: () => void;
@@ -17,6 +18,8 @@
   let revision = $state(0);
   let images = $state<Record<string, string>>({});
   let view = $state<ReturnType<typeof StripPage>>();
+  let stripControls = $state<ReturnType<typeof StripControls>>();
+  export function confirmAutomatic() { stripControls?.confirmAutomatic(); }
   let disposed = false;
   let running = false;
   let requested = 0;
@@ -45,7 +48,7 @@
     if (!running) page = Math.min(page, result.pages.length - 1);
   });
   $effect(() => {
-    if (!enabled) return;
+    if (!enabled || editorState.arrange) return;
     const bands = result.plan.strips.filter(s => !s.hidden && s.sheet === page).flatMap(s => s.bands);
     const tones = $state.snapshot(app.tone) as Record<string, ToneParams>;
     for (const band of bands) {
@@ -63,6 +66,10 @@
   });
   onDestroy(() => { disposed = true; onpending(false); for (const url of Object.values(images)) URL.revokeObjectURL(url); });
 
+  function selectMany(keys:StripKey[]) { editorState.selections=keys;editorState.selection=keys[0]??null; }
+  $effect(() => {
+    if (enabled && editorState.arrange && !result.plan.strips.some(s=>s.transform) && !history.edits.some(e=>e.op==='arrange')) { edit({op:'arrange'}); history.past=[]; }
+  });
   function select(key: StripKey | null) {
     editorState.selection = key;
     const s = result.plan.strips.find(s => key && sameKey(s.key, key));
@@ -71,7 +78,7 @@
   function edit(e: StripEdit, destination?: number) { if (app.readOnly) return; history.push($state.snapshot(e) as StripEdit); nextPage = destination ?? null; changed(); }
   function undo() { if (app.readOnly) return; nextPage = null; history.undo(); changed(); }
   function redo() { if (app.readOnly) return; nextPage = null; history.redo(); changed(); }
-  function automatic() { if (app.readOnly) return; history.automatic(); editorState.selection = null; editorState.splitting = false; changed(); }
+  function automatic() { if (app.readOnly) return; history.automatic(); onautomatic(); editorState.selections=[]; editorState.selection = null; editorState.splitting = false; changed(); }
   function changed() { onchange(); revision++; requested++; onpending(true); void render(); }
   /** Serialise worker calls, coalesce new input and never replace the page with a stale result. */
   async function render() {
@@ -83,7 +90,7 @@
         const version = requested;
         const rendered = history.edits;
         const edits = $state.snapshot(rendered) as StripEdit[];
-        const r = await app.run('Rendering strips', () => core.printPlanRender($state.snapshot(base) as SheetPlan, edits, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.tone) as Record<string, ToneParams>));
+        const r = await app.run('Rendering strips', () => core.printPlanRender({ ...$state.snapshot(base) as SheetPlan, print_spots: $state.snapshot(app.spots) }, edits, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.tone) as Record<string, ToneParams>));
         if (disposed) return;
         if (r?.dropped?.length) {
           history.reject(rendered, r.dropped.map(d => d.index));
@@ -106,12 +113,19 @@
     function key(e: KeyboardEvent) {
       if (!enabled || document.querySelector('dialog[open]')) return;
       const el = e.target as HTMLElement;
-      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); editorState.selection = null; editorState.splitting = false; view?.cancel(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); editorState.selections=[]; editorState.selection = null; editorState.splitting = false; view?.cancel(); return; }
       if (el.matches('input, textarea, select') || el.isContentEditable) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault(); e.stopImmediatePropagation(); if (e.shiftKey) redo(); else undo(); return;
       }
       const direction: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      if (editorState.arrange && direction[e.key] && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();e.stopImmediatePropagation();
+        let strips=chosen(result.plan,editorState.selections??[]);
+        for(const op of history.edits.slice(renderedCount)) if(op.op==='transform') strips=strips.map(s=>{const p=op.pieces.find(p=>sameKey(p.strip,s.key));return p?placed(s,p):s;});
+        if(strips.length) edit({op:'transform',pieces:nudge(strips,direction[e.key],e.shiftKey)});
+        return;
+      }
       if (selected && direction[e.key] && !e.metaKey && !e.ctrlKey) {
         e.preventDefault(); e.stopImmediatePropagation();
         // Include nudges queued before the renderer returns, so key repeat is exact.
@@ -129,6 +143,6 @@
 </script>
 
 {#if enabled}
-  <StripControls target={controls} {droppedNotice} {result} {selected} {select} {edit} {undo} {redo} {automatic} {count} {canUndo} {canRedo} split={editorState.splitting} setSplit={v => editorState.splitting = v} axis={editorState.axis} setAxis={v => editorState.axis = v} {pairs} {page} />
-  <StripPage bind:this={view} plan={result.plan} {urls} bind:page selected={editorState.selection} {select} {edit} {images} grains={app.grains} {bounds} split={editorState.splitting} axis={editorState.axis} cancelSplit={() => editorState.splitting = false} />
+  <StripControls bind:this={stripControls} arrange={editorState.arrange} selections={editorState.selections??[]} {selectMany} target={controls} {droppedNotice} {result} {selected} {select} {edit} {undo} {redo} {automatic} {count} {canUndo} {canRedo} split={editorState.splitting} setSplit={v => editorState.splitting = v} axis={editorState.axis} setAxis={v => editorState.axis = v} {pairs} {page} />
+  <StripPage bind:this={view} arrange={editorState.arrange} pages={result.pages} selections={editorState.selections??[]} {selectMany} snap={editorState.snap??true} setSnap={v=>editorState.snap=v} {undo} {redo} {canUndo} {canRedo} automatic={confirmAutomatic} plan={result.plan} {urls} bind:page selected={editorState.selection} {select} {edit} {images} grains={app.grains} {bounds} split={editorState.splitting} axis={editorState.axis} cancelSplit={() => editorState.splitting = false} />
 {/if}

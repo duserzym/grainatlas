@@ -66,7 +66,7 @@ export interface PrintControls {
   params: LayoutParams; sheet: SheetParams; style: 'sheets' | 'layout'; sheetMode: 'grains' | 'whole';
   orientation: WholeParams['orientation']; wholeScale: number | 'auto'; grid: boolean; wholeArea: string; spotText: string;
 }
-export interface PrintEditorState { selection: StripKey | null; splitting: boolean; axis: 'x' | 'y' }
+export interface PrintEditorState { arrange?: boolean; selections?: StripKey[]; snap?: boolean; selection: StripKey | null; splitting: boolean; axis: 'x' | 'y' }
 export interface CachedPrint {
   quality: PrintQuality | null;
   fingerprint: string; controls: PrintControls;

@@ -541,7 +541,7 @@
   {#if syncDetailsOpen && app.project}<SyncDetails />{/if}
   </div>{/if}
 
-  <main class:has-oversight={oversightSession.readOnly || !!oversightSession.owner(app.server, app.project?.uuid)}>
+  <main class:layout-screen={app.screen === 'layout'} class:has-oversight={oversightSession.readOnly || !!oversightSession.owner(app.server, app.project?.uuid)}>
     {#if oversightSession.state?.viewAs}
       <div class="glass panel session-banner" role="status" data-testid="view-as-banner">Viewing as {oversightSession.state.viewAs.name} (read-only)</div>
     {:else if oversightSession.owner(app.server, app.project?.uuid)}
@@ -712,6 +712,18 @@
     overflow:hidden;
   }
   main.has-oversight { grid-template-rows:auto minmax(0, 1fr); }
+  main.layout-screen { display:flex; flex-direction:column; }
+  .layout-screen .screen { flex:1; }
+  .layout-screen .session-banner { flex:none; }
+  .layout-screen .notices {
+    position:relative;
+    flex:none;
+    inset:auto;
+    width:auto;
+    max-width:none;
+    max-height:25vh;
+    margin:0 var(--space-2) var(--space-2);
+  }
   .session-banner { padding:var(--space-2) var(--space-4); margin:0 var(--space-2) var(--space-2); border-color:var(--accent); }
   .screen { position:relative; min-height:0; min-width:0; overflow:hidden; }
   .screen.pixels-loading { display:grid; grid-template-rows:auto minmax(0,1fr); }

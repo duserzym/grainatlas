@@ -31,6 +31,7 @@ use crate::readers::PackageInfo;
 use crate::segment::Grain;
 
 pub mod packed;
+pub mod arrange;
 mod compact;
 pub mod edit;
 pub use edit::{StripEdit, PrintEdits, EditedPlan, DroppedEdit, Problem, ProblemKind, LeftOff, LeftOffSummary, EditSummary, apply_edits, replay};
@@ -397,6 +398,8 @@ pub struct SheetBody {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BandRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<arrange::BandTransform>,
     pub sheet: usize,
     pub sample: String,
     pub area: String,
@@ -532,6 +535,9 @@ pub struct SheetResult {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SheetPlan {
     pub params: SheetParams,
+    /// Read-only annotation snapshot. It never changes registered positions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print_spots: Option<Vec<crate::spots::Spot>>,
     pub meta: SheetMeta,
     pub paper_mm: [f64; 2],
     pub um_per_mm: f64,
@@ -564,6 +570,8 @@ pub struct StripKey {
 /// One movable run: label, translated mosaic bands, gap marks and note allowance.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SheetStrip {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<arrange::PieceTransform>,
     pub key: StripKey,
     /// Zero-based sheet index; registrations remain 1-based.
     pub sheet: usize,
@@ -1430,7 +1438,7 @@ fn place_lines(p: &SheetParams, areas: &[SheetArea], meta: &SheetMeta, cut: CutS
                     cuts: q.cuts, cut_sources: q.cut_sources, gap_after_um: q.gap_after_um, repeated_um: None,
                 }).collect();
                 indices.push(strips.len());
-                strips.push(SheetStrip { key, sheet: pi, origin_mm: [m + run.x, y], size_mm: [run.end - run.x, height], sample: run.sample, area: area.clone(), row: run.row, cont: run.cont, labelled: run.labelled, label, bands, hidden: false, neighbours: Vec::new(), shares_gap_with: None });
+                strips.push(SheetStrip { transform: None, key, sheet: pi, origin_mm: [m + run.x, y], size_mm: [run.end - run.x, height], sample: run.sample, area: area.clone(), row: run.row, cont: run.cont, labelled: run.labelled, label, bands, hidden: false, neighbours: Vec::new(), shares_gap_with: None });
             }
             for pair in indices.windows(2) {
                 let (a, b) = (&strips[pair[0]], &strips[pair[1]]);
@@ -1443,7 +1451,7 @@ fn place_lines(p: &SheetParams, areas: &[SheetArea], meta: &SheetMeta, cut: CutS
         }
     }
     let targets = areas.iter().zip(printed).map(|(a, gs)| (a.rec.id.clone(), gs.iter().map(|g| g.id).collect())).collect();
-    SheetPlan { params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats, edit_summary: None, left_off: Vec::new() }
+    SheetPlan { print_spots: None, params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats, edit_summary: None, left_off: Vec::new() }
 }
 
 /// Place the plan's strips around separate taken rectangles. The public packer also
@@ -1494,9 +1502,12 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     let headers = plan.cut_stats.header_mm;
     let body_h = |pi: usize| page.h_mm - 2.0 * m - plan.sheet_bodies[pi].header_mm - 1.0 - FOOTER_MM;
     let auto = plan.auto_scale.clone();
-    let (spots_shown, spots_off) = key_spots(&p.spot_sizes_um, k);
+    let (_, spots_off) = key_spots(&p.spot_sizes_um, k);
     let mut stats = plan.cut_stats.clone();
     let printed: Vec<Vec<&Grain>> = areas.iter().map(|a| plan.targets[&a.rec.id].iter().map(|id| grains[&a.rec.id].iter().find(|g| g.id == *id).expect("plan target in source grains")).collect()).collect();
+    let mut spots_by_area: BTreeMap<&str,Vec<&crate::spots::Spot>> = BTreeMap::new();
+    for spot in plan.print_spots.as_deref().unwrap_or(&[]) { spots_by_area.entry(&spot.area_id).or_default().push(spot); }
+    for spots in spots_by_area.values_mut() { spots.sort_by(|a,b|a.x_um.total_cmp(&b.x_um)); }
     let runs: Vec<Run> = plan.strips.iter().map(|r| {
         let ai = areas.iter().position(|a| a.rec.id == r.area).expect("plan area in source areas");
         let pieces = r.bands.iter().map(|q| Piece {
@@ -1546,7 +1557,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     stats.strip_refused = imgs.iter().filter(|i| i.1.starts_with("kept:")).count();
     stats.sheets = plan.sheet_bodies.len();
     let line_count = plan.lines.as_ref().map_or(0, Vec::len);
-    let image_area: f64 = runs.iter().flat_map(|r| &r.pieces).map(|q| q.w(k) * q.h(k)).sum();
+    let image_area: f64 = runs.iter().zip(&plan.strips).map(|(r,s)|r.pieces.iter().map(|q|q.w(k)*q.h(k)).sum::<f64>()*s.transform.unwrap_or_default().scale.powi(2)).sum();
     let line_width: f64 = runs.iter().flat_map(|r| &r.pieces).map(|q| q.w(k)).sum();
     if stats.sheets > 0 {
         stats.fill.band_area = image_area / ((0..stats.sheets).map(body_h).sum::<f64>() * body_w);
@@ -1583,8 +1594,11 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
         bands: Vec::new(),
     };
     // The header draws the key that fits this scale and says how the scale was chosen.
-    let hp = SheetParams { spot_sizes_um: spots_shown.clone(), ..p.clone() };
-    let scale_note = scale_note(auto.as_ref(), k);
+    let piece_scales: Vec<_> = plan.strips.iter().map(|s| k/s.transform.unwrap_or_default().scale).collect();
+    let mixed = piece_scales.first().is_some_and(|first| piece_scales.iter().any(|v| (v-first).abs()>1e-7));
+    let header_k = if mixed { k } else { piece_scales.first().copied().unwrap_or(k) };
+    let hp = SheetParams { spot_sizes_um: if mixed { Vec::new() } else { key_spots(&p.spot_sizes_um,header_k).0 }, ..p.clone() };
+    let scale_note = if mixed { "Per-piece scale; see each scale bar".into() } else { scale_note(if plan.strips.iter().any(|s|s.transform.is_some()) {None} else {auto.as_ref()}, header_k) };
     let mut svgs = Vec::new();
     let mut j = 0;
     let n = plan.sheet_bodies.len();
@@ -1620,17 +1634,24 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
         if plan.lines.is_none() {
             let mut blocks = 0.0;
             for &(ri, strip) in &pg {
-                let images: f64 = runs[ri].pieces.iter().map(|q| q.w(k) * q.h(k)).sum();
-                let block = strip.size_mm[0] * strip.size_mm[1];
+                let scale = strip.transform.unwrap_or_default().scale;
+                let images: f64 = runs[ri].pieces.iter().map(|q| q.w(k) * q.h(k)).sum::<f64>()*scale.powi(2);
+                let block = if strip.transform.is_some() { let size=arrange::size(strip);size[0]*size[1] } else {strip.size_mm[0] * strip.size_mm[1]};
                 blocks += block;
                 budget.band_mm2 += images;
-                budget.labels_notes_mm2 += strip.size_mm[0] * (LABEL_MM + edit::note_height(strip));
-                budget.other_line_mm2 += block - strip.size_mm[0] * (LABEL_MM + edit::note_height(strip)) - images;
+                budget.labels_notes_mm2 += strip.size_mm[0] * (LABEL_MM + edit::note_height(strip))*scale.powi(2);
+                budget.other_line_mm2 += block - strip.size_mm[0] * (LABEL_MM + edit::note_height(strip))*scale.powi(2) - images;
             }
             budget.blank_mm2 = body_w * body_h(pi) - blocks;
         }
         for &(ri, strip) in &pg {
             let run = &runs[ri];
+            if strip.transform.is_some() {
+                let mut mat = arrange::matrix(strip);
+                mat[4] -= mat[0]*strip.origin_mm[0]+mat[2]*strip.origin_mm[1];
+                mat[5] -= mat[1]*strip.origin_mm[0]+mat[3]*strip.origin_mm[1];
+                let _ = write!(s, r#"<g data-piece="{}" transform="matrix({} {} {} {} {} {})">"#, esc(&serde_json::to_string(&(&strip.key.area,&strip.key.grains_hash,strip.key.split)).expect("piece key serializes")),mat[0],mat[1],mat[2],mat[3],mat[4],mat[5]);
+            }
             let y = strip.origin_mm[1];
             let itop = y + LABEL_MM;
             let a = &areas[run.area];
@@ -1656,12 +1677,14 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                 j += 1;
                 let (px, pw, ph) = (strip.origin_mm[0] + q.x, q.w(k), q.h(k));
                 let iy = itop;
-                let _ = write!(s, r#"<image x="{px:.3}" y="{iy:.3}" width="{pw:.3}" height="{ph:.3}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png));
+                if strip.transform.is_some() {
+                    let _ = write!(s, r#"<image x="{px}" y="{iy}" width="{pw}" height="{ph}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png));
+                } else { let _ = write!(s, r#"<image x="{px:.3}" y="{iy:.3}" width="{pw:.3}" height="{ph:.3}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(png)); }
                 let repeated = strip.bands[qi].repeated_um.clone().unwrap_or_else(|| q.repeated(&printed[run.area], p.pad_um));
                 draw_repeated(&mut s, q, &repeated, [px, iy], k, p.pad_um, j);
                 let owned_w = (q.core[2].min(q.rect[2]) - q.core[0].max(q.rect[0])) / k;
-                if owned_w > 13.0 {
-                    let bar = if owned_w > 28.0 { 100.0 } else { 50.0 };
+                if owned_w > 13.0 || strip.transform.is_some() {
+                    let bar = if let Some(t) = strip.transform { arrange::scale_bar(k/t.scale, (owned_w*t.scale*0.25).clamp(0.01,20.0)) } else if owned_w > 28.0 { 100.0 } else { 50.0 };
                     let (bx1, by) = (px + (q.core[2].min(q.rect[2]) - q.rect[0]) / k - 2.2, iy + (q.core[3].min(q.rect[3]) - q.rect[1]) / k - 2.0);
                     let bl = bar / k;
                     let _ = write!(
@@ -1684,6 +1707,10 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                 for (cx, cy, dx, dy) in [(px, iy, -1.0, -1.0), (px + pw, iy, 1.0, -1.0), (px, iy + ph, -1.0, 1.0), (px + pw, iy + ph, 1.0, 1.0)] {
                     let _ = write!(s, r#"<path d="M{cx:.3} {cy:.3} h{:.2} M{cx:.3} {cy:.3} v{:.2}" stroke="{GREY}" stroke-width="0.15"/>"#, dx * 1.6, dy * 1.6);
                 }
+                if let Some(t) = strip.transform {
+                    arrange_annotations(&mut s, q, [px, iy], k, t);
+                    arrange_spots(&mut s, spots_by_area.get(strip.area.as_str()).map_or(&[],Vec::as_slice), q, [px,iy], k, t.scale, j);
+                }
                 if let Some(gap) = q.gap_after_um {
                     let gx = px + pw + PIECE_GAP_MM / 2.0;
                     let _ = write!(
@@ -1701,12 +1728,13 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                     .map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() })
                     .collect();
                 reg.bands.push(BandRecord {
+                    transform: strip.transform.map(|_| arrange::band_transform(strip, &strip.bands[qi], k)),
                     sheet: pi + 1,
                     sample: run.sample.clone(),
                     area: a.rec.id.clone(),
                     row: run.row,
                     grains: q.grains.iter().map(|g| BandGrain { id: g.id, number: g.number, label: g.label.clone() }).collect(),
-                    sheet_rect_mm: [px, iy, px + pw, iy + ph],
+                    sheet_rect_mm: if strip.transform.is_some() { arrange::bounds(arrange::matrix(strip), [q.x, LABEL_MM, q.x + pw, LABEL_MM + ph]) } else { [px, iy, px + pw, iy + ph] },
                     mosaic_rect_um: q.rect,
                     repeated_um: repeated,
                     cut_sources: q.cut_sources.clone(),
@@ -1717,6 +1745,19 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
             if !strip.neighbours.is_empty() {
                 let note = edit::continuation_note(source_plan, strip);
                 let _ = write!(s, r#"<text x="{rx0:.2}" y="{:.2}" font-size="1.9" fill="{GREY}">{}</text>"#, y + strip.size_mm[1] - 0.8, esc(&note));
+            }
+            if let Some(t)=strip.transform {
+                let max_h=run.pieces.iter().map(|q|q.h(k)).fold(0.0,f64::max);
+                let mut cx=rx0+2.0;
+                let font=2.116667/t.scale;
+                let refs=key_spots(&p.spot_sizes_um,k).0;
+                for (i,d) in refs.iter().enumerate() {
+                    let r=d/k/2.0;let cy=itop+max_h+3.0+r;
+                    let label=if i+1==refs.len() {format!("{d} µm")} else {d.to_string()};
+                    let _ = write!(s,r#"<circle data-spot-um="{d}" cx="{}" cy="{cy}" r="{r}" fill="none" stroke="black" stroke-width="0.2"/><text x="{}" y="{}" font-size="{font}" fill="black" text-anchor="middle">{label}</text>"#,cx+r,cx+r,cy+r+font);
+                    cx+=2.0*r+4.0;
+                }
+                let _ = write!(s, "</g>");
             }
             if let Some(ln) = plan.lines.as_ref().and_then(|lines| lines.iter().find(|ln| ln.sheet == pi && ln.strips.last() == Some(&ri))) {
                 let ny = ln.origin_mm[1] + LABEL_MM + ln.band_height_mm + NOTE_MM - 0.8;
@@ -1730,7 +1771,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
         };
         if plan.lines.is_some() { budget.blank_below_mm = (page.h_mm - m - FOOTER_MM - bottom).max(0.0); }
         stats.height_budget.push(budget);
-        header(&mut s, if plan.lines.is_none() { p } else { &hp }, meta, page, pi + 1, n, &here, areas, &shown, ownership, &stats, k, &scale_note, &spots_off, header_mm, plan.lines.is_none(), &band_rects);
+        header(&mut s, if plan.lines.is_none() && !plan.strips.iter().any(|s|s.transform.is_some()) { p } else { &hp }, meta, page, pi + 1, n, &here, areas, &shown, ownership, &stats, header_k, &scale_note, &spots_off, header_mm, plan.lines.is_none(), &band_rects);
         mount_map(&mut s, p, page, areas, &shown, &here, &band_rects, ownership, &view, header_mm, if plan.lines.is_none() { Some(if pi == 0 { compact::map_top(p, meta, page, &stats) } else { 6.5 }) } else { None });
         // Footer and corner registration marks.
         let fy = h - m - 2.0;
@@ -1769,6 +1810,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     stats.grains_unmarked = check.unmarked;
     stats.bands_outside_body = check.outside_body;
     stats.bands_overlapping = check.bands_overlapping;
+    if plan.strips.iter().any(|s|s.transform.is_some()) { reg.mapping="Use bands[].transform.paper_to_mount (SVG affine [a,b,c,d,e,f]); crop_um is the source rectangle in mount µm".into(); }
     let problems = edit::problems(plan, &reg, &printed, areas);
     SheetResult { pages: svgs, registration: reg, stats, audit: check, left_off_summary: LeftOffSummary { cropped: plan.left_off.iter().filter(|g| g.reason == "cropped").count(), hidden: plan.left_off.iter().filter(|g| g.reason == "hidden").count() }, problems, plan: source_plan.clone(), dropped: Vec::new(), left_off: plan.left_off.clone() }
 }
@@ -1962,7 +2004,7 @@ fn header_values(p: &SheetParams, meta: &SheetMeta, k: f64, scale_note: &str) ->
     kv.push(("Tiles", tiles));
     let imaged = if meta.date.is_empty() { "—".into() } else { format!("{} {}–{}", meta.date, meta.t_start, meta.t_end) };
     kv.push(("Imaged", imaged));
-    let mut proc = vec![format!("1 mm = {} µm ({}×)", super::fmt_num(k), fmt(1000.0 / k, 0))];
+    let mut proc = if scale_note.starts_with("Per-piece") { Vec::new() } else { vec![format!("1 mm = {} µm ({}×)", super::fmt_num(k), fmt(1000.0 / k, 0))] };
     if !scale_note.is_empty() {
         proc.push(scale_note.to_string());
     }
@@ -2298,4 +2340,40 @@ fn mount_map(
         bx + 4.5 + l,
         by + bh - 1.5
     );
+}
+
+fn arrange_annotations(s: &mut String, q: &Piece, origin: [f64;2], k: f64, t: arrange::PieceTransform) {
+    let [x,y] = origin;
+    let font = 2.5_f64.max(2.116667/t.scale);
+    for g in &q.grains {
+        let gx = x+(g.centroid_um[0]-q.rect[0])/k;
+        let gy = y+(g.centroid_um[1]-q.rect[1])/k;
+        let label = g.label.clone().unwrap_or_else(|| g.number.to_string());
+        let _ = write!(s,r#"<text x="{gx}" y="{gy}" font-size="{font}" fill="white" stroke="black" stroke-width="0.3" paint-order="stroke" text-anchor="middle">{}</text>"#,esc(&label));
+    }
+    if t.rotation_deg.abs()>1e-7 {
+        let gx = x+q.w(k)/2.0;
+        let _ = write!(s,r#"<g data-orientation="{}" stroke="white" fill="white"><path d="M{gx} {} v6 m-1.5 -2 l1.5 2 l1.5 -2" fill="none" stroke-width="0.4"/><text x="{}" y="{}" font-size="{font}" stroke="black" stroke-width="0.25" paint-order="stroke">mount +y · {}°</text></g>"#,t.rotation_deg,y+3.0,gx+2.0,y+5.0,t.rotation_deg);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn arrange_spots(s:&mut String, spots:&[&crate::spots::Spot], q:&Piece, origin:[f64;2], k:f64, scale:f64, index:usize) {
+    let [x,y]=origin;
+    let font=2.5_f64.max(2.116667/scale);
+    let _ = write!(s,r#"<clipPath id="arrange-spots-{index}"><rect x="{x}" y="{y}" width="{}" height="{}"/></clipPath><g clip-path="url(#arrange-spots-{index})" fill="none" stroke="white" stroke-width="0.3">"#,q.w(k),q.h(k));
+    let first=spots.partition_point(|spot|spot.x_um<q.rect[0]);let last=spots.partition_point(|spot|spot.x_um<=q.rect[2]);
+    for spot in spots[first..last].iter().filter(|spot|spot.y_um>=q.rect[1] && spot.y_um<=q.rect[3]) {
+        let sx=x+(spot.x_um-q.rect[0])/k;let sy=y+(spot.y_um-q.rect[1])/k;
+        let radius=spot.diameter_um/k/2.0;
+        let ex=x+(spot.x2_um.unwrap_or(spot.x_um)-q.rect[0])/k;
+        let ey=y+(spot.y2_um.unwrap_or(spot.y_um)-q.rect[1])/k;
+        match spot.kind {
+            crate::spots::SpotKind::Spot => {let _=write!(s,r#"<circle cx="{sx}" cy="{sy}" r="{radius}"/>"#);}
+            crate::spots::SpotKind::Line => {let _=write!(s,r#"<path d="M{sx} {sy} L{ex} {ey}"/>"#);}
+            crate::spots::SpotKind::Raster => {let _=write!(s,r#"<rect x="{}" y="{}" width="{}" height="{}"/>"#,sx.min(ex),sy.min(ey),(ex-sx).abs(),(ey-sy).abs());}
+        }
+        let _=write!(s,r#"<text data-spot-label="{}" x="{}" y="{}" font-size="{font}" fill="white" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text>"#,spot.id,sx+radius+0.8,sy,esc(&spot.name));
+    }
+    let _=write!(s,"</g>");
 }

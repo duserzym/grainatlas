@@ -5,6 +5,105 @@ sync.md`: `ui/src/lib/sync-api.ts` owns its URLs, authentication, wire types and
 mappings. The client regression tests use the small fixture and an in-process fake. A live
 scratch database exposed the legacy publish state covered below.
 
+## Print recipes and local recovery
+
+`project.print_sheets` is a project recipe, not an element or a pixel input.
+Unversioned/v1 strip edits and v2 arrangements follow exactly the same save,
+recovery and atlas-publishing paths. No v1 element-sync path exists that v2
+bypasses. The current transport's `syncWireBody()` and UPbDB's `SyncIn` contain
+only grains, spots and labels, together with revision and request metadata.
+
+What happens when only an arrangement changes:
+
+- Layout saves the complete recipe into the open project, marks it dirty and
+  calls `persist()`. The full local project copy and draft metadata are written
+  through AppStorage. `draft.print_recipe` holds the recipe independently of
+  `draft.pending`, which remains null if the elements were already current.
+- The element counts and pixel signature do not change. This edit alone does
+  not queue a background element request or an image upload. A draft record
+  exists, but it is not a queued recipe upload. The sync chip's element status
+  does not claim to acknowledge the recipe.
+- Manual Sync, or Save with sync-on-save enabled and a reachable writable
+  mount, can still send an empty element delta (or the required first element
+  snapshot). Neither request contains `print_sheets`. Its acknowledgement and
+  canonical `/elements` refetch leave the local recipe unchanged.
+- A `.gaproj` save includes v2. Explicit atlas publishing includes it in the
+  immutable bundle's `project.json`, and the server retains those published
+  bytes. Element sync neither stores a newer recipe nor removes the recipe
+  from an existing bundle. The bundle can therefore contain an older recipe,
+  or none at all, after a successful element sync.
+- This computer overlays `draft.print_recipe` on a reopened published project,
+  even with a clean element outbox. Older drafts recover the recipe from their
+  stored full project copy. This overlay copies only `print_sheets`; it never
+  restores old grains, spots or labels over the current database elements.
+  It is scoped to the matching project UUID and server. Core record refreshes
+  also retain the UI-held field through `keepPrintEdits()`.
+- An empty `print_recipe` envelope records Back to automatic explicitly, so a
+  stale published recipe cannot resurrect it. A missing envelope identifies an
+  older draft. Unknown recipe versions and raw JSON remain intact; a raw null
+  value is distinct from the empty envelope used for Reset.
+- Another device with no local recipe sees the last published bundle's recipe.
+  A recipe-only element sync cannot deliver the new arrangement to that device.
+  Today that requires atlas publishing, or transferring the saved project.
+
+No UPbDB files were changed. The local retention is available now; automatic
+cross-device recipe delivery requires the following server contract extension.
+
+### Required server extension for recipe sync
+
+Add optional `project_edits` to `SyncIn` for
+`POST /v1/mounts/{mount_id}/sync`, scoped by its existing `project_uuid`:
+
+```json
+{
+  "project_uuid": "<project uuid>",
+  "base_revision": 12,
+  "mode": "delta",
+  "project_edits": {
+    "print_sheets": {"value": {"version": 2, "params": {}, "um_per_mm": 8, "edits": []}}
+  },
+  "spots": {"upsert": [], "delete": []},
+  "grains": {"upsert": [], "delete": []},
+  "labels": {"upsert": [], "delete": []}
+}
+```
+
+The contract must provide these semantics:
+
+1. Omitted `project_edits` or omitted `print_sheets` means keep. Explicit
+   `"print_sheets": null` means clear. `{"value": <JSON value>}` means replace
+   the complete recipe, retaining its numeric precision and unknown fields.
+   The wrapper distinguishes a retained raw JSON null from a deliberate clear.
+   Unversioned/v1 and v2 use the same field. Never interpret a missing field in
+   an older client's request or bundle as a clear.
+2. Store this JSON per project UUID, separately from immutable atlas files and
+   mount-wide registered elements. Apply it atomically with element edits under
+   the existing mount `base_revision`, permissions, dry-run and idempotency
+   rules. A changed recipe alone advances the mount revision; an identical
+   retry or no-op does not. Record a project-scoped recipe change in mount
+   history so concurrent recipe writes can produce a conflict, not a silent
+   overwrite. Do not change registered positions, identities or links.
+3. Extend the project-filtered `/elements` response with the canonical
+   `project_edits` object and a separate `project_edits_hash`; `{}` means no
+   recipe. Change its ETag on recipe changes. Include the hash in project
+   lookup/revision notifications without altering the three element hashes or
+   their counts. Include the recipe and project UUID in change history, and
+   return canonical `project_edits` plus `project_edits_applied` in SyncOut.
+   A dry run reports the proposed result without writing or advancing revision.
+4. The current project metadata can be initialized from an explicitly supplied
+   recipe during atlas publication. Republishing an older bundle without the
+   field must keep a newer stored recipe. Do not rewrite immutable bundle bytes
+   or their manifest hashes: clients overlay current `/elements` metadata after
+   reading the bundle, as they already do for elements.
+
+After that server extension is deployed, the client can queue recipe diffs,
+persist their acknowledged base separately from the local envelope, include
+them in request identities, and merge/review recipe conflicts as one complete
+project recipe. It must clear a pending recipe only after reading back the
+acknowledged value at the returned revision. An older server omitting the
+response field must never acknowledge or delete the local recipe. This client
+does not send the proposed field to an unsupported server.
+
 ## Elements and revisions
 
 A revision belongs to a mount. Several project uuids may share it. The client
