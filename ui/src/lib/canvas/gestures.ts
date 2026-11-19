@@ -30,6 +30,8 @@ export interface ViewPoint {
   sx: number;
   sy: number;
   ev: PointerEvent | MouseEvent;
+  /** Historical pointer samples, transformed through the same view as this event. */
+  coalesced?: ViewPoint[];
 }
 
 export interface GestureOptions {
@@ -158,8 +160,11 @@ export function attachGestures(o: GestureOptions): () => void {
       return;
     }
     if (activePointer !== null && e.pointerId !== activePointer) return;
-    if (mode === 'tool') o.ondrag?.(pt(e));
-    else if (mode === 'maybe' && Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_SLOP) mode = 'pan';
+    if (mode === 'tool') {
+      const p = pt(e);
+      p.coalesced = e.getCoalescedEvents?.().map(pt);
+      o.ondrag?.(p);
+    } else if (mode === 'maybe' && Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_SLOP) mode = 'pan';
     if (mode === 'pan') set(panBy(view.get(), e.clientX - last.x, e.clientY - last.y));
     last = { x: e.clientX, y: e.clientY };
     if (mode === 'none' && !onUi(e)) o.onhover?.(pt(e));

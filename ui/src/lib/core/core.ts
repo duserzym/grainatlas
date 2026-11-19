@@ -80,7 +80,8 @@ export interface Core {
   /** Click-grow a grain at a point (manual add). */
   grainAt(areaId: string, xUm: number, yUm: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null>;
   /** Split a grain along a line (um), returns the parts. */
-  splitGrain(areaId: string, grain: Grain, line: [number, number, number, number]): Promise<Grain[]>;
+  /** Polyline in µm, at least two points; each open end extends through the grain bbox. */
+  splitGrain(areaId: string, grain: Grain, path_um: [number, number][]): Promise<Grain[]>;
   mergeGrains(areaId: string, grains: Grain[]): Promise<Grain>;
   /** GrabCut refinement of one grain. */
   refineGrain(areaId: string, grain: Grain): Promise<Grain>;

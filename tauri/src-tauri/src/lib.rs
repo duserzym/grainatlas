@@ -446,10 +446,10 @@ async fn grain_at(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id:
 }
 
 #[tauri::command]
-async fn split_grain(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, grain: String, line: [f64; 4]) -> Res<String> {
+async fn split_grain(app: AppHandle, state: State<'_, AppState>, tab: u32, area_id: String, grain: String, path_um: Vec<[f64; 2]>) -> Res<String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_session_ctl(&app, tab, |s, ctl| s.split_grain_with_ctl(&area_id, &grain, line, ctl)).map_err(e)
+        state.with_session_ctl(&app, tab, |s, ctl| s.split_grain_with_ctl(&area_id, &grain, path_um, ctl)).map_err(e)
     }).await.map_err(e)?
 }
 

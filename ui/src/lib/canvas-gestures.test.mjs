@@ -148,3 +148,14 @@ test('canvas UI controls keep their focus and default pointer behaviour', t => {
   assert.equal(h.document.activeElement, null);
   assert.equal(h.calls.press.length, 0);
 });
+
+test('tool drags expose all coalesced pointer samples in view coordinates', t => {
+  const h = harness(t);
+  h.send('pointerdown');
+  const first = { clientX: 110, clientY: 120 }, second = { clientX: 150, clientY: 160 };
+  h.send('pointermove', { clientX: 200, clientY: 220, getCoalescedEvents: () => [first, second] });
+  assert.deepEqual(h.calls.drag[0].coalesced.map(p => [p.sx, p.sy]), [[110, 120], [150, 160]]);
+  // The view is centred on 0,0 with a viewport of 800 × 600 at zoom 1.
+  assert.deepEqual(h.calls.drag[0].coalesced.map(p => [p.x, p.y]), [[-290, -180], [-250, -140]]);
+  assert.deepEqual([h.calls.drag[0].x, h.calls.drag[0].y], [-200, -80]);
+});

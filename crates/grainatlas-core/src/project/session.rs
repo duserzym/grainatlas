@@ -970,18 +970,18 @@ impl Session {
         serde_json::to_string(&grain).map_err(invalid)
     }
 
-    pub fn split_grain(&mut self, area_id: &str, grain: &str, line: [f64; 4]) -> Result<String> {
-        self.split_grain_with_ctl(area_id, grain, line, &Ctl::NONE)
+    pub fn split_grain(&mut self, area_id: &str, grain: &str, path_um: Vec<[f64; 2]>) -> Result<String> {
+        self.split_grain_with_ctl(area_id, grain, path_um, &Ctl::NONE)
     }
 
     pub fn split_grain_with_ctl(
         &mut self,
         area_id: &str,
         grain: &str,
-        line: [f64; 4],
+        path_um: Vec<[f64; 2]>,
         ctl: &Ctl,
     ) -> Result<String> {
-        let result = self.split_grain_controlled(area_id, grain, line, ctl);
+        let result = self.split_grain_controlled(area_id, grain, path_um, ctl);
         self.trim(None);
         result
     }
@@ -990,14 +990,17 @@ impl Session {
         &mut self,
         area_id: &str,
         grain: &str,
-        line: [f64; 4],
+        path_um: Vec<[f64; 2]>,
         ctl: &Ctl,
     ) -> Result<String> {
+        if path_um.len() < 2 || path_um.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(invalid("A cut needs at least two finite points."));
+        }
         let g: Grain = serde_json::from_str(grain).map_err(invalid)?;
         let params = self.rec(area_id)?.params.segment.clone();
         let w = self.work_for(area_id, params.work_scale, ctl)?;
         let signal = params.resolved_signal(w);
-        serde_json::to_string(&crate::segment::split_grain_for_signal(w, &g, line, 0.8, signal,
+        serde_json::to_string(&crate::segment::split_grain_for_signal(w, &g, &path_um, 0.8, signal,
         )).map_err(invalid)
     }
 

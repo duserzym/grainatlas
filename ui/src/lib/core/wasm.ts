@@ -269,9 +269,9 @@ export class WasmCore implements Core {
     return this.call('grainAt', { areaId, x, y, params, outline });
   }
 
-  async splitGrain(areaId: string, grain: Grain, line: [number, number, number, number]): Promise<Grain[]> {
+  async splitGrain(areaId: string, grain: Grain, path_um: [number, number][]): Promise<Grain[]> {
     await this.ready();
-    return this.call('splitGrain', { areaId, grain, line });
+    return this.call('splitGrain', { areaId, grain, path_um });
   }
 
   async mergeGrains(areaId: string, grains: Grain[]): Promise<Grain> {

@@ -143,11 +143,12 @@ impl Session {
     pub fn grain_at(&mut self, area_id: &str, x_um: f64, y_um: f64, params: &str, outline: &str) -> Result<String, JsError> {
         self.0.grain_at(area_id, x_um, y_um, params, outline).map_err(err)
     }
-    pub fn split_grain(&mut self, area_id: &str, grain: &str, line: Vec<f64>) -> Result<String, JsError> {
-        if line.len() != 4 {
-            return Err(JsError::new("line needs 4 numbers"));
+    pub fn split_grain(&mut self, area_id: &str, grain: &str, path_um: Vec<f64>) -> Result<String, JsError> {
+        if path_um.len() < 4 || !path_um.len().is_multiple_of(2) || path_um.iter().any(|v| !v.is_finite()) {
+            return Err(JsError::new("A cut needs at least two finite points (an even number of coordinates)."));
         }
-        self.0.split_grain(area_id, grain, [line[0], line[1], line[2], line[3]]).map_err(err)
+        let path_um = path_um.as_chunks::<2>().0.to_vec();
+        self.0.split_grain(area_id, grain, path_um).map_err(err)
     }
     pub fn merge_grains(&mut self, area_id: &str, grains: &str) -> Result<String, JsError> {
         self.0.merge_grains(area_id, grains).map_err(err)

@@ -157,8 +157,8 @@ export class TauriCore implements Core {
   async grainAt(areaId: string, x: number, y: number, params: SegmentParams, outline: OutlinePad): Promise<Grain | null> {
     return JSON.parse(await this.call<string>('grain_at', { areaId, x, y, params: JSON.stringify(params), outline: JSON.stringify(outline) }));
   }
-  async splitGrain(areaId: string, grain: Grain, line: [number, number, number, number]): Promise<Grain[]> {
-    return JSON.parse(await this.call<string>('split_grain', { areaId, grain: JSON.stringify(grain), line }));
+  async splitGrain(areaId: string, grain: Grain, path_um: [number, number][]): Promise<Grain[]> {
+    return JSON.parse(await this.call<string>('split_grain', { areaId, grain: JSON.stringify(grain), pathUm: path_um }));
   }
   async mergeGrains(areaId: string, grains: Grain[]): Promise<Grain> {
     return JSON.parse(await this.call<string>('merge_grains', { areaId, grains: JSON.stringify(grains) }));

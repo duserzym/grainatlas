@@ -11,6 +11,9 @@ pub mod morph;
 pub mod pad;
 pub use pad::{OutlinePad, add_missing, pad_outlines, segment_padded};
 pub mod shape;
+mod split;
+pub use split::{split_grain, split_grain_path};
+pub(crate) use split::split_grain_for_signal;
 pub mod watershed;
 
 use serde::{Deserialize, Serialize};
@@ -647,55 +650,6 @@ pub fn grain_at(w: &WorkImage, p: &SegmentParams, x_um: f64, y_um: f64) -> Optio
     let mut g = shape::grain_from_mask(&m, sw, sh, (x0, y0), w, p.simplify_px, true)?;
     g.number = 0;
     Some(g)
-}
-
-/// Splits a grain along a line (um). Returns the pieces larger than 5 % of the grain.
-pub fn split_grain(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64) -> Vec<Grain> {
-    split_grain_for_signal(w, g, line, simplify_px, w.signal)
-}
-
-pub(crate) fn split_grain_for_signal(w: &WorkImage, g: &Grain, line: [f64; 4], simplify_px: f64, signal: Signal) -> Vec<Grain> {
-    let (mask, bw, bh, origin) = shape::rasterize(g, w.um_per_px, 2);
-    let mut m = mask;
-    // Cut: clear pixels within 1 px of the line.
-    let k = w.um_per_px;
-    let (ax, ay, bx, by) = (line[0] / k - origin.0 as f64, line[1] / k - origin.1 as f64, line[2] / k - origin.0 as f64, line[3] / k - origin.1 as f64);
-    let (dx, dy) = (bx - ax, by - ay);
-    let len2 = (dx * dx + dy * dy).max(1e-9);
-    // Extend the line to cross the whole grain.
-    for y in 0..bh {
-        for x in 0..bw {
-            let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
-            let t = ((px - ax) * dx + (py - ay) * dy) / len2;
-            let (qx, qy) = (ax + t * dx, ay + t * dy);
-            if (px - qx).hypot(py - qy) <= 1.0 {
-                m[y * bw + x] = false;
-            }
-        }
-    }
-    let (lab, counts) = morph::components(&m, bw, bh);
-    let total: usize = counts.iter().sum();
-    let mut out = Vec::new();
-    for (l, &count) in counts.iter().enumerate().skip(1) {
-        if count * 20 < total {
-            continue;
-        }
-        let part: Vec<bool> = lab.iter().map(|&v| v as usize == l).collect();
-        // Give the cut pixels back to the nearer part.
-        let part = morph::dilate(&part, bw, bh, 1).iter().zip(&m).zip(&lab).map(|((d, _), &lv)| *d && (lv as usize == l || lv == 0)).collect::<Vec<bool>>();
-        let part: Vec<bool> = part.iter().enumerate().map(|(i, &v)| v && shape::inside_polygon_px(g, w.um_per_px, origin, i % bw, i / bw)).collect();
-        if let Some(mut ng) = shape::grain_from_mask(&part, bw, bh, origin, w, simplify_px, true) {
-            ng.number = 0;
-            ng.sample = g.sample.clone();
-            // One cut detaches a bubble: a round part far darker than the epoxy is flagged.
-            if signal == Signal::Cl && filter::looks_like_bubble(&ng, g, w) {
-                ng.artifact = Some(Artifact::Bubble);
-                ng.manual = false;
-            }
-            out.push(ng);
-        }
-    }
-    out
 }
 
 /// Merges grains into one (union, closed until connected; convex hull as a last resort).

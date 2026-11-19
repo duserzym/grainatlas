@@ -468,20 +468,24 @@ alone and retains an in-memory Undo discard action until the next open. A
 small discarded-uuid index prevents those stored bytes from immediately
 reappearing as legacy drafts; explicit adoption starts tracking again.
 
-Without raw pixels, Split uses a finite line crossing the polygon twice;
+In Canvas, Split draws a freehand cut; hold Shift for a straight cut.
+Both ends extend across the grain, and repeated crossings can make several
+pieces; parts smaller than 5 % are dropped. Without raw pixels, a cut that
+crosses itself inside the grain is refused.
+
 Merge uses polygon boundary intersections; Outline uses the drawn polygon
 without snapping. Boolean results with holes, separate pieces or point-only
 contacts are refused because the grain format stores one simple ring. Brush
 still needs raw pixels. New geometric shapes recompute area, centroid and
 bounds. Pixel splits keep the core geometry and bubble classification.
 
-Split gives both children new uuids, the parent number and label suffixes a/b
-(larger part first), with split_from. Merge creates a new uuid with merged_from,
+Split gives every child a new uuid, the parent number and label suffixes a, b, c…
+(largest part first), with split_from. Merge creates a new uuid with merged_from,
 the lowest parent number and the default area/number label. Parents leave the
 active grain list and their wire deletes mean retirement. Spots retain names,
 ids and positions; reassignment to children and parent retirement share one
 sync request and one undo checkpoint. A boundary spot goes to the larger part;
-a spot outside both pixel-derived parts refuses the edit instead of silently
+a spot outside all pixel-derived parts refuses the edit instead of silently
 unlinking it. Artifact children retain lineage and their parent's number.
 
 Numbers are not keys. Canvas review filtering and shell selection use grain
@@ -629,9 +633,9 @@ spots with null grain_id, and no labels. A test-only reset with snapshot true
 selects an already-snapshotted fixture for delta scenarios. This is explicit in
 those setups; ordinary opens exercise the legacy publish state.
 
-For a bundle without raw pixels, the split tool finds a grain by the cut's two
-polygon crossings. The fixture cut at HJ-GC1_1.x + 15 µm has its midpoint outside
-the concave outline, so midpoint hit testing alone missed a valid cut. Unit
+For a bundle without raw pixels, the split tool finds a grain by the cut's
+interior runs between polygon crossings. The fixture cut at HJ-GC1_1.x + 15 µm
+has its midpoint outside the concave outline, so midpoint hit testing alone missed a valid cut. Unit
 coverage uses that exact cut and verifies two positive-area parts with conserved
 area. The hosted browser regression checks that the line draws and both children
 retain the parent lineage and spot assignment.

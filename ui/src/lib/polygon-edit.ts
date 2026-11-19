@@ -1,6 +1,7 @@
 // Geometry-only editing of simple, implicitly closed polygons in micrometres.
 // Boolean results must have one outer ring and no holes: a grain stores one ring.
 import type { Grain } from './core/types.ts';
+import { extendPath } from './split-path.ts';
 export type Point = [number, number];
 export type Polygon = Point[];
 const EPS = 1e-7;
@@ -43,32 +44,115 @@ export function contains(p: Polygon, at: Point, boundary = true): boolean {
   }
   return inside;
 }
-export function splitPolygon(polygon: Polygon, line: [number, number, number, number]): [Polygon, Polygon] {
-  const p = ring(polygon), a: Point = [line[0], line[1]], b: Point = [line[2], line[3]], dir = sub(b, a);
-  if (same(a, b) || contains(p, a, false) || contains(p, b, false)) throw new Error('Draw the cut all the way across the grain.');
-  const hits = p.flatMap((c, i) => intersections(a, b, c, p[(i + 1) % p.length])).sort((a, b) => a - b).filter((t, i, ts) => !i || Math.abs(t - ts[i - 1]) > EPS);
-  if (hits.length !== 2 || !contains(p, lerp(a, b, (hits[0] + hits[1]) / 2), false)) throw new Error('The cut must cross the grain fully in two places.');
-  const side = (q: Point) => cross(dir, sub(q, a));
-  function half(sign: number): Polygon {
-    const out: Polygon = [];
-    for (let i = 0; i < p.length; i++) {
-      const c = p[i], d = p[(i + 1) % p.length], sc = side(c) * sign, sd = side(d) * sign;
-      if (sc >= -EPS) out.push(c);
-      if ((sc > EPS && sd < -EPS) || (sc < -EPS && sd > EPS)) out.push(lerp(c, d, sc / (sc - sd)));
-    }
-    return ring(out);
+const cutAcross = 'Draw the cut all the way across the grain.';
+function pointBounds(points: Point[]): Grain['bbox_um'] {
+  const bounds: Grain['bbox_um'] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [x, y] of points) {
+    bounds[0] = Math.min(bounds[0], x); bounds[1] = Math.min(bounds[1], y);
+    bounds[2] = Math.max(bounds[2], x); bounds[3] = Math.max(bounds[3], y);
   }
-  return [half(1), half(-1)].sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a))) as [Polygon, Polygon];
+  return bounds;
 }
-/** The midpoint of a valid cut can lie outside a concave grain. Find the
- * crossed polygon itself; selection still supplies a useful error for a bad cut. */
-export function grainForCut(grains: Grain[], line: [number, number, number, number], selected: string[] = []): Grain | undefined {
-  const mid: Point = [(line[0] + line[2]) / 2, (line[1] + line[3]) / 2];
-  const candidates = [...grains.filter(g => selected.includes(g.id)), ...grains.filter(g => contains(g.polygon_um, mid)), ...grains];
-  for (const grain of [...new Set(candidates)]) {
-    try { splitPolygon(grain.polygon_um, line); return grain; } catch { /* try the next crossed outline */ }
+function extendedCut(p: Polygon, path: Point[]): Point[] {
+  return extendPath(path, pointBounds(p));
+}
+/** Each run starts and ends on the boundary; exterior stretches separate runs. */
+function insideRuns(p: Polygon, path: Point[]): Point[][] {
+  const runs: Point[][] = [];
+  let run: Point[] = [];
+  const finish = () => { if (run.length > 1) runs.push(run); run = []; };
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    const ts = [0, 1, ...p.flatMap((c, j) => intersections(a, b, c, p[(j + 1) % p.length]))]
+      .sort((a, b) => a - b).filter((t, j, ts) => !j || t - ts[j - 1] > EPS);
+    for (let j = 1; j < ts.length; j++) {
+      const c = lerp(a, b, ts[j - 1]), d = lerp(a, b, ts[j]);
+      if (same(c, d)) continue;
+      if (contains(p, lerp(c, d, .5), false)) {
+        if (!run.length) run.push(c);
+        run.push(d);
+        // A boundary touch can separate pieces even without an exterior gap.
+        if (!contains(p, d, false)) finish();
+      } else finish();
+    }
   }
-  return grains.find(g => selected.includes(g.id) || contains(g.polygon_um, mid));
+  finish();
+  return runs;
+}
+function refuseCrossing(p: Polygon, path: Point[]) {
+  for (let i = 1; i < path.length; i++) for (let j = i + 1; j < path.length; j++) {
+    const a = path[i - 1], b = path[i], c = path[j - 1], d = path[j];
+    const hits = [...intersections(a, b, c, d).map(t => lerp(a, b, t)), ...intersections(c, d, a, b).map(t => lerp(c, d, t))];
+    const crossing = hits.some(q => !(j === i + 1 && same(q, b)) && contains(p, q, false));
+    // An overlap can span the whole grain with both overlap endpoints outside.
+    const ordered = hits.slice().sort((q, r) => Math.hypot(q[0] - a[0], q[1] - a[1]) - Math.hypot(r[0] - a[0], r[1] - a[1]));
+    const overlap = ordered.length > 1 && !same(ordered[0], ordered.at(-1)!)
+      && insideRuns(p, [ordered[0], ordered.at(-1)!]).length > 0;
+    if (crossing || overlap) {
+      throw new Error('The cut crosses itself inside the grain. Draw a path that does not cross itself.');
+    }
+  }
+}
+function splitRun(p: Polygon, run: Point[]): Polygon[] {
+  const a = run[0], b = run.at(-1)!;
+  if (same(a, b)) throw new Error('The cut returns to the same boundary point. Draw across the grain.');
+  const boundary: Point[] = [];
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i], d = p[(i + 1) % p.length], v = sub(d, c), length2 = v[0] ** 2 + v[1] ** 2;
+    const insert = [a, b].map(q => ({ q, t: ((q[0] - c[0]) * v[0] + (q[1] - c[1]) * v[1]) / length2 }))
+      .filter(({ q, t }) => t > EPS && t < 1 - EPS && Math.abs(cross(v, sub(q, c))) < EPS)
+      .sort((a, b) => a.t - b.t);
+    boundary.push(c, ...insert.map(({ q }) => q));
+  }
+  const ia = boundary.findIndex(q => same(q, a)), ib = boundary.findIndex(q => same(q, b));
+  if (ia < 0 || ib < 0) throw new Error(cutAcross);
+  function arc(start: number, end: number): Point[] {
+    const out = [boundary[start]];
+    for (let i = (start + 1) % boundary.length; i !== end; i = (i + 1) % boundary.length) out.push(boundary[i]);
+    out.push(boundary[end]);
+    return out;
+  }
+  const interior = run.slice(1, -1);
+  return [ring([...arc(ia, ib), ...interior.slice().reverse()]), ring([...arc(ib, ia), ...interior])];
+}
+/** Cut the ring along every interior run, preserving the shape of the drawn path. */
+export function splitPolygon(polygon: Polygon, path: Point[]): Polygon[] {
+  const p = ring(polygon), extended = extendedCut(p, path);
+  refuseCrossing(p, extended);
+  const runs = insideRuns(p, extended);
+  let parts = [p];
+  for (const run of runs) {
+    const probe = lerp(run[0], run[1], .5);
+    const index = parts.findIndex(q => contains(q, probe, false));
+    if (index < 0) throw new Error(cutAcross);
+    parts.splice(index, 1, ...splitRun(parts[index], run));
+  }
+  const minimum = Math.abs(signedArea(p)) * .05;
+  parts = parts.filter(q => Math.abs(signedArea(q)) + EPS >= minimum)
+    .sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)));
+  if (parts.length < 2) throw new Error(cutAcross);
+  return parts;
+}
+/** Only the drawn path chooses the grain; extensions are used to split it.
+ * Prefer selected grains, then the greatest drawn length strictly inside. */
+export function grainForCut(grains: Grain[], path: Point[], selected: string[] = []): Grain | undefined {
+  const ids = new Set(selected), drawnBounds = pointBounds(path);
+  // Reject distant grains before inspecting their polygon edges. Keep touching
+  // bboxes here so horizontal/vertical strokes still reach the strict inside test.
+  const candidates = grains.filter(grain => {
+    const bounds = grain.bbox_um ?? pointBounds(grain.polygon_um);
+    return bounds[0] <= drawnBounds[2] && bounds[2] >= drawnBounds[0]
+      && bounds[1] <= drawnBounds[3] && bounds[3] >= drawnBounds[1];
+  }).map(grain => ({ grain, length: insideRuns(grain.polygon_um, path)
+    .reduce((sum, run) => sum + run.slice(1).reduce((length, p, i) => length + Math.hypot(p[0] - run[i][0], p[1] - run[i][1]), 0), 0) }))
+    .filter(candidate => candidate.length > 0)
+    .sort((a, b) => Number(ids.has(b.grain.id)) - Number(ids.has(a.grain.id)) || b.length - a.length);
+  for (const { grain } of candidates) {
+    try { splitPolygon(grain.polygon_um, path); return grain; } catch { /* try the next entered outline */ }
+  }
+  // Preserve the precise split error in the caller when no entered grain can
+  // be split (for example a self-crossing cut or a discarded tiny sliver).
+  return candidates[0]?.grain;
 }
 /** Split all edges at intersections, keep boundary segments with material on their left,
  * then trace. Offset probes also resolve coincident edges and containment. */

@@ -2,11 +2,17 @@ import type { Grain, Spot } from './core/types.ts';
 import { contains } from './polygon-edit.ts';
 /** Stable numeric component for sorting; label suffix for display and navigation. */
 export const grainNumber = (g: Pick<Grain, 'number' | 'label'>): string => g.label?.split('/').at(-1) || String(g.number);
-export function splitChildren(parent: Grain, parts: Grain[], area: string, newId = () => crypto.randomUUID()): Grain[] {
-  if (parts.length !== 2) throw new Error('A split must produce exactly two grains.');
+// Spreadsheet-style suffixes continue a…z, aa, ab… for cuts with many pieces.
+function splitSuffix(index: number): string {
+  let suffix = '';
+  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) suffix = String.fromCharCode(97 + (n - 1) % 26) + suffix;
+  return suffix;
+}
+export function splitChildren(parent: Grain, parts: Grain[], area: string, newId: () => string = () => crypto.randomUUID()): Grain[] {
+  if (parts.length < 2) throw new Error('A split must produce at least two grains.');
   return [...parts].sort((a, b) => b.area_um2 - a.area_um2).map((part, i) => {
     const { split_from: _s, merged_from: _m, ...geometry } = part;
-    return { ...geometry, id: newId(), number: parent.number, label: `${parent.label ?? `${area}/${parent.number}`}${i ? 'b' : 'a'}`, sample: parent.sample, split_from: parent.id };
+    return { ...geometry, id: newId(), number: parent.number, label: `${parent.label ?? `${area}/${parent.number}`}${splitSuffix(i)}`, sample: parent.sample, split_from: parent.id };
   });
 }
 export function mergedChild(parents: Grain[], geometry: Grain, area: string, newId = () => crypto.randomUUID()): Grain {

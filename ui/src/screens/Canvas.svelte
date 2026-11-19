@@ -10,6 +10,7 @@
   // to move it, use the size input to resize, double-click its name to rename;
   // the floating panel edits the hovered or selected object. Keys are extras.
   import { exportSpotLabels, grainNumber, splitChildren, mergedChild, reassignLineage, renumberLabels } from '../lib/grain-lineage';
+  import { appendPathPoint, simplifyPath } from '../lib/split-path';
   import { grainForCut, splitPolygon, mergePolygons, polygonBoolean, polygonGrain } from '../lib/polygon-edit';
   import { setMode, undoDiscard } from '../lib/hosted-actions';
   import { app, current, type Overlay, type Tool } from '../lib/store.svelte';
@@ -83,7 +84,7 @@
   $effect(() => {
     if (!isViewer) { spotMenu = null; return; }
     editing = null; batch = null; gesture = null; drawing = null;
-    lasso = null; stroke = null; splitLine = null; rectangle = null; measure = null;
+    lasso = null; stroke = null; splitStroke = null; rectangle = null; measure = null;
   });
 
   let core = $state<Core | null>(null);
@@ -340,7 +341,10 @@
   });
   let snapHint = $state<SnapTarget | null>(null);
   // In-progress gestures.
-  let splitLine = $state<[number, number, number, number] | null>(null);
+  let splitStroke = $state<{ points: Point[]; end: Point; straight: boolean } | null>(null);
+  const splitPreview = $derived(splitStroke
+    ? (splitStroke.straight ? [splitStroke.points[0], splitStroke.end] : [...splitStroke.points, splitStroke.end])
+    : []);
   let drawing = $state<{ kind: SpotKind | 'measure'; x: number; y: number; x2: number; y2: number } | null>(null);
   let measure = $state<[number, number, number, number] | null>(null);
   let gesture = $state.raw<{ ids: string[]; startX: number; startY: number; orig: Map<string, { x: number; y: number; x2: number | null; y2: number | null }>; dirty: boolean } | null>(null);
@@ -352,6 +356,7 @@
   let snapEdges = $state(true);
   let brushUm = $state(20);
   $effect(() => {
+    if (app.tool !== 'grain-split') splitStroke = null;
     if (app.tool !== 'grain-outline') lasso = null;
     if (app.tool !== 'grain-brush') stroke = null;
   });
@@ -1046,7 +1051,7 @@
       return true;
     }
     if (app.tool === 'grain-split') {
-      splitLine = [x, y, x, y];
+      splitStroke = { points: [[x, y]], end: [x, y], straight: ev.shiftKey };
       return true;
     }
     if (app.tool === 'grain-outline') {
@@ -1114,8 +1119,12 @@
       return;
     }
     const x = p.x * umPerPx, y = p.y * umPerPx;
-    if (splitLine) {
-      splitLine = [splitLine[0], splitLine[1], x, y];
+    if (splitStroke) {
+      for (const sample of [...(p.coalesced ?? []), p]) {
+        appendPathPoint(splitStroke.points, [sample.x * umPerPx, sample.y * umPerPx], k);
+      }
+      splitStroke.end = [x, y];
+      splitStroke.straight = p.ev.shiftKey;
       return;
     }
     if (lasso) {
@@ -1205,10 +1214,13 @@
       await finishStroke(st);
       return;
     }
-    if (splitLine) {
-      const line = splitLine;
-      splitLine = null;
-      await doSplit(line);
+    if (splitStroke) {
+      drag(p); // Include the release position even when no final move was dispatched.
+      const path = splitStroke.straight
+        ? [splitStroke.points[0], splitStroke.end]
+        : simplifyPath([...splitStroke.points, splitStroke.end], Math.max(.5 * umPerPx, .5 * k));
+      splitStroke = null;
+      await doSplit(path);
       return;
     }
     if (drawing) {
@@ -1256,18 +1268,18 @@
       app.persist();
     }
     rectangle = null; gesture = null; collapseSpot = null; pressScreen = null;
-    drawing = null; splitLine = null; stroke = null; lasso = null; snapHint = null;
+    drawing = null; splitStroke = null; stroke = null; lasso = null; snapHint = null;
   }
 
-  async function doSplit(line: [number, number, number, number]) {
+  async function doSplit(path: Point[]) {
     if (!core || !areaId) return;
-    const g = grainForCut(grains, line, selGrains);
-    if (!g) { app.notice = 'Draw the cut all the way across a grain.'; return; }
     const id = areaId;
     try {
+      const g = grainForCut(grains, path, selGrains);
+      if (!g) { app.notice = 'Draw the cut all the way across the grain.'; return; }
       const parts = noPixels
-        ? splitPolygon(g.polygon_um, line).map(p => polygonGrain(p, $state.snapshot(g) as Grain))
-        : await app.run('Splitting grain', () => core!.splitGrain(id, $state.snapshot(g) as Grain, line));
+        ? splitPolygon(g.polygon_um, path).map(p => polygonGrain(p, $state.snapshot(g) as Grain))
+        : await app.run('Splitting grain', () => core!.splitGrain(id, $state.snapshot(g) as Grain, path));
       if (!parts || parts.length < 2) { app.notice = 'Draw the cut all the way across the grain.'; return; }
       const children = splitChildren(g, parts, id);
       const spots = reassignLineage(app.spots, [g], children);
@@ -1478,7 +1490,16 @@
   }
 
   // ---- keyboard --------------------------------------------------------------------------
+  function splitModifier(e: KeyboardEvent) {
+    if (splitStroke && e.key === 'Shift') splitStroke.straight = e.type === 'keydown';
+  }
   function key(e: KeyboardEvent) {
+    splitModifier(e);
+    if (splitStroke && e.key === 'Escape') {
+      e.preventDefault();
+      cancelGesture();
+      return;
+    }
     if (isViewer) {
       const target = e.target as HTMLElement;
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
@@ -1602,7 +1623,7 @@
 {#if app.grainExportPrompt}
   <GrainExportDialog selectedCount={selGrains.length} hasArea={!!areaId} oncancel={() => app.grainExportPrompt = false} onexport={(choice) => { app.grainExportPrompt = false; void saveGrainExport(choice, areaId, [...selGrains]).catch(e => { app.error = e instanceof Error ? e.message : String(e); }); }} />
 {/if}
-<svelte:window onkeydown={key} oncontextmenu={contextSpot} onpointerdown={closeSpotMenu} />
+<svelte:window onkeydown={key} onkeyup={splitModifier} oncontextmenu={contextSpot} onpointerdown={closeSpotMenu} />
 
 {#if isViewer && spotMenu}
   <div class="panel spot-menu" role="menu" data-ui data-testid="spot-action-menu" style:left="{spotMenu.x}px" style:top="{spotMenu.y}px">
@@ -1766,8 +1787,8 @@
               <line class="measure" x1={measure[0]} y1={measure[1]} x2={measure[2]} y2={measure[3]} />
               <text class="mlabel" transform={screenLabel(measure[2], measure[3])} dx="8" dy="-6">{Math.hypot(measure[2] - measure[0], measure[3] - measure[1]).toFixed(1)} µm</text>
             {/if}
-            {#if splitLine}
-              <line class="splitline" x1={splitLine[0]} y1={splitLine[1]} x2={splitLine[2]} y2={splitLine[3]} />
+            {#if splitStroke}
+              <polyline class="splitline" points={splitPreview.map(p => p.join(',')).join(' ')} />
             {/if}
             {#if lasso}
               <polyline class="lasso" class:cut={lasso.op === 'cut'} points={[...lasso.pts, ...(lassoHover && !(lasso.clicks === 1 && lasso.dragged) ? [lassoHover] : [])].map((q) => q.join(',')).join(' ')} data-testid="lasso" />
@@ -1823,7 +1844,7 @@
       {#if !ro}
         <span class="sep"></span>
         <button class="icon" title={`Add grain: click inside it; Shift-drag adds grains in a box; ${modName}-drag toggles grains in a box (G)`} aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
-        <button class="icon" data-testid="tool-split" title="Split grain: draw a line across it; switch to Select (V) to box-select (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
+        <button class="icon" data-testid="tool-split" title="Split grain: draw across it freehand; hold Shift for a straight cut" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
         <button class="icon" title={(noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : `Outline a grain (O): drag or click corners; Shift extends, Alt cuts, ${modName} draws without snapping.`) + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
         <button class="icon" disabled={noPixels} title={(noPixels ? "Brush needs raw image pixels. Open the raw package to paint grain edges." : "Grain brush (B): paint to add, Alt to erase.") + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
         {#if app.tool === 'grain-outline' && !noPixels}
@@ -2828,6 +2849,9 @@
     stroke-width: 1;
   }
   :global(.ga-root) .splitline {
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
     stroke: var(--danger);
     stroke-width: 2;
     stroke-dasharray: 6 4;
