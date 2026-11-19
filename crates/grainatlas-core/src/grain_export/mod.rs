@@ -1,7 +1,7 @@
 //! Bounded grain export: begin, measurement batches, individual image batches, finish.
 //! No crops survive a batch. Hosts write each returned file before requesting another.
 mod measure;
-mod pixels;
+pub(crate) mod pixels;
 mod stats;
 pub mod synthetic;
 mod table;
@@ -113,7 +113,7 @@ fn invalid(e: impl std::fmt::Display) -> Error {
 
 /// Only accept stage maps that agree across every real tile within 0.1 pixel.
 /// Piecewise nearest-tile stage maps can jump at seams; those are not registrations.
-fn affine(a: &AreaRecord) -> Option<[f64; 2]> {
+pub(crate) fn affine(a: &AreaRecord) -> Option<[f64; 2]> {
     let p = a.placement.as_ref()?;
     if p.tiles.is_empty() || a.stage_sign.iter().any(|s| s.abs() != 1.0) {
         return None;

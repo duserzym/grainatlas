@@ -403,8 +403,7 @@ pub fn correct_ctl(
         .collect();
     // Stage 2: gains, offsets, surfaces and overlap steps of all tiles together.
     let leveled_stats = tiles_stats(&leveled, &neighbours);
-    let mut sol = solve(pl, &leveled, block, fixed, nb, steps, &cuts, &leveled_stats, &stats,
-    );
+    let mut sol = solve_loaded(pl, &|i|Ok(std::borrow::Cow::Borrowed(&leveled[i])), block, fixed, nb, steps, &cuts, &leveled_stats, &stats)?;
     // Both application stages use the raw mode/band. Stage-two fitting still uses the
     // leveled background statistics, but its overlap mask and application must not shift
     // the fade thresholds after stage one.
@@ -433,11 +432,215 @@ pub fn correct_ctl(
     Ok((out, sol, auto_gain, auto_offset))
 }
 
+/// A compact correction recipe. Full-resolution fields are regenerated for one
+/// source tile at a time; no mosaic or corrected tile set is retained.
+pub(crate) struct Prepared {
+    pub sol: JointSolution,
+    stats: Vec<TileStats>,
+    cuts: Vec<Cuts>,
+    skip: Vec<bool>,
+    block: i64,
+}
+impl Prepared {
+    pub fn apply(&self, i: usize, t: &Gray) -> Gray {
+        let flat = if self.skip[i] {
+            None
+        } else {
+            flatten_tile(t, &self.stats[i], &self.cuts[i], self.block)
+        };
+        self.sol.apply(i, flat.as_ref().map_or(t, |f| &f.0))
+    }
+}
+pub(crate) fn prepare_loaded(
+    pl: &Placement,
+    load: &impl Fn(usize) -> crate::Result<Gray>,
+    bp: &BackgroundParams,
+    fixed: &Fixed,
+    overrides: &[(usize, Option<f32>, Option<f32>)],
+    ctl: &crate::Ctl,
+) -> crate::Result<Prepared> {
+    ctl.check()?;
+    let n = pl.tiles.len();
+    let block = (bp.cell / 2).max(4) as i64;
+
+    // Neighbours: every pair of placed tiles that overlap by at least a block (and margins) each way.
+    let rect = |i: usize| {
+        let t = &pl.tiles[i];
+        [t.x, t.y, t.x + t.w as i64, t.y + t.h as i64]
+    };
+    let mut nb: Vec<Vec<(usize, [i64; 4])>> = vec![Vec::new(); n];
+    let mut neighbours = vec![Vec::new(); n];
+    for a in 0..n {
+        for b in a + 1..n {
+            let (ra, rb) = (rect(a), rect(b));
+            let r = [
+                ra[0].max(rb[0]),
+                ra[1].max(rb[1]),
+                ra[2].min(rb[2]),
+                ra[3].min(rb[3]),
+            ];
+            if r[2] > r[0] && r[3] > r[1] {
+                neighbours[a].push(b);
+                neighbours[b].push(a);
+            }
+            if r[2] - r[0] >= block + 8 && r[3] - r[1] >= block + 8 {
+                nb[a].push((b, [r[0] - ra[0], r[1] - ra[1], r[2] - ra[0], r[3] - ra[1]]));
+                nb[b].push((a, [r[0] - rb[0], r[1] - rb[1], r[2] - rb[0], r[3] - rb[1]]));
+            }
+        }
+    }
+    let stats = stats_loaded(n, load, &neighbours, ctl)?;
+    // Step rectangles: the overlaps, with their inner edges moved onto the step lines found in
+    // the tile's background, and the step lines that no overlap edge explains.
+    let lines: Vec<Cuts> = (0..n)
+        .map(|i| {
+            ctl.check()?;
+            Ok(if fixed.skip[i] {
+                (Vec::new(), Vec::new())
+            } else {
+                step_lines(&load(i)?, &stats[i])
+            })
+        })
+        .collect::<crate::Result<_>>()?;
+    if std::env::var_os("GRAINATLAS_DEBUG_STEPS").is_some() {
+        for (i, l) in lines.iter().enumerate() {
+            eprintln!(
+                "tile {i}: mode {:.4} band {:.4} x {:?} y {:?}",
+                stats[i].mode, stats[i].band, l.0, l.1
+            );
+        }
+    }
+    let mut cuts: Vec<Cuts> = Vec::with_capacity(n);
+    let steps: Vec<Vec<[i64; 4]>> = (0..n)
+        .map(|i| {
+            let (w, h) = (pl.tiles[i].w as i64, pl.tiles[i].h as i64);
+            let (xs, ys) = lines[i].clone();
+            // Every overlap edge near a step line moves onto it (several overlaps can share one
+            // edge, e.g. the left and the diagonal neighbour) and takes its fitted width.
+            let snap = |e: i64, n: i64, ls: &[(i64, f64)]| -> i64 {
+                if e <= 0 || e >= n {
+                    return e;
+                }
+                ls.iter()
+                    .filter(|l| (l.0 - e).abs() <= SNAP)
+                    .min_by_key(|l| (l.0 - e).abs())
+                    .map_or(e, |l| l.0)
+            };
+            let rects: Vec<[i64; 4]> = nb[i]
+                .iter()
+                .map(|(_, r)| {
+                    [
+                        snap(r[0], w, &xs),
+                        snap(r[1], h, &ys),
+                        snap(r[2], w, &xs),
+                        snap(r[3], h, &ys),
+                    ]
+                })
+                .collect();
+            // The step lines stay cuts themselves (cell_cuts merges duplicates).
+            (rects, xs, ys)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (rects, wx, wy))| {
+            cuts.push(cell_cuts(
+                &rects,
+                &wx,
+                &wy,
+                pl.tiles[i].w as i64,
+                pl.tiles[i].h as i64,
+            ));
+            rects
+        })
+        .collect();
+
+    let block1 = (block / 2).max(4);
+    let leveled = |i: usize| {
+        ctl.check()?;
+        let t = load(i)?;
+        Ok(if fixed.skip[i] {
+            t
+        } else {
+            flatten_tile(&t, &stats[i], &cuts[i], block1).map_or(t, |f| f.0)
+        })
+    };
+    let leveled_stats = stats_loaded(n, &leveled, &neighbours, ctl)?;
+    let mut sol = solve_loaded(
+        pl,
+        &|i|Ok(std::borrow::Cow::Owned(leveled(i)?)),
+        block,
+        fixed,
+        nb,
+        steps,
+        &cuts,
+        &leveled_stats,
+        &stats,
+    )?;
+    sol.raw_stats = stats.clone();
+    for &(i, g, o) in overrides {
+        if let Some(v) = g {
+            sol.gain[i] = v;
+        }
+        if let Some(v) = o {
+            sol.offset[i] = v;
+        }
+    }
+    Ok(Prepared {
+        sol,
+        stats,
+        cuts,
+        skip: fixed.skip.to_vec(),
+        block: block1,
+    })
+}
+fn stats_loaded(
+    n: usize,
+    load: &impl Fn(usize) -> crate::Result<Gray>,
+    neighbours: &[Vec<usize>],
+    ctl: &crate::Ctl,
+) -> crate::Result<Vec<TileStats>> {
+    let hists = (0..n)
+        .map(|i| {
+            ctl.check()?;
+            Ok(smoothed_hist(&load(i)?))
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+    let pks: Vec<_> = hists.iter().map(|h| peaks(h)).collect();
+    (0..n)
+        .map(|i| {
+            ctl.check()?;
+            let mut mi = pks[i].first().copied().unwrap_or(128);
+            let mut votes: Vec<_> = neighbours[i]
+                .iter()
+                .filter_map(|&j| pks[j].first().copied())
+                .collect();
+            if !votes.is_empty() {
+                votes.sort_unstable();
+                let k = votes.len() / 2;
+                let consensus =
+                    (bin_value(votes[(votes.len() - 1) / 2]) + bin_value(votes[k])) * 0.5;
+                if (bin_value(mi) - consensus).abs() > 0.06
+                    && let Some(&p) = pks[i].iter().min_by(|&&a, &&b| {
+                        (bin_value(a) - consensus)
+                            .abs()
+                            .total_cmp(&(bin_value(b) - consensus).abs())
+                    })
+                    && (bin_value(p) - consensus).abs() <= 0.04
+                {
+                    mi = p;
+                }
+            }
+            Ok(tile_stats_at(&load(i)?, bin_value(mi)))
+        })
+        .collect()
+}
+
 /// The joint solve over all tiles (stage 2 of `correct`); `steps` are each tile's overlap
 /// rectangles, snapped to its step lines.
 #[allow(clippy::too_many_arguments)]
-fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<(usize, [i64; 4])>>, steps: Vec<Vec<[i64; 4]>>, cuts: &[Cuts], stats: &[TileStats], fade_stats: &[TileStats]) -> JointSolution {
-    let n = tiles.len();
+fn solve_loaded<'a>(pl: &Placement, load:&impl Fn(usize)->crate::Result<std::borrow::Cow<'a,Gray>>, block: i64, fixed: &Fixed, nb: Vec<Vec<(usize, [i64; 4])>>, steps: Vec<Vec<[i64; 4]>>, cuts: &[Cuts], stats: &[TileStats], fade_stats: &[TileStats])->crate::Result<JointSolution> {
+    let n=pl.tiles.len();
     let gain_free = fixed.gain.is_none();
     let fixed_g = |i: usize| fixed.gain.map_or(1.0, |g| g[i] as f64);
     let mut base = Vec::with_capacity(n);
@@ -450,7 +653,7 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
 
     // Additive-field coefficients of tile i over a block (tile pixels).
     let field_coef = |i: usize, bl: [i64; 4], out: &mut Vec<(usize, f64)>| {
-        let t = &tiles[i];
+        let t=&pl.tiles[i];
         let fx = ((bl[0] + bl[2]) as f64 * 0.5) / t.w as f64 - 0.5;
         let fy = ((bl[1] + bl[3]) as f64 * 0.5) / t.h as f64 - 0.5;
         if !fixed.skip[i] {
@@ -470,10 +673,12 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
     // field is faded: these rows model the full field, not a value-dependent fraction of it.
     let mut rows: Vec<Row> = Vec::new();
     for a in 0..n {
+        let image_a=load(a)?;
         for &(b, ra) in &lay.nb[a] {
             if b < a {
                 continue;
             }
+            let image_b=load(b)?;
             let (ta, tb) = (&pl.tiles[a], &pl.tiles[b]);
             let (dx, dy) = (ta.x - tb.x, ta.y - tb.y);
             let mut by = ra[1] + 4;
@@ -483,8 +688,8 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
                     let (mut sa, mut sb, mut k) = (0.0f64, 0.0f64, 0usize);
                     for y in by..by + block {
                         for x in bx..bx + block {
-                            let va = tiles[a].px[y as usize * ta.w + x as usize];
-                            let vb = tiles[b].px[(y + dy) as usize * tb.w + (x + dx) as usize];
+                            let va = image_a.px[y as usize * ta.w + x as usize];
+                            let vb = image_b.px[(y + dy) as usize * tb.w + (x + dx) as usize];
                             if valid(va) && valid(vb) && fade_stats[a].field_weight(va, 0.0) == 1.0 && fade_stats[b].field_weight(vb, 0.0) == 1.0 {
                                 sa += va as f64;
                                 sb += vb as f64;
@@ -525,11 +730,11 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
 
     // Flatness rows: background blocks of every tile sit at one level.
     let mut flat: Vec<(usize, [i64; 4], f64)> = Vec::new();
-    for (i, t) in tiles.iter().enumerate() {
+    for (i,st) in stats.iter().enumerate().take(n) {
+        let t=load(i)?;
         if fixed.skip[i] {
             continue;
         }
-        let st = &stats[i];
         let mut by = 0;
         while by + block <= t.h as i64 {
             let mut bx = 0;
@@ -619,7 +824,7 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
         }
         // Range of the field over a coarse grid.
         let (mut lo, mut hi) = (f64::MAX, f64::MIN);
-        let t = &tiles[i];
+        let t=&pl.tiles[i];
         for gy in 0..=8 {
             for gx in 0..=8 {
                 let (px, py) = ((gx * t.w / 8).min(t.w - 1) as i64, (gy * t.h / 8).min(t.h - 1) as i64);
@@ -631,7 +836,7 @@ fn solve(pl: &Placement, tiles: &[Gray], block: i64, fixed: &Fixed, nb: Vec<Vec<
         out.range.push((hi - lo).max(0.0) as f32);
         out.fields.push(f);
     }
-    out
+    Ok(out)
 }
 
 /// Cuts of a tile: the interior edges of its overlap rectangles (width fitted where they were

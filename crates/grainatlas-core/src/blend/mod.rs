@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 
 mod bounded;
 mod seams;
+pub(crate) mod streaming;
+#[cfg(test)]
+mod canvas_regression;
 
 use crate::Ctl;
 use crate::image::Gray;

@@ -15,6 +15,7 @@ pub mod grain_export;
 pub mod laser;
 pub mod layout;
 pub mod mosaic;
+pub mod mosaic_export;
 pub mod ownership;
 pub mod photometric;
 pub mod project;

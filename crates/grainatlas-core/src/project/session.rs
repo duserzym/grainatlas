@@ -8,6 +8,7 @@
 
 mod sheets;
 mod grain_export;
+mod mosaic_export;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -90,6 +91,8 @@ pub struct Session {
     /// The UI's current grains per area (for per-grain tone normalisation).
     grains: BTreeMap<String, Vec<Grain>>,
     bundle_sources: BTreeMap<String, Arc<Vec<u8>>>,
+    /// Source depth captured while decoding, so export estimates do not reread tiles.
+    mosaic_depths: BTreeMap<String, u16>,
     bundle_digest: Option<crate::atlas::PackageDigest>,
 }
 
@@ -113,6 +116,7 @@ impl Session {
             small: BTreeMap::new(),
             grains: BTreeMap::new(),
             bundle_sources: BTreeMap::new(),
+            mosaic_depths: BTreeMap::new(),
             bundle_digest: None,
         }
     }
@@ -306,6 +310,7 @@ impl Session {
     ) -> Result<String> {
         let (probe, pkg) = readers::probe(src.clone())?;
         self.bundle_sources.clear();
+        self.mosaic_depths.clear();
         self.bundle_digest = None;
         self.outputs.clear();
         self.sheet_images.clear();
@@ -329,6 +334,7 @@ impl Session {
         let pkg = LoosePackage::open(src, &spec)?;
         let info = serde_json::to_string(pkg.info()).map_err(invalid)?;
         self.bundle_sources.clear();
+        self.mosaic_depths.clear();
         self.bundle_digest = None;
         self.outputs.clear();
         self.sheet_images.clear();
@@ -342,6 +348,7 @@ impl Session {
     /// Makes `pkg` current; keeps a loaded project of the same package (same name, kind and
     /// areas), else starts a new one, and records how the package was opened.
     fn adopt(&mut self, pkg: Box<dyn Package>, loose: Option<LooseSpec>, created: &str) {
+        self.mosaic_depths.clear();
         let info = pkg.info();
         let ids: Vec<&str> = info.areas.iter().map(|a| a.id.as_str()).collect();
         let keep = self.project.as_ref().is_some_and(|p| {
@@ -477,6 +484,7 @@ impl Session {
         let t0 = clock();
         ctl.report("read", 0.0);
         let tiles = pipeline::read_tiles_ctl(pkg, ai, rec, ctl)?;
+        self.mosaic_depths.insert(area_id.into(), if tiles.iter().any(|t| t.depth == crate::image::Depth::U16) { 16 } else { 8 });
         ctl.report("read", 1.0);
         ctl.check()?;
         timings.steps.push(("read".into(), clock() - t0));
@@ -527,6 +535,7 @@ impl Session {
             let t0 = clock();
             ctl.report("read", 0.0);
             let tiles = pipeline::read_tiles_ctl(pkg, ai, rec, ctl)?;
+            self.mosaic_depths.insert(area_id.into(), if tiles.iter().any(|t| t.depth == crate::image::Depth::U16) { 16 } else { 8 });
             let inputs = pipeline::inputs_owned(rec, tiles);
             ctl.report("read", 1.0);
             ctl.check()?;

@@ -19,7 +19,17 @@ export interface GrainExportOptions {
   area_id: string | null; exported: string; display_tone: Record<string, ToneParams>;
 }
 export interface GrainExportBatch { data: Uint8Array; done: boolean }
+export interface MosaicExportOptions { area_ids: string[]; whole_mount: boolean; values: 'original' | 'displayed'; display_tone: Record<string, ToneParams>; format?: 'tiff' | 'png' | 'jpg'; png_bits?: number; quality?: number; size_choice?: 'full' | 'downsample' | 'split'; downsample?: number }
+export interface MosaicImagePlan { name: string; format?: 'tiff' | 'png' | 'jpg'; downsample?: number; source_origin?: [number, number]; limit_reason?: string | null; area_ids: string[]; width: number; height: number; bit_depth: number; estimated_bytes: number; big_tiff: boolean; pixel_size_um: [number, number]; pixel_to_stage_um: number[] | null; coordinate_reason: string | null }
+export interface MosaicExportPlan { images: MosaicImagePlan[]; whole_mount_reason: string | null }
+export interface MosaicExportChunk { name?: string; data?: Uint8Array; last?: boolean; done: boolean; tiles_done: number; tiles_total: number }
 export interface Core {
+  planMosaicExport?(project: Project, options: MosaicExportOptions): Promise<MosaicExportPlan>;
+  beginMosaicExport?(project: Project, options: MosaicExportOptions): Promise<MosaicExportPlan>;
+  mosaicExportNext?(): Promise<MosaicExportChunk>;
+  abortMosaicExport?(): Promise<void>;
+  cancelMosaicExport?(): void;
+  saveMosaicExport?(project: Project, options: MosaicExportOptions, onProgress?: (p: Progress) => void): Promise<string | null>;
   beginGrainExport?(project: Project, options: GrainExportOptions): Promise<void>;
   grainExportBatch?(zipStream: boolean, onProgress?: (p: Progress) => void): Promise<GrainExportBatch>;
   abortGrainExport?(): Promise<void>;

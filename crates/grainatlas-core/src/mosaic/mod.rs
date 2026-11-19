@@ -280,3 +280,51 @@ pub fn stitch_with_failed(area: &AreaMeta, tiles: &[Gray], failed: &[bool], p: &
     let max = used.iter().cloned().fold(0.0, f64::max);
     Ok(Placement { tiles: tp, pairs: results, width: w.max(0) as usize, height: h.max(0) as usize, rms_residual: rms, max_residual: max })
 }
+
+
+/// The same stitch solve, decoding only one neighbour pair at a time.
+pub(crate) fn stitch_loaded(area:&AreaMeta,sizes:&[(usize,usize)],failed:&[bool],p:&StitchParams,load:&impl Fn(usize)->crate::Result<Gray>,ctl:&Ctl)->crate::Result<Placement>{
+    let prior=prior_px(area);
+    let pairs:Vec<_>=neighbour_pairs(&prior,sizes).into_iter().filter(|&(a,b,_)|!failed[a]&&!failed[b]).collect();
+    let max_drift_px=p.max_drift_um*1000./area.pixel_size_nm.max(1e-9);
+    let mut results=Vec::new();
+    for (k,&(a,b,dir)) in pairs.iter().enumerate(){ctl.check()?;let pd=[prior[b][0]-prior[a][0],prior[b][1]-prior[a][1]];
+        let m=phasecorr::measure_pair(&load(a)?,&load(b)?,pd,p);
+        let(measured,psr)=match m{Some((d,psr))if psr>=p.min_psr&&(d[0]-pd[0]).hypot(d[1]-pd[1])<=max_drift_px=>(Some(d),psr),Some((_,psr))=>(None,psr),None=>(None,0.)};
+        results.push(PairResult{a,b,dir:dir.into(),prior:pd,measured,psr,used:measured.is_some(),residual:0.});
+        ctl.report("correlate",(k+1)as f32/pairs.len().max(1)as f32);
+    }
+    ctl.report("correlate", 1.0);
+    consensus(&mut results, prior.len(), p.consensus_px, 3.0 * p.min_psr);
+    let (pos, results) = solve::solve(&prior, results, p.outlier_px);
+    let mut tp = Vec::new();
+    let (mut minx, mut miny) = (f64::INFINITY, f64::INFINITY);
+    for q in &pos {
+        minx = minx.min(q[0]);
+        miny = miny.min(q[1]);
+    }
+    let (mut w, mut h) = (0i64, 0i64);
+    for (i, q) in pos.iter().enumerate() {
+        let sx = q[0] - minx;
+        let sy = q[1] - miny;
+        let x = sx.round() as i64;
+        let y = sy.round() as i64;
+        w = w.max(x + sizes[i].0 as i64);
+        h = h.max(y + sizes[i].1 as i64);
+        tp.push(TilePlacement {
+            index: i,
+            failed: failed[i],
+            prior: prior[i],
+            pos: [sx, sy],
+            x,
+            y,
+            w: sizes[i].0,
+            h: sizes[i].1,
+            drift: [q[0] - prior[i][0] - (minx - prior.iter().map(|v| v[0]).fold(f64::INFINITY, f64::min)), q[1] - prior[i][1] - (miny - prior.iter().map(|v| v[1]).fold(f64::INFINITY, f64::min))],
+        });
+    }
+    let used: Vec<f64> = results.iter().filter(|r| r.used).map(|r| r.residual).collect();
+    let rms = if used.is_empty() { 0.0 } else { (used.iter().map(|r| r * r).sum::<f64>() / used.len() as f64).sqrt() };
+    let max = used.iter().cloned().fold(0.0, f64::max);
+    Ok(Placement { tiles: tp, pairs: results, width: w.max(0) as usize, height: h.max(0) as usize, rms_residual: rms, max_residual: max })
+}

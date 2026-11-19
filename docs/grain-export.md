@@ -1,5 +1,7 @@
 # Export segmented grains
 
+For full stitched images, see [Export stitched mosaics](mosaic-export.md).
+
 In the grain panel, choose **Export grains...**, or use the desktop File menu.
 Choose selected grains, the current area or the whole mount; original 16-bit or
 displayed 8-bit values; PNG or TIFF; and a crop margin in µm (default 10 µm).

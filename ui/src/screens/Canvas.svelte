@@ -17,6 +17,7 @@
   import { CLICK_SLOP } from '../lib/canvas/gestures';
   import { primaryModifier } from '../lib/platform';
   import GrainExportDialog from '../components/GrainExportDialog.svelte';
+  import MosaicExportDialog from '../components/MosaicExportDialog.svelte';
   import { saveGrainExport } from '../lib/save-grain-export';
   import SpotBatchDialog from '../components/SpotBatchDialog.svelte';
   import { RingContrasts, type Contrast } from '../lib/canvas/contrast';
@@ -1376,7 +1377,7 @@
       }
       return;
     }
-    if (app.busy || app.grainExportPrompt || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
+    if (app.busy || app.mosaicExportPrompt || app.grainExportPrompt || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
     if (e.key.startsWith('Arrow')) app.flash = null;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
@@ -1479,6 +1480,9 @@
   {#each DATE_CHOICES as kind (kind)}<option value={kind} title={kind === 'preferred' ? 'Preferred (207Pb/206Pb above 1000 Ma)' : kind}>{dateLabel(kind)}</option>{/each}
 {/snippet}
 
+{#if app.mosaicExportPrompt}
+  <MosaicExportDialog {areaId} oncancel={() => app.mosaicExportPrompt = false} />
+{/if}
 {#if app.grainExportPrompt}
   <GrainExportDialog selectedCount={selGrains.length} hasArea={!!areaId} oncancel={() => app.grainExportPrompt = false} onexport={(choice) => { app.grainExportPrompt = false; void saveGrainExport(choice, areaId, [...selGrains]).catch(e => { app.error = e instanceof Error ? e.message : String(e); }); }} />
 {/if}
@@ -2049,6 +2053,7 @@
           {/if}
           <button class:danger={confirmAll} onclick={findAll} disabled={noPixels || !!app.busy} title={missingGrainAreas ? 'Areas that already have grains are left as they are' : 'Finds grains again in every area; hand edits to outlines are replaced'} data-testid="find-all-grains">{allGrainsLabel}</button>
           <button onclick={() => app.grainExportPrompt = true} disabled={!Object.values(app.grains).some(gs => gs.some(g => !g.artifact)) || !!app.busy}>Export grains...</button>
+          <button onclick={() => app.mosaicExportPrompt = true} disabled={!app.project?.areas.length || !!app.busy}>Export mosaic...</button>
           <button onclick={exportGrains} disabled={!grains.length}>Grain CSV</button>
         </div>
         <div class="row">

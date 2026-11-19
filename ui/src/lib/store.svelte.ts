@@ -156,6 +156,7 @@ class AppState {
   leaveEditPrompt = $state<{ answer: (decision: 'sync' | 'keep-draft' | 'stay') => void } | null>(null);
   screen = $state<Screen>('open');
   grainExportPrompt = $state(false);
+  mosaicExportPrompt = $state(false);
   pkg = $state<PackageInfo | null>(null);
   /** Loose images waiting for a scale (the scale dialog is open while set). */
   pendingLoose = $state<{ name: string; images: ImageEntry[]; spec: LooseSpec | null } | null>(null);

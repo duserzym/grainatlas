@@ -679,6 +679,50 @@ async fn atlas_zip(state: State<'_, AppState>, tab: u32, project: String, option
     }).await.map_err(e)?
 }
 
+/// Mosaic pixels leave the core one tile at a time, on a blocking worker.
+#[tauri::command]
+async fn mosaic_export_plan(state: State<'_, AppState>, tab: u32, project: String, options: String) -> Res<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = state.tab(tab);
+        let job = grainatlas_core::mosaic_export::Export::begin(&t.lock(), &project, &options).map_err(e)?;
+        serde_json::to_string(&job.plan).map_err(e)
+    }).await.map_err(e)?
+}
+#[tauri::command]
+async fn save_mosaic_export(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, options: String) -> Res<Option<String>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(parent) = app.dialog().file().set_title("Folder for the mosaic export").blocking_pick_folder() else { return Ok(None) };
+        let parent = parent.into_path().map_err(e)?;
+        let stem = format!("mosaic-export-{}", now_iso().replace([':', '.'], "-"));
+        let mut suffix = 0;
+        let dir = loop {
+            let dir = parent.join(if suffix == 0 { stem.clone() } else { format!("{stem}-{suffix}") });
+            match std::fs::create_dir(&dir) {
+                Ok(()) => break dir,
+                Err(x) if x.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
+                Err(x) => return Err(e(x)),
+            }
+        };
+        let result = state.with_session_ctl(&app, tab, |s, ctl| {
+            let mut job = grainatlas_core::mosaic_export::Export::begin_ctl(s, &project, &options, ctl)?;
+            grainatlas_core::mosaic_export::write_directory(&mut job, s, &dir, ctl)
+        });
+        if let Err(error) = result {
+            if let Err(cleanup) = std::fs::remove_dir_all(&dir) {
+                return Err(format!("{error}; could not remove incomplete export {}: {cleanup}", dir.display()));
+            }
+            return Err(e(error));
+        }
+        Ok(Some(dir.display().to_string()))
+    }).await.map_err(e)?
+}
+#[tauri::command]
+fn cancel_mosaic_export(state: State<'_, AppState>, tab: u32) {
+    state.tab(tab).cancel.store(true, Ordering::SeqCst);
+}
+
 /// Grain crops are written one batch at a time; failed exports are removed.
 #[tauri::command]
 async fn save_grain_export(app: AppHandle, state: State<'_, AppState>, tab: u32, project: String, options: String) -> Res<Option<String>> {
@@ -936,7 +980,8 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab").accelerator("CmdOrCtrl+W").build(app)?;
     let close_window = MenuItemBuilder::with_id("close-window", "Close Window").accelerator("CmdOrCtrl+Shift+W").build(app)?;
     let export_grains = MenuItemBuilder::with_id("export-grains", "Export grains...").build(app)?;
-    let file = SubmenuBuilder::new(app, "File").item(&new_tab).item(&close_tab).separator().item(&export_grains).separator().item(&close_window).build()?;
+    let export_mosaic = MenuItemBuilder::with_id("export-mosaic", "Export mosaic...").build(app)?;
+    let file = SubmenuBuilder::new(app, "File").item(&new_tab).item(&close_tab).separator().item(&export_grains).item(&export_mosaic).separator().item(&close_window).build()?;
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
     let window = SubmenuBuilder::new(app, "Window").minimize().maximize().separator().fullscreen().build()?;
     let mut m = MenuBuilder::new(app);
@@ -987,7 +1032,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(menu)
         .on_menu_event(|app, ev| match ev.id().as_ref() {
-            "new-tab" | "close-tab" | "export-grains" => {
+            "new-tab" | "close-tab" | "export-grains" | "export-mosaic" => {
                 let _ = app.emit("grainatlas://menu", ev.id().as_ref());
             }
             "close-window" | "quit-app" => {
@@ -1101,6 +1146,9 @@ pub fn run() {
             atlas_zip,
             save_atlas,
             save_grain_export,
+            mosaic_export_plan,
+            save_mosaic_export,
+            cancel_mosaic_export,
             record_published,
             blank,
             close_tab,

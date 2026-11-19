@@ -241,7 +241,11 @@ pub(super) fn multiband(
     levels: usize,
     ctl: &Ctl,
 ) -> crate::Result<(Vec<f32>, Vec<f32>)> {
-    let budget = if cfg!(target_arch = "wasm32") { 0 } else { 256 * 1024 * 1024 };
+    let budget = if cfg!(target_arch = "wasm32") {
+        0
+    } else {
+        256 * 1024 * 1024
+    };
     let ch = imgs.first().map_or(1, |i| i.ch);
     let levels = levels.max(1);
     let align = 1i32 << (levels - 1);
@@ -278,73 +282,8 @@ pub(super) fn multiband(
             .saturating_mul(ch + 1)
             .saturating_mul(4 * 3)
     };
-    let band = |k: usize, imgs: &[RoiImage]| -> crate::Result<PyramidBand> {
-        ctl.check()?;
-        let im = &imgs[k];
-        let (gx0, gy0, gw, gh) = grid(im);
-        // Each grid pixel takes the image pixel that lands on it (every image pixel lands on at
-        // most one), so rows of the grid are independent and fill in parallel.
-        let src_of = |gx: usize, gy: usize| -> Option<usize> {
-            let (x, y) = (
-                gx as i64 + gx0 as i64 - im.x0 as i64,
-                gy as i64 + gy0 as i64 - im.y0 as i64,
-            );
-            (x >= 0 && y >= 0 && (x as usize) < im.w && (y as usize) < im.h)
-                .then(|| y as usize * im.w + x as usize)
-        };
-        let mut px = vec![0.0f32; gw * gh * ch];
-        par_rows(&mut px, gw, ch, |gy, row| {
-            for gx in 0..gw {
-                if let Some(i) = src_of(gx, gy) {
-                    row[gx * ch..(gx + 1) * ch].copy_from_slice(&im.px[i * ch..(i + 1) * ch]);
-                }
-            }
-        });
-        let mut cov = vec![0.0f32; gw * gh];
-        par_rows(&mut cov, gw, 1, |gy, row| {
-            for (gx, o) in row.iter_mut().enumerate() {
-                if let Some(i) = src_of(gx, gy) {
-                    let _ = i;
-                    *o = 1.0;
-                }
-            }
-        });
-        let mut wt = vec![0.0f32; gw * gh];
-        par_rows(&mut wt, gw, 1, |gy, row| {
-            for (gx, o) in row.iter_mut().enumerate() {
-                if let Some(i) = src_of(gx, gy) {
-                    *o = weights(k, i);
-                }
-            }
-        });
-        let bin: Vec<f32> = par_map1(&cov, |a| if a > 0.5 { 1.0 } else { 0.0 });
-        drop(cov);
-        push_pull(gw, gh, ch, &mut px, &bin);
-        drop(bin);
-        // Laplacian of the colours, Gaussian of the weights. Planes move into the pyramids rather
-        // than being copied: with one image built at a time, a copy is a serial pass over it.
-        let mut lap: Vec<(usize, usize, Vec<f32>)> = Vec::new();
-        let mut gau: Vec<Vec<f32>> = Vec::new();
-        let (mut cw, mut chh, mut cur, mut cwt) = (gw, gh, px, wt);
-        for l in 0..levels {
-            ctl.check()?;
-            if l + 1 == levels {
-                lap.push((cw, chh, cur));
-                gau.push(cwt);
-                break;
-            }
-            let (nw, nh, down) = reduce(cw, chh, ch, &cur);
-            let up = expand(nw, nh, ch, &down, cw, chh);
-            lap.push((cw, chh, par_zip(&cur, &up, |a, b| a - b)));
-            let (_, _, wdown) = reduce(cw, chh, 1, &cwt);
-            gau.push(cwt);
-            cw = nw;
-            chh = nh;
-            cur = down;
-            cwt = wdown;
-        }
-        Ok((gx0, gy0, lap, gau))
-    };
+    let band =
+        |k: usize, imgs: &[RoiImage]| tile_band(&imgs[k], |i| weights(k, i), w, h, levels, ctl);
     // Build the bands a batch at a time and add each batch before building the next. Each pixel
     // adds the bands in the same order as the serial loop (per level, bands one after another;
     // batches follow each other in image order), but rows of a level are independent, so they
@@ -454,4 +393,94 @@ pub(super) fn multiband(
         }
     });
     Ok((cur, cov))
+}
+
+pub(super) fn tile_band(
+    im: &RoiImage,
+    weights: impl Fn(usize) -> f32 + Sync,
+    w: usize,
+    h: usize,
+    levels: usize,
+    ctl: &Ctl,
+) -> crate::Result<PyramidBand> {
+    let ch = im.ch;
+    let align = 1i32 << (levels - 1);
+    let margin = align * 4;
+    let grid = |im: &RoiImage| {
+        let gx0 = ((im.x0 - margin).max(0) / align) * align;
+        let gy0 = ((im.y0 - margin).max(0) / align) * align;
+        let gx1 = (im.x0 + im.w as i32 + margin).min(w as i32);
+        let gy1 = (im.y0 + im.h as i32 + margin).min(h as i32);
+        (
+            gx0,
+            gy0,
+            (gx1 - gx0).max(1) as usize,
+            (gy1 - gy0).max(1) as usize,
+        )
+    };
+    ctl.check()?;
+
+    let (gx0, gy0, gw, gh) = grid(im);
+    // Each grid pixel takes the image pixel that lands on it (every image pixel lands on at
+    // most one), so rows of the grid are independent and fill in parallel.
+    let src_of = |gx: usize, gy: usize| -> Option<usize> {
+        let (x, y) = (
+            gx as i64 + gx0 as i64 - im.x0 as i64,
+            gy as i64 + gy0 as i64 - im.y0 as i64,
+        );
+        (x >= 0 && y >= 0 && (x as usize) < im.w && (y as usize) < im.h)
+            .then(|| y as usize * im.w + x as usize)
+    };
+    let mut px = vec![0.0f32; gw * gh * ch];
+    par_rows(&mut px, gw, ch, |gy, row| {
+        for gx in 0..gw {
+            if let Some(i) = src_of(gx, gy) {
+                row[gx * ch..(gx + 1) * ch].copy_from_slice(&im.px[i * ch..(i + 1) * ch]);
+            }
+        }
+    });
+    let mut cov = vec![0.0f32; gw * gh];
+    par_rows(&mut cov, gw, 1, |gy, row| {
+        for (gx, o) in row.iter_mut().enumerate() {
+            if let Some(i) = src_of(gx, gy) {
+                let _ = i;
+                *o = 1.0;
+            }
+        }
+    });
+    let mut wt = vec![0.0f32; gw * gh];
+    par_rows(&mut wt, gw, 1, |gy, row| {
+        for (gx, o) in row.iter_mut().enumerate() {
+            if let Some(i) = src_of(gx, gy) {
+                *o = weights(i);
+            }
+        }
+    });
+    let bin: Vec<f32> = par_map1(&cov, |a| if a > 0.5 { 1.0 } else { 0.0 });
+    drop(cov);
+    push_pull(gw, gh, ch, &mut px, &bin);
+    drop(bin);
+    // Laplacian of the colours, Gaussian of the weights. Planes move into the pyramids rather
+    // than being copied: with one image built at a time, a copy is a serial pass over it.
+    let mut lap: Vec<(usize, usize, Vec<f32>)> = Vec::new();
+    let mut gau: Vec<Vec<f32>> = Vec::new();
+    let (mut cw, mut chh, mut cur, mut cwt) = (gw, gh, px, wt);
+    for l in 0..levels {
+        ctl.check()?;
+        if l + 1 == levels {
+            lap.push((cw, chh, cur));
+            gau.push(cwt);
+            break;
+        }
+        let (nw, nh, down) = reduce(cw, chh, ch, &cur);
+        let up = expand(nw, nh, ch, &down, cw, chh);
+        lap.push((cw, chh, par_zip(&cur, &up, |a, b| a - b)));
+        let (_, _, wdown) = reduce(cw, chh, 1, &cwt);
+        gau.push(cwt);
+        cw = nw;
+        chh = nh;
+        cur = down;
+        cwt = wdown;
+    }
+    Ok((gx0, gy0, lap, gau))
 }

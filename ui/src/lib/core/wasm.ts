@@ -318,6 +318,16 @@ export class WasmCore implements Core {
     return this.call('exportSpots', { spots, grains, format });
   }
 
+  async beginMosaicExport(project: Project, options: import('./core').MosaicExportOptions): Promise<import('./core').MosaicExportPlan> {
+    // Both arguments can come from Svelte $state. Only JSON crosses the worker
+    // boundary; destination handles, streams and callbacks stay with the caller.
+    await this.ready(); return this.call('mosaicExportBegin', { project: JSON.stringify(project), options: JSON.stringify(options) });
+  }
+  async planMosaicExport(project: Project, options: import('./core').MosaicExportOptions): Promise<import('./core').MosaicExportPlan> {
+    await this.ready(); return this.call('mosaicExportPlan', { project: JSON.stringify(project), options: JSON.stringify(options) });
+  }
+  async mosaicExportNext(): Promise<import('./core').MosaicExportChunk> { return this.call('mosaicExportNext'); }
+  async abortMosaicExport(): Promise<void> { await this.call('mosaicExportAbort'); }
   async beginGrainExport(project: Project, options: import('./core').GrainExportOptions): Promise<void> {
     await this.ready(); return this.call('grainExportBegin', { project: JSON.parse(JSON.stringify(project)), options });
   }

@@ -9,6 +9,7 @@ pub mod grain_norm;
 pub mod hdr;
 pub mod joint;
 pub mod tone;
+pub(crate) mod streaming;
 
 use photocraft_algo::panorama::{RoiImage, photometric};
 use serde::{Deserialize, Serialize};

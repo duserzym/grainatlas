@@ -25,13 +25,14 @@ pub struct Session(
     session::Session,
     Option<grainatlas_core::grain_export::Export>,
     grainatlas_core::atlas::zip::Stream,
+    Option<grainatlas_core::mosaic_export::Export>,
 );
 
 #[wasm_bindgen]
 impl Session {
     #[wasm_bindgen(constructor)]
     pub fn new(name: &str) -> Session {
-        Session(session::Session::new(name), None, Default::default())
+        Session(session::Session::new(name), None, Default::default(), None)
     }
     pub fn add_file(&mut self, path: &str, bytes: Vec<u8>) {
         self.0.add_file(path, bytes);
@@ -162,6 +163,44 @@ impl Session {
     }
     pub fn brush_grain(&mut self, area_id: &str, stroke: &str, size_um: f64, base: &str, op: &str) -> Result<String, JsError> {
         self.0.brush_grain(area_id, stroke, size_um, base, op).map_err(err)
+    }
+    pub fn mosaic_export_plan(&self, project: &str, options: &str) -> Result<String, JsError> {
+        let job = grainatlas_core::mosaic_export::Export::begin(&self.0, project, options)
+            .map_err(err)?;
+        serde_json::to_string(&job.plan).map_err(err)
+    }
+    pub fn mosaic_export_begin(&mut self, project: &str, options: &str) -> Result<String, JsError> {
+        self.3 = None;
+        let job = grainatlas_core::mosaic_export::Export::begin(&self.0, project, options)
+            .map_err(err)?;
+        let plan = serde_json::to_string(&job.plan).map_err(err)?;
+        self.3 = Some(job);
+        Ok(plan)
+    }
+    pub fn mosaic_export_abort(&mut self) {
+        self.3 = None;
+        self.0.finish_mosaic_export();
+    }
+    pub fn mosaic_export_next(&mut self) -> Result<JsValue, JsError> {
+        let job = self.3.as_mut().ok_or_else(|| err("No mosaic export"))?;
+        let chunk = job.next(&mut self.0, &Ctl::NONE).map_err(err)?;
+        let (done, total) = job.progress();
+        let out = js_sys::Object::new();
+        let set = |key: &str, value: JsValue| {
+            js_sys::Reflect::set(&out, &JsValue::from_str(key), &value).map_err(|_| err("Could not construct mosaic export chunk"))
+        };
+        if let Some(chunk) = chunk {
+            set("name", JsValue::from_str(&chunk.name))?;
+            set(
+                "data",
+                js_sys::Uint8Array::from(chunk.data.as_slice()).into(),
+            )?;
+            set("last", JsValue::from_bool(chunk.last))?;
+        }
+        set("done", JsValue::from_bool(job.done()))?;
+        set("tiles_done", JsValue::from_f64(done as f64))?;
+        set("tiles_total", JsValue::from_f64(total as f64))?;
+        Ok(out.into())
     }
     pub fn grain_export_begin(&mut self, project: &str, options: &str) -> Result<(), JsError> {
         self.grain_export_abort();

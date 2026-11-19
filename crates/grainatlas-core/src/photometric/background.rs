@@ -55,11 +55,13 @@ pub enum SurfaceModel {
 /// Otsu threshold of values in 0..1 (256 bins).
 pub fn otsu(values: impl Iterator<Item = f32>) -> f32 {
     let mut hist = [0u64; 256];
-    let mut n = 0u64;
     for v in values {
         hist[(v.clamp(0.0, 1.0) * 255.0) as usize] += 1;
-        n += 1;
     }
+    otsu_hist(&hist)
+}
+pub(crate) fn otsu_hist(hist:&[u64;256])->f32 {
+    let n=hist.iter().sum::<u64>();
     if n == 0 {
         return 0.5;
     }

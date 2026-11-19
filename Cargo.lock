@@ -1674,6 +1674,7 @@ dependencies = [
  "sha2",
  "svg2pdf",
  "thiserror 2.0.21",
+ "tiff",
  "uuid",
  "zune-core",
  "zune-jpeg",

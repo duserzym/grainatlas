@@ -183,6 +183,15 @@ export class TauriCore implements Core {
   async setLink(mountId: string | null, samples: Record<string, string>): Promise<void> {
     await this.call('set_link', { mountId: mountId ?? '', samples: JSON.stringify(samples) });
   }
+  async planMosaicExport(project: Project, options: import('./core').MosaicExportOptions): Promise<import('./core').MosaicExportPlan> {
+    return JSON.parse(await this.call<string>('mosaic_export_plan', { project: JSON.stringify(project), options: JSON.stringify(options) }));
+  }
+  cancelMosaicExport(): void { void this.call('cancel_mosaic_export'); }
+  async saveMosaicExport(project: Project, options: import('./core').MosaicExportOptions, onProgress?: (p: Progress) => void): Promise<string | null> {
+    this.onProgress = onProgress ?? null;
+    try { return await this.call<string | null>('save_mosaic_export', { project: JSON.stringify(project), options: JSON.stringify(options) }); }
+    finally { this.onProgress = null; }
+  }
   async saveGrainExport(project: Project, options: import('./core').GrainExportOptions, onProgress?: (p: Progress) => void): Promise<string | null> {
     if (!canWrite()) return null;
     this.onProgress = onProgress ?? null;
