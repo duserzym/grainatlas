@@ -263,6 +263,42 @@ a draft release with installers, signed update bundles and `latest.json` on
 `v*` tags; manual runs keep workflow artifacts. Publish the draft after the
 workflows pass. See [In-app updates](in-app-updates.md) for setup and channels.
 
+### Windows installer from macOS
+
+From v0.1.5 the Windows release uses a current-user NSIS installer, with
+passive in-app updates. Install `cargo-xwin`, Homebrew NSIS (`makensis`) and
+the `x86_64-pc-windows-msvc` Rust target, then run:
+
+```bash
+make full
+make windows-installer
+```
+
+`make windows-installer` builds the web page and icons. Inside its recipe it
+reads `TAURI_SIGNING_PRIVATE_KEY_PATH` (default
+`~/.tauri/grainatlas-updater.key`) into `TAURI_SIGNING_PRIVATE_KEY` without
+printing the key, then runs this command from `tauri/`:
+
+```bash
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 TAURI_SIGNING_PRIVATE_KEY=... cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json
+```
+
+`...` represents the key contents supplied through the environment, not a
+literal value to type into shell history. Homebrew `makensis` aborts with
+`std::bad_alloc` under the C locale; keep both UTF-8 locale variables.
+The build writes `grainatlas_<version>_x64-setup.exe` and its `.exe.sig` in
+`target/x86_64-pc-windows-msvc/release/bundle/nsis/`. Attach both to the
+release and add `platforms["windows-x86_64"]` to `latest.json`: `url` is the
+release download URL of the setup exe, and `signature` is the contents of
+its `.exe.sig`. Keep the existing macOS entries. See the
+[Windows release steps](in-app-updates.md#windows-release-from-a-mac) for the
+JSON entry.
+
+On Windows, in-app downloads and installation require `uninstall.exe`
+(NSIS) or `Uninstall grainatlas.lnk` (MSI) beside the running executable.
+Portable copies link to the GitHub release page; run the setup file once
+and use the installed app for later in-app updates.
+
 ## Release asset for UPb Lab
 
 ```bash

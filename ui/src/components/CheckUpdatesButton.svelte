@@ -91,10 +91,11 @@
       <div class="glass panel" id="check-updates-popover" data-testid="check-updates-popover"
         role="dialog" aria-label="Updates" tabindex="-1" bind:this={popover} style:left={`${left}px`} style:top={`${top}px`}>
         <p role="status">{view.text}</p>
+        {#if updater.status.kind === 'unsupported' && info}<p class="small">{updater.status.reason}</p>{/if}
         {#if info}<p class="faint small">Current version: v{info.currentVersion}</p>{/if}
         {#if view.action === 'download'}<button onclick={download}>Download</button>
         {:else if view.action === 'install'}<button class="primary" onclick={install}>Restart to update</button>
-        {:else if view.action === 'releases'}<a class="btn" href={RELEASES_PAGE} target="_blank" rel="noreferrer">Open download page</a>{/if}
+        {:else if view.action === 'releases' || updater.status.kind === 'unsupported'}<a class="btn" href={RELEASES_PAGE} target="_blank" rel="noreferrer">Open download page</a>{/if}
         <a class="small" href="#/settings" onclick={openSettings}>Update settings…</a>
       </div>
     {/if}

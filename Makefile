@@ -4,7 +4,7 @@ WASM_BINDGEN_VERSION := $(shell grep -A1 'name = "wasm-bindgen"$$' Cargo.lock 2>
 WASM_OUT := ui/src/lib/core/pkg
 
 .PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test release-web site
-.PHONY: updater-setup check-version
+.PHONY: updater-setup check-version windows-installer
 .PHONY: full check desktop-check screenshots
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
@@ -78,6 +78,17 @@ desktop-build: WASM_TARGET_DIR = $(if $(RELEASE_TARGET),$(RELEASE_TARGET),$(CURD
 desktop-build: ui-build icons
 	cd tauri && $(SIGN_ENV) CARGO_TARGET_DIR="$(WASM_TARGET_DIR)" cargo tauri build
 	@echo "App: $(WASM_TARGET_DIR)/release/bundle/ (copy the .app out, then delete it there)"
+
+# Run `make full` first. cargo-xwin and Homebrew makensis build NSIS on macOS.
+# makensis aborts with std::bad_alloc under the C locale. Keep the key off stdout.
+windows-installer: ui-build icons
+	@set -eu; set +x; \
+	key_path="$${TAURI_SIGNING_PRIVATE_KEY_PATH:-$$HOME/.tauri/grainatlas-updater.key}"; \
+	TAURI_SIGNING_PRIVATE_KEY="$$(cat "$$key_path")"; \
+	export TAURI_SIGNING_PRIVATE_KEY; \
+	test -n "$$TAURI_SIGNING_PRIVATE_KEY" || { echo "Updater signing key is empty" >&2; exit 1; }; \
+	cd tauri; \
+	LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json
 
 desktop-check: icons
 	cargo check -p grainatlas-desktop

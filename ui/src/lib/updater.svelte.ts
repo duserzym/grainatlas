@@ -4,7 +4,7 @@ import { friendlyUpdateError, loadPrefs, pickEndpoint, savePrefs, STABLE_ENDPOIN
 
 const HOSTED_REASON = 'UPb Lab updates grainatlas with the shell.';
 const WEB_REASON = 'Updates come with the desktop app; the web page is always the version its server serves.';
-const INSTALL_REASON = 'Install grainatlas to receive in-app updates on this computer.';
+const INSTALL_REASON = 'Install grainatlas before updating. On Windows, run the setup file from the GitHub release page once. Later updates arrive in-app.';
 function storage() {
   try { return globalThis.localStorage; } catch { return undefined; }
 }

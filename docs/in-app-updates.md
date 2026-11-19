@@ -33,6 +33,14 @@ every repository; the last section is the part specific to this one.
   there; the shell's own Updates panel lists the module versions.
 - The static web build (no Tauri) shows the version chip but cannot update
   itself; the panel says so and links to the releases page.
+- On Windows, only installed copies can download or install updates. The
+  executable's folder must contain the NSIS `uninstall.exe` or the MSI
+  `Uninstall grainatlas.lnk` shortcut. These names come from Tauri's
+  [NSIS template](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi)
+  and [MSI template](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/msi/main.wxs).
+  A portable `grainatlas.exe` can check for updates and links to GitHub;
+  run the release's setup file once, then use the installed app for in-app
+  updates. macOS behaviour is unchanged.
 
 ## What the user sees
 
@@ -63,6 +71,47 @@ every repository; the last section is the part specific to this one.
 
 A manual run (`gh workflow run <name>`) builds the same artifacts and keeps
 them as workflow artifacts without publishing a release; it is the dry run.
+
+### Windows release from a Mac
+
+From v0.1.5, Windows releases include the current-user NSIS installer
+`grainatlas_<version>_x64-setup.exe`. Updates run it in passive mode.
+Install `cargo-xwin`, the `x86_64-pc-windows-msvc` Rust target and Homebrew
+NSIS (`makensis`) first. Run `make full`, then from the repository root:
+
+```bash
+make windows-installer
+```
+
+The target builds the web page and icons, reads the private key from
+`TAURI_SIGNING_PRIVATE_KEY_PATH` (default `~/.tauri/grainatlas-updater.key`)
+into `TAURI_SIGNING_PRIVATE_KEY` inside the recipe without printing it, and
+runs this command from `tauri/`:
+
+```bash
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 TAURI_SIGNING_PRIVATE_KEY=... cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json
+```
+
+Here `...` means the key's contents supplied through the environment; keep
+them out of command history. Both locale variables are needed: Homebrew
+`makensis` aborts with `std::bad_alloc` under the C locale.
+The release config enables updater artifacts. The build writes
+`target/x86_64-pc-windows-msvc/release/bundle/nsis/grainatlas_<version>_x64-setup.exe`
+and the adjacent `grainatlas_<version>_x64-setup.exe.sig`.
+
+Attach the setup exe and its `.exe.sig` to the release. Add this entry to
+`platforms` in that release's `latest.json`, keeping the macOS entries:
+
+```json
+"windows-x86_64": {
+  "url": "https://github.com/duserzym/grainatlas/releases/download/v<version>/grainatlas_<version>_x64-setup.exe",
+  "signature": "<contents of grainatlas_<version>_x64-setup.exe.sig>"
+}
+```
+
+Use the signature file's contents, not its path or URL. Publish `latest.json`
+with the matching release version and assets; installed Windows copies then
+receive it through the in-app update check.
 
 ## One-time setup per repository (the owner does this)
 

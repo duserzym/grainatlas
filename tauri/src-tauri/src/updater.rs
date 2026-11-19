@@ -1,5 +1,7 @@
 //! Signed updates, downloaded in the background and installed on request.
 use serde::Serialize;
+#[cfg(any(target_os = "windows", test))]
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State, Url};
@@ -152,12 +154,72 @@ pub fn update_supported() -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        // Both installers (NSIS and MSI) leave a copy the updater can replace;
-        // grainatlas ships no portable exe.
-        true
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(installed_copy))
+            .unwrap_or(false)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         false
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn installed_copy(exe_dir: &Path) -> bool {
+    // Tauri's NSIS installer.nsi writes "$INSTDIR\uninstall.exe".
+    // Its MSI main.wxs creates "Uninstall grainatlas.lnk" in INSTALLDIR.
+    // Check files beside the running exe, never just a conventional install path.
+    exe_dir.join("uninstall.exe").is_file()
+        || exe_dir.join("Uninstall grainatlas.lnk").is_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::installed_copy;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "grainatlas-updater-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn portable_copy_and_missing_directory_are_unsupported() {
+        let dir = Scratch::new();
+        assert!(!installed_copy(&dir.0));
+        fs::write(dir.0.join("grainatlas.exe"), b"portable").unwrap();
+        fs::write(dir.0.join("grainatlas.msi"), b"installer download").unwrap();
+        assert!(!installed_copy(&dir.0));
+        assert!(!installed_copy(&dir.0.join("missing")));
+    }
+
+    #[test]
+    fn installed_markers_must_be_files_beside_the_exe() {
+        for marker in ["uninstall.exe", "Uninstall grainatlas.lnk"] {
+            let dir = Scratch::new();
+            fs::create_dir(dir.0.join(marker)).unwrap();
+            assert!(!installed_copy(&dir.0));
+            fs::remove_dir(dir.0.join(marker)).unwrap();
+            fs::write(dir.0.join(marker), b"installer marker").unwrap();
+            assert!(installed_copy(&dir.0));
+            let portable = dir.0.join("portable");
+            fs::create_dir(&portable).unwrap();
+            assert!(!installed_copy(&portable));
+            fs::remove_file(dir.0.join(marker)).unwrap();
+            assert!(!installed_copy(&dir.0));
+        }
     }
 }
