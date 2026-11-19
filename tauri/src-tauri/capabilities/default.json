@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The main window: core events and native file dialogs.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-title", "dialog:default"]
+  "permissions": ["core:default", "core:window:allow-set-title", "core:webview:allow-print", "dialog:default"]
 }

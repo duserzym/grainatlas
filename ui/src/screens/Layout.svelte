@@ -1,6 +1,6 @@
 <script lang="ts">
   // Print layout: paper, scale, packing, preview, PDF export and the
-  // browser print dialog as a fallback. Two styles: print sheets (every grain of
+  // system print dialog. Two styles: print sheets (every grain of
   // the mount once, at a fixed scale, with a mount map and the print_sheet
   // registration for hand spot registration) and the grain / area layout.
   import { current } from '../lib/store.svelte';
@@ -12,6 +12,7 @@
   import { onDestroy } from 'svelte';
   import { printCache, printFingerprint, revision, type PrintControls, type PrintEditorState } from '../lib/print-cache';
   import { PrintQuality, printPdfName } from '../lib/print-quality';
+  import { createPrintDocument, type PrintDocument } from '../lib/print-document';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
 
   const app = current();
@@ -89,6 +90,7 @@
   let qualityRevision = $state(0);
   let qualityUnsubscribe: (() => void) | undefined;
   let destroyed = false;
+  let printDocument: PrintDocument | undefined;
   let stale = $state(false);
   let qualityCancelled = $state(false);
   const qualityState = $derived.by(() => { qualityRevision; return quality ? { ready: quality.ready, next: quality.next, total: quality.total, error: quality.error } : null; });
@@ -155,6 +157,7 @@
   restoreCached();
   watchQuality();
   onDestroy(() => {
+    printDocument?.cleanup();
     destroyed = true; const stopped = quality?.stop(); qualityUnsubscribe?.();
     if (result && !pending && madeWith && madeWith === fingerprint()) {
       // At most two bytes per JS code unit plus three in its UTF-8 Blob.
@@ -186,7 +189,7 @@
     for (const url of old) url && URL.revokeObjectURL(url);
   }
   // Only materialise a Blob for a page the viewer actually visits. Full-quality
-  // pages stay in the core until PDF export or browser printing.
+  // pages stay in the core until PDF export or printing.
   $effect(() => {
     const svg = result?.pages[pageIdx];
     if (svg && !urls[pageIdx]) urls[pageIdx] = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
@@ -311,31 +314,23 @@
   }
   async function browserPrint() {
     if (!result || exportBlocked) return;
-    const win = window.open('', '_blank');
-    if (!win) { app.error = 'The print window was blocked; allow pop-ups or use the PDF.'; return; }
+    printDocument?.cleanup();
+    printDocument = undefined;
     let cancelled = false;
     app.cancelTask = () => { cancelled = true; cancelQuality(); };
     try {
       const core = await app.core;
-    if (app.project) await core.loadProject(JSON.stringify($state.snapshot({ ...app.project, grainatlas_ui: undefined })));
+      if (app.project) await core.loadProject(JSON.stringify($state.snapshot({ ...app.project, grainatlas_ui: undefined })));
       const pages = await app.run('Preparing print quality', async progress => {
         if (quality) await quality.wait(progress, () => cancelled || destroyed || stale);
         return quality ? core.printPages(quality.job) : result!.pages;
       });
-      if (!pages || cancelled || destroyed || stale) { win.close(); return; }
-      const [w, h] = result.paper_mm;
-      win.document.title = style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title;
-      win.document.body.innerHTML = `<style>@page{size:${w}mm ${h}mm;margin:0}body{margin:0}svg{display:block;width:${w}mm;height:${h}mm;page-break-after:always}</style>${pages.join('')}`;
-      await Promise.all(Array.from(win.document.querySelectorAll('svg image'), async node => {
-        const img = win.document.createElement('img');
-        const loaded = new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error('A print image could not be loaded')); });
-        void loaded.catch(() => {});
-        img.src = node.getAttribute('href') ?? node.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ?? '';
-        await (img.decode ? img.decode() : loaded);
-      }));
-      if (cancelled || destroyed || stale) { win.close(); return; }
-      win.focus(); win.print();
-    } catch (error) { win.close(); app.error = error instanceof Error ? error.message : String(error); }
+      if (!pages || cancelled || destroyed || stale) return;
+      const doc = printDocument = createPrintDocument(pages, result.paper_mm);
+      await doc.decodeImages();
+      if (cancelled || destroyed || stale || printDocument !== doc) { doc.cleanup(); return; }
+      await doc.print(style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title);
+    } catch (error) { app.error = error instanceof Error ? error.message : String(error); }
     finally { app.cancelTask = null; }
   }
   function toggleArea(id: string) {

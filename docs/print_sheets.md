@@ -710,6 +710,8 @@ grainatlas stitch <package> --out <package>.grainatlas --auto --polarity both \
 writes `exports/<package>_grain_sheets_tabloid.pdf`,
 `exports/<package>_print_registration.json` and `exports/ownership.json`.
 In the app: Layout → Print sheets.
+Print… opens the system print dialog in the desktop apps and in browsers,
+without a pop-up window.
 
 `grainatlas sheets <project.grainatlas> --out <dir> [--paper tabloid] [--scale auto|8] [--params sheet_params.json] [--packing lines|packed] [--edits FILE] [--svg] [--title "…"] [--lab "…"]` re-renders saved mosaics and grains without stitching or segmenting. It writes the PDF, print registration and sheet stats JSON to `--out`, plus `<package>_sheet<N>.svg` with `--svg`. JSON parameters override defaults; flags override JSON. The output directory must be outside the project folder.
 
