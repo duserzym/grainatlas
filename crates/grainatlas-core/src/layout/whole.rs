@@ -177,6 +177,10 @@ fn minimum(page: Paper, m: f64, size: [f64; 2]) -> f64 {
 
 /// One page and the existing print_sheet frame; convert pages with pdf::pdf_from_svgs.
 pub fn whole_sheet(p: &WholeParams, area: &SheetArea, meta: &SheetMeta) -> Result<WholeResult> {
+    whole_sheet_with_image(p, area, meta, &|a, w, h| area_png(a, w, h))
+}
+/// Same physical geometry and stats, with a preview image provider.
+pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMeta, image: &impl Fn(&AreaImage, usize, usize) -> Vec<u8>) -> Result<WholeResult> {
     let a = &area.img;
     if a.w == 0
         || a.h == 0
@@ -260,7 +264,7 @@ pub fn whole_sheet(p: &WholeParams, area: &SheetArea, meta: &SheetMeta) -> Resul
     let rect = [x, y, x + w, y + h];
     let ow = ((w * p.dpi / 25.4).round() as usize).clamp(1, a.w);
     let oh = ((h * p.dpi / 25.4).round() as usize).clamp(1, a.h);
-    let png = area_png(a, ow, oh);
+    let png = image(a, ow, oh);
     let step = p.grid.then(|| round_bar_um(40.0 * k));
     let corners = [[0.0, 0.0], [size[0], 0.0], [0.0, size[1]], size];
     let stats = WholeStats {

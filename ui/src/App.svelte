@@ -594,7 +594,7 @@
   {#if app.storedCopy?.ready}<StoredCopyDialog />{/if}
   {#if app.pendingLoose}<ScaleDialog />{/if}
   {/if}
-  {#if app.busy}<Busy />{/if}
+  {#if app.busy}<Busy task={app.busy} />{/if}
   {/key}
   {#if !isViewer}<VersionChip />{/if}
   {#if dropping}

@@ -1,3 +1,4 @@
+import { printCache } from './print-cache';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout, resetLayoutStorage, type LayoutPrefs } from './layout-prefs';
 export { DEFAULT_LAYOUT, type LayoutPrefs } from './layout-prefs';
 import { saveBundleTones, type BundleSources } from './bundle-tone';
@@ -655,6 +656,7 @@ class Tabs {
     const i = this.list.findIndex((t) => t.id === id);
     if (i < 0) return;
     const [t] = this.list.slice(i, i + 1);
+    printCache.clearOwner(t.id, true);
     t.stopNumbering();
     t.sync.dispose();
     const list = this.list.filter((x) => x.id !== id);

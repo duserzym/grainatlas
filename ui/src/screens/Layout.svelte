@@ -1,16 +1,21 @@
 <script lang="ts">
-  // Print layout: paper, scale, packing, preview, PDF / SVG export and the
+  // Print layout: paper, scale, packing, preview, PDF export and the
   // browser print dialog as a fallback. Two styles: print sheets (every grain of
   // the mount once, at a fixed scale, with a mount map and the print_sheet
   // registration for hand spot registration) and the grain / area layout.
-  import { app } from '../lib/store.svelte';
-  import { download } from '../lib/files';
+  import { current } from '../lib/store.svelte';
+  import { download, savePrintPdf } from '../lib/files';
   import { wholePrintOptions } from '../lib/whole-print';
   import type { DroppedEdit, Grain, LayoutParams, LayoutResult, SheetParams, SheetPlan, SheetResult, WholeParams, WholeResult, Spot, Label, ToneParams } from '../lib/core/types';
   import StripEditor from '../components/StripEditor.svelte';
   import { readPrintEdits, storePrintEdits, StripHistory } from '../lib/strip-edit';
   import { onDestroy } from 'svelte';
+  import { printCache, printFingerprint, revision, type PrintControls, type PrintEditorState } from '../lib/print-cache';
+  import Busy from '../components/Busy.svelte';
+  import { PrintQuality, printPdfName } from '../lib/print-quality';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
+
+  const app = current();
 
   /** Preview pixels per paper millimetre (zooming in re-rasterises the SVG page). */
   const PX_PER_MM = 6;
@@ -41,7 +46,7 @@
   let wholeScale = $state<number | 'auto'>('auto');
   let grid = $state(true);
   let wholeArea = $state(app.areaId ?? '');
-  let whole = $state<WholeResult | null>(null);
+  let whole = $state.raw<WholeResult | null>(null);
   const savedPrint = readPrintEdits(structuredClone($state.snapshot(app.project?.print_sheets)));
   const unreadablePrint = $derived(app.project?.print_sheets !== undefined && !readPrintEdits(app.project.print_sheets));
   let sheet = $state<SheetParams>({
@@ -68,42 +73,136 @@
     ...savedPrint?.params,
   });
   let spotText = $state((savedPrint?.params.spot_sizes_um ?? [15, 20, 25, 30, 35, 50]).join(', '));
-  let sheets = $state<SheetResult | null>(null);
-  let result = $state<LayoutResult | null>(null);
+  let sheets = $state.raw<SheetResult | null>(null);
+  let result = $state.raw<LayoutResult | null>(null);
   let pageIdx = $state(0);
   let urls = $state<string[]>([]);
-  const history = new StripHistory();
-  let automaticPlan = $state<SheetPlan | null>(null);
+  let history = $state.raw(new StripHistory());
+  let automaticPlan = $state.raw<SheetPlan | null>(null);
   let editMode = $state(false);
+  let editor = $state<PrintEditorState>({ selection: null, splitting: false, axis: 'x' });
   let pending = $state(false);
   let savedDrops = $state<DroppedEdit[]>([]);
   const droppedEdits = $derived(savedDrops.length ? savedDrops : sheets?.dropped ?? []);
   let editorControls = $state<HTMLElement>();
-  const exportBlocked = $derived(pending || !!sheets?.problems?.length);
-  const exportReason = $derived(pending ? 'Wait for the strip preview' : exportBlocked ? 'Fix strip problems before export' : '');
-  onDestroy(() => { for (const url of urls) URL.revokeObjectURL(url); });
+  let quality = $state.raw<PrintQuality | null>(null);
+  let qualityRevision = $state(0);
+  let qualityUnsubscribe: (() => void) | undefined;
+  let destroyed = false;
+  let stale = $state(false);
+  let qualityCancelled = $state(false);
+  const qualityState = $derived.by(() => { qualityRevision; return quality ? { ready: quality.ready, next: quality.next, total: quality.total, error: quality.error } : null; });
+  function watchQuality() {
+    qualityUnsubscribe?.();
+    qualityUnsubscribe = quality?.subscribe(() => {
+      if (destroyed) return;
+      if (quality?.summary) {
+        if (sheets) sheets = { ...sheets, registration: quality.summary.registration, stats: quality.summary.stats as SheetResult['stats'] };
+        if (whole) whole = { ...whole, registration: quality.summary.registration, stats: quality.summary.stats as WholeResult['stats'] };
+      }
+      qualityRevision++;
+    });
+    qualityRevision++;
+    if (quality && !quality.ready && !qualityCancelled) void quality.start();
+  }
+  function beginQuality(r: { job_id?: number; pages: string[] }) {
+    quality?.release();
+    qualityCancelled = false;
+    void app.core.then(core => {
+      if (destroyed) return;
+      quality = r.job_id ? new PrintQuality(core, r.job_id, r.pages.length, r.pages.reduce((n, p) => n + p.length * 3, 0)) : null;
+      watchQuality();
+    });
+  }
+  function cancelQuality() { qualityCancelled = true; quality?.stop(); qualityRevision++; }
+  const exportBlocked = $derived(!!app.busy || stale || pending || !!sheets?.problems?.length);
+  const exportReason = $derived(app.busy ? app.busy.label : stale ? 'Inputs changed; make sheets again' : pending ? 'Wait for the strip preview' : exportBlocked ? 'Fix strip problems before export' : '');
+  function controls(): PrintControls {
+    return $state.snapshot({ params, sheet, style, sheetMode, orientation, wholeScale, grid, wholeArea, spotText });
+  }
+  function fingerprint(c = controls()) {
+    const ids = c.style === 'sheets' && c.sheetMode === 'whole' ? [c.wholeArea]
+      : c.style === 'layout' && c.params.area_ids.length ? c.params.area_ids : Object.keys(app.stitched);
+    return printFingerprint({
+      identity: [app.id, app.project?.uuid, app.projectPath, revision(app.packageSource), revision(app.pkg),
+        app.project?.package, app.project?.revision, app.pixelsVersion,
+        app.remote?.server, app.remote?.projectId, app.remote?.version, app.sync.baseRevision],
+      controls: c,
+      areas: app.project?.areas.filter(a => ids.includes(a.id)).map(a => [a.id, a.uuid, a.name, a.sample, a.pixel_size_nm,
+        revision(a.tiles), revision(a.placement), revision(app.stitched[a.id]?.placement),
+        a.stage_sign, a.mosaic, app.stitched[a.id]?.mosaic, a.params, app.params[a.id], a.area_meta]),
+      tone: Object.fromEntries(ids.map(id => [id, app.tone[id]])),
+      grains: Object.fromEntries(ids.map(id => [id, app.grains[id]])),
+      spots: c.style === 'layout' && c.params.show_spots ? app.spots : undefined,
+      labels: c.style === 'layout' && c.params.show_labels ? app.labels : undefined,
+      edits: app.project?.print_sheets,
+    });
+  }
+  let madeWith = $state('');
+  let madeControls: PrintControls | null = null;
+  function restoreCached() {
+    const cached = printCache.take(String(app.id));
+    if (cached) {
+      ({ params, sheet, style, sheetMode, orientation, wholeScale, grid, wholeArea, spotText } = cached.controls);
+      if (cached.fingerprint === fingerprint()) {
+        ({ sheets, whole, result, automaticPlan, history, savedDrops, pageIdx, editMode, editor, urls, quality } = cached);
+        madeWith = cached.fingerprint;
+        madeControls = cached.controls;
+      } else { cached.quality?.release(); for (const url of cached.urls) url && URL.revokeObjectURL(url); }
+    }
+  }
+  restoreCached();
+  watchQuality();
+  onDestroy(() => {
+    destroyed = true; const stopped = quality?.stop(); qualityUnsubscribe?.();
+    if (result && !pending && madeWith && madeWith === fingerprint()) {
+      // At most two bytes per JS code unit plus three in its UTF-8 Blob.
+      const bytes = result.pages.reduce((n, p) => n + p.length * 5, 0);
+      const cached = { fingerprint: madeWith, controls: controls(),
+        sheets, whole, result, automaticPlan, history, savedDrops: $state.snapshot(savedDrops),
+        pageIdx, editMode, quality, editor: $state.snapshot(editor), urls: $state.snapshot(urls) };
+      const key = String(app.id);
+      printCache.put(key, app.id, cached, bytes + (quality?.residentBytes ?? 0));
+      void stopped?.then(() => printCache.reweigh(key, cached, bytes + (cached.quality?.residentBytes ?? 0)));
+    } else { quality?.release(); for (const url of urls) url && URL.revokeObjectURL(url); }
+  });
   function showSheets(r: SheetResult) {
+    beginQuality(r);
     sheets = r;
     replacePages(r.pages);
-    result = { pages: r.pages, um_per_mm: r.registration.um_per_mm, items: r.stats.bands, paper_mm: r.registration.paper_mm };
+    result = { job_id: r.job_id, pages: r.pages, um_per_mm: r.registration.um_per_mm, items: r.stats.bands, paper_mm: r.registration.paper_mm };
   }
   function storeHistory() {
     if (!automaticPlan || app.readOnly) return;
     storePrintEdits(app, $state.snapshot(automaticPlan) as SheetPlan, $state.snapshot(history.edits));
     app.persist();
     savedDrops = [];
+    if (madeControls) madeWith = fingerprint(madeControls);
   }
   function replacePages(pages: string[]) {
     const old = urls;
-    urls = pages.map(s => URL.createObjectURL(new Blob([s], { type: 'image/svg+xml' })));
-    for (const url of old) URL.revokeObjectURL(url);
+    urls = pages.map(() => '');
+    for (const url of old) url && URL.revokeObjectURL(url);
   }
+  // Only materialise a Blob for a page the viewer actually visits. Full-quality
+  // pages stay in the core until PDF export or browser printing.
+  $effect(() => {
+    const svg = result?.pages[pageIdx];
+    if (svg && !urls[pageIdx]) urls[pageIdx] = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  });
   const hasGrains = $derived(stitchedIds.some((id) => (app.grains[id] ?? []).length > 0));
 
   $effect(() => {
     if (!stitchedIds.includes(wholeArea)) wholeArea = stitchedIds[0] ?? '';
     if (!params.title) params.title = app.pkg?.name ?? app.project?.package.name ?? '';
     if (!hasGrains && params.items === 'grains') params.items = 'areas';
+  });
+
+  $effect(() => {
+    const key = fingerprint();
+    stale = !!madeWith && key !== madeWith;
+    if (stale || pending) quality?.stop();
+    else if (quality && !quality.ready && !qualityCancelled) void quality.start();
   });
 
   async function generateSheets() {
@@ -119,12 +218,15 @@
     const exportName = stem.toLowerCase() === name.toLowerCase() ? stem : name;
     p.registration_file = `${exportName}_print_registration.json`;
     p.project = projectFile;
+    // The print timestamp belongs to this result; the clock is not a cache input.
     p.printed = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
     const tones = $state.snapshot(app.tone) as Record<string, ToneParams>;
     const previousPlan = automaticPlan;
     const stored = app.project?.print_sheets !== undefined
       ? readPrintEdits($state.snapshot(app.project.print_sheets))
       : history.count && previousPlan ? { params: $state.snapshot(previousPlan.params), um_per_mm: previousPlan.um_per_mm, edits: $state.snapshot(history.edits) } : null;
+    const generationControls = controls();
+    const generationKey = fingerprint(generationControls);
     const r = sheetMode === 'whole'
       ? await app.run('Laying out whole area', () => core.printWhole(wholePrintOptions(p, { areaId: wholeArea, orientation, scale: wholeScale, grid }), tones))
       : await app.run('Laying out print sheets', () => core.printSheets(p, $state.snapshot(app.grains) as Record<string, Grain[]>, tones));
@@ -145,14 +247,23 @@
     } else {
       whole = r;
       sheets = null;
+      beginQuality(r);
       replacePages(r.pages);
-      result = { pages: r.pages, um_per_mm: r.registration.um_per_mm, items: 1, paper_mm: r.registration.paper_mm };
+      result = { job_id: r.job_id, pages: r.pages, um_per_mm: r.registration.um_per_mm, items: 1, paper_mm: r.registration.paper_mm };
     }
     pageIdx = 0;
+    madeWith = generationKey;
+    madeControls = generationControls;
   }
-  function registration() {
-    const r = whole ?? sheets;
-    if (r && !exportBlocked) download(JSON.stringify(r.registration, null, 1), r.registration.registration_file || r.registration.package + '_print_registration.json', 'application/json');
+  async function registration() {
+    if (exportBlocked) return;
+    let cancelled = false;
+    app.cancelTask = () => { cancelled = true; cancelQuality(); };
+    try {
+      const ready = await app.run('Preparing registration', async progress => { if (quality) await quality.wait(progress, () => cancelled || destroyed || stale); return true; });
+      const r = whole ?? sheets;
+      if (ready && r && !cancelled && !destroyed && !stale) download(JSON.stringify(r.registration, null, 1), r.registration.registration_file || r.registration.package + '_print_registration.json', 'application/json');
+    } finally { app.cancelTask = null; }
   }
 
   async function generate() {
@@ -164,40 +275,62 @@
     if (!p.area_ids.length) p.area_ids = stitchedIds;
     sheets = null;
     whole = null;
+    const generationControls = controls();
+    const generationKey = fingerprint(generationControls);
     const r = await app.run('Laying out pages', () =>
       core.layout(p, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.spots) as Spot[], $state.snapshot(app.labels) as Label[], $state.snapshot(app.tone) as Record<string, ToneParams>),
     );
     if (!r) return;
-    for (const u of urls) URL.revokeObjectURL(u);
-    urls = r.pages.map((s) => URL.createObjectURL(new Blob([s], { type: 'image/svg+xml' })));
+    replacePages(r.pages);
     result = r;
+    beginQuality(r);
     pageIdx = 0;
+    madeWith = generationKey;
+    madeControls = generationControls;
   }
 
   async function pdf() {
     if (!result || exportBlocked) return;
     const core = await app.core;
-    const pages = $state.snapshot(result.pages) as string[];
-    const bytes = await app.run('Writing PDF', () => core.pdf(pages));
-    const what = style === 'sheets' ? `${whole ? 'whole_area' : 'grain_sheets'}_${sheet.paper}` : `${params.items}_${params.paper}`;
-    if (bytes) download(bytes, `${app.pkg?.name ?? app.project?.package.name ?? 'grainatlas'}_${what}.pdf`, 'application/pdf');
+    let cancelled = false;
+    app.cancelTask = () => { cancelled = true; cancelQuality(); };
+    try {
+      await app.run('Exporting PDF', async progress => {
+        const bytes = quality ? await quality.pdf(progress, () => cancelled || destroyed || stale) : await core.pdf(result!.pages);
+        if (cancelled || destroyed || stale) throw new Error('cancelled');
+        progress({ stage: 'Saving PDF', fraction: 1 });
+        const r = whole ?? sheets;
+        await savePrintPdf(bytes, printPdfName(app.pkg?.name ?? app.project?.package.name ?? 'grainatlas'), r ? JSON.stringify(r.registration, null, 1) : null);
+      });
+    } finally { app.cancelTask = null; }
   }
-  function svgs() {
-    if (exportBlocked) return;
-    result?.pages.forEach((s, i) => download(s, `${app.pkg?.name ?? app.project?.package.name ?? 'grainatlas'}_page${i + 1}.svg`, 'image/svg+xml'));
-  }
-  function browserPrint() {
+  async function browserPrint() {
     if (!result || exportBlocked) return;
-    const [w, h] = result.paper_mm;
     const win = window.open('', '_blank');
-    if (!win) {
-      app.error = 'The print window was blocked; allow pop-ups or use the PDF.';
-      return;
-    }
-    win.document.write(`<!doctype html><title>${style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name : params.title}</title><style>@page{size:${w}mm ${h}mm;margin:0}body{margin:0}svg{display:block;width:${w}mm;height:${h}mm;page-break-after:always}</style>${result.pages.join('')}`);
-    win.document.close();
-    win.focus();
-    setTimeout(() => win.print(), 300);
+    if (!win) { app.error = 'The print window was blocked; allow pop-ups or use the PDF.'; return; }
+    let cancelled = false;
+    app.cancelTask = () => { cancelled = true; cancelQuality(); };
+    try {
+      const core = await app.core;
+      const pages = await app.run('Preparing print quality', async progress => {
+        if (quality) await quality.wait(progress, () => cancelled || destroyed || stale);
+        return quality ? core.printPages(quality.job) : result!.pages;
+      });
+      if (!pages || cancelled || destroyed || stale) { win.close(); return; }
+      const [w, h] = result.paper_mm;
+      win.document.title = style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title;
+      win.document.body.innerHTML = `<style>@page{size:${w}mm ${h}mm;margin:0}body{margin:0}svg{display:block;width:${w}mm;height:${h}mm;page-break-after:always}</style>${pages.join('')}`;
+      await Promise.all(Array.from(win.document.querySelectorAll('svg image'), async node => {
+        const img = win.document.createElement('img');
+        const loaded = new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error('A print image could not be loaded')); });
+        void loaded.catch(() => {});
+        img.src = node.getAttribute('href') ?? node.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ?? '';
+        await (img.decode ? img.decode() : loaded);
+      }));
+      if (cancelled || destroyed || stale) { win.close(); return; }
+      win.focus(); win.print();
+    } catch (error) { win.close(); app.error = error instanceof Error ? error.message : String(error); }
+    finally { app.cancelTask = null; }
   }
   function toggleArea(id: string) {
     params.area_ids = params.area_ids.includes(id) ? params.area_ids.filter((a) => a !== id) : [...params.area_ids, id];
@@ -219,6 +352,9 @@
   {/if}
 {/snippet}
 
+{#if qualityState && !qualityState.ready && !qualityCancelled && !qualityState.error && !stale && !pending && !app.busy}
+  <Busy task={{ label: 'Preparing print quality', progress: { stage: `page ${Math.min(qualityState.next + 1, qualityState.total)} of ${qualityState.total}`, fraction: qualityState.next / qualityState.total } }} onCancel={cancelQuality} testId="print-quality-busy" />
+{/if}
 <div class="layout" class:folded={app.layout.printCollapsed}>
   {#if app.layout.printCollapsed}
     <aside class="glass folded-side"><button class="icon" title="Show print controls" aria-label="Show print controls" onclick={() => { app.layout.printCollapsed = false; app.saveLayout(); }}>»</button></aside>
@@ -230,6 +366,14 @@
     {/if}
     <div bind:this={editorControls}></div>
     <h2>Print layout</h2>
+    {#if result}
+      <p class="faint small" data-testid="preview-note">Preview uses reduced resolution without export enhancement. PDF and print use full quality.</p>
+      {#if stale}<p class="faint small">Inputs changed; make sheets again.</p>{/if}
+      <p class="faint small" data-testid="print-quality" data-ready={qualityState?.ready ?? true}>{qualityState?.error ? qualityState.error.message : qualityState?.ready || !qualityState ? 'Print quality ready' : qualityCancelled ? 'Print quality paused; export resumes it.' : `Preparing print quality: page ${Math.min(qualityState.next + 1, qualityState.total)} of ${qualityState.total}`}</p>
+    {/if}
+    {#if sheets?.problems?.length}
+      <p class="faint small" role="status" data-testid="export-blocked">Export blocked: {sheets.problems[0].message}. {sheets.problems.some(p => p.kind === 'outside_body') ? 'Increase the scale value or paper size, or edit the strips.' : 'Fix the strip problems before exporting.'}</p>
+    {/if}
     {#if unreadablePrint}<p class="faint small" data-testid="unreadable-print-edits">Stored strip edits could not be read. They will be kept when saving. A new strip edit replaces them.</p>{/if}
     <div class="seg" role="radiogroup" aria-label="Style">
       <label class="check"><input type="radio" bind:group={style} value="sheets" data-testid="style-sheets" /> Print sheets</label>
@@ -315,7 +459,6 @@
         <div class="two">
           <button onclick={pdf} disabled={exportBlocked} title={exportReason} data-testid="export-pdf">Export PDF</button>
           <button onclick={registration} disabled={exportBlocked} title={exportReason} data-testid="export-registration">Registration</button>
-          <button onclick={svgs} disabled={exportBlocked} title={exportReason}>Export SVG</button>
           <button onclick={browserPrint} disabled={exportBlocked} title={exportReason}>Print…</button>
         </div>
       {/if}
@@ -370,7 +513,6 @@
       <p class="muted">{result.pages.length} page{result.pages.length === 1 ? '' : 's'}, {result.items} items at <b>1 mm = {result.um_per_mm} µm</b></p>
       <div class="two">
         <button onclick={pdf} disabled={exportBlocked} title={exportReason} data-testid="export-pdf">Export PDF</button>
-        <button onclick={svgs} disabled={exportBlocked} title={exportReason}>Export SVG</button>
         <button onclick={browserPrint} disabled={exportBlocked} title={exportReason}>Print…</button>
       </div>
     {/if}
@@ -379,7 +521,7 @@
   <section class="preview" data-testid="layout-view">
     {#if sheets && automaticPlan && editorControls && style === 'sheets' && sheetMode === 'grains'}
       {#key automaticPlan}
-        <StripEditor base={automaticPlan} result={sheets} {urls} controls={editorControls} {droppedNotice} {history} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
+        <StripEditor base={automaticPlan} result={sheets} {urls} controls={editorControls} {droppedNotice} {history} bind:editorState={editor} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
       {/key}
     {/if}
     {#if result && urls[pageIdx] && !(editMode && sheets && style === 'sheets' && sheetMode === 'grains')}
@@ -391,7 +533,7 @@
       <div class="pager glass" data-ui>
         <button class="icon" disabled={pageIdx === 0} onclick={() => pageIdx--}>‹</button>
         <span class="num">{pageIdx + 1} / {result.pages.length}</span>
-        <button class="icon" disabled={pageIdx >= result.pages.length - 1} onclick={() => pageIdx++}>›</button>
+        <button class="icon" data-testid="next-page" disabled={pageIdx >= result.pages.length - 1} onclick={() => pageIdx++}>›</button>
         <button class="icon" title="Zoom out" onclick={() => panzoom?.zoomBy(1 / 1.5)}>−</button>
         <button class="icon" title="Zoom in" onclick={() => panzoom?.zoomBy(1.5)}>+</button>
         <button class="icon" title="Fit (double-click)" onclick={() => panzoom?.fitAll()}>Fit</button>

@@ -332,7 +332,11 @@ test('published images support tone, sheets, save, sync and returning to view', 
   await page.getByTestId('sheets').click();
   await expect(page.getByTestId('busy')).toHaveCount(0);
   await expect(page.locator('.page')).toBeVisible();
-  const svg = await downloadText(page, () => page.getByRole('button', { name: /SVG/ }).click());
+  // Print export is one PDF now; the on-screen page is the same sheet SVG.
+  const svg = await page.getByTestId('page').evaluate(async (img: HTMLImageElement) => (await fetch(img.src)).text());
+  const pdf = page.waitForEvent('download');
+  await page.getByTestId('export-pdf').click();
+  expect((await pdf).suggestedFilename()).toMatch(/_print_\d{4}-\d{2}-\d{2}\.pdf$/);
   // Sheets carry the mosaic and sample legend; spots are drawn by hand at the laser.
   expect(svg).toContain('<image');
   expect(svg).toContain('Synthetic area');

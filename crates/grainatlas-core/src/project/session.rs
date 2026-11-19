@@ -1186,6 +1186,9 @@ impl Session {
     }
 
     pub fn layout(&self, params: &str, grains: &str, spots: &str, labels: &str, tone: &str) -> Result<String> {
+        self.layout_page(params, grains, spots, labels, tone, None)
+    }
+    fn layout_page(&self, params: &str, grains: &str, spots: &str, labels: &str, tone: &str, page: Option<usize>) -> Result<String> {
         let p: crate::layout::LayoutParams = serde_json::from_str(params).map_err(invalid)?;
         let grains: BTreeMap<String, Vec<Grain>> = serde_json::from_str(grains).map_err(invalid)?;
         let spots: Vec<Spot> = serde_json::from_str(spots).map_err(invalid)?;
@@ -1197,7 +1200,9 @@ impl Session {
             .iter()
             .filter_map(|rec| Some(pipeline::area_image(rec, self.outputs.get(&rec.id)?, tone.get(&rec.id).unwrap_or(&rec.params.tone))))
             .collect();
-        serde_json::to_string(&crate::layout::layout(&p, &imgs, &grains, &spots, &labels)).map_err(invalid)
+        let result = if let Some(page) = page { crate::layout::layout_page(&p, &imgs, &grains, &spots, &labels, page) }
+            else { crate::layout::layout(&p, &imgs, &grains, &spots, &labels) };
+        serde_json::to_string(&result).map_err(invalid)
     }
 
     /// All files of the project folder (plan section 5.4) for a full project JSON that also

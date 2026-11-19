@@ -49,6 +49,10 @@ export class TauriCore implements Core {
   }
 
   async dispose(): Promise<void> {
+    this.printClosed = true;
+    this.printParser?.terminate();
+    for (const reply of this.printReplies.values()) reply.reject(new Error('Project closed'));
+    this.printReplies.clear();
     (await this.unlisten)();
     await tauriInvoke('close_tab', { tab: this.tab });
   }
@@ -210,6 +214,10 @@ export class TauriCore implements Core {
   async register(pairs: [[number, number], [number, number]][]) {
     return JSON.parse(await this.call<string>('register', { pairs: JSON.stringify(pairs) }));
   }
+  async printPages(job: number): Promise<string[]> { return (await this.printResult<{ pages: string[] }>('print_task', { job, action: 'full', page: 0 })).pages; }
+  async printTask(job: number, action: string, page = 0): Promise<Uint8Array> {
+    return bytes(await this.call<ArrayBuffer>('print_task', { job, action, page }));
+  }
   async pdf(pages: string[]): Promise<Uint8Array> {
     return bytes(await this.call<ArrayBuffer>('pdf', { pages: JSON.stringify(pages) }));
   }
@@ -249,19 +257,46 @@ export class TauriCore implements Core {
   async ownership(grains: Record<string, Grain[]>): Promise<Ownership> {
     return JSON.parse(await this.call<string>('ownership', { grains: JSON.stringify(grains) }));
   }
+  private printClosed = false;
+  private printParser: Worker | null = null;
+  private printSequence = 0;
+  private printReplies = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private async printResult<T>(command: string, args: InvokeArgs): Promise<T> {
+    if (this.printClosed) throw new Error('Project closed');
+    const body = await this.call<ArrayBuffer>(command, args);
+    if (this.printClosed) throw new Error('Project closed');
+    if (!this.printParser) {
+      this.printParser = new Worker(new URL('./print-json.worker.ts', import.meta.url), { type: 'module' });
+      this.printParser.onmessage = ({ data }) => {
+        const reply = this.printReplies.get(data.id);
+        this.printReplies.delete(data.id);
+        if (data.error) reply?.reject(new Error(data.error)); else reply?.resolve(data.value);
+      };
+      this.printParser.onerror = () => {
+        for (const reply of this.printReplies.values()) reply.reject(new Error('Print response could not be read'));
+        this.printReplies.clear();
+        this.printParser?.terminate(); this.printParser = null;
+      };
+    }
+    const id = ++this.printSequence;
+    return new Promise<T>((resolve, reject) => {
+      this.printReplies.set(id, { resolve: value => resolve(value as T), reject });
+      this.printParser!.postMessage({ id, body }, [body]);
+    });
+  }
   async printWhole(params: WholeParams, tone: Record<string, ToneParams>): Promise<WholeResult> {
-    return JSON.parse(await this.call<string>('print_whole', { params: JSON.stringify(params), tone: JSON.stringify(tone) }));
+    return this.printResult('print_whole', { params: JSON.stringify(params), tone: JSON.stringify(tone) });
   }
 
   async printPlanRender(plan: SheetPlan, edits: StripEdit[] | PrintEdits, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>): Promise<SheetResult> {
-    return JSON.parse(await this.call<string>('print_plan_render', { plan: JSON.stringify(plan), edits: JSON.stringify(edits), grains: JSON.stringify(grains), tone: JSON.stringify(tone) }));
+    return this.printResult('print_plan_render', { plan: JSON.stringify(plan), edits: JSON.stringify(edits), grains: JSON.stringify(grains), tone: JSON.stringify(tone) });
   }
   async printBandImage(areaId: string, mosaicRectUm: SheetRect, tone: Record<string, ToneParams>): Promise<Uint8Array> {
-    return new Uint8Array(await this.call<number[]>('print_band_image', { areaId, mosaicRectUm, tone: JSON.stringify(tone) }));
+    return bytes(await this.call<ArrayBuffer>('print_band_image', { areaId, mosaicRectUm, tone: JSON.stringify(tone) }));
   }
 
   async printSheets(params: SheetParams, grains: Record<string, Grain[]>, tone: Record<string, ToneParams>, edits?: PrintEdits): Promise<SheetResult> {
-    return JSON.parse(await this.call<string>('print_sheets', { params: JSON.stringify(params), grains: JSON.stringify(grains), tone: JSON.stringify(tone), edits: edits ? JSON.stringify(edits) : null }));
+    return this.printResult('print_sheets', { params: JSON.stringify(params), grains: JSON.stringify(grains), tone: JSON.stringify(tone), edits: edits ? JSON.stringify(edits) : null });
   }
 }
 
@@ -270,4 +305,11 @@ export async function saveFile(name: string, data: Uint8Array | string): Promise
   if (!canWrite()) return null;
   const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
   return tauriInvoke<string | null>('save_bytes', body, { headers: { 'x-name': encodeURIComponent(name), 'x-tab': String(saveTab) } });
+}
+
+/** PDF and sidecar share one native path choice. */
+export async function savePrintPdf(name: string, pdf: Uint8Array, registration: string | null): Promise<string | null> {
+  if (!canWrite()) return null;
+  const { printSavePacket } = await import('../print-save');
+  return tauriInvoke<string | null>('save_print_pdf', printSavePacket(pdf, registration), { headers: { 'x-name': encodeURIComponent(name), 'x-tab': String(saveTab) } });
 }

@@ -90,6 +90,11 @@ windows-installer: ui-build icons
 	cd tauri; \
 	LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json
 
+# Cross-build the Windows executable; the supervisor packages the installer.
+.PHONY: windows
+windows: ui-build icons
+	cd tauri && cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
+
 desktop-check: icons
 	cargo check -p grainatlas-desktop
 

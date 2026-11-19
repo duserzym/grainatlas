@@ -288,18 +288,21 @@ impl Session {
         self.0.print_sheets(params, grains, tone).map_err(err)
     }
     pub fn print_sheets_with_edits(&self, params: &str, grains: &str, tone: &str, edits: &str) -> Result<String, JsError> {
-        self.0.print_sheets_with_edits(params, grains, tone, edits).map_err(err)
+        self.0.print_sheets_preview(params, grains, tone, edits).map_err(err)
     }
     pub fn print_plan_render(&self, plan: &str, edits: &str, grains: &str, tone: &str) -> Result<String, JsError> {
-        self.0.print_plan_render(plan, edits, grains, tone).map_err(err)
+        self.0.print_plan_preview(plan, edits, grains, tone).map_err(err)
     }
     pub fn print_band_image(&self, area_id: &str, mosaic_rect_um: &str, tone: &str) -> Result<Vec<u8>, JsError> {
         let rect = serde_json::from_str(mosaic_rect_um).map_err(err)?;
-        self.0.print_band_image(area_id, rect, tone).map_err(err)
+        self.0.print_band_preview(area_id, rect, tone).map_err(err)
     }
     /// Whole area on one sheet (WholeParams and tone JSON); no grains required.
     pub fn print_whole(&self, params: &str, tone: &str) -> Result<String, JsError> {
-        self.0.print_whole(params, tone).map_err(err)
+        self.0.print_whole_preview(params, tone).map_err(err)
+    }
+    pub fn print_task(&self, job: usize, action: &str, page: usize) -> Result<Vec<u8>, JsError> {
+        self.0.print_task(job, action, page).map_err(err)
     }
     /// Header metadata of the open package for print sheets.
     pub fn sheet_meta(&self) -> Result<String, JsError> {
@@ -314,7 +317,7 @@ impl Session {
         self.0.pin_identity(project_id, created).map_err(err)
     }
     pub fn layout(&self, params: &str, grains: &str, spots: &str, labels: &str, tone: &str) -> Result<String, JsError> {
-        self.0.layout(params, grains, spots, labels, tone).map_err(err)
+        self.0.layout_preview(params, grains, spots, labels, tone).map_err(err)
     }
 }
 

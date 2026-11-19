@@ -78,6 +78,84 @@ pub fn nl_means(g: &Gray, h: f32, sigma: f32, patch: usize, search: usize) -> Gr
         let (y0, y1) = (si * STRIP, ((si + 1) * STRIP).min(ht));
         // Padded region: rows y0-pad .. y1+pad, cols -pad .. w+pad (clamped samples).
         let (pw, ph) = (w + 2 * pad as usize, (y1 - y0) + 2 * pad as usize);
+        // Cache clamped samples once. Every offset then reads contiguous rows;
+        // arithmetic and accumulation order remain identical to the reference.
+        let border = sr as usize;
+        let stride = pw + 2 * border;
+        let padded: Vec<f32> = (0..ph + 2 * border).flat_map(|yy| {
+            (0..stride).map(move |xx| g.atc(xx as i64 - pad - sr, y0 as i64 - pad - sr + yy as i64))
+        }).collect();
+        let mut acc = vec![0f32; (y1 - y0) * w];
+        let mut wsum = vec![0f32; (y1 - y0) * w];
+        let mut wmax = vec![0f32; (y1 - y0) * w];
+        let mut integ = vec![0f64; (pw + 1) * (ph + 1)];
+        for dy in -sr..=sr {
+            for dx in -sr..=sr {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                // Integral image of (I(p) - I(p+d))² over the region needed for the patches.
+                for yy in 0..ph {
+                    let center = (yy + border) * stride + border;
+                    let shifted = ((yy + border) as i64 + dy) as usize * stride + (border as i64 + dx) as usize;
+                    let a = &padded[center..center + pw];
+                    let b = &padded[shifted..shifted + pw];
+                    let mut row = 0f64;
+                    for xx in 0..pw {
+                        let d = a[xx] - b[xx];
+                        row += (d * d) as f64;
+                        integ[(yy + 1) * (pw + 1) + xx + 1] = integ[yy * (pw + 1) + xx + 1] + row;
+                    }
+                }
+                for y in y0..y1 {
+                    let yy = (y as i64 - y0 as i64 + pad) as usize;
+                    let neighbor = ((yy + border) as i64 + dy) as usize * stride
+                        + (pad + sr + dx) as usize;
+                    let neighbors = &padded[neighbor..neighbor + w];
+                    for (x, &neighbor) in neighbors.iter().enumerate() {
+                        let xx = x + pad as usize;
+                        let (a0, a1) = (xx - pr as usize, xx + pr as usize + 1);
+                        let (b0, b1) = (yy - pr as usize, yy + pr as usize + 1);
+                        let s = integ[b1 * (pw + 1) + a1] - integ[b0 * (pw + 1) + a1] - integ[b1 * (pw + 1) + a0] + integ[b0 * (pw + 1) + a0];
+                        let d2 = s as f32 / area;
+                        let wt = (-(d2 - s2).max(0.0) / h2).exp();
+                        let i = (y - y0) * w + x;
+                        acc[i] += wt * neighbor;
+                        wsum[i] += wt;
+                        wmax[i] = wmax[i].max(wt);
+                    }
+                }
+            }
+        }
+        // The pixel itself gets the largest weight any other patch got.
+        (0..(y1 - y0) * w)
+            .map(|i| {
+                let (x, y) = (i % w, y0 + i / w);
+                let own = wmax[i].max(1e-6);
+                (acc[i] + own * g.px[y * w + x]) / (wsum[i] + own)
+            })
+            .collect()
+    });
+    Gray { w, h: ht, px: rows.into_iter().flatten().collect() }
+}
+
+#[cfg(test)]
+fn nl_means_reference(g: &Gray, h: f32, sigma: f32, patch: usize, search: usize) -> Gray {
+    let (w, ht) = (g.w, g.h);
+    if w == 0 || ht == 0 || h <= 0.0 {
+        return g.clone();
+    }
+    let pr = (patch / 2) as i64;
+    let sr = search as i64;
+    let pad = pr + sr;
+    let area = ((2 * pr + 1) * (2 * pr + 1)) as f32;
+    let (h2, s2) = (h * h, 2.0 * sigma * sigma);
+    const STRIP: usize = 32;
+    let strips = ht.div_ceil(STRIP);
+    let rows: Vec<Vec<f32>> = crate::util::par_map(strips, |si| {
+        let (y0, y1) = (si * STRIP, ((si + 1) * STRIP).min(ht));
+        // Padded region: rows y0-pad .. y1+pad, cols -pad .. w+pad (clamped samples).
+        let (pw, ph) = (w + 2 * pad as usize, (y1 - y0) + 2 * pad as usize);
         let at = |x: i64, y: i64| g.atc(x, y);
         let mut acc = vec![0f32; (y1 - y0) * w];
         let mut wsum = vec![0f32; (y1 - y0) * w];
@@ -220,4 +298,31 @@ pub fn strip_background(g: &mut Gray, mask: &[bool], grey: f32, um_per_px: f64) 
         *v = *v * s + grey * (1.0 - s);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod exact_nlm_tests {
+    use super::*;
+    #[cfg(all(feature="parallel",not(target_arch="wasm32")))]
+    #[test]
+    fn one_large_band_is_identical_with_one_or_four_row_workers() {
+        let g = Gray { w:257,h:137,px:(0..257*137).map(|i| ((i*73+i/7)%256) as f32/255.0).collect() };
+        let run = |threads| rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| nl_means(&g,0.08,0.03,5,6));
+        let serial = run(1); let parallel = run(4);
+        assert_eq!(serial.px,parallel.px); assert_eq!(serial.to_u8(),parallel.to_u8());
+    }
+    #[test]
+    fn cached_samples_preserve_every_float_and_encoded_pixel() {
+        for (w, h) in [(1, 1), (2, 7), (17, 35), (41, 33)] {
+            let g = Gray { w, h, px: (0..w*h).map(|i| ((i*73+i/7)%256) as f32/255.0).collect() };
+            for search in [1, 6] {
+                for strength in [0.12, 0.0001] {
+                    let a = nl_means(&g, strength, 0.03, 5, search);
+                    let b = nl_means_reference(&g, strength, 0.03, 5, search);
+                    assert_eq!(a.px, b.px, "{w} x {h}, search {search}");
+                    assert_eq!(a.to_u8(), b.to_u8());
+                }
+            }
+        }
+    }
 }

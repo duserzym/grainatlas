@@ -354,6 +354,10 @@ export class WasmCore implements Core {
     return this.call<{ matrix: [number, number, number, number, number, number]; rms_um: number; residuals_um: number[] } | null>('register', { pairs });
   }
 
+  async printPages(job: number): Promise<string[]> { await this.ready(); return this.call('printPages', { job }); }
+  async printTask(job: number, action: string, page = 0): Promise<Uint8Array> {
+    await this.ready(); return this.call('printTask', { job, action, page });
+  }
   async pdf(pages: string[]): Promise<Uint8Array> {
     return this.call('pdf', { pages });
   }

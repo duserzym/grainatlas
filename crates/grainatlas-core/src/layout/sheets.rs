@@ -1841,6 +1841,12 @@ pub fn audit(reg: &PrintRegistration, printed: &[Vec<&Grain>], areas: &[SheetAre
 /// One band: the mosaic crop with the display LUT, enhanced as asked, as PNG; and what happened
 /// to its background.
 pub fn band_png(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhanceParams) -> (Vec<u8>, String) {
+    let (w, h, px, bg) = band_pixels(img, rect, grains, e);
+    (crate::image::encode_png_gray(w, h, &px), bg)
+}
+
+/// Unencoded band pixels, also used to separate enhancement and encoding in benchmarks.
+pub fn band_pixels(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhanceParams) -> (usize, usize, Vec<u8>, String) {
     let u = img.um_per_px;
     let (x0, y0) = ((rect[0] / u).round() as usize, (rect[1] / u).round() as usize);
     let (x1, y1) = (((rect[2] / u).round() as usize).min(img.w), ((rect[3] / u).round() as usize).min(img.h));
@@ -1863,7 +1869,7 @@ pub fn band_png(img: &AreaImage, rect: [f64; 4], grains: &[Grain], e: &EnhancePa
             },
         };
     }
-    (crate::image::encode_png_gray(cw, ch, &g.to_u8()), bg)
+    (cw, ch, g.to_u8(), bg)
 }
 
 /// A single hatch mask unions the strips and punches out all owned boxes plus

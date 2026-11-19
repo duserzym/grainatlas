@@ -3,7 +3,9 @@
 //! DejaVu Sans font (Bitstream Vera licence, see assets/fonts/LICENSE_DEJAVU),
 //! so the PDF is the same natively and in the browser.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+mod objects;
 use std::sync::{Arc, OnceLock};
 
 use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref};
@@ -19,53 +21,432 @@ fn options() -> &'static usvg::Options<'static> {
         let mut db = usvg::fontdb::Database::new();
         db.load_font_data(FONT.to_vec());
         db.set_sans_serif_family("DejaVu Sans");
-        let mut o = usvg::Options { font_family: "DejaVu Sans".into(), ..Default::default() };
+        let mut o = usvg::Options {
+            font_family: "DejaVu Sans".into(),
+            ..Default::default()
+        };
         o.fontdb = Arc::new(db);
         o
     })
 }
 
-/// Converts SVG pages (sizes in mm) to a PDF.
-pub fn pdf_from_svgs(pages: &[String]) -> Result<Vec<u8>> {
-    let mut alloc = Ref::new(1);
-    let catalog = alloc.bump();
-    let tree_id = alloc.bump();
-    let mut pdf = Pdf::new();
-    let mut page_ids = Vec::new();
-    let mut chunks = Vec::new();
-    for (i, svg) in pages.iter().enumerate() {
-        let tree = usvg::Tree::from_str(svg, options()).map_err(|e| Error::Invalid(format!("page {}: {e}", i + 1)))?;
-        let (chunk, svg_ref) = svg2pdf::to_chunk(&tree, svg2pdf::ConversionOptions::default()).map_err(|e| Error::Invalid(format!("page {}: {e}", i + 1)))?;
-        let mut map = HashMap::new();
-        let chunk = chunk.renumber(|old| *map.entry(old).or_insert_with(|| alloc.bump()));
-        let svg_ref = map[&svg_ref];
-        // usvg sizes are CSS px at 96 dpi; PDF points are 1/72 in.
-        let size = tree.size();
-        let r = |v: f32| (v * 72.0 / 96.0 * 100.0).round() / 100.0;
-        let (wpt, hpt) = (r(size.width()), r(size.height()));
-        let page_id = alloc.bump();
-        let content_id = alloc.bump();
-        let name = format!("S{i}");
-        {
-            let mut page = pdf.page(page_id);
-            page.media_box(Rect::new(0.0, 0.0, wpt, hpt));
-            page.parent(tree_id);
-            page.contents(content_id);
-            let mut res = page.resources();
-            res.x_objects().pair(Name(name.as_bytes()), svg_ref);
-            res.finish();
-            page.finish();
+/// Incremental PDF assembler. One push is a cancellation/progress boundary.
+/// Generated root-level grayscale PNG images reuse their IDAT streams: no pixel
+/// decode, RGB expansion or second compression. Vector layers preserve SVG order.
+pub struct PdfBuilder {
+    alloc: Ref,
+    catalog: Ref,
+    tree: Ref,
+    pdf: Pdf,
+    pages: Vec<Ref>,
+    objects: objects::Objects,
+    images: HashMap<(i32, i32, String), Ref>,
+    glyphs: HashSet<(usvg::fontdb::ID, u16)>,
+    seed: String,
+    clusters: HashSet<String>,
+    seed_ready: bool,
+    prepared: usize,
+    attachment: Option<(String, Vec<u8>)>,
+}
+impl Default for PdfBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl PdfBuilder {
+    pub fn new() -> Self {
+        let mut alloc = Ref::new(1);
+        let catalog = alloc.bump();
+        let tree = alloc.bump();
+        Self {
+            alloc,
+            catalog,
+            tree,
+            pdf: Pdf::new(),
+            pages: Vec::new(),
+            objects: objects::Objects::default(),
+            images: HashMap::new(),
+            glyphs: HashSet::new(),
+            seed: String::new(),
+            clusters: HashSet::new(),
+            seed_ready: false,
+            prepared: 0,
+            attachment: None,
         }
+    }
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+    /// Preflight all pages before push: every layer uses the same glyph subset
+    /// and CID assignment, so its font objects can be shared across the document.
+    pub fn prepare(&mut self, svg: &str) -> Result<()> {
+        let doc = roxmltree::Document::parse(svg).map_err(|e| Error::Invalid(e.to_string()))?;
+        let opening = &svg[..svg.find('>').unwrap() + 1];
+        let vector: String = doc
+            .root_element()
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() != "image")
+            .map(|n| &svg[n.range()])
+            .collect();
+        let tree = usvg::Tree::from_str(&format!("{opening}{vector}</svg>"), options())
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        self.font_samples(tree.root());
+        self.prepared += 1;
+        Ok(())
+    }
+    pub fn prepared(&self) -> usize {
+        self.prepared
+    }
+    fn font_samples(&mut self, group: &usvg::Group) {
+        for node in group.children() {
+            match node {
+                usvg::Node::Text(text) => {
+                    self.clusters.extend(
+                        text.layouted()
+                            .iter()
+                            .flat_map(|s| &s.positioned_glyphs)
+                            .map(|g| g.text.clone()),
+                    );
+                    let glyphs: Vec<_> = text
+                        .layouted()
+                        .iter()
+                        .flat_map(|s| &s.positioned_glyphs)
+                        .map(|g| (g.font, g.id.0))
+                        .collect();
+                    if glyphs.iter().any(|g| !self.glyphs.contains(g)) {
+                        for chunk in text.chunks() {
+                            let text = chunk
+                                .text()
+                                .replace('&', "&amp;")
+                                .replace('<', "&lt;")
+                                .replace('>', "&gt;");
+                            self.seed
+                                .push_str(&format!("<text font-size=\"1\">{text}</text>"));
+                        }
+                        self.glyphs.extend(glyphs);
+                    }
+                }
+                usvg::Node::Group(group) => self.font_samples(group),
+                _ => (),
+            }
+        }
+    }
+    fn compact_seed(&mut self) -> Result<()> {
+        if self.seed_ready {
+            return Ok(());
+        }
+        // Most sheets need only a short alphabet of shaping clusters. Verify
+        // the actual glyph ids, retaining the full-context samples for scripts
+        // whose glyph selection depends on surrounding text.
+        let mut clusters: Vec<_> = self.clusters.iter().map(String::as_str).collect();
+        clusters.sort_unstable();
+        let text = clusters
+            .join(" ")
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        let seed = format!("<text font-size=\"1\">{text}</text>");
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">{seed}</svg>"#
+        );
+        let tree =
+            usvg::Tree::from_str(&svg, options()).map_err(|e| Error::Invalid(e.to_string()))?;
+        fn glyphs(group: &usvg::Group, out: &mut HashSet<(usvg::fontdb::ID, u16)>) {
+            for node in group.children() {
+                match node {
+                    usvg::Node::Text(t) => out.extend(
+                        t.layouted()
+                            .iter()
+                            .flat_map(|s| &s.positioned_glyphs)
+                            .map(|g| (g.font, g.id.0)),
+                    ),
+                    usvg::Node::Group(g) => glyphs(g, out),
+                    _ => (),
+                }
+            }
+        }
+        let mut covered = HashSet::new();
+        glyphs(tree.root(), &mut covered);
+        if self.glyphs.is_subset(&covered) {
+            self.seed = seed;
+        }
+        self.seed_ready = true;
+        Ok(())
+    }
+    pub fn attach(&mut self, name: &str, bytes: Vec<u8>) {
+        self.attachment = Some((name.into(), bytes));
+    }
+    pub fn push(&mut self, svg: &str) -> Result<()> {
+        self.compact_seed()?;
+        let doc = roxmltree::Document::parse(svg).map_err(|e| Error::Invalid(e.to_string()))?;
+        let root = doc.root_element();
+        let mm = |key| {
+            root.attribute(key)
+                .and_then(|v| v.trim_end_matches("mm").parse::<f32>().ok())
+        };
+        let (wmm, hmm) = (
+            mm("width").ok_or_else(|| Error::Invalid("missing page width".into()))?,
+            mm("height").ok_or_else(|| Error::Invalid("missing page height".into()))?,
+        );
+        let r = |v: f32| (v * 72.0 / 25.4 * 100.0).round() / 100.0;
+        let (wpt, hpt) = (r(wmm), r(hmm));
+        let opening = &svg[..svg.find('>').unwrap() + 1];
+        let defs: String = root
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "defs")
+            .map(|n| &svg[n.range()])
+            .collect();
+        let mut layers = Vec::<(Ref, [f32; 6])>::new();
+        let mut vector = String::new();
+        for node in root.children().filter(|n| n.is_element()) {
+            if node.tag_name().name() == "defs" {
+                continue;
+            }
+            let png = if node.tag_name().name() == "image"
+                && node.attribute("preserveAspectRatio") == Some("none")
+            {
+                node.attribute(("http://www.w3.org/1999/xlink", "href"))
+                    .or_else(|| node.attribute("href"))
+                    .and_then(|v| v.strip_prefix("data:image/png;base64,"))
+                    .and_then(png_stream)
+            } else {
+                None
+            };
+            if let Some((w, h, data)) = png {
+                if !vector.is_empty() {
+                    layers.push((
+                        self.vector(&format!("{opening}{defs}{vector}</svg>"))?,
+                        [wpt, 0.0, 0.0, hpt, 0.0, 0.0],
+                    ));
+                    vector.clear();
+                }
+                let key = (w, h, crate::util::sha256_hex(&data));
+                let id = if let Some(&id) = self.images.get(&key) {
+                    id
+                } else {
+                    let id = self.alloc.bump();
+                    let mut image = self.pdf.image_xobject(id, &data);
+                    image.width(w).height(h).bits_per_component(8);
+                    image.color_space().device_gray();
+                    image.filter(pdf_writer::Filter::FlateDecode);
+                    image
+                        .decode_parms()
+                        .predictor(pdf_writer::types::Predictor::PngOptimum)
+                        .colors(1)
+                        .bits_per_component(8)
+                        .columns(w);
+                    image.finish();
+                    self.images.insert(key, id);
+                    id
+                };
+                let attr = |key| {
+                    node.attribute(key)
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(0.0)
+                };
+                let (x, y, w, h) = (attr("x"), attr("y"), attr("width"), attr("height"));
+                layers.push((
+                    id,
+                    [
+                        w / wmm * wpt,
+                        0.0,
+                        0.0,
+                        h / hmm * hpt,
+                        x / wmm * wpt,
+                        (1.0 - (y + h) / hmm) * hpt,
+                    ],
+                ));
+            } else {
+                vector.push_str(&svg[node.range()]);
+            }
+        }
+        if !vector.is_empty() {
+            layers.push((
+                self.vector(&format!("{opening}{defs}{vector}</svg>"))?,
+                [wpt, 0.0, 0.0, hpt, 0.0, 0.0],
+            ));
+        }
+        let page_id = self.alloc.bump();
+        let content_id = self.alloc.bump();
         let mut content = Content::new();
-        content.transform([wpt, 0.0, 0.0, hpt, 0.0, 0.0]).x_object(Name(name.as_bytes()));
-        pdf.stream(content_id, &content.finish());
-        page_ids.push(page_id);
-        chunks.push(chunk);
+        {
+            let mut page = self.pdf.page(page_id);
+            page.media_box(Rect::new(0.0, 0.0, wpt, hpt));
+            page.parent(self.tree);
+            page.contents(content_id);
+            let mut resources = page.resources();
+            let mut objects = resources.x_objects();
+            for (i, (id, matrix)) in layers.iter().enumerate() {
+                let name = format!("L{i}");
+                objects.pair(Name(name.as_bytes()), *id);
+                content
+                    .save_state()
+                    .transform(*matrix)
+                    .x_object(Name(name.as_bytes()))
+                    .restore_state();
+            }
+        }
+        self.pdf.stream(content_id, &content.finish());
+        self.pages.push(page_id);
+        Ok(())
     }
-    pdf.catalog(catalog).pages(tree_id);
-    pdf.pages(tree_id).kids(page_ids.iter().copied()).count(page_ids.len() as i32);
-    for c in &chunks {
-        pdf.extend(c);
+    fn vector(&mut self, svg: &str) -> Result<Ref> {
+        // Hidden samples participate in font subsetting, but never paint. Put
+        // them before and after the layer for stable CID and Unicode mappings.
+        let at = svg.find('>').unwrap() + 1;
+        let seed = format!("<g visibility=\"hidden\">{}</g>", self.seed);
+        let svg = format!(
+            "{}{}{}{}{}",
+            &svg[..at],
+            seed,
+            &svg[at..svg.len() - 6],
+            seed,
+            "</svg>"
+        );
+        let tree =
+            usvg::Tree::from_str(&svg, options()).map_err(|e| Error::Invalid(e.to_string()))?;
+        let (chunk, id) = svg2pdf::to_chunk(&tree, svg2pdf::ConversionOptions::default())
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        self.objects
+            .import(&mut self.pdf, &mut self.alloc, &chunk, id)
     }
-    Ok(pdf.finish())
+    pub fn finish(mut self) -> Vec<u8> {
+        let attachment = self.attachment.take().map(|(name, bytes)| {
+            let data = self.alloc.bump();
+            let spec = self.alloc.bump();
+            self.pdf
+                .embedded_file(data, &bytes)
+                .subtype(Name(b"application/json"))
+                .params()
+                .size(bytes.len() as i32);
+            self.pdf
+                .file_spec(spec)
+                .path(pdf_writer::Str(name.as_bytes()))
+                .unic_file(pdf_writer::TextStr(&name))
+                .embedded_file_with_unicode(data);
+            (name, spec)
+        });
+        let mut catalog = self.pdf.catalog(self.catalog);
+        catalog.pages(self.tree);
+        if let Some((name, spec)) = &attachment {
+            catalog
+                .names()
+                .embedded_files()
+                .names()
+                .insert(pdf_writer::Str(name.as_bytes()), *spec);
+        }
+        catalog.finish();
+        self.pdf
+            .pages(self.tree)
+            .kids(self.pages.iter().copied())
+            .count(self.pages.len() as i32);
+        self.pdf.finish()
+    }
+}
+fn png_stream(encoded: &str) -> Option<(i32, i32, Vec<u8>)> {
+    let mut bytes = Vec::with_capacity(encoded.len() * 3 / 4);
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for c in encoded.bytes().take_while(|c| *c != b'=') {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((acc >> bits) as u8);
+        }
+    }
+    if bytes.get(..8)? != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let mut at = 8;
+    let mut size = None;
+    let mut data = Vec::new();
+    while at + 12 <= bytes.len() {
+        let n = u32::from_be_bytes(bytes[at..at + 4].try_into().ok()?) as usize;
+        let chunk = bytes.get(at + 8..at + 8 + n)?;
+        match &bytes[at + 4..at + 8] {
+            b"IHDR" => {
+                if chunk.len() != 13 || chunk[8..] != [8, 0, 0, 0, 0] {
+                    return None;
+                }
+                size = Some((
+                    i32::from_be_bytes(chunk[..4].try_into().ok()?),
+                    i32::from_be_bytes(chunk[4..8].try_into().ok()?),
+                ));
+            }
+            b"IDAT" => data.extend_from_slice(chunk),
+            _ => (),
+        }
+        at += 12 + n;
+    }
+    let (w, h) = size?;
+    if w <= 0 || h <= 0 || data.is_empty() {
+        return None;
+    }
+    Some((w, h, data))
+}
+/// Converts SVG pages (sizes in mm) to a PDF, retaining image pixels exactly.
+pub fn pdf_from_svgs(pages: &[String]) -> Result<Vec<u8>> {
+    let mut builder = PdfBuilder::new();
+    for page in pages {
+        builder.prepare(page)?;
+    }
+    for page in pages {
+        builder.push(page)?;
+    }
+    Ok(builder.finish())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn png_idat_is_reused_without_reencoding() {
+        let px: Vec<_> = (0..120).map(|i| (i * 13) as u8).collect();
+        let png = crate::image::encode_png_gray(12, 10, &px);
+        let (w, h, idat) = png_stream(&crate::layout::base64(&png)).unwrap();
+        assert_eq!((w, h), (12, 10));
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20mm" height="20mm" viewBox="0 0 20 20"><rect width="20" height="20" fill="white"/><image x="1" y="2" width="12" height="10" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/><path d="M1 2h12" stroke="black"/></svg>"#,
+            crate::layout::base64(&png)
+        );
+        let pdf = pdf_from_svgs(&[svg.clone(), svg]).unwrap();
+        assert!(pdf.windows(idat.len()).any(|v| v == idat));
+        assert!(pdf.starts_with(b"%PDF"));
+        assert_eq!(
+            pdf.windows(b"/Subtype /Image".len())
+                .filter(|v| *v == b"/Subtype /Image")
+                .count(),
+            1
+        );
+    }
+    #[test]
+    fn all_pages_share_one_font_and_registration_is_an_embedded_file() {
+        let pages: Vec<_> = ["office 10 µm", "affinity 29 Ω", "Grain 47", "Échantillon 83", "عينة 52"].iter().map(|text| format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="50mm" viewBox="0 0 50 50"><text x="2" y="10" font-size="4">{text}</text></svg>"#)).collect();
+        let mut pdf = PdfBuilder::new();
+        for page in &pages {
+            pdf.prepare(page).unwrap();
+        }
+        for page in &pages {
+            pdf.push(page).unwrap();
+        }
+        let json = br#"{"spots":[{"id":"registered"}]}"#;
+        pdf.attach("print_registration.json", json.to_vec());
+        let bytes = pdf.finish();
+        let count = |key: &[u8]| bytes.windows(key.len()).filter(|v| *v == key).count();
+        assert_eq!(count(b"/Subtype /Type0"), 1);
+        assert_eq!(count(b"/FontFile2"), 1);
+        assert_eq!(count(b"/EmbeddedFiles"), 1);
+        assert_eq!(count(json), 1);
+    }
 }

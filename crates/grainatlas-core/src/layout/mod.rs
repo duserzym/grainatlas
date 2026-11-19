@@ -140,6 +140,17 @@ const FOOTER_MM: f64 = 12.0;
 
 /// Lays out pages.
 pub fn layout(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String, Vec<Grain>>, spots: &[Spot], labels: &[Label]) -> LayoutResult {
+    layout_with_images(p, areas, grains, spots, labels, &|a, rect, k| crop_png(a, rect, k, p.dpi).0)
+}
+/// Same geometry, with a preview image provider.
+pub fn layout_with_images(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String, Vec<Grain>>, spots: &[Spot], labels: &[Label], image: &impl Fn(&AreaImage, [f64; 4], f64) -> Vec<u8>) -> LayoutResult {
+    layout_pages(p, areas, grains, spots, labels, image, None)
+}
+/// One original page, for cooperative full-resolution export preparation.
+pub fn layout_page(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String, Vec<Grain>>, spots: &[Spot], labels: &[Label], page: usize) -> LayoutResult {
+    layout_pages(p, areas, grains, spots, labels, &|a, rect, k| crop_png(a, rect, k, p.dpi).0, Some(page))
+}
+fn layout_pages(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String, Vec<Grain>>, spots: &[Spot], labels: &[Label], image: &impl Fn(&AreaImage, [f64; 4], f64) -> Vec<u8>, only: Option<usize>) -> LayoutResult {
     let page = p.page();
     let pw = page.w_mm - 2.0 * p.margin_mm;
     let ph = page.h_mm - 2.0 * p.margin_mm - HEADER_MM - FOOTER_MM;
@@ -229,7 +240,8 @@ pub fn layout(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String, V
     let svgs: Vec<String> = pages
         .iter()
         .enumerate()
-        .map(|(pi, list)| page_svg(p, page, um_per_mm, pi + 1, n, list, &placed_items, areas, spots, labels))
+        .filter(|(pi, _)| only.is_none_or(|selected| selected == *pi))
+        .map(|(pi, list)| page_svg(p, page, um_per_mm, pi + 1, n, list, &placed_items, areas, spots, labels, image))
         .collect();
     LayoutResult { pages: svgs, um_per_mm, items: placed_items.len(), paper_mm: [page.w_mm, page.h_mm] }
 }
@@ -253,7 +265,7 @@ fn esc(s: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages: usize, list: &[(usize, f64, f64)], items: &[Item], areas: &[AreaImage], spots: &[Spot], labels: &[Label]) -> String {
+fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages: usize, list: &[(usize, f64, f64)], items: &[Item], areas: &[AreaImage], spots: &[Spot], labels: &[Label], image: &impl Fn(&AreaImage, [f64; 4], f64) -> Vec<u8>) -> String {
     let (w, h) = (page.w_mm, page.h_mm);
     let ox = p.margin_mm;
     let oy = p.margin_mm + HEADER_MM;
@@ -277,7 +289,7 @@ fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages
             let _ = write!(s, r#"<text x="{x}" y="{}" font-size="3.2" fill="black">{}</text>"#, y + 3.6, esc(&it.label));
         }
         // Image crop at the print resolution.
-        let (png, _, _) = crop_png(a, it.rect, um_per_mm, p.dpi);
+        let png = image(a, it.rect, um_per_mm);
         let _ = write!(s, r#"<image x="{x}" y="{iy}" width="{wmm}" height="{hmm}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#, base64(&png));
         let tr = |ux: f64, uy: f64| (x + (ux - it.rect[0]) / um_per_mm, iy + (uy - it.rect[1]) / um_per_mm);
         let _ = write!(s, r#"<g><clipPath id="c{i}"><rect x="{x}" y="{iy}" width="{wmm}" height="{hmm}"/></clipPath></g><g clip-path="url(#c{i})">"#);

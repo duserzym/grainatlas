@@ -99,6 +99,29 @@ function problems(page: Page) {
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
   test(`grain sheets switch from lines to packed and fit ${viewport.width} x ${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
+    await page.addInitScript(() => {
+      const w = window as any; w.__printCoreCalls = 0; w.__pdfExports = []; w.__downloadRequests = [];
+      const blobs = new Map<string, Blob>();
+      const createURL = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = blob => { const url = createURL(blob); if (blob instanceof Blob) blobs.set(url, blob); return url; };
+      const click = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function() {
+        if (this.download) w.__downloadRequests.push(this.download);
+        if (this.download.endsWith('.pdf')) {
+          const blob = blobs.get(this.href);
+          const saved = { name: this.download, type: blob?.type, size: blob?.size, embedded: false };
+          w.__pdfExports.push(saved);
+          void blob?.text().then(text => { saved.embedded = text.includes('/EmbeddedFiles') && text.includes('print_registration.json'); });
+          return;
+        }
+        return click.call(this);
+      };
+      const send = Worker.prototype.postMessage;
+      Worker.prototype.postMessage = function(message: any, ...args: any[]) {
+        if (['printSheets', 'printPlanRender', 'printWhole'].includes(message?.op)) w.__printCoreCalls++;
+        return Reflect.apply(send, this, [message, ...args]);
+      };
+    });
     const unexpected = await mockServer(page);
     await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
     await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
@@ -110,9 +133,30 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
     await page.getByTestId('sheets').click();
     await expect(stats).toContainText('in lines');
     await expect(page.getByTestId('page')).toBeVisible();
+
+    const pageURL = await page.getByTestId('page').getAttribute('src');
+    const originalStats = await stats.innerText();
+    const coreCalls = await page.evaluate(() => (window as any).__printCoreCalls);
+    expect(coreCalls).toBeGreaterThan(0);
+    const nav = page.getByRole('navigation', { name: 'Screens' });
+    await nav.getByRole('button', { name: 'Canvas', exact: true }).click();
+    await nav.getByRole('button', { name: 'Layout', exact: true }).click();
+    await expect(stats).toHaveText(originalStats);
+    // The same live object URL proves the generated page was retained, rather
+    // than made again. No Make action occurs on return.
+    await expect(page.getByTestId('page')).toHaveAttribute('src', pageURL!);
+    await expect(page.getByTestId('busy')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__printCoreCalls)).toBe(coreCalls);
     await expect(page.getByText(/line width/)).toBeVisible();
     expect(await problems(page)).toEqual([]);
 
+    // An oversized automatic band must explain why export is unavailable,
+    // even with the strip editor closed. Do not bypass the geometry guard.
+    await page.getByTestId('sheet-scale').fill('0.1');
+    await page.getByTestId('sheets').click();
+    await expect(page.getByTestId('export-blocked')).toContainText('outside sheet body');
+    await expect(page.getByTestId('export-pdf')).toBeDisabled();
+    await page.getByTestId('sheet-scale').fill('');
     await packing.selectOption('packed');
     await expect(stats).toContainText('in lines');
     await page.getByTestId('sheets').click();
@@ -121,6 +165,17 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
     await expect(page.getByTestId('page')).toBeVisible();
     await expect(page.getByText(/blank on this sheet/)).toBeVisible();
     await expect(page.getByText(/line width/)).toHaveCount(0);
+
+    await expect(page.getByRole('button', { name: 'Export SVG', exact: true })).toHaveCount(0);
+    await page.getByTestId('export-pdf').click();
+    await expect.poll(() => page.evaluate(() => (window as any).__pdfExports.length)).toBe(1);
+    await expect.poll(() => page.evaluate(() => (window as any).__pdfExports[0]?.embedded)).toBe(true);
+    const pdfExport = await page.evaluate(() => (window as any).__pdfExports[0]);
+    const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
+    expect(pdfExport.name).toBe(`${project.package.name}_print_${new Date().toISOString().slice(0, 10)}.pdf`);
+    expect(await page.evaluate(() => (window as any).__downloadRequests)).toEqual([pdfExport.name]);
+    expect(pdfExport.type).toBe('application/pdf');
+    expect(pdfExport.size).toBeGreaterThan(100);
 
     const downloaded = page.waitForEvent('download');
     await page.getByTestId('export-registration').click();

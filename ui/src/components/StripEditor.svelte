@@ -1,19 +1,20 @@
 <script lang="ts">
   import { onDestroy, onMount, type Snippet } from 'svelte';
-  import { app } from '../lib/store.svelte';
+  import { current } from '../lib/store.svelte';
+  import type { PrintEditorState } from '../lib/print-cache';
   import type { Grain, SheetPlan, SheetRect, SheetResult, StripEdit, StripKey, ToneParams } from '../lib/core/types';
   import { bandImageKey, nudgeOrigin, sameKey, splitPairs, StripHistory } from '../lib/strip-edit';
   import StripControls from './StripControls.svelte';
   import StripPage from './StripPage.svelte';
-  let { base, result, urls, controls, droppedNotice, history, storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange }: {
+
+  const app = current();
+  let { base, result, urls, controls, droppedNotice, history, editorState = $bindable(), storedDropped = 0, page = $bindable(0), enabled, onresult, onpending, onchange }: {
+    editorState: PrintEditorState;
     base: SheetPlan; result: SheetResult; urls: string[]; controls: HTMLElement; history: StripHistory; page?: number; enabled: boolean;
     droppedNotice: Snippet<[boolean]>;
     storedDropped?: number; onresult: (r: SheetResult) => void; onpending: (v: boolean) => void; onchange: () => void;
   } = $props();
-  let selection = $state<StripKey | null>(null);
   let revision = $state(0);
-  let splitting = $state(false);
-  let axis = $state<'x' | 'y'>('x');
   let images = $state<Record<string, string>>({});
   let view = $state<ReturnType<typeof StripPage>>();
   let disposed = false;
@@ -21,7 +22,7 @@
   let requested = 0;
   let nextPage: number | null = null;
   const cache = new Map<string, Promise<string>>();
-  const selected = $derived(result.plan.strips.find(s => selection && sameKey(s.key, selection)));
+  const selected = $derived(result.plan.strips.find(s => editorState.selection && sameKey(s.key, editorState.selection)));
   const count = $derived.by(() => { void revision; return history.count + storedDropped; });
   const canUndo = $derived.by(() => { void revision; return history.past.length > 0; });
   const canRedo = $derived.by(() => { void revision; return history.future.length > 0; });
@@ -35,10 +36,10 @@
     return rects;
   });
   $effect(() => {
-    if (!enabled) { splitting = false; view?.cancel(); }
+    if (!enabled) { editorState.splitting = false; view?.cancel(); }
   });
   $effect(() => {
-    if (selected && selected.sheet !== page) { selection = null; splitting = false; }
+    if (selected && selected.sheet !== page) { editorState.selection = null; editorState.splitting = false; }
   });
   $effect(() => {
     if (!running) page = Math.min(page, result.pages.length - 1);
@@ -63,14 +64,14 @@
   onDestroy(() => { disposed = true; onpending(false); for (const url of Object.values(images)) URL.revokeObjectURL(url); });
 
   function select(key: StripKey | null) {
-    selection = key;
+    editorState.selection = key;
     const s = result.plan.strips.find(s => key && sameKey(s.key, key));
     if (s) page = s.sheet;
   }
   function edit(e: StripEdit, destination?: number) { if (app.readOnly) return; history.push($state.snapshot(e) as StripEdit); nextPage = destination ?? null; changed(); }
   function undo() { if (app.readOnly) return; nextPage = null; history.undo(); changed(); }
   function redo() { if (app.readOnly) return; nextPage = null; history.redo(); changed(); }
-  function automatic() { if (app.readOnly) return; history.automatic(); selection = null; splitting = false; changed(); }
+  function automatic() { if (app.readOnly) return; history.automatic(); editorState.selection = null; editorState.splitting = false; changed(); }
   function changed() { onchange(); revision++; requested++; onpending(true); void render(); }
   /** Serialise worker calls, coalesce new input and never replace the page with a stale result. */
   async function render() {
@@ -105,7 +106,7 @@
     function key(e: KeyboardEvent) {
       if (!enabled || document.querySelector('dialog[open]')) return;
       const el = e.target as HTMLElement;
-      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); selection = null; splitting = false; view?.cancel(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); editorState.selection = null; editorState.splitting = false; view?.cancel(); return; }
       if (el.matches('input, textarea, select') || el.isContentEditable) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault(); e.stopImmediatePropagation(); if (e.shiftKey) redo(); else undo(); return;
@@ -128,6 +129,6 @@
 </script>
 
 {#if enabled}
-  <StripControls target={controls} {droppedNotice} {result} {selected} {select} {edit} {undo} {redo} {automatic} {count} {canUndo} {canRedo} split={splitting} setSplit={v => splitting = v} {axis} setAxis={v => axis = v} {pairs} {page} />
-  <StripPage bind:this={view} plan={result.plan} {urls} bind:page selected={selection} {select} {edit} {images} grains={app.grains} {bounds} split={splitting} {axis} cancelSplit={() => splitting = false} />
+  <StripControls target={controls} {droppedNotice} {result} {selected} {select} {edit} {undo} {redo} {automatic} {count} {canUndo} {canRedo} split={editorState.splitting} setSplit={v => editorState.splitting = v} axis={editorState.axis} setAxis={v => editorState.axis = v} {pairs} {page} />
+  <StripPage bind:this={view} plan={result.plan} {urls} bind:page selected={editorState.selection} {select} {edit} {images} grains={app.grains} {bounds} split={editorState.splitting} axis={editorState.axis} cancelSplit={() => editorState.splitting = false} />
 {/if}

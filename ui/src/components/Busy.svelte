@@ -1,14 +1,16 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
-  const pct = $derived(app.busy?.progress ? Math.round(app.busy.progress.fraction * 100) : null);
+  import type { Progress } from '../lib/core/types';
+  let { task = app.busy, onCancel = () => app.cancel(), testId = 'busy' }: { task?: { label: string; progress: Progress | null } | null; onCancel?: () => void; testId?: string } = $props();
+  const pct = $derived(task?.progress ? Math.round(task.progress.fraction * 100) : null);
 </script>
 
-<div class="glass busy" role="status" aria-live="polite" data-testid="busy">
+<div class="glass busy" role="status" aria-live="polite" data-testid={testId}>
   <div class="row">
     <span class="spinner" aria-hidden="true"></span>
-    <strong>{app.busy?.label}</strong>
-    {#if app.busy?.progress}<span class="muted">{app.busy.progress.stage} {pct}%</span>{/if}
-    <button onclick={() => app.cancel()}>Cancel</button>
+    <strong>{task?.label}</strong>
+    {#if task?.progress}<span class="muted">{task.progress.stage} {pct}%</span>{/if}
+    <button onclick={onCancel}>Cancel</button>
   </div>
   <div class="bar"><div class="fill" style:transform="scaleX({(pct ?? 0) / 100})"></div></div>
 </div>

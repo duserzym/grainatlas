@@ -349,7 +349,8 @@ async function overlap(page: Page) {
 test('overlap blocks all exports; undo and redo restore validation', async ({ page }) => {
   await openEditor(page);
   await overlap(page);
-  for (const name of ['Export PDF', 'Registration', 'Export SVG', 'Print…']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+  for (const name of ['Export PDF', 'Registration', 'Print…']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Export SVG', exact: true })).toHaveCount(0);
   await expect(page.getByTestId('export-pdf')).toHaveAttribute('title', /Fix strip problems/);
   await page.keyboard.press('ControlOrMeta+z');
   await renderFinished(page);

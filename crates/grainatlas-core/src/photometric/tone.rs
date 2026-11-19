@@ -51,14 +51,7 @@ pub fn auto(linear: &Gray, cov: Option<&[f32]>, um_per_px: f64, current: &TonePa
     let mut t = ToneParams { low_pct: 0.5, high_pct: 99.8, black: 0.0, white: 1.0, gamma: 1.0, clahe: true, grain_norm: current.grain_norm.clone(), ..ToneParams::default() };
     let (lo, hi) = stretch_levels(linear, cov, &t);
     let k = 1.0 / (hi - lo);
-    let mut h = vec![0; 256];
-    for (i, &v) in linear.px.iter().enumerate() {
-        if cov.is_some_and(|c| c[i] < 0.5) {
-            continue;
-        }
-        let v = ((v - lo) * k).clamp(0.0, 1.0);
-        h[((v.clamp(0.0, 1.0) * 255.0) + 0.5) as usize] += 1;
-    }
+    let h = histogram_mapped(linear, cov, 256, &|v| ((v - lo) * k).clamp(0.0, 1.0));
     let spread = percentile(&h, 95.0) - percentile(&h, 5.0);
     // 1.5 (already spread) to 3 (narrow); capped so a dark mount background's noise is not pumped up.
     t.clahe_clip = ((1.5 + 1.5 * (1.0 - spread).powi(2)) * 4.0).round() / 4.0;
@@ -70,13 +63,26 @@ pub fn auto(linear: &Gray, cov: Option<&[f32]>, um_per_px: f64, current: &TonePa
 
 /// 1024-bin histogram of covered pixels in 0..1.
 pub fn histogram(g: &Gray, cov: Option<&[f32]>, bins: usize) -> Vec<u64> {
-    let mut h = vec![0u64; bins];
-    for (i, &v) in g.px.iter().enumerate() {
-        if cov.is_some_and(|c| c[i] < 0.5) {
-            continue;
+    histogram_mapped(g, cov, bins, &|v| v)
+}
+
+fn histogram_mapped(g: &Gray, cov: Option<&[f32]>, bins: usize, map: &(impl Fn(f32) -> f32 + Sync)) -> Vec<u64> {
+    // Integer bins reduce exactly regardless of native scheduling. Small crops
+    // stay sequential; full mosaics split into cache-sized chunks.
+    const CHUNK: usize = 256 * 1024;
+    let chunks = crate::util::par_map(g.px.len().div_ceil(CHUNK), |chunk| {
+        let start = chunk * CHUNK;
+        let end = (start + CHUNK).min(g.px.len());
+        let mut h = vec![0u64; bins];
+        for i in start..end {
+            if cov.is_some_and(|c| c[i] < 0.5) { continue; }
+            let v = map(g.px[i]);
+            h[((v.clamp(0.0, 1.0) * (bins - 1) as f32) + 0.5) as usize] += 1;
         }
-        h[((v.clamp(0.0, 1.0) * (bins - 1) as f32) + 0.5) as usize] += 1;
-    }
+        h
+    });
+    let mut h = vec![0u64; bins];
+    for chunk in chunks { for (count, n) in h.iter_mut().zip(chunk) { *count += n; } }
     h
 }
 
@@ -180,4 +186,20 @@ pub fn clahe(g: &mut Gray, tile: usize, clip: f32) {
             *o = (v00 * (1.0 - ax) + v10 * ax) * (1.0 - ay) + (v01 * (1.0 - ax) + v11 * ax) * ay;
         }
     });
+}
+
+#[cfg(test)]
+mod parallel_histogram_tests {
+    use super::*;
+    #[test]
+    fn bins_match_sequential_for_large_covered_mosaic() {
+        let n = 700_003;
+        let g = Gray { w: n, h: 1, px: (0..n).map(|i| (i % 1001) as f32 / 997.0 - 0.01).collect() };
+        let cov: Vec<_> = (0..n).map(|i| if i % 7 == 0 { 0.0 } else { 1.0 }).collect();
+        for bins in [256, 4096] {
+            let mut expected = vec![0u64; bins];
+            for (i, v) in g.px.iter().enumerate() { if cov[i] >= 0.5 { expected[((v.clamp(0.0,1.0) * (bins-1) as f32)+0.5) as usize] += 1; } }
+            assert_eq!(histogram(&g, Some(&cov), bins), expected);
+        }
+    }
 }

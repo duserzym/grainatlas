@@ -99,6 +99,8 @@ export interface Core {
   exportPng(areaId: string, tone: ToneParams): Promise<Uint8Array>;
   layout(params: LayoutParams, grains: Record<string, Grain[]>, spots: Spot[], labels: Label[], tone: Record<string, ToneParams>): Promise<LayoutResult>;
   pdf(pages: string[]): Promise<Uint8Array>;
+  printPages(job: number): Promise<string[]>;
+  printTask(job: number, action: string, page?: number): Promise<Uint8Array>;
   /** Reference-image registration: pairs of [image px, mosaic um] → affine (image px → um). */
   register(pairs: [[number, number], [number, number]][]): Promise<{ matrix: [number, number, number, number, number, number]; rms_um: number; residuals_um: number[] } | null>;
   /** The atlas bundle (WORKFLOW.md 3.1) of the full project as a zip, every stitched area included. */

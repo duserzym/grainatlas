@@ -6,7 +6,7 @@ import init, * as wasm from './pkg/grainatlas.js';
 
 // Also type the new export before the next wasm-bindgen regeneration.
 declare module './pkg/grainatlas.js' {
-  interface Session { check_project(project: string, labels: string): string }
+  interface Session { check_project(project: string, labels: string): string; print_task(job: number, action: string, page: number): Uint8Array }
 }
 
 let ready: ReturnType<typeof init> | null = null;
@@ -86,6 +86,8 @@ const ops: Record<string, Handler> = {
   exportGrains: ({ areaId, grains }) => s().export_grains(areaId, JSON.stringify(grains)),
   layout: ({ params, grains, spots, labels, tone }) =>
     JSON.parse(s().layout(JSON.stringify(params), JSON.stringify(grains), JSON.stringify(spots), JSON.stringify(labels), JSON.stringify(tone))),
+  printPages: ({ job }) => JSON.parse(new TextDecoder().decode(s().print_task(job, 'full', 0))).pages,
+  printTask: ({ job, action, page }) => s().print_task(job, action, page),
   pdf: ({ pages }) => wasm.pdf_from_svgs(JSON.stringify(pages)),
   register: ({ pairs }) => JSON.parse(wasm.register(JSON.stringify(pairs))),
   atlasZip: ({ project, options }) => s().atlas_zip(JSON.stringify(project), JSON.stringify(options)),

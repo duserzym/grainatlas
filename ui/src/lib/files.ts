@@ -115,3 +115,10 @@ export function rawToCanvas(img: { w: number; h: number; data: Uint8Array }, lut
   ctx.putImageData(id, 0, 0);
   return c;
 }
+
+/** Browser PDF carries the embedded registration; desktop also writes its sidecar. */
+export async function savePrintPdf(pdf: Uint8Array, name: string, registration: string | null): Promise<void> {
+  if (!canWrite()) return;
+  if (isDesktop()) { await (await import('./core/tauri')).savePrintPdf(name, pdf, registration); }
+  else download(pdf, name, 'application/pdf');
+}

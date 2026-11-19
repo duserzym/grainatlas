@@ -419,3 +419,42 @@ rather than reconstructing historical images. A locally held draft with the
 same uuid opens in Edit and the chip says “Your draft here, based on r<n>”.
 Hosted and standalone storage are separate; drafts are not transferred by
 the launch arguments.
+
+## Print performance checks
+
+`make windows` cross-builds the Windows x86-64 executable with cargo-xwin and
+`--no-bundle`. Install `cargo-tauri`, `cargo-xwin` and the
+`x86_64-pc-windows-msvc` Rust target first. The supervisor builds the installer.
+Native and wasm builds use release optimisation level 3, thin LTO, four codegen
+units and no debug assertions. Wasm stays on the baseline instruction set:
+SIMD is not required by this change, preserving compatibility with older hosts.
+
+Generate only invented benchmark data beneath the ignored target directory:
+
+```bash
+cargo run --release -p grainatlas-core --example large_bundle
+RAYON_NUM_THREADS=4 cargo run --release -p grainatlas-core --example print_bench -- target/large-bundle
+# Read a local source package without writing it; no names or paths appear in output:
+RAYON_NUM_THREADS=4 cargo run --release -p grainatlas-core --example print_bench -- "$PACKAGE_PATH" --package
+make full
+cd ui && pnpm build
+pnpm exec playwright test e2e/print-sheets.spec.ts e2e/strip-editor.spec.ts
+PERF=1 PERF_LABEL=after pnpm exec playwright test e2e/perf-print.spec.ts
+```
+
+The native benchmark separates planning, crop/enhancement, PNG, base64 and
+serialization, preview, background quality, cached repacking and PDF bytes. Band and PNG times are summed worker time, so they exceed elapsed
+render time. Package opening reports read, stitch, correction, blend, tone and
+pyramid steps; bundle opening reports tile decode and mosaic/pyramid construction.
+Browser first paint and WebView IPC require the supervisor's browser/app checks.
+The performance spec uses four-times CPU throttling and a valid explicit
+5 µm/mm scale (487 pages on the default bundle; the default auto-scale’s
+672-page layout has an oversized band and correctly blocks export). It writes
+a `before-pdf` JSON line and report in `target/perf` before attempting export,
+then a `complete` line/report after PDF bytes are ready. It measures initial canvas imagery, first decoded preview, all
+preview SVGs available, full-resolution readiness, PDF bytes after clicking
+Export PDF, and cached return to Layout. Only the selected preview page is
+mounted; the availability metric excludes Playwright pagination round trips.
+
+Cache lifetime, implementation and measured results are in
+[print-performance.md](print-performance.md).

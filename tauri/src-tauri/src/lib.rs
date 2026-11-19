@@ -54,6 +54,7 @@ mod memory;
 mod profile;
 mod recent;
 mod project_save;
+mod print_export;
 mod signin;
 mod store;
 mod mirror;
@@ -539,7 +540,7 @@ async fn set_link(state: State<'_, AppState>, tab: u32, mount_id: String, sample
 async fn layout(state: State<'_, AppState>, tab: u32, params: String, grains: String, spots: String, labels: String, tone: String) -> Res<String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_session(tab, |s| s.layout(&params, &grains, &spots, &labels, &tone)).map_err(e)
+        state.with_session(tab, |s| s.layout_preview(&params, &grains, &spots, &labels, &tone)).map_err(e)
     }).await.map_err(e)?
 }
 
@@ -578,6 +579,24 @@ async fn save_bytes(app: AppHandle, state: State<'_, AppState>, request: Request
         let Some(path) = d.blocking_save_file() else { return Ok(None) };
         let path = path.into_path().map_err(e)?;
         std::fs::write(&path, bytes).map_err(e)?;
+        Ok(Some(path.display().to_string()))
+    }).await.map_err(e)?
+}
+
+/// Save one PDF and its registration beside the chosen path, with one dialog.
+#[tauri::command]
+async fn save_print_pdf(app: AppHandle, state: State<'_, AppState>, request: Request<'_>) -> Res<Option<String>> {
+    let tab = request.headers().get("x-tab").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let t = state.tab(tab);
+    let name = percent_decode(request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or("grainatlas_print.pdf"));
+    let body = match request.body() { InvokeBody::Raw(bytes) => bytes.clone(), _ => return Err("Expected print bytes".into()) };
+    tauri::async_runtime::spawn_blocking(move || {
+        let (pdf, registration) = print_export::unpack(&body)?;
+        let mut dialog = app.dialog().file().set_file_name(&name).add_filter("PDF", &["pdf"]);
+        if let Some(dir) = t.package_dir() { dialog = dialog.set_directory(dir); }
+        let Some(path) = dialog.blocking_save_file() else { return Ok(None) };
+        let path = path.into_path().map_err(e)?;
+        print_export::write(&path, pdf, registration).map_err(|err| format!("Could not save print files: {err}"))?;
         Ok(Some(path.display().to_string()))
     }).await.map_err(e)?
 }
@@ -857,35 +876,43 @@ async fn ownership(state: State<'_, AppState>, tab: u32, grains: String) -> Res<
 
 /// Print sheets of the mount (pages, print_sheet registration, stats, ownership).
 #[tauri::command]
-async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grains: String, tone: String, edits: Option<String>) -> Res<String> {
+async fn print_sheets(state: State<'_, AppState>, tab: u32, params: String, grains: String, tone: String, edits: Option<String>) -> Res<Response> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_session(tab, |s| s.print_sheets_with_edits(&params, &grains, &tone, edits.as_deref().unwrap_or(""))).map_err(e)
+        state.with_session(tab, |s| s.print_sheets_preview(&params, &grains, &tone, edits.as_deref().unwrap_or(""))).map(|json| Response::new(json.into_bytes())).map_err(e)
     }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn print_plan_render(state: State<'_, AppState>, tab: u32, plan: String, edits: String, grains: String, tone: String) -> Res<String> {
+async fn print_plan_render(state: State<'_, AppState>, tab: u32, plan: String, edits: String, grains: String, tone: String) -> Res<Response> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_session(tab, |s| s.print_plan_render(&plan, &edits, &grains, &tone)).map_err(e)
+        state.with_session(tab, |s| s.print_plan_preview(&plan, &edits, &grains, &tone)).map(|json| Response::new(json.into_bytes())).map_err(e)
     }).await.map_err(e)?
 }
 
 #[tauri::command]
-async fn print_band_image(state: State<'_, AppState>, tab: u32, area_id: String, mosaic_rect_um: [f64; 4], tone: String) -> Res<Vec<u8>> {
+async fn print_band_image(state: State<'_, AppState>, tab: u32, area_id: String, mosaic_rect_um: [f64; 4], tone: String) -> Res<Response> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_session(tab, |s| s.print_band_image(&area_id, mosaic_rect_um, &tone)).map_err(e)
+        state.with_session(tab, |s| s.print_band_preview(&area_id, mosaic_rect_um, &tone)).map(Response::new).map_err(e)
+    }).await.map_err(e)?
+}
+
+#[tauri::command]
+async fn print_task(state: State<'_, AppState>, tab: u32, job: usize, action: String, page: usize) -> Res<Response> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_session(tab, |s| s.print_task(job, &action, page)).map(Response::new).map_err(e)
     }).await.map_err(e)?
 }
 
 /// Whole area on one sheet (pages, print_sheet registration and stats).
 #[tauri::command]
-async fn print_whole(state: State<'_, AppState>, tab: u32, params: String, tone: String) -> Res<String> {
+async fn print_whole(state: State<'_, AppState>, tab: u32, params: String, tone: String) -> Res<Response> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_session(tab, |s| s.print_whole(&params, &tone)).map_err(e)
+        state.with_session(tab, |s| s.print_whole_preview(&params, &tone)).map(|json| Response::new(json.into_bytes())).map_err(e)
     }).await.map_err(e)?
 }
 
@@ -1142,6 +1169,7 @@ pub fn run() {
             pdf,
             register,
             save_bytes,
+            save_print_pdf,
             save_project,
             atlas_zip,
             save_atlas,
@@ -1164,6 +1192,7 @@ pub fn run() {
             print_plan_render,
             print_band_image,
             print_whole,
+            print_task,
         ])
         .build(tauri::generate_context!())
         .expect("error while running grainatlas")

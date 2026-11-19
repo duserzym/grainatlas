@@ -1,3 +1,4 @@
+import { printCache } from './print-cache';
 import { flushWrites } from './deferred-writes';
 import { canWrite } from './presentation';
 import { chooseOpenTab, existingProject, holdsWork, pathGroups, sourceKey } from './open-target';
@@ -271,6 +272,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.remoteTiles = null;
   app.pkg = info;
   app.params = {};
+  printCache.clearOwner(app.id);
   app.stitched = {};
   app.grains = {};
   app.spots = [];
@@ -423,6 +425,7 @@ export async function loadProjectFile(file: File, app: AppState = current(), ini
     app.grains = {};
     app.labels = [];
     app.tone = {};
+    printCache.clearOwner(app.id);
     app.stitched = {};
     app.adopt(p);
     app.settings = { ...app.settings, ...(p.settings ?? {}), area_patterns: app.project!.settings.area_patterns ?? {}, spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };

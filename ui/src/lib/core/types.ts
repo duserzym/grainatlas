@@ -298,7 +298,7 @@ export interface LayoutParams {
   by_number: boolean;
 }
 
-export interface LayoutResult { pages: string[]; um_per_mm: number; items: number; paper_mm: [number, number] }
+export interface LayoutResult { job_id?: number; pages: string[]; um_per_mm: number; items: number; paper_mm: [number, number] }
 
 /** Export-only enhancement: NLM denoise, unsharp mask, background strip. */
 export interface EnhanceParams {
@@ -421,6 +421,7 @@ export interface WholeParams {
   printed: string;
 }
 export interface WholeResult {
+  job_id?: number;
   pages: string[];
   registration: PrintRegistration;
   stats: {
@@ -458,7 +459,7 @@ export interface SheetPlan {
   targets: Record<string, string[]>; strays: PrintRegistration['strays']; cut_stats: SheetStats; edit_summary?: EditSummary; left_off?: LeftOff[];
 }
 export interface SheetAudit { cut: number; twice: number; unmarked: number; outside_body: number; bands_overlapping: number }
-export interface SheetResult { audit: SheetAudit; left_off_summary: { cropped: number; hidden: number }; pages: string[]; registration: PrintRegistration; stats: SheetStats; ownership: Ownership; plan: SheetPlan; problems?: SheetProblem[]; dropped?: DroppedEdit[]; left_off?: LeftOff[] }
+export interface SheetResult { job_id?: number; audit: SheetAudit; left_off_summary: { cropped: number; hidden: number }; pages: string[]; registration: PrintRegistration; stats: SheetStats; ownership: Ownership; plan: SheetPlan; problems?: SheetProblem[]; dropped?: DroppedEdit[]; left_off?: LeftOff[] }
 
 export interface Progress { stage: string; fraction: number }
 
