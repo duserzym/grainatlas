@@ -35,6 +35,7 @@
     onpress,
     ondrag,
     onrelease,
+    oncancel,
     onclick,
     ondblclick,
     onhover,
@@ -62,6 +63,7 @@
     onpress?: (p: CanvasPoint) => boolean;
     ondrag?: (p: CanvasPoint) => void;
     onrelease?: (p: CanvasPoint) => void;
+    oncancel?: () => void;
     onclick?: (p: CanvasPoint) => void;
     /** Return true when handled; otherwise a double-click fits the view. */
     ondblclick?: (p: CanvasPoint) => boolean | void;
@@ -254,6 +256,7 @@
       onpress: (p) => onpress?.(p) ?? false,
       ondrag: (p) => ondrag?.(p),
       onrelease: (p) => onrelease?.(p),
+      oncancel: () => oncancel?.(),
       onclick: (p) => onclick?.(p),
       ondblclick: (p) => ondblclick?.(p),
       onhover: (p) => onhover?.(p),
@@ -313,8 +316,6 @@
     inset: 0;
     overflow: hidden;
     touch-action: none;
-    user-select: none;
-    -webkit-user-select: none;
     background: var(--image-bg);
   }
   canvas {
@@ -329,5 +330,10 @@
   }
   .overlay :global(*) {
     vector-effect: non-scaling-stroke;
+  }
+  .viewer, .viewer :global(*) {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
   }
 </style>

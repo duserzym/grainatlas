@@ -78,7 +78,7 @@
     {#each urls as url, i}<button data-testid="page-thumb" data-sheet={i} aria-label="Page {i + 1}" aria-current={page === i ? 'page' : undefined} onclick={() => page = i}><img src={url} alt="" /><span>{i + 1}</span></button>{/each}
   </nav>
   <div class="paper-view">
-    <PanZoom bind:this={panzoom} w={plan.paper_mm[0] * PX} h={plan.paper_mm[1] * PX} fitKey={String(page)} label="Strip editor" gestures={{ onpress: press, ondrag: update, onrelease: release, canNudge: () => !selected, ondblclick: p => !!(p.ev.target as Element).closest('[data-strip]') }}>
+    <PanZoom bind:this={panzoom} w={plan.paper_mm[0] * PX} h={plan.paper_mm[1] * PX} fitKey={String(page)} label="Strip editor" gestures={{ onpress: press, ondrag: update, onrelease: release, oncancel: cancel, canNudge: () => !selected, ondblclick: p => !!(p.ev.target as Element).closest('[data-strip]') }}>
       <img class="page" src={urls[page]} alt="Page {page + 1}" width={plan.paper_mm[0] * PX} height={plan.paper_mm[1] * PX} data-testid="page" />
       {#if drag?.moved && !split}
         {@const old = stripBlock(drag.strip)}

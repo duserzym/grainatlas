@@ -6,7 +6,7 @@
   import { attachGestures, type GestureOptions } from './gestures';
   import { type View, fit, matrix, zoomAt } from './view';
 
-  let { w, h, fitKey = '', label = 'Preview', children, gestures = {} }: { w: number; h: number; fitKey?: string; label?: string; children: Snippet; gestures?: Partial<Pick<GestureOptions, 'onpress' | 'ondrag' | 'onrelease' | 'ondblclick' | 'canNudge'>> } = $props();
+  let { w, h, fitKey = '', label = 'Preview', children, gestures = {} }: { w: number; h: number; fitKey?: string; label?: string; children: Snippet; gestures?: Partial<Pick<GestureOptions, 'onpress' | 'ondrag' | 'onrelease' | 'oncancel' | 'ondblclick' | 'canNudge'>> } = $props();
 
   let host: HTMLDivElement;
   let size = $state({ w: 800, h: 600 });
@@ -35,7 +35,7 @@
     ro.observe(host);
     const detach = attachGestures({ host, getView: () => view, setView: (v) => (view = v), fit: fitAll, rotate: false,
       onpress: p => gestures.onpress?.(p) ?? false, ondrag: p => gestures.ondrag?.(p), onrelease: p => gestures.onrelease?.(p),
-      ondblclick: p => gestures.ondblclick?.(p), canNudge: () => gestures.canNudge?.() ?? true });
+      oncancel: () => gestures.oncancel?.(), ondblclick: p => gestures.ondblclick?.(p), canNudge: () => gestures.canNudge?.() ?? true });
     return () => {
       ro.disconnect();
       detach();

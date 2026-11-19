@@ -59,9 +59,9 @@ trackpad two-finger scroll pan in every tool.
 
 | Canvas tool | Drag behaviour and box selection |
 | --- | --- |
-| Select (V) | Plain drag replaces; Shift adds; Cmd/Ctrl toggles; grains in the Grains tab, spots otherwise |
+| Select (V) | Plain drag replaces; Shift adds; Cmd/Ctrl toggles; enclosed spots take priority in the Spots tab, otherwise grains |
 | Spot (S) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; grains in the Grains tab, spots otherwise |
-| Delete (D) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; grains in the Grains tab, spots otherwise |
+| Delete (D) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; enclosed spots take priority in the Spots tab, otherwise grains |
 | Add grain (G) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; always grains |
 | Outline (O), Brush (B), Split (K) | Not available; keep stroke modifiers; switch to Select (V) to box-select |
 
@@ -69,11 +69,17 @@ Artifacts are included only while the artifacts layer is visible. Grain
 table filters still apply. Box selection changes selection only, leaving
 spot data untouched. Selected grains appear in the table and on the Canvas
 and use the same grain actions as click selection.
+Select and Delete boxes switch to the Grains tab when they select grains.
+In the Spots tab, a box with no enclosed spots falls back to visible grains;
+an empty box still clears selection. Other side tabs target grains with these
+two tools. A canceled pointer, lost pointer capture or a second touch discards
+the active tool gesture. Native text and image dragging is disabled on the canvas.
 
 Cmd/Ctrl+A selects all spots
 in the current area, or visible grains in the Grains tab. Escape clears
 the selection and keeps the tool; with no selection it switches to Select.
 Delete or Backspace deletes the selected spots, or the selected grains.
+The Delete tool removes the whole grain selection when clicking a selected grain.
 
 Spot size comes only from the size input in the side panel, for new and selected
 spots; placed spots are never resized by dragging.

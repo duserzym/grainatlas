@@ -19,8 +19,8 @@
 // -3 × deltaY for trackpads and a multiple of 120 for mouse notches;
 // Firefox has no wheelDeltaY and reports mouse notches in lines (deltaMode 1).
 
-import { frameView } from './frame-view';
-import { type View, panBy, rotateAt, toMosaic, zoomAt } from './view';
+import { frameView } from './frame-view.ts';
+import { type View, panBy, rotateAt, toMosaic, zoomAt } from './view.ts';
 
 export interface ViewPoint {
   /** View (mosaic / content) coordinates. */
@@ -45,6 +45,8 @@ export interface GestureOptions {
   onpress?(p: ViewPoint): boolean;
   ondrag?(p: ViewPoint): void;
   onrelease?(p: ViewPoint): void;
+  /** Interrupted input must discard a tool preview, never replay a click. */
+  oncancel?(): void;
   /** A click without movement. */
   onclick?(p: ViewPoint): void;
   /** Double-click: return true when handled (else the view fits). */
@@ -100,6 +102,7 @@ export function attachGestures(o: GestureOptions): () => void {
   let inside = false;
   let gesture: { scale: number; rot: number } | null = null;
   let mode: 'none' | 'tool' | 'maybe' | 'pan' = 'none';
+  let activePointer: number | null = null;
   let start = { x: 0, y: 0 };
   let last = { x: 0, y: 0 };
   const touches = new Map<number, { x: number; y: number }>();
@@ -116,39 +119,45 @@ export function attachGestures(o: GestureOptions): () => void {
   const set = (v: View) => view.set(v);
 
   function down(e: PointerEvent) {
-    if (onUi(e)) return;
+    if (onUi(e) || (e.button !== 0 && e.button !== 1)) return;
     host.focus({ preventScroll: true });
+    // Keep focus here and suppress native text/image drags (especially WebView2).
+    e.preventDefault();
     host.setPointerCapture?.(e.pointerId);
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (touches.size === 2) {
-      const [a, b] = [...touches.values()];
-      pinch = { d: Math.hypot(b.x - a.x, b.y - a.y), a: Math.atan2(b.y - a.y, b.x - a.x) };
+    if (touches.size >= 2) {
+      if (mode === 'tool') o.oncancel?.();
       mode = 'none';
+      activePointer = null;
+      const [a, b] = [...touches.values()];
+      pinch = touches.size === 2 ? { d: Math.hypot(b.x - a.x, b.y - a.y), a: Math.atan2(b.y - a.y, b.x - a.x) } : null;
       return;
     }
+    activePointer = e.pointerId;
     start = last = { x: e.clientX, y: e.clientY };
     if (e.button === 1 || spaceDown) {
       mode = 'pan';
       e.preventDefault();
       return;
     }
-    if (e.button !== 0) return;
     mode = o.onpress?.(pt(e)) ? 'tool' : 'maybe';
   }
 
   function move(e: PointerEvent) {
+    if (cancelIfCaptureLost(e)) return;
     if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pinch && touches.size === 2) {
       const [a, b] = [...touches.values()];
       const d = Math.hypot(b.x - a.x, b.y - a.y), ang = Math.atan2(b.y - a.y, b.x - a.x);
       const r = rect();
       const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
-      let nv = zoomAt(view.get(), mx, my, d / pinch.d);
+      let nv = zoomAt(view.get(), mx, my, pinch.d > 0 && d > 0 ? d / pinch.d : 1);
       if (o.rotate) nv = rotateAt(nv, mx, my, ang - pinch.a);
       pinch = { d, a: ang };
       set(nv);
       return;
     }
+    if (activePointer !== null && e.pointerId !== activePointer) return;
     if (mode === 'tool') o.ondrag?.(pt(e));
     else if (mode === 'maybe' && Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_SLOP) mode = 'pan';
     if (mode === 'pan') set(panBy(view.get(), e.clientX - last.x, e.clientY - last.y));
@@ -157,11 +166,44 @@ export function attachGestures(o: GestureOptions): () => void {
   }
 
   function up(e: PointerEvent) {
+    if (!touches.has(e.pointerId)) return;
+    if (cancelIfCaptureLost(e)) return;
     touches.delete(e.pointerId);
     if (touches.size < 2) pinch = null;
-    if (mode === 'tool') o.onrelease?.(pt(e));
-    else if (mode === 'maybe') o.onclick?.(pt(e));
+    const finished = e.pointerId === activePointer ? mode : 'none';
     mode = 'none';
+    activePointer = null;
+    if (host.hasPointerCapture?.(e.pointerId)) host.releasePointerCapture(e.pointerId);
+    if (finished === 'tool') o.onrelease?.(pt(e));
+    else if (finished === 'maybe') o.onclick?.(pt(e));
+  }
+
+  function cancelIfCaptureLost(e: PointerEvent): boolean {
+    // Releasing capture before its first gotpointercapture clears the pending
+    // request without a lostpointercapture event. Never commit that uncaptured
+    // move/up as a tool release or click. Normal pointerup still holds capture
+    // during dispatch; implicit release happens afterwards.
+    if (!touches.has(e.pointerId) || host.hasPointerCapture?.(e.pointerId) !== false) return false;
+    cancel(e);
+    return true;
+  }
+
+  function cancel(e: PointerEvent) {
+    if (!touches.has(e.pointerId)) return;
+    const tool = mode === 'tool';
+    touches.delete(e.pointerId);
+    mode = 'none'; activePointer = null; pinch = null;
+    if (host.hasPointerCapture?.(e.pointerId)) host.releasePointerCapture(e.pointerId);
+    if (tool) o.oncancel?.();
+  }
+
+  function blur() {
+    for (const pointerId of [...touches.keys()]) cancel({ pointerId } as PointerEvent);
+    spaceDown = false;
+  }
+
+  function dragstart(e: DragEvent) {
+    if (!onUi(e)) e.preventDefault();
   }
 
   function wheel(e: WheelEvent) {
@@ -255,7 +297,9 @@ export function attachGestures(o: GestureOptions): () => void {
   host.addEventListener('pointerdown', down);
   host.addEventListener('pointermove', move);
   host.addEventListener('pointerup', up);
-  host.addEventListener('pointercancel', up);
+  host.addEventListener('pointercancel', cancel);
+  host.addEventListener('lostpointercapture', cancel);
+  host.addEventListener('dragstart', dragstart);
   host.addEventListener('pointerenter', enter);
   host.addEventListener('pointerleave', leave);
   host.addEventListener('wheel', wheel, opts);
@@ -265,12 +309,16 @@ export function attachGestures(o: GestureOptions): () => void {
   host.addEventListener('gestureend', gend, opts);
   window.addEventListener('keydown', key);
   window.addEventListener('keyup', key);
+  window.addEventListener('blur', blur);
   return () => {
+    blur();
     view.clear();
     host.removeEventListener('pointerdown', down);
     host.removeEventListener('pointermove', move);
     host.removeEventListener('pointerup', up);
-    host.removeEventListener('pointercancel', up);
+    host.removeEventListener('pointercancel', cancel);
+    host.removeEventListener('lostpointercapture', cancel);
+    host.removeEventListener('dragstart', dragstart);
     host.removeEventListener('pointerenter', enter);
     host.removeEventListener('pointerleave', leave);
     host.removeEventListener('wheel', wheel);
@@ -280,5 +328,6 @@ export function attachGestures(o: GestureOptions): () => void {
     host.removeEventListener('gestureend', gend);
     window.removeEventListener('keydown', key);
     window.removeEventListener('keyup', key);
+    window.removeEventListener('blur', blur);
   };
 }

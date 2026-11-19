@@ -15,6 +15,7 @@
   import { pick, selectAll, addMany, toggleMany, clickHow, type PickHow, type Sel } from '../lib/selection';
   import { canvasBox, grainGrid } from '../lib/grain-selection';
   import { CLICK_SLOP } from '../lib/canvas/gestures';
+  import { primaryModifier } from '../lib/platform';
   import GrainExportDialog from '../components/GrainExportDialog.svelte';
   import { saveGrainExport } from '../lib/save-grain-export';
   import SpotBatchDialog from '../components/SpotBatchDialog.svelte';
@@ -46,6 +47,8 @@
   import { autoSignalLabel, grainStatus } from '../lib/grain-status';
   import { ownerColourToken, ownerLegend, spotSample } from '../lib/grain-owners';
   import { shownGrains } from '../lib/grain-visibility';
+
+  const modName = primaryModifier();
 
   import { presentation } from '../lib/presentation';
   import { sendSpotAction } from '../lib/spot-action';
@@ -152,7 +155,7 @@
   }
   let spotSort = $state<'name' | 'diameter' | null>(null);
   let batch = $state<{ numbering: boolean; ids: string[] } | null>(null);
-  let rectangle = $state<{ x: number; y: number; x2: number; y2: number; moved: boolean; start: CanvasPoint; how: 'only' | 'add' | 'toggle'; grains: boolean } | null>(null);
+  let rectangle = $state<{ x: number; y: number; x2: number; y2: number; moved: boolean; start: CanvasPoint; how: 'only' | 'add' | 'toggle'; grains: boolean; fallbackGrains: boolean } | null>(null);
   let collapseSpot: string | null = null;
   let pressScreen: [number, number] | null = null;
   let tab = $state<'spots' | 'grains' | 'refOverlay' | 'link' | 'laser' | 'checks'>('spots');
@@ -931,10 +934,12 @@
     // Delay click actions until release: a modified drag must never move, place
     // or delete a spot, even when it starts on one. Stroke tools keep their modifiers.
     const boxTool = app.tool === 'select' || app.tool === 'spot' || app.tool === 'delete' || app.tool === 'grain-add';
+    const grainBoxTool = app.tool === 'select' || app.tool === 'delete';
     const mod = ev.metaKey || ev.ctrlKey;
     if (allowBox && boxTool && (ev.shiftKey || mod || (app.tool === 'select' && !hitSpot(x, y) && !hitLabel(x, y)))) {
       rectangle = { x: p.sx, y: p.sy, x2: p.sx, y2: p.sy, moved: false, start: p, how: mod ? 'toggle' : ev.shiftKey ? 'add' : 'only',
-        grains: tab === 'grains' || app.tool === 'grain-add' };
+        grains: tab === 'grains' || app.tool === 'grain-add' || (grainBoxTool && tab !== 'spots'),
+        fallbackGrains: grainBoxTool };
       return true;
     }
     if (app.tool === 'grain-split') {
@@ -1067,11 +1072,17 @@
       if (!view) return;
       const box = canvasBox(view, umPerPx, [r.x, r.y], [p.sx, p.sy]);
       const select = (sel: Sel, ids: string[]) => r.how === 'only' ? selectAll(ids) : r.how === 'toggle' ? toggleMany(sel, ids) : addMany(sel, ids);
-      if (r.grains) {
+      const spotIds = r.grains ? [] : areaSpots.filter((s) => box.contains(s.x_um, s.y_um)).map((s) => s.id);
+      if (r.grains || (r.fallbackGrains && !spotIds.length)) {
         const hits = grainGrid(detections).query(box).filter(g => (!showOnlyNew || g.added)
           && (g.artifact ? app.layers.artifacts : app.showNeighbourGrains || !owners.get(g.id)?.duplicate_of));
-        setGrainSelection(select({ ids: selGrains, anchor: grainAnchor }, hits.map(g => g.id)), true);
-      } else setSpotSelection(select({ ids: selSpots.map((s) => s.id), anchor: spotAnchor }, areaSpots.filter((s) => box.contains(s.x_um, s.y_um)).map((s) => s.id)), true);
+        if (r.grains || hits.length) {
+          if (r.fallbackGrains) tab = 'grains';
+          setGrainSelection(select({ ids: selGrains, anchor: grainAnchor }, hits.map(g => g.id)), true);
+          return;
+        }
+      }
+      setSpotSelection(select({ ids: selSpots.map((s) => s.id), anchor: spotAnchor }, spotIds), true);
       return;
     }
     if (lasso) {
@@ -1117,6 +1128,25 @@
     if (gesture && !gesture.dirty && collapseSpot) pickSpot(collapseSpot, 'only', true);
     gesture = null;
     collapseSpot = null;
+  }
+
+  function cancelGesture() {
+    // A native drag, lost capture, window blur or second finger is not a release.
+    // Restore live spot/label moves without changing their names or grain links.
+    if (gesture?.dirty) {
+      const orig = gesture.orig;
+      app.spots = app.spots.map(s => {
+        const p = orig.get(s.id);
+        return p ? { ...s, x_um: p.x, y_um: p.y, x2_um: p.x2, y2_um: p.y2 } : s;
+      });
+      app.labels = app.labels.map(l => {
+        const p = orig.get(l.id);
+        return p ? { ...l, x_um: p.x, y_um: p.y } : l;
+      });
+      app.persist();
+    }
+    rectangle = null; gesture = null; collapseSpot = null; pressScreen = null;
+    drawing = null; splitLine = null; stroke = null; lasso = null; snapHint = null;
   }
 
   async function doSplit(line: [number, number, number, number]) {
@@ -1168,9 +1198,10 @@
       // Spots and labels went in press(); here the click is on a grain (or nothing).
       const g = grainAt(detections, x, y, app.layers.artifacts);
       if (g) {
-        selGrains = [g.id];
+        if (!selGrains.includes(g.id)) selGrains = [g.id];
+        const count = selGrains.length;
         deleteGrains();
-        app.notice = `Deleted ${g.artifact ? 'a flagged detection' : 'the grain'} (⌘Z brings it back).`;
+        app.notice = `Deleted ${count > 1 ? `${count} grains` : g.artifact ? 'a flagged detection' : 'the grain'} (${modName}+Z brings it back).`;
       }
       return;
     }
@@ -1434,13 +1465,13 @@
   const cursor = $derived(isViewer ? 'default' : app.tool === 'select' ? 'default' : app.tool === 'delete' ? 'not-allowed' : 'crosshair');
   const fmt = (v: number | null | undefined, d = 0) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
   const toolList: { id: Tool; label: string; key: string; title: string }[] = [
-    { id: 'select', label: 'Select', key: 'V', title: 'Drag empty space or a grain to replace selection with a box; Shift-drag adds; Cmd/Ctrl-drag toggles; drag a selected spot to move selection; Space-drag or middle drag pans; Cmd/Ctrl-click toggles; Shift-click adds (table: range); Grains tab selects grains, otherwise spots; Cmd/Ctrl+A selects all; Escape clears; Delete/Backspace removes selection' },
-    { id: 'spot', label: 'Spot', key: 'S', title: 'Click to place a spot; Cmd/Ctrl-click toggles; Shift-click adds; Shift-drag adds a box; Cmd/Ctrl-drag toggles a box; Grains tab selects grains, otherwise spots' },
+    { id: 'select', label: 'Select', key: 'V', title: `Drag empty space or a grain to replace selection with a box; Shift-drag adds; ${modName}-drag toggles; drag a selected spot to move selection; Space-drag or middle drag pans; ${modName}-click toggles; Shift-click adds (table: range); Spots tab selects enclosed spots, otherwise grains; ${modName}+A selects all; Escape clears; Delete/Backspace removes selection` },
+    { id: 'spot', label: 'Spot', key: 'S', title: `Click to place a spot; ${modName}-click toggles; Shift-click adds; Shift-drag adds a box; ${modName}-drag toggles a box; Grains tab selects grains, otherwise spots` },
     { id: 'line', label: 'Line', key: 'L', title: 'Drag to draw a line scan' },
     { id: 'raster', label: 'Raster', key: 'R', title: 'Drag to draw a raster area' },
     { id: 'measure', label: 'Measure', key: 'M', title: 'Drag to measure a distance' },
     { id: 'label', label: 'Label', key: 'T', title: 'Click to place a text label' },
-    { id: 'delete', label: 'Delete', key: 'D', title: 'Click a spot, label or grain to delete it; Shift-drag adds a box; Cmd/Ctrl-drag toggles a box; Grains tab selects grains, otherwise spots' },
+    { id: 'delete', label: 'Delete', key: 'D', title: `Click a spot, label or grain to delete it; Shift-drag adds a box; ${modName}-drag toggles a box; Spots tab selects enclosed spots, otherwise grains` },
   ];
 </script>
 
@@ -1489,7 +1520,7 @@
       {@const viewerArea = areaId}
       <Viewer bind:this={viewer} bind:view={() => view, (next) => setAreaView(viewerArea, next)} core={tiles!} {areaId} {mosaic} {lut} version={app.pixelsVersion} {cursor}
         preview={app.preview[areaId] ?? null} onlevel={(l) => (app.drawLevel = l)} ondraw={() => scheduleContrast(true)} canNudge={() => isViewer || !selSpots.length}
-        onpress={press} ondrag={drag} onrelease={release} onclick={click} ondblclick={dblclick} onhover={hover}>
+        onpress={press} ondrag={drag} onrelease={release} oncancel={cancelGesture} onclick={click} ondblclick={dblclick} onhover={hover}>
         {#snippet overlay()}
           <g transform="scale({1 / umPerPx})" data-testid="canvas-um-space">
             {#if refOverlay?.url && refOverlay.visible}
@@ -1663,9 +1694,9 @@
       </div>
       {#if !ro}
         <span class="sep"></span>
-        <button class="icon" title="Add grain: click inside it; Shift-drag adds grains in a box; Cmd/Ctrl-drag toggles grains in a box (G)" aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
+        <button class="icon" title={`Add grain: click inside it; Shift-drag adds grains in a box; ${modName}-drag toggles grains in a box (G)`} aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
         <button class="icon" data-testid="tool-split" title="Split grain: draw a line across it; switch to Select (V) to box-select (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
-        <button class="icon" title={(noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : "Outline a grain (O): drag or click corners; Shift extends, Alt cuts, Cmd draws without snapping.") + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
+        <button class="icon" title={(noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : `Outline a grain (O): drag or click corners; Shift extends, Alt cuts, ${modName} draws without snapping.`) + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
         <button class="icon" disabled={noPixels} title={(noPixels ? "Brush needs raw image pixels. Open the raw package to paint grain edges." : "Grain brush (B): paint to add, Alt to erase.") + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
         {#if app.tool === 'grain-outline' && !noPixels}
           <label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
@@ -1675,8 +1706,8 @@
       {/if}
       {#if !ro}
         <span class="sep"></span>
-        <button class="icon" title="Undo (⌘Z)" disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()}>↶</button>
-        <button class="icon" title="Redo (⇧⌘Z)" disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()}>↷</button>
+        <button class="icon" title={`Undo (${modName}+Z)`} disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()}>↶</button>
+        <button class="icon" title={`Redo (Shift+${modName}+Z)`} disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()}>↷</button>
       {/if}
       <span class="sep"></span>
       <button class="icon" title="Zoom in (+)" onclick={() => viewer?.zoomBy(1.5)}>+</button>
@@ -1789,7 +1820,7 @@
               {#if !focusGrain.artifact}
                 <button onclick={markArtifact} title="Unnumbered, left off print sheets and spots; Find again keeps the mark" data-testid="card-not-grain">Not a grain</button>
               {/if}
-              <button class="danger" onclick={deleteGrains} title="Remove it from the project (⌘Z undoes)" data-testid="card-delete-grain">Delete grain</button>
+              <button class="danger" onclick={deleteGrains} title={`Remove it from the project (${modName}+Z undoes)`} data-testid="card-delete-grain">Delete grain</button>
             </div>
           {/if}
         {/if}
@@ -1817,6 +1848,9 @@
         <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to UPbDB" data-testid="tab-link">UPbDB</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
+      {#if !ro && app.tool === 'select'}
+        <p class="faint small-text" data-testid="box-select-hint">Drag a box for grains. Shift adds, {modName} toggles. Delete removes. Spots take priority in the Spots tab.</p>
+      {/if}
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
       <fieldset class="plain tabbody" disabled={(ro && tab !== 'link' && tab !== 'checks') || (tab === 'grains' && !!app.busy)}>
       {#if tab === 'spots'}

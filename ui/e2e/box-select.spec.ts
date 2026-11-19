@@ -25,8 +25,8 @@ async function tab(page: Page, name: 'Grains' | 'Spots') {
   await page.locator('.side .tabs').getByRole('button', { name: new RegExp(`^${name} `) }).click();
 }
 
-async function prepare(page: Page) {
-  const mock = await mockLargeServer(page);
+async function prepare(page: Page, initialTab: 'Grains' | 'Spots' = 'Grains', measured = false) {
+  const mock = await mockLargeServer(page, measured ? { measuredSpotIndex: 2 } : {});
   await openEdit(page);
   await page.getByRole('combobox', { name: 'Area', exact: true }).selectOption(areaId);
   const layers = page.locator('details.layers');
@@ -36,7 +36,8 @@ async function prepare(page: Page) {
   await page.getByLabel('outlines', { exact: true }).check();
   await layers.evaluate((d: HTMLDetailsElement) => { d.open = false; });
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
-  await tab(page, 'Grains');
+  if (initialTab === 'Grains') await tab(page, 'Grains');
+  else await expect(page.locator('.side .tabs').getByRole('button', { name: /^Spots / })).toHaveAttribute('aria-pressed', 'true');
   await page.getByTestId('tool-select').click();
   await page.getByRole('button', { name: 'Fit', exact: true }).click();
   await expect(page.getByTestId('busy')).toHaveCount(0);
@@ -330,5 +331,206 @@ test('Shift-click without a drag still adds a grain to the click selection', asy
   await page.mouse.click(points[1].x, points[1].y);
   await page.keyboard.up('Shift');
   await expectGrains(page, grains.map(g => g.id));
+  expect(mock.unexpected).toEqual([]);
+});
+
+// A UA alone does not change navigator.platform in Playwright on a Mac host.
+test.describe('Windows Edge / WebView2 input', () => {
+  test.use({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0' });
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'platform', { configurable: true, get: () => 'Win32' });
+      if ('userAgentData' in navigator) {
+        Object.defineProperty(navigator.userAgentData, 'platform', { configurable: true, get: () => 'Windows' });
+      }
+    });
+  });
+
+  for (const size of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
+    test(`default Spots tab falls back to grains; Ctrl toggles, Shift adds, Delete/Backspace and undo (${size.width})`, async ({ page }) => {
+      await page.setViewportSize(size);
+      const mock = await prepare(page, 'Spots');
+      const before = (await savedProject(page)).grainatlas_ui.spots;
+      const hint = page.getByTestId('box-select-hint');
+      await expect(hint).toContainText('Drag a box for grains');
+      await expect(hint).toContainText('Ctrl toggles');
+      await expect(hint).not.toContainText('Cmd');
+      await expect(page.getByTestId('tool-select')).toHaveAttribute('title', /Ctrl-drag/);
+      await expect(page.getByTestId('tool-select')).not.toHaveAttribute('title', /Cmd/);
+      const bounds = await hint.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(size.width);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(size.height);
+      // The mock has spots only in row 0. These boxes contain grains and no spots.
+      const first = await block(page, mock, [1, 3], [2, 3]);
+      const second = await block(page, mock, [4, 6], [2, 3]);
+      const a = await grainHits(page, mock, first), b = await grainHits(page, mock, second);
+      expect(a.length).toBeGreaterThan(1);
+      expect(b.length).toBeGreaterThan(1);
+      // A previously focused select must not swallow Delete after the canvas drag.
+      await page.getByRole('combobox', { name: 'Area', exact: true }).focus();
+      await dragBox(page, first, []);
+      await expect(page.locator('[data-view]')).toBeFocused();
+      await expect(page.locator('.side .tabs').getByRole('button', { name: /^Grains / })).toHaveAttribute('aria-pressed', 'true');
+      await expectGrains(page, a);
+      // Exercise fallback with modifiers too, keeping the selection across tab changes.
+      await tab(page, 'Spots');
+      await dragBox(page, first, ['Control']);
+      await expectGrains(page, []);
+      await tab(page, 'Spots');
+      await dragBox(page, first, ['Shift']);
+      await expectGrains(page, a);
+      await tab(page, 'Spots');
+      await dragBox(page, second, ['Shift']);
+      await expectGrains(page, [...a, ...b]);
+      await dragBox(page, first, ['Control', 'Shift']);
+      await expectGrains(page, b);
+      expect((await savedProject(page)).grainatlas_ui.spots).toEqual(before);
+      for (const key of ['Delete', 'Backspace']) {
+        if (key === 'Backspace') await dragBox(page, second, []);
+        await page.keyboard.press(key);
+        for (const id of b) await expect(page.locator(`tr[data-grain-id="${id}"]`)).toHaveCount(0);
+        expect((await savedProject(page)).grainatlas_ui.spots).toEqual(before);
+        await page.keyboard.press('Control+z');
+        for (const id of b) await expect(page.locator(`tr[data-grain-id="${id}"]`)).toHaveCount(1);
+      }
+      expect(mock.unexpected).toEqual([]);
+    });
+  }
+
+  test('Spots tab still selects spots when a box encloses both spots and grains', async ({ page }) => {
+    const mock = await prepare(page, 'Spots');
+    const before = (await savedProject(page)).grainatlas_ui.spots;
+    const box = await block(page, mock, [1, 4], [0, 0]);
+    const spots = mock.ui.spots.filter(s => s.area_id === areaId);
+    const points = await screenPoints(page, spots.map(s => [s.x_um, s.y_um]));
+    const ids = spots.filter((_, i) => inside(points[i], box)).map(s => s.id);
+    expect(ids.length).toBeGreaterThan(1);
+    await dragBox(page, box, []);
+    await expect(page.locator('[data-testid=spot].sel')).toHaveCount(ids.length);
+    await expect(page.locator('polygon.grain.sel')).toHaveCount(0);
+    await expect(page.locator('.side .tabs').getByRole('button', { name: /^Spots / })).toHaveAttribute('aria-pressed', 'true');
+    await dragBox(page, box, ['Control']);
+    await expect(page.locator('[data-testid=spot].sel')).toHaveCount(0);
+    await dragBox(page, box, ['Shift']);
+    await expect(page.locator('[data-testid=spot].sel')).toHaveCount(ids.length);
+    expect((await savedProject(page)).grainatlas_ui.spots).toEqual(before);
+    expect(mock.unexpected).toEqual([]);
+  });
+
+  test('Delete boxes on Spots select grains without deleting; clicking a selected grain removes the whole selection', async ({ page }) => {
+    const mock = await prepare(page, 'Spots');
+    const before = (await savedProject(page)).grainatlas_ui.spots;
+    await page.getByTestId('tool-delete').click();
+    const box = await block(page, mock, [1, 4], [2, 3]);
+    const ids = await grainHits(page, mock, box);
+    await dragBox(page, box, ['Control']);
+    await expectGrains(page, ids);
+    expect((await savedProject(page)).grainatlas_ui.spots).toEqual(before);
+    const g = mock.ui.grains[areaId].find(g => g.id === ids[0])!;
+    const [point] = await screenPoints(page, [g.centroid_um]);
+    await page.mouse.click(point.x, point.y);
+    for (const id of ids) await expect(page.locator(`tr[data-grain-id="${id}"]`)).toHaveCount(0);
+    expect((await savedProject(page)).grainatlas_ui.spots).toEqual(before);
+    await page.keyboard.press('Control+z');
+    for (const id of ids) await expect(page.locator(`tr[data-grain-id="${id}"]`)).toHaveCount(1);
+    expect(mock.unexpected).toEqual([]);
+  });
+
+  test('Select can box grains from another side tab', async ({ page }) => {
+    const mock = await prepare(page);
+    await page.getByTestId('tab-checks').click();
+    const box = await block(page, mock, [1, 4], [2, 3]);
+    await dragBox(page, box, []);
+    await expectGrains(page, await grainHits(page, mock, box));
+    await expect(page.locator('.side .tabs').getByRole('button', { name: /^Grains / })).toHaveAttribute('aria-pressed', 'true');
+    expect(mock.unexpected).toEqual([]);
+  });
+
+  for (const event of ['pointercancel', 'lostpointercapture']) {
+    for (const moved of [false, true]) {
+      test(`${event} ${moved ? 'during a box' : 'before movement'} discards a Delete box starting on a registered spot`, async ({ page }) => {
+        const mock = await prepare(page, 'Grains', true);
+        const before = (await savedProject(page)).grainatlas_ui.spots;
+        await page.getByTestId('tool-delete').click();
+        const spot = mock.ui.spots[2];
+        expect(spot.acquisition_id).toBeTruthy();
+        const [start] = await screenPoints(page, [[spot.x_um, spot.y_um]]);
+        const box = await block(page, mock, [1, 5], [0, 2]);
+        await page.keyboard.down('Control');
+        await page.mouse.move(start.x, start.y);
+        await page.mouse.down();
+        if (moved) {
+          await page.mouse.move(box.end.x, box.end.y, { steps: 5 });
+          await expect(page.locator('.selection-rectangle')).toBeVisible();
+        }
+        const capture = await page.locator('[data-view]').evaluate((host, type) => {
+          // Chromium's mouse pointer id is 1; release capture to exercise the real
+          // capture machinery rather than dispatching a lookalike lost event.
+          // Before movement, releasing the still-pending capture may produce no
+          // lostpointercapture event at all. The uncaptured up must cancel too.
+          const held = host.hasPointerCapture(1);
+          if (type === 'lostpointercapture') host.releasePointerCapture(1);
+          else host.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'mouse' }));
+          return { held, released: !host.hasPointerCapture(1) };
+        }, event);
+        expect(capture).toEqual({ held: true, released: true });
+        await page.mouse.up();
+        await page.keyboard.up('Control');
+        await expect(page.locator('.selection-rectangle')).toHaveCount(0);
+        await expectGrains(page, []);
+        await expect(page.getByText('This spot has measurements in the database; it cannot be deleted there', { exact: true })).toHaveCount(0);
+        expect((await savedProject(page)).grainatlas_ui.spots).toEqual(before);
+        // A canceled box must not leave stale state blocking the next drag.
+        await dragBox(page, box, ['Control']);
+        await expectGrains(page, await grainHits(page, mock, box));
+        expect(mock.unexpected).toEqual([]);
+      });
+    }
+  }
+
+  test('canceling a live spot move restores positions, names and grain links', async ({ page }) => {
+    const mock = await prepare(page, 'Spots', true);
+    const before = (await savedProject(page)).grainatlas_ui.spots;
+    const spot = mock.ui.spots[2];
+    const [start] = await screenPoints(page, [[spot.x_um, spot.y_um]]);
+    await page.mouse.click(start.x, start.y);
+    await page.keyboard.down('Alt');
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + 40, start.y + 30, { steps: 5 });
+    await page.locator('[data-view]').evaluate(host => host.dispatchEvent(
+      new PointerEvent('pointercancel', { bubbles: true, pointerId: 1, pointerType: 'mouse' })));
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+    expect((await savedProject(page)).grainatlas_ui.spots).toEqual(before);
+    expect(mock.unexpected).toEqual([]);
+  });
+
+  test('native drag starts are suppressed on the host and SVG text overlays', async ({ page }) => {
+    const mock = await prepare(page);
+    const host = page.locator('[data-view]');
+    for (const element of [host, host.locator('text').first()]) {
+      const result = await element.evaluate(el => {
+        const event = new DragEvent('dragstart', { bubbles: true, cancelable: true });
+        el.dispatchEvent(event);
+        const style = getComputedStyle(el);
+        return { prevented: event.defaultPrevented, select: style.userSelect, drag: style.getPropertyValue('-webkit-user-drag') };
+      });
+      expect(result).toEqual({ prevented: true, select: 'none', drag: 'none' });
+    }
+    expect(mock.unexpected).toEqual([]);
+  });
+});
+
+test('Mac modifier hints name Cmd', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, get: () => 'MacIntel' });
+  });
+  const mock = await prepare(page);
+  await expect(page.getByTestId('box-select-hint')).toContainText('Cmd toggles');
+  await expect(page.getByTestId('box-select-hint')).not.toContainText('Ctrl');
+  await expect(page.getByTestId('tool-select')).toHaveAttribute('title', /Cmd-drag/);
   expect(mock.unexpected).toEqual([]);
 });

@@ -4,6 +4,7 @@
   import { tabs, type AppState } from '../lib/store.svelte';
   import { saveProject } from '../lib/actions';
   import { flushWrites } from '../lib/deferred-writes';
+  import { primaryModifier } from '../lib/platform';
 
   let { shortcuts = false }: { shortcuts?: boolean } = $props();
 
@@ -84,7 +85,7 @@
     }
   }
 
-  const mod = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+  const mod = primaryModifier() === 'Cmd' ? '⌘' : 'Ctrl+';
 </script>
 
 <div class="tabbar" role="tablist" aria-label="Open projects" bind:this={strip} data-testid="tabbar">

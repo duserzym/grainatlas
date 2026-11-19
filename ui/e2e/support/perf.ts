@@ -54,15 +54,19 @@ export function tileTotals(requests: TileRequest[]) {
     bytes: requests.reduce((sum, r) => sum + r.bytes, 0), byLevel: levels, tiles: requests };
 }
 
-export async function mockLargeServer(page: Page) {
+export async function mockLargeServer(page: Page, options: { measuredSpotIndex?: number } = {}) {
   // Generate explicitly before running specs, so fixture creation never contaminates timings.
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui as { grains: Record<string, Grain[]>; spots: Spot[]; labels: object[] };
+  if (options.measuredSpotIndex !== undefined) {
+    ui.spots[options.measuredSpotIndex].acquisition_id = '60000000-0000-4000-8000-000000000001';
+  }
   const grains = Object.entries(ui.grains).flatMap(([area_id, gs]) => gs.map(g => ({
     ...g, area_id, project_uuid: projectId, retired: false, merged_from: [],
   })));
-  const elements = { grains, spots: ui.spots.map(s => ({ ...s, project_uuid: projectId, acquisition_ids: [] })),
+  const elements = { grains, spots: ui.spots.map(s => ({ ...s, project_uuid: projectId,
+    acquisition_ids: s.acquisition_id ? [s.acquisition_id] : [] })),
     labels: ui.labels.map(l => ({ ...l, project_uuid: projectId })) };
   const hashes = { grains: 'grains-1', spots: 'spots-1', labels: 'labels-1' };
   const counts = { grains: grains.length, spots: ui.spots.length, labels: ui.labels.length,
