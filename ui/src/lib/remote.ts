@@ -19,6 +19,7 @@ import { fileRequest, publishedFile } from './published-files';
 import { current, type AppState } from './store.svelte';
 import { savedProject, sameId } from './deeplink';
 import { authToken } from './atlas';
+import { pixelSignature } from './sync-pixels';
 
 export interface AtlasArea {
   id: string;
@@ -56,6 +57,8 @@ export interface Remote {
   atlas: AtlasJson;
   /** Published bundle version from X-Atlas-Version (not the atlas format version). */
   version?: number;
+  /** Pixel baseline from the fetched project.json, before local recipes or edits. */
+  pixelsSignature?: string;
   readOnly: boolean;
   /** UPbDB serves bundles to a bearer token or a signed read-only `access` token (12 h). */
   token: string | null;
@@ -140,13 +143,36 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   let r: { atlas: AtlasJson; project: Project } | undefined;
   try {
     r = await app.run(`Opening ${projectId} from ${new URL(server).host}`, async () => {
-      const atlas = await getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json', response => {
+      const atlasRequest = getJson<AtlasJson>(fileRequest(at, 'atlas.json'), 'atlas.json', response => {
         const version = Number(response.headers.get('X-Atlas-Version'));
         if (Number.isSafeInteger(version) && version > 0) at.version = version;
       }, controller.signal);
-      if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
-      if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
-      const project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json', undefined, controller.signal);
+      let projectVersion: number | undefined;
+      // Handle rejection immediately: atlas validation still takes precedence, and a
+      // fast project failure must not become an unhandled rejection while atlas loads.
+      const projectRequest = getJson<Project>(fileRequest(at, 'project.json'), 'project.json', response => {
+        const version = Number(response.headers.get('X-Atlas-Version'));
+        if (Number.isSafeInteger(version) && version > 0) projectVersion = version;
+      }, controller.signal).then(project => ({ project }), error => ({ error }));
+      let atlas: AtlasJson, project: Project;
+      try {
+        atlas = await atlasRequest;
+        if (atlas.format !== 'grainatlas-atlas') throw new Error('atlas.json: not a grainatlas atlas bundle');
+        if (atlas.version > 1) throw new Error(`atlas.json: version ${atlas.version} is newer than this grainatlas reads (1)`);
+        const opened = await projectRequest;
+        // A publish between the two reads must not mix bundles. Older servers with
+        // no version headers keep the original atlas-then-project request path.
+        if (at.version !== undefined && projectVersion === at.version) {
+          if ('error' in opened) throw opened.error;
+          project = opened.project;
+        } else {
+          controller.signal.throwIfAborted();
+          project = await getJson<Project>(fileRequest(at, 'project.json'), 'project.json', undefined, controller.signal);
+        }
+      } catch (error) {
+        controller.abort(error);
+        throw error;
+      }
       // Published bundles are immutable; ones from before the UPbDB rename have no `upbdb`
       // link. The mount this viewer was opened for stands in until the sync check confirms it.
       project.upbdb ??= { mount_id: mount ?? null };
@@ -156,10 +182,11 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
     });
   } finally { if (app.cancelTask === cancel) app.cancelTask = null; }
   if (!r || controller.signal.aborted) return false;
+  const pixelsSignature = pixelSignature(r.project);
   // A clean element outbox can still carry a newer local print recipe.
   const openedProject = r.project;
   keepDraftPrintRecipe(openedProject, listDrafts(server).find(d => d.uuid === openedProject.uuid && (!d.server || normalizeServer(d.server) === server)) ?? null);
-  const remote: Remote = { server, projectId, atlas: r.atlas, version: at.version, readOnly: true, token, access, mount };
+  const remote: Remote = { server, projectId, atlas: r.atlas, version: at.version, pixelsSignature, readOnly: true, token, access, mount };
   app.cancelPixelsLoad?.();
   app.pixelsLoad = null;
   app.clearHistory(); app.viewMode = false; app.draftHere = null;

@@ -580,9 +580,16 @@ export class SyncSession {
         }
       }
       if (this.draft?.pixels_base === undefined) {
-        const published = await api.publishedProject(status.project_uuid);
-        if (!this.isCurrent(identity)) return;
-        this.save({ pixels_base: published ? pixelSignature(published) : null });
+        // Use the fetched document's signature, never the possibly edited live project.
+        const remote = this.app.remote;
+        if (remote?.projectId === status.project_uuid && remote.version !== undefined
+          && remote.version === status.atlas_version && remote.pixelsSignature !== undefined) {
+          this.save({ pixels_base: remote.pixelsSignature });
+        } else {
+          const published = await api.publishedProject(status.project_uuid);
+          if (!this.isCurrent(identity)) return;
+          this.save({ pixels_base: published ? pixelSignature(published) : null });
+        }
       }
       this.track(false);
     } catch (e) {

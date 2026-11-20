@@ -582,7 +582,9 @@ test('Cancel stops an unanswered open-from-server request immediately', async ({
   await page.getByTestId('busy').getByRole('button', { name: 'Cancel', exact: true }).click();
   await failed;
   await expect(page.getByTestId('busy')).toHaveCount(0, { timeout: 1000 });
-  expect(mock.bundleRequests).toEqual([]);
+  // project.json is read alongside atlas.json; nothing else may be requested.
+  expect(mock.bundleRequests.filter(r => r.path !== 'project.json')).toEqual([]);
+  expect(mock.bundleRequests.length).toBeLessThanOrEqual(1);
 });
 
 test('an older copy waits for a choice and Bring them back prevents all spot deletions', async ({ page }) => {

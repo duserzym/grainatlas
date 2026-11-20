@@ -862,3 +862,166 @@ test('background images wait through stale, offline and remembered failures unti
   await session.publishImages(undefined, true);
   assert.equal(fetch.mock.callCount(), 1, 'a failed capability waits for a successful check before another upload');
 });
+
+for (const [name, version, statusVersion, projectId, signature, expectedCalls] of [
+  ['matching versions', 7, 7, 'baseline-synthetic', true, 0],
+  ['different versions', 7, 8, 'baseline-synthetic', true, 1],
+  ['unknown opened version', undefined, 7, 'baseline-synthetic', true, 1],
+  ['unknown published version', 7, null, 'baseline-synthetic', true, 1],
+  ['another project', 7, 7, 'another-synthetic', true, 1],
+  ['missing opened signature', 7, 7, 'baseline-synthetic', false, 1],
+]) {
+  test(`pixel baseline reuse: ${name}`, async t => {
+    const { session, base, hashes } = quietSession('baseline-synthetic');
+    t.after(() => { session.dispose(); app.remote = null; });
+    app.remote = { server: 'https://quiet.test', projectId, version, readOnly: true,
+      ...(signature ? { pixelsSignature: pixelSignature(source) } : {}) };
+    const published = structuredClone(source);
+    published.areas[0].mosaic.sha256 = 'newly-published-pixels';
+    const status = { ...session.status, atlas_version: statusVersion };
+    const download = t.mock.fn(async () => published);
+    session.api = async () => ({ lookup: async () => status,
+      elements: async () => ({ ...base, revision: 1, hashes }), publishedProject: download });
+    app.project.areas[0].mosaic.sha256 = 'local-edits';
+    await session.check();
+    assert.equal(session.error, '');
+    assert.equal(download.mock.callCount(), expectedCalls);
+    assert.equal(session.draft.pixels_base, pixelSignature(expectedCalls ? published : source));
+  });
+}
+
+async function serverOpenSetup(t) {
+  const { openFromServer } = await import('./remote.ts');
+  const { session } = quietSession('open-synthetic');
+  app.stopNumbering(); // Keep unrelated TIMS effects off this network harness.
+  app.project = null; app.link.token = 'synthetic-token';
+  t.after(() => { session.dispose(); app.remote = null; app.link.token = ''; });
+  const hashes = { spots: 's', grains: 'g', labels: 'l' };
+  const published = { ...structuredClone(source), uuid: 'open-synthetic' };
+  published.grainatlas_ui.tone = { area: { ...neutralTone(), gamma: 2 } };
+  published.grainatlas_ui.bundle_tone = { area: { curve: neutralTone(), display: neutralTone(), on_sha256: 'pixels' } };
+  published.image_edits = { areas: { area: { synthetic: true } } };
+  const download = t.mock.fn(async () => published);
+  session.api = async () => ({ lookup: async () => ({ project_uuid: published.uuid, mount_id: 'mount', revision: 1, atlas_version: 7, can_edit: true, hashes }),
+    elements: async () => ({ spots: [], grains: [], labels: [], revision: 1, hashes }), publishedProject: download });
+  const atlas = { format: 'grainatlas-atlas', version: 1, name: 'Synthetic', tile_size: 256,
+    files: Array.from({ length: 5099 }, (_, n) => ({ path: `tiles/${n}.webp`, size: 1, sha256: `synthetic-${n}` })),
+    areas: [{ ...published.areas[0], path: 'area', levels: [], w: 32, h: 24, um_per_px: 1 }] };
+  const reply = (data, version = 7) => Response.json(data, { headers: version === null ? {} : { 'X-Atlas-Version': String(version) } });
+  return { atlas, published, download, reply, open: () => openFromServer('https://quiet.test', published.uuid, null, 'synthetic-access', null, app) };
+}
+
+for (const [name, atlasVersion, projectVersion, count] of [
+  ['matching versions', 7, 7, 2], ['a publish race', 7, 8, 3],
+  ['a missing project version', 7, null, 3], ['a missing atlas version', null, 7, 3],
+  ['missing versions', null, null, 3], ['an invalid project version', 7, 1.5, 3],
+]) {
+  test(`parallel server open handles ${name}`, async t => {
+    const { atlas, published, download, reply, open } = await serverOpenSetup(t);
+    const { oversightSession } = await import('./oversight.ts');
+    oversightSession.set({ viewAs: { username: 'synthetic-viewer', name: 'Synthetic' }, onBehalf: false });
+    t.after(() => oversightSession.clear());
+    const requests = [];
+    let releaseAtlas;
+    const atlasGate = new Promise(resolve => { releaseAtlas = resolve; });
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      const u = new URL(url); requests.push(u);
+      assert.equal(u.searchParams.get('access'), 'synthetic-access');
+      assert.equal(u.searchParams.get('as'), 'synthetic-viewer');
+      assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer synthetic-token');
+      if (u.pathname.endsWith('/atlas.json')) { await atlasGate; return reply(atlas, atlasVersion); }
+      if (requests.length === 2) {
+        assert.equal(u.searchParams.has('version'), false);
+        assert.equal(init.cache, 'no-cache');
+        releaseAtlas(); // Atlas cannot finish unless project starts concurrently.
+        const speculative = structuredClone(published);
+        if (count === 3) speculative.areas[0].mosaic.sha256 = 'wrong-bundle';
+        return reply(speculative, projectVersion);
+      }
+      assert.equal(u.searchParams.get('version'), atlasVersion === null ? null : String(atlasVersion));
+      assert.equal(init.cache, atlasVersion === null ? 'no-cache' : 'default');
+      return reply(published, atlasVersion);
+    });
+    assert.equal(await open(), true);
+    assert.equal(app.error, null);
+    assert.equal(requests.length, count);
+    assert.equal(app.project.areas[0].mosaic.sha256, 'pixels');
+    assert.equal(app.remote.pixelsSignature, pixelSignature(published));
+    assert.equal(download.mock.callCount(), atlasVersion === null ? 1 : 0);
+    assert.equal(app.sync.draft.pixels_base, pixelSignature(published));
+  });
+}
+
+test('parallel server open preserves atlas validation and HTTP/JSON errors', async t => {
+  for (const failure of ['format', 'version', 'atlas-http', 'project-http', 'json', 'network', 'fallback-http']) {
+    const { atlas, published, reply, open } = await serverOpenSetup(t);
+    let calls = 0;
+    const fetch = t.mock.method(globalThis, 'fetch', async url => {
+      calls++;
+      if (String(url).includes('/atlas.json')) {
+        if (failure === 'atlas-http') return new Response(null, { status: 404 });
+        return reply({ ...atlas, ...(failure === 'format' ? { format: 'other' } : failure === 'version' ? { version: 2 } : {}) });
+      }
+      if (failure === 'project-http') return new Response(null, { status: 401 });
+      if (failure === 'network') throw new TypeError('Synthetic network failure');
+      if (failure === 'json') return new Response('{', { headers: { 'X-Atlas-Version': '7' } });
+      if (failure === 'fallback-http' && calls === 3) return new Response(null, { status: 403 });
+      return reply(published, failure === 'fallback-http' ? 8 : 7);
+    });
+    assert.equal(await open(), false, failure);
+    assert.match(app.error, { format: /not a grainatlas atlas/, version: /newer than/, 'atlas-http': /atlas.json: 404.*not published/,
+      'project-http': /project.json: 401.*sign in/, json: /JSON|property name/, network: /database did not answer/,
+      'fallback-http': /project.json: 403/ }[failure]);
+    assert.equal(app.project, null); assert.equal(app.cancelTask, null);
+    fetch.mock.restore();
+  }
+});
+
+test('a malformed speculative document from another version is discarded', async t => {
+  const { atlas, published, reply, open } = await serverOpenSetup(t);
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    const u = new URL(url); requests.push(u);
+    if (u.pathname.endsWith('atlas.json')) return reply(atlas);
+    return u.searchParams.has('version') ? reply(published)
+      : new Response('{', { headers: { 'X-Atlas-Version': '8' } });
+  });
+  assert.equal(await open(), true);
+  assert.equal(requests.length, 3);
+  assert.equal(app.remote.pixelsSignature, pixelSignature(published));
+});
+
+test('imagesPublished still downloads the fresh baseline despite an opened signature', async t => {
+  const { session } = quietSession('published-baseline-synthetic');
+  t.after(() => { session.dispose(); app.remote = null; });
+  app.remote = { server: 'https://quiet.test', projectId: app.project.uuid, version: 1,
+    readOnly: true, pixelsSignature: pixelSignature(source) };
+  const published = structuredClone(source);
+  published.areas[0].mosaic.sha256 = 'freshly-published';
+  const download = t.mock.fn(async () => published);
+  session.api = async () => ({ publishedProject: download, lookup: async () => session.status });
+  await session.imagesPublished(app.project.uuid);
+  assert.equal(download.mock.callCount(), 1);
+  assert.equal(session.draft.pixels_base, pixelSignature(published));
+});
+
+for (const fallback of [false, true]) {
+  test(`cancelling parallel server open stops ${fallback ? 'the versioned fallback' : 'both initial requests'}`, async t => {
+    const { atlas, published, reply, open } = await serverOpenSetup(t);
+    const signals = [];
+    let started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    t.mock.method(globalThis, 'fetch', async (url, { signal }) => {
+      signals.push(signal);
+      if (fallback && signals.length < 3) return reply(String(url).includes('atlas.json') ? atlas : published, signals.length === 1 ? 7 : 8);
+      if (signals.length === (fallback ? 3 : 2)) started();
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    const opening = open();
+    await waiting; app.cancelTask();
+    assert.equal(await opening, false);
+    assert.equal(signals.at(-1).aborted, true);
+    if (!fallback) assert.ok(signals.every(s => s.aborted));
+    assert.equal(app.error, null); assert.equal(app.project, null); assert.equal(app.cancelTask, null);
+  });
+}
