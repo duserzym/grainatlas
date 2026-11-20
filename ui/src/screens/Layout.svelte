@@ -9,13 +9,29 @@
   import type { DroppedEdit, Grain, LayoutParams, LayoutResult, SheetParams, SheetPlan, SheetResult, WholeParams, WholeResult, Spot, Label, ToneParams } from '../lib/core/types';
   import StripEditor from '../components/StripEditor.svelte';
   import { readPrintEdits, storePrintEdits, StripHistory } from '../lib/strip-edit';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { printCache, printFingerprint, revision, type PrintControls, type PrintEditorState } from '../lib/print-cache';
   import { PrintQuality, printPdfName } from '../lib/print-quality';
   import { createPrintDocument, type PrintDocument } from '../lib/print-document';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
 
+  import PickListImport from '../components/PickListImport.svelte';
+  import { buildPickListRows, renderPickList, type PickListOptions } from '../lib/tims-picklist';
+  import { bundlePixels } from '../lib/bundle-tone';
+
   const app = current();
+  let importingPickList = $state(false);
+  let pick = $state<PickListOptions>({ set: '', batch: '', cropMargin: 30, cropSize: 35, paper: 'a4', title: `${app.pkg?.name ?? app.project?.package.name ?? 'Mount'} pick list ${new Date().toLocaleDateString('en-CA')}` });
+  const pickStore = $derived(app.tims.store);
+  const pickRows = $derived.by(() => {
+    app.tims.version;
+    return buildPickListRows({ fractions: pickStore?.fractions ?? [], sets: pickStore?.data.sets ?? [], batches: pickStore?.batches ?? [], outbox: pickStore?.data.outbox ?? [], grains: app.grains, spots: app.spots, areas: app.project?.areas ?? [], filter: pick });
+  });
+  const hasPlucks = $derived.by(() => { app.tims.version; return !!pickStore?.fractions.some(f => !f.retired_at && f.sources.some(s => !s.retired_at)); });
+  const pickSets = $derived.by(() => { app.tims.version; return pickStore?.data.sets ?? []; });
+  const pickBatches = $derived.by(() => { app.tims.version; return pickStore?.batches.filter(b => !pick.set || b.capsule_set_id === pick.set) ?? []; });
+  const pickPixelsReady = $derived(!app.remote || bundlePixels(app));
+
 
   /** Preview pixels per paper millimetre (zooming in re-rasterises the SVG page). */
   const PX_PER_MM = 6;
@@ -40,7 +56,7 @@
     dpi: 300,
     by_number: false,
   });
-  let style = $state<'sheets' | 'layout'>('sheets');
+  let style = $state<'sheets' | 'layout' | 'picklist'>('sheets');
   let sheetMode = $state<'grains' | 'whole'>('grains');
   let orientation = $state<WholeParams['orientation']>('auto');
   let wholeScale = $state<number | 'auto'>('auto');
@@ -120,7 +136,7 @@
   const exportBlocked = $derived(!!app.busy || stale || pending || !!sheets?.problems?.length);
   const exportReason = $derived(app.busy ? app.busy.label : stale ? 'Inputs changed; make sheets again' : pending ? 'Wait for the strip preview' : exportBlocked ? 'Fix strip problems before export' : '');
   function controls(): PrintControls {
-    return $state.snapshot({ params, sheet, style, sheetMode, orientation, wholeScale, grid, wholeArea, spotText });
+    return $state.snapshot({ params, sheet, style, sheetMode, orientation, wholeScale, grid, wholeArea, spotText, pick });
   }
   function fingerprint(c = controls()) {
     const ids = c.style === 'sheets' && c.sheetMode === 'whole' ? [c.wholeArea]
@@ -129,24 +145,25 @@
       identity: [app.id, app.project?.uuid, app.projectPath, revision(app.packageSource), revision(app.pkg),
         app.project?.package, app.project?.revision, app.pixelsVersion,
         app.remote?.server, app.remote?.projectId, app.remote?.version, app.sync.baseRevision],
-      controls: c,
+      controls: c.style === 'picklist' ? { ...c, rows: pickRows } : c,
       areas: app.project?.areas.filter(a => ids.includes(a.id)).map(a => [a.id, a.uuid, a.name, a.sample, a.pixel_size_nm,
         revision(a.tiles), revision(a.placement), revision(app.stitched[a.id]?.placement),
         a.stage_sign, a.mosaic, app.stitched[a.id]?.mosaic, a.params, app.params[a.id], a.area_meta]),
       tone: Object.fromEntries(ids.map(id => [id, app.tone[id]])),
       grains: Object.fromEntries(ids.map(id => [id, app.grains[id]])),
-      spots: c.style === 'layout' && c.params.show_spots ? app.spots : undefined,
+      spots: c.style === 'picklist' || c.style === 'layout' && c.params.show_spots ? app.spots : undefined,
       labels: c.style === 'layout' && c.params.show_labels ? app.labels : undefined,
       edits: app.project?.print_sheets,
       image_edits: app.project?.image_edits,
     });
   }
   let madeWith = $state('');
-  let madeControls: PrintControls | null = null;
+  let madeControls = $state.raw<PrintControls | null>(null);
   function restoreCached() {
     const cached = printCache.take(String(app.id));
     if (cached) {
       ({ params, sheet, style, sheetMode, orientation, wholeScale, grid, wholeArea, spotText } = cached.controls);
+      if (cached.controls.pick) pick = cached.controls.pick;
       if (cached.fingerprint === fingerprint()) {
         ({ sheets, whole, result, automaticPlan, history, savedDrops, pageIdx, editMode, editor, urls, quality } = cached);
         madeWith = cached.fingerprint;
@@ -208,6 +225,33 @@
     if (stale || pending) quality?.stop();
     else if (quality && !quality.ready && !qualityCancelled) void quality.start();
   });
+
+  $effect(() => {
+    if (style !== 'picklist' || !pickStore) return;
+    const store = pickStore;
+    untrack(() => { void (async () => {
+      await store.loadSets();
+      for (const set of store.data.sets) {
+        if (destroyed || !store.enabled) return;
+        await store.loadBatches(set.id);
+      }
+    })(); });
+  });
+  async function generatePickList() {
+    if (app.busy || !app.project || !pickStore || !pickPixelsReady) return;
+    const { liveIdle } = await import('../lib/actions');
+    for (const id of new Set(pickRows.flatMap(r => r.grains.map(g => g.area)))) if (id) await liveIdle(id, app);
+    const core = await app.core;
+    const project = $state.snapshot({ ...app.project, grainatlas_ui: undefined });
+    await core.loadProject(JSON.stringify(project));
+    const generationControls = controls(), generationKey = fingerprint(generationControls);
+    const rows = $state.snapshot(pickRows), options = $state.snapshot(pick);
+    const rendered = await app.run('Laying out pick list', () => renderPickList({ core, project, rows, options,
+      mosaics: Object.fromEntries(Object.entries(app.stitched).map(([id, s]) => [id, $state.snapshot(s.mosaic)])), tone: $state.snapshot(app.tone), mount: app.pkg?.name ?? project.package.name }));
+    if (!rendered) return;
+    sheets = null; whole = null; result = rendered; beginQuality(rendered);
+    replacePages(rendered.pages); pageIdx = 0; madeWith = generationKey; madeControls = generationControls;
+  }
 
   async function generateSheets() {
     if (app.busy) return;
@@ -308,7 +352,7 @@
         if (cancelled || destroyed || stale) throw new Error('cancelled');
         progress({ stage: 'Saving PDF', fraction: 1 });
         const r = whole ?? sheets;
-        await savePrintPdf(bytes, printPdfName(app.pkg?.name ?? app.project?.package.name ?? 'grainatlas'), r ? JSON.stringify(r.registration, null, 1) : null);
+        await savePrintPdf(bytes, printPdfName(style === 'picklist' ? pick.title : app.pkg?.name ?? app.project?.package.name ?? 'grainatlas'), r ? JSON.stringify(r.registration, null, 1) : null);
       });
     } finally { app.cancelTask = null; }
   }
@@ -329,7 +373,7 @@
       const doc = printDocument = createPrintDocument(pages, result.paper_mm);
       await doc.decodeImages();
       if (cancelled || destroyed || stale || printDocument !== doc) { doc.cleanup(); return; }
-      await doc.print(style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title);
+      await doc.print(style === 'picklist' ? pick.title : style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title);
     } catch (error) { app.error = error instanceof Error ? error.message : String(error); }
     finally { app.cancelTask = null; }
   }
@@ -337,6 +381,8 @@
     params.area_ids = params.area_ids.includes(id) ? params.area_ids.filter((a) => a !== id) : [...params.area_ids, id];
   }
 </script>
+
+<PickListImport bind:open={importingPickList} />
 
 {#snippet droppedNotice(editing: boolean)}
   {#if droppedEdits.length}
@@ -391,10 +437,26 @@
     <div class="seg" role="radiogroup" aria-label="Style">
       <label class="check"><input type="radio" bind:group={style} value="sheets" data-testid="style-sheets" /> Print sheets</label>
       <label class="check"><input type="radio" bind:group={style} value="layout" data-testid="style-layout" /> Grains or areas</label>
+      <label class="check"><input type="radio" bind:group={style} value="picklist" disabled={!hasPlucks} data-testid="style-picklist" /> Pick list</label>
     </div>
-    {#if style === 'sheets'}
+    <button onclick={() => importingPickList = true} data-testid="import-pick-list">Import pick list…</button>
+    {#if style === 'picklist'}
+      <label class="field">Capsule set <select aria-label="Capsule set" bind:value={pick.set} onchange={() => pick.batch = ''}><option value="">All sets</option>{#each pickSets as set}<option value={set.id}>{set.name} ({set.code})</option>{/each}</select></label>
+      <label class="field">Batch <select aria-label="Batch" bind:value={pick.batch}><option value="">All batches on this mount</option>{#each pickBatches.filter(b => pickStore?.fractions.some(f => !f.retired_at && f.batch_id === b.id)) as batch}<option value={batch.id}>{pickSets.find(s => s.id === batch.capsule_set_id)?.code} batch started {batch.started_on}</option>{/each}</select></label>
+      <label class="field">Crop margin (µm) <input type="number" min="0" bind:value={pick.cropMargin} /></label>
+      <label class="field">Crop size on paper (mm) <input type="number" min="15" max="60" bind:value={pick.cropSize} /></label>
+      <label class="field">Paper <select aria-label="Paper" bind:value={pick.paper}><option value="tabloid">Tabloid 11 × 17 in</option><option value="letter">Letter</option><option value="a3">A3</option><option value="a4">A4</option></select></label>
+      <label class="field">Title <input bind:value={pick.title} /></label>
+      <p class="faint small">{pickRows.length} rows. Pending plucks are marked “not yet in the database”.</p>
+      {#if !pickPixelsReady}<p class="faint small">Open an editable copy and let the mount images finish loading to make local grain crops.</p>{/if}
+      <button class="primary" onclick={generatePickList} disabled={!!app.busy || !pickRows.length || !pickPixelsReady} data-testid="picklist-preview">Preview pick list</button>
+      {#if result && madeControls?.style === 'picklist'}
+        <p class="faint small" data-testid="picklist-count">{result.items} rows · {result.pages.length} pages</p>
+        <div class="two"><button onclick={pdf} disabled={exportBlocked} title={exportReason} data-testid="export-pdf">Save PDF</button><button onclick={browserPrint} disabled={exportBlocked} title={exportReason}>Print…</button></div>
+      {/if}
+    {:else if style === 'sheets'}
       <label class="field">Print
-        <select bind:value={sheetMode} data-testid="sheet-mode" onchange={() => { sheets = null; whole = null; result = null; }}>
+        <select aria-label="Print" bind:value={sheetMode} data-testid="sheet-mode" onchange={() => { sheets = null; whole = null; result = null; }}>
           <option value="grains">Grain sheets</option>
           <option value="whole">Whole area, one sheet</option>
         </select>
@@ -406,7 +468,7 @@
       <label class="field">Lab and operator <input type="text" bind:value={sheet.lab} placeholder="e.g. lab name · operator" /></label>
       <div class="two">
         <label class="field">Paper
-          <select bind:value={sheet.paper}>
+          <select aria-label="Paper" bind:value={sheet.paper}>
             <option value="tabloid">Tabloid 11 × 17 in</option>
             <option value="letter">Letter</option>
             <option value="a3">A3</option>
@@ -427,13 +489,13 @@
       </div>
       {#if sheetMode === 'whole'}
       <label class="field">Area
-        <select bind:value={wholeArea} data-testid="whole-area">
+        <select aria-label="Area" bind:value={wholeArea} data-testid="whole-area">
           {#each stitchedIds as id (id)}<option value={id}>{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
         </select>
       </label>
       <div class="two">
         <label class="field">Orientation
-          <select bind:value={orientation} data-testid="whole-orientation">
+          <select aria-label="Orientation" bind:value={orientation} data-testid="whole-orientation">
             <option value="auto">Auto</option><option value="landscape">Landscape</option><option value="portrait">Portrait</option>
           </select>
         </label>
@@ -479,7 +541,7 @@
     <label class="field">Title <input type="text" bind:value={params.title} /></label>
     <div class="two">
       <label class="field">Paper
-        <select bind:value={params.paper} data-testid="paper">
+        <select aria-label="Paper" bind:value={params.paper} data-testid="paper">
           <option value="tabloid">Tabloid 11 × 17 in</option>
           <option value="letter">Letter</option>
           <option value="a4">A4</option>
@@ -500,7 +562,7 @@
       <label class="field">Margin mm <input type="number" min="0" bind:value={params.margin_mm} /></label>
     </div>
     <label class="field">Items
-      <select bind:value={params.items} data-testid="items">
+      <select aria-label="Items" bind:value={params.items} data-testid="items">
         <option value="grains" disabled={!hasGrains}>single grains, cropped alone (no neighbours)</option>
         <option value="areas">whole areas</option>
       </select>
@@ -637,6 +699,7 @@
   .seg {
     display: flex;
     gap: var(--space-3);
+    flex-wrap: wrap;
   }
   .swatch {
     display: inline-block;

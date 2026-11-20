@@ -1,5 +1,7 @@
 <script lang="ts">
   import { appStorage } from '../lib/app-storage';
+  import PickListImport from '../components/PickListImport.svelte';
+  let importingPickList = $state(false);
   import StartMounts from '../components/StartMounts.svelte';
   import MountPicker from '../components/MountPicker.svelte';
   import { oversightSession } from '../lib/oversight';
@@ -253,11 +255,14 @@
   }
 </script>
 
+<PickListImport bind:open={importingPickList} />
+
 <section class="open">
   <div class="glass panel action-bar" class:over ondragover={e => { e.preventDefault(); over = true; }} ondragleave={() => over = false} ondrop={drop} role="region" aria-label="Open files">
     <button onclick={pick} data-testid="choose-folder">Open package…</button>
     <button onclick={() => projectInput.click()}>Open project…</button>
     <button disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(undefined, undefined, true)}>New mount…</button>
+    <button onclick={() => importingPickList = true} data-testid="import-pick-list">Import pick list…</button>
     <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
     {#if hasContent}<span class="faint small">Drop a folder or images here</span>{/if}
   </div>

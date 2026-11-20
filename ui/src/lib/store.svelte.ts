@@ -13,6 +13,7 @@ import { canWrite, presentation } from './presentation';
 // its tab once (`current()`) so a result lands in the tab that started the work.
 
 import { SyncSession } from './sync-session.svelte';
+import { TimsSession } from './tims-store.svelte';
 import { grainMapWithoutBlankArtifacts } from './sync';
 import type { ReviewGroups, ShellCommand } from './shellcmd';
 import { newCore, type Core, type PackageFile, type RawImage } from './core/core';
@@ -25,7 +26,7 @@ import { loadLink, resolveServer, saveLink, type LinkSettings } from './upbdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
-export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'grain-outline' | 'grain-brush' | 'pair';
+export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'grain-outline' | 'grain-brush' | 'pair' | 'pluck';
 
 /** A reference image (printout photo, post-laser frame) registered to an area's mosaic. */
 export interface Overlay {
@@ -150,6 +151,7 @@ export const reviewSpots = $state<{ projects: Record<string, string[]>; colors: 
 
 class AppState {
   readonly sync: SyncSession;
+  readonly tims: TimsSession;
   viewMode = $state(false);
   sessionToken: string | null = null;
   sessionServer: string | null = null;
@@ -352,8 +354,10 @@ class AppState {
   constructor(id: number) {
     this.id = id;
     this.sync = new SyncSession(this);
+    this.tims = new TimsSession(this);
     this.core = newCore(id);
     this.stopNumbering = $effect.root(() => {
+      const stopTims = this.tims.start();
       $effect(() => { this.sync.refreshAutomatic(); });
       let context: { area: string | null; sample: string } | null = null;
       let project: string | null = null;
@@ -379,6 +383,7 @@ class AppState {
           this.lastPlaced = null;
         }
       });
+      return stopTims;
     });
   }
 

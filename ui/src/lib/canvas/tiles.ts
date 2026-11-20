@@ -80,6 +80,16 @@ export class TileCache {
     return null;
   }
 
+  /** Export callers await the same tile loader and display LUT as the viewer. */
+  async ready(area: string, level: number, col: number, row: number): Promise<ImageBitmap> {
+    const bitmap = this.get(area, level, col, row);
+    if (bitmap) return bitmap;
+    await this.inflight.get(`${area}/${level}/${col}/${row}`);
+    const loaded = this.peek(area, level, col, row);
+    if (!loaded) throw new Error(`Image tile ${area}/${level}/${col}/${row} could not be loaded`);
+    return loaded;
+  }
+
   private async load(k: string, area: string, level: number, col: number, row: number) {
     const gen = this.gen;
     let r = this.raw.get(k);

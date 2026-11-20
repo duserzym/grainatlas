@@ -32,6 +32,10 @@
   import { formatName, grainAt, relinkSpots, newId, nextNumber, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
   import { findGrainsInArea } from '../lib/grain-finding';
   import FloatingPanel from '../components/FloatingPanel.svelte';
+  import PluckPanel, { type PluckGrain } from '../components/PluckPanel.svelte';
+  import TimsSection from '../components/TimsSection.svelte';
+  import type { FractionOut } from '../lib/tims';
+  import type { OutboxEntry } from '../lib/tims-outbox';
   import SizeBox from '../components/SizeBox.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
   import { spotLink } from '../lib/upbdb';
@@ -59,18 +63,58 @@
   import { presentation } from '../lib/presentation';
   import { sendSpotAction } from '../lib/spot-action';
   const isViewer = $derived(presentation.current === 'viewer');
-  let spotMenu = $state<{ spot: string; x: number; y: number } | null>(null);
+  let spotMenu = $state<{ spot?: string; grain?: string; x: number; y: number } | null>(null);
+  let pluck = $state<{ serial: string; scope: string | null; grains: PluckGrain[]; fraction: FractionOut | null; failed: OutboxEntry | null } | null>(null);
+  const canPluck = $derived(!app.readOnly && !!app.project?.upbdb.mount_id && !oversightSession.readOnly);
+  function pluckGrain(id: string, spot?: Spot, sample?: FractionOut['sample']): PluckGrain {
+    const grain = Object.values(app.grains).flat().find(g => g.id === id);
+    const area = app.project?.areas.find(a => (app.grains[a.id] ?? []).some(g => g.id === id));
+    return { grain: id, label: grain?.label || (grain ? `Grain ${grain.number}` : id), spot: spot?.id, spotName: spot?.name,
+      sample: sample ?? { id: '', name: grain?.sample || spot?.sample || area?.sample || area?.name || '' } };
+  }
+  function editPluck(fraction: FractionOut, failed: OutboxEntry | null = null) {
+    if (!canPluck) return;
+    pluck = { serial: newId(), scope: app.tims.store?.key ?? null, fraction, failed, grains: fraction.sources.map(s => ({ ...pluckGrain(s.atlas_grain_id, app.spots.find(p => p.id === s.atlas_spot_id), fraction.sample), spot: s.atlas_spot_id, spotName: app.spots.find(p => p.id === s.atlas_spot_id)?.name ?? s.spot_label ?? undefined })) };
+  }
+  function openPluck(id: string, spot?: Spot, add = false) {
+    if (!canPluck) return;
+    const selected = pluckGrain(id, spot);
+    if (add && pluck) {
+      if (!pluck.grains.some(g => g.grain === id)) pluck.grains = [...pluck.grains, selected];
+    } else {
+      const existing = app.tims.badges.get(id)?.fractions[0];
+      if (existing) editPluck(existing);
+      else pluck = { serial: newId(), scope: app.tims.store?.key ?? null, grains: [selected], fraction: null, failed: null };
+    }
+    if (spot) pickSpot(spot.id, add ? 'add' : 'only', true);
+    else { selGrains = add ? [...new Set([...selGrains, id])] : [id]; app.selection = []; }
+  }
+  function pluckContext() {
+    const spot = app.spots.find(s => s.id === spotMenu?.spot);
+    const id = spot?.grain_id ?? spotMenu?.grain;
+    if (id) openPluck(id, spot);
+    spotMenu = null;
+  }
+  $effect(() => {
+    const scope = app.tims.store?.key ?? null;
+    if (!canPluck || (pluck?.scope && pluck.scope !== scope)) pluck = null;
+    else if (pluck && !pluck.scope && scope) pluck.scope = scope;
+  });
   function contextSpot(e: MouseEvent) {
-    if (!isViewer || !view || !(e.target instanceof Element)) return;
+    if ((!isViewer && !canPluck) || !view || !(e.target instanceof Element)) return;
+    // Editing: only a plain right-click opens the pluck menu. macOS fires contextmenu for
+    // Ctrl+press, which is the Ctrl-drag box gesture, and that must keep its selection.
+    if (!isViewer && (e.button !== 2 || e.ctrlKey)) return;
     const host = e.target.closest('.viewer[data-view]');
     if (!host) return;
     const bounds = host.getBoundingClientRect();
     const point = toMosaic(view, e.clientX - bounds.left, e.clientY - bounds.top);
     const spot = hitSpot(point[0] * umPerPx, point[1] * umPerPx);
-    if (!spot) return;
+    const grain = spot?.grain_id ?? grainAt(detections, point[0] * umPerPx, point[1] * umPerPx, app.layers.artifacts)?.id;
+    if (!spot && (!grain || isViewer)) return;
     e.preventDefault();
-    pickSpot(spot.id, 'only', true);
-    spotMenu = { spot: spot.id, x: Math.max(0, Math.min(e.clientX, innerWidth - 175)), y: Math.max(0, Math.min(e.clientY, innerHeight - 80)) };
+    if (isViewer && spot) pickSpot(spot.id, 'only', true);
+    spotMenu = { spot: spot?.id, grain, x: Math.max(0, Math.min(e.clientX, innerWidth - 175)), y: Math.max(0, Math.min(e.clientY, innerHeight - 80)) };
   }
   function actionSpot(action: 'edit' | 'studio') {
     const id = spotMenu?.spot ?? (app.selection.length === 1 ? app.selection[0] : null);
@@ -82,7 +126,7 @@
     if (!(e.target instanceof Element) || !e.target.closest('[data-testid=spot-action-menu]')) spotMenu = null;
   }
   $effect(() => {
-    if (!isViewer) { spotMenu = null; return; }
+    if (!isViewer) return;
     editing = null; batch = null; gesture = null; drawing = null;
     lasso = null; stroke = null; splitStroke = null; rectangle = null; measure = null;
   });
@@ -1039,6 +1083,7 @@
       pickSpot(s.id, clickHow(ev, false), true);
       return true;
     }
+    if (app.tool === 'pluck') return false;
     // Delay click actions until release: a modified drag must never move, place
     // or delete a spot, even when it starts on one. Stroke tools keep their modifiers.
     const boxTool = app.tool === 'select' || app.tool === 'spot' || app.tool === 'delete' || app.tool === 'grain-add';
@@ -1299,6 +1344,12 @@
     const x = p.x * umPerPx, y = p.y * umPerPx;
     if (ro && app.tool !== 'select' && app.tool !== 'measure') return;
     if (app.tool === 'grain-outline' || app.tool === 'grain-brush') return;
+    if (app.tool === 'pluck') {
+      const spot = hitSpot(x, y);
+      const grain = spot?.grain_id ?? grainAt(detections, x, y, app.layers.artifacts)?.id;
+      if (grain) openPluck(grain, spot ?? undefined, ev.shiftKey);
+      return;
+    }
     if (app.tool === 'pair') {
       await pairClick(x, y).catch((e) => (app.error = e instanceof Error ? e.message : String(e)));
       return;
@@ -1509,6 +1560,7 @@
       }
       return;
     }
+    if (e.key === 'Escape' && (pluck || spotMenu)) { e.preventDefault(); pluck = null; spotMenu = null; return; }
     if (app.busy || app.mosaicExportPrompt || app.grainExportPrompt || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
     if (e.key.startsWith('Arrow')) app.flash = null;
     const t = e.target as HTMLElement;
@@ -1558,6 +1610,7 @@
     if (mod || e.altKey) return;
     const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split', o: 'grain-outline', b: 'grain-brush' };
     const kk = e.key.toLowerCase();
+    if (kk === 'p' && canPluck) { app.tool = 'pluck'; return; }
     if (tools[kk] && !(noPixels && (kk === 'g' || kk === 'b'))) app.tool = tools[kk];
     else if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
@@ -1625,10 +1678,12 @@
 {/if}
 <svelte:window onkeydown={key} onkeyup={splitModifier} oncontextmenu={contextSpot} onpointerdown={closeSpotMenu} />
 
-{#if isViewer && spotMenu}
+{#if spotMenu}
   <div class="panel spot-menu" role="menu" data-ui data-testid="spot-action-menu" style:left="{spotMenu.x}px" style:top="{spotMenu.y}px">
+    {#if isViewer}
     <button role="menuitem" onclick={() => actionSpot('edit')}>Edit in grainatlas</button>
     <button role="menuitem" onclick={() => actionSpot('studio')}>Open in Studio</button>
+    {:else if canPluck && spotMenu.grain}<button role="menuitem" onclick={pluckContext}>Pluck for TIMS…</button>{/if}
   </div>
 {/if}
 
@@ -1714,6 +1769,15 @@
                 <text class="gnum" class:cropped={cropExcluded.has(g.id)} class:sel={selGrains.includes(g.id)} transform={screenLabel(g.bbox_um[0], g.bbox_um[1])} dy="-3">{grainNumber(g)}</text>
               {/each}
             {/if}
+            {#each outlinedGrains as g (g.id)}
+              {@const badge = app.tims.badges.get(g.id)}
+              {#if badge}
+                <g class="tims-badge" class:pending={badge.state === 'pending' || badge.state === 'waiting'} class:failed={badge.state === 'failed'} transform={screenLabel(g.bbox_um[0], g.bbox_um[1])} data-testid="tims-badge" data-grain-id={g.id}>
+                  <rect x="22" y="-21" rx="3" width={badge.text.length * 6.5 + 10} height="18" />
+                  <text x="27" y="-8">{badge.text}</text>
+                </g>
+              {/if}
+            {/each}
             {#if (isViewer || app.layers.results) && range}
               <g class="results" data-testid="results-layer">
                 {#each shown as { s, r, v } (s.id)}
@@ -1825,7 +1889,7 @@
       </div>
       <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
     {:else}
-    <div class="glass toolbar" data-ui>
+    <div class="glass toolbar" data-ui title={!app.project?.upbdb.mount_id ? 'Link the mount to the database first to pluck grains for TIMS' : undefined}>
       <button aria-pressed={editImage} disabled={ro} data-testid="edit-image" onclick={()=>{editImage=!editImage;imageTool=null;}}>Edit image</button>
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
       {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
@@ -1858,6 +1922,7 @@
         <button class="icon" title={`Undo (${modName}+Z)`} disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()}>↶</button>
         <button class="icon" title={`Redo (Shift+${modName}+Z)`} disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()}>↷</button>
       {/if}
+      {#if canPluck}<button class="icon" aria-pressed={app.tool === 'pluck'} title="Pluck grains for TIMS; Shift-click adds grains (P)" data-testid="tool-pluck" onclick={() => { app.tool = 'pluck'; }}>Pluck</button>{/if}
       <span class="sep"></span>
       <button class="icon" title="Zoom in (+)" onclick={() => viewer?.zoomBy(1.5)}>+</button>
       <button class="icon" title="Zoom out (−)" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
@@ -1867,6 +1932,10 @@
       <button class="icon" title="Rotate right 15° (])" onclick={() => viewer?.rotateBy(Math.PI / 12)}>↻</button>
     </div>
 
+    {/if}
+
+    {#if pluck}
+      {#key pluck.serial}<PluckPanel bind:grains={pluck.grains} fraction={pluck.fraction} failed={pluck.failed} onclose={() => pluck = null} />{/key}
     {/if}
 
     {#if !isViewer && panel.open && (focus || focusGrain)}
@@ -1974,6 +2043,7 @@
           {/if}
         {/if}
         </fieldset>
+        {#if focus?.grain_id || focusGrain?.id}<TimsSection grain={(focus?.grain_id ?? focusGrain?.id)!} onedit={(f, failed) => editPluck(f, failed)} />{/if}
       </FloatingPanel>
     {/if}
 
@@ -2336,6 +2406,13 @@
 {/if}
 
 <style>
+  .tims-badge {pointer-events:none;}
+  .tims-badge rect {fill:#18252d;stroke:#fff;stroke-width:1;}
+  .tims-badge text {fill:#fff;stroke:none;font:11px var(--font-mono, monospace);}
+  .tims-badge.pending rect {stroke-dasharray:3 2;}
+  .tims-badge.failed rect {stroke:var(--danger);stroke-width:2;}
+  .tims-badge.failed text {fill:var(--danger);}
+
   .spot-menu { position:fixed; z-index:60; display:grid; padding:var(--space-1); }
   .spot-menu button { text-align:left; }
   .viewer-mode .viewer-controls { right:var(--space-2); max-width:none; flex-wrap:nowrap; gap:var(--space-1); padding:var(--space-1); }

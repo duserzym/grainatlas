@@ -24,6 +24,8 @@ export function mockSessionRead(method: string, pathname: string): unknown | und
   if (pathname === '/v1/accounts/me') return { id: 'invented-account', username: 'casey', display_name: 'Casey Example', can_manage_people: false };
   if (pathname === '/v1/server') return { dataset_id: 'invented-dataset' };
   if (pathname === '/v1/labs') return [];
+  // Existing bundle specs have no TIMS records. Specs with plucks intercept these first.
+  if (['/v1/fractions', '/v1/tims/capsule-sets', '/v1/tims/batches', '/v1/tims/recipes'].includes(pathname)) return [];
   return undefined;
 }
 

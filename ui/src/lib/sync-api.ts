@@ -147,7 +147,7 @@ export class SyncApi {
   private token: string | null;
   private access: string | null;
   constructor(server: string, token: string | null, access: string | null = null) { this.server = server; this.token = token; this.access = access; }
-  private async call(path: string, init: RequestInit = {}, identity: WriteIdentity = {}, project?: string): Promise<Response> {
+  private async call(path: string, init: RequestInit = {}, identity: WriteIdentity = {}, project?: string, durableCache = false): Promise<Response> {
     if (init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) requireWrite();
     const url = new URL(this.server + path);
     if (this.access && !init.method) url.searchParams.set('access', this.access);
@@ -155,7 +155,7 @@ export class SyncApi {
     if (viewAs) url.searchParams.set('as', viewAs.username);
     const cache = syncCache(this.server, this.token, this.access);
     const cacheable = !init.method || init.method === 'GET';
-    const cached = cacheable ? cache.get(url.href) : undefined;
+    const cached = cacheable && !durableCache ? cache.get(url.href) : undefined;
     let r: Response;
     try {
       const send = (key?: string) => serverFetch(url, { cache: 'no-cache', ...init, headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...(cached ? { 'If-None-Match': cached.etag } : {}), ...(init.headers ?? {}), ...(key ? { 'Idempotency-Key': key } : {}) } }, project, fetchWithTimeout);
@@ -171,14 +171,14 @@ export class SyncApi {
       r = new Response(text, { status: r.status, statusText: r.statusText, headers: r.headers });
     }
     if (r.status === 304 && cached) return new Response(cached.body, { headers: cached.headers });
-    if (cacheable && r.ok) {
+    if (cacheable && !durableCache && r.ok) {
       const etag = r.headers.get('ETag');
       if (etag) {
         cache.set(url.href, { etag, body: await r.clone().text(), headers: new Headers(r.headers) });
         if (cache.size > 64) cache.delete(cache.keys().next().value!);
       } else cache.delete(url.href);
     }
-    if (!r.ok && r.status !== 404 && r.status !== 409) {
+    if (!r.ok && r.status !== 304 && r.status !== 404 && r.status !== 409) {
       const raw = await r.text();
       let payload: Record<string, unknown> = {};
       try { const parsed: unknown = JSON.parse(raw); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>; } catch { /* not JSON */ }
@@ -203,6 +203,11 @@ export class SyncApi {
       throw error;
     }
     return r;
+  }
+  /** Resources with their own durable ETag cache share sync's transport and write gates.
+   * Keep 304 intact: the caller owns the persisted body, including every list page. */
+  resource(path: string, init: RequestInit = {}, identity: WriteIdentity = {}, project?: string) {
+    return this.call(path, init, identity, project, true);
   }
   async lookup(uuid: string): Promise<ProjectStatus | null> {
     const r = await this.call(`/v1/atlas/projects/${encodeURIComponent(uuid)}`);

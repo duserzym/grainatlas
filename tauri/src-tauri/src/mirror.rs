@@ -19,6 +19,12 @@ fn relative(key: &str) -> io::Result<PathBuf> {
     let parts: Vec<_> = key.split('/').collect();
     let valid = match parts.as_slice() {
         ["mirror", dataset, account, "start-screen.json"] => segment(dataset) && segment(account),
+        ["mirror", dataset, account, "tims", server, file] => {
+            segment(dataset)
+                && segment(account)
+                && segment(server)
+                && file.strip_suffix(".json").is_some_and(segment)
+        }
         ["mirror-bindings", server, file] => {
             segment(server) && file.strip_suffix(".json").is_some_and(segment)
         }
@@ -150,7 +156,28 @@ mod tests {
             read(&root, "mirror/dataset-b/account-a/start-screen.json").unwrap(),
             None
         );
+        let tims_key = "mirror/dataset-a/account-a/tims/server-a/mount-a.json";
+        write(
+            &root,
+            tims_key,
+            "{\"outbox\":[{\"key\":\"pending-key\"}]}",
+        )
+        .unwrap();
+        assert_eq!(
+            read(&root, tims_key).unwrap().as_deref(),
+            Some("{\"outbox\":[{\"key\":\"pending-key\"}]}")
+        );
+        assert_eq!(
+            read(&root, "mirror/dataset-a/account-b/tims/server-a/mount-a.json").unwrap(),
+            None
+        );
+        assert_eq!(
+            read(&root, "mirror/dataset-a/account-a/tims/server-b/mount-a.json").unwrap(),
+            None
+        );
         for key in [
+            "mirror/dataset-a/account-a/tims/../mount-a.json",
+            "mirror/dataset-a/account-a/tims/server-a/../../mount-a.json",
             "mirror/a/../start-screen.json",
             "mirror/../a/start-screen.json",
             "/mirror/a/b/start-screen.json",
