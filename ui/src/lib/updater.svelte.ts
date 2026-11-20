@@ -1,6 +1,8 @@
 import { isHosted } from '@lab/bridge';
 import { isDesktop } from './core/core';
-import { checkButtonView, friendlyUpdateError, loadPrefs, pickEndpoint, savePrefs, STABLE_ENDPOINT, transition, UPDATE_UNSUPPORTED_REASON, type UpdateEvent, type UpdateInfo, type UpdatePrefs, type UpdateStatus } from './updates';
+import { checkButtonView, friendlyUpdateError, loadPrefs, currentNotes, recordVersion, releaseNotesUrl, savePrefs, STABLE_ENDPOINT, transition, UPDATE_UNSUPPORTED_REASON, type UpdateEvent, type UpdateInfo, type UpdatePrefs, type UpdateStatus } from './updates';
+
+const bundledNotes = import.meta.glob<string>('../../../release-notes/*.md', { query: '?raw', import: 'default', eager: true });
 
 const HOSTED_REASON = 'UPb Lab updates grainatlas with the shell.';
 const WEB_REASON = 'Updates come with the desktop app; the web page is always the version its server serves.';
@@ -11,7 +13,7 @@ function storage() {
 const previewName = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)
   ? new URLSearchParams(window.location.search).get('update-preview') : null;
 export const updatePreview = ['idle', 'checking', 'none', 'available', 'downloading', 'ready', 'installing', 'error', 'unsupported'].includes(previewName ?? '');
-const fake: UpdateInfo = { version: '0.2.0', currentVersion: '0.1.0', notes: 'Faster stitching, new checks', date: null, ready: false };
+const fake: UpdateInfo = { version: '0.2.0', currentVersion: '0.1.0', notes: '- Faster stitching.\n- Check grain outlines before printing.\n- Print sheets fit A4 and Letter.\n- Keep neighbouring grains together.\n- <b>Notes stay plain text.</b>', date: null, ready: false };
 function previewStatus(): UpdateStatus {
   switch (previewName) {
     case 'idle': return { kind: 'idle' };
@@ -32,6 +34,8 @@ export const updater = $state({
   prefs: loadPrefs(storage()),
   version: __APP_VERSION__,
   supported: false,
+  whatsNewOpen: false,
+  whatsNewNotes: '',
   manualNoneUntil: updatePreview && previewName === 'none' ? Date.now() + 5000 : 0,
 });
 
@@ -48,15 +52,17 @@ function fail(error: unknown) {
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
 }
-async function endpoint() {
-  if (updater.prefs.channel === 'stable') return STABLE_ENDPOINT;
-  try {
-    const res = await fetch('https://api.github.com/repos/duserzym/grainatlas/releases?per_page=10', {
-      headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return STABLE_ENDPOINT;
-    return pickEndpoint('beta', await res.json());
-  } catch { return STABLE_ENDPOINT; }
+function bundled(version: string) { return bundledNotes[`../../../release-notes/${version}.md`]; }
+export function openWhatsNew() {
+  if (!updater.whatsNewNotes) updater.whatsNewNotes = currentNotes(updater.version, bundled(updater.version), updater.prefs);
+  updater.whatsNewOpen = true;
+}
+function noteRunningVersion() {
+  const result = recordVersion(updater.version, bundled(updater.version), updater.prefs);
+  updater.whatsNewNotes = result.notes;
+  updater.whatsNewOpen = result.show;
+  updater.prefs = result.prefs;
+  savePrefs(updater.prefs, storage());
 }
 
 export async function check(manual = false): Promise<void> {
@@ -76,7 +82,7 @@ export async function check(manual = false): Promise<void> {
       return;
     }
     updater.supported = await invoke<boolean>('update_supported');
-    const info = await invoke<UpdateInfo | null>('update_check', { endpoint: await endpoint() });
+    const info = await invoke<UpdateInfo | null>('update_check', { endpoint: STABLE_ENDPOINT });
     const checkedAt = Date.now();
     send({ type: 'checked', info, checkedAt });
     setPrefs({ lastCheck: checkedAt, lastResult: checkButtonView(updater.status, updater.version).text });
@@ -112,6 +118,7 @@ export async function download(): Promise<void> {
 
 export async function install(): Promise<void> {
   if (updater.status.kind !== 'ready' || isHosted() || !updatePreview && !updater.supported) return;
+  setPrefs({ pendingNotes: { version: updater.status.info.version, notes: updater.status.info.notes ?? '' } });
   send({ type: 'install' });
   if (updatePreview) return;
   try { await invoke('update_install'); } catch (error) { fail(error); }
@@ -122,11 +129,14 @@ export function startScheduler(): () => void {
   let stopped = false;
   let first: ReturnType<typeof setTimeout> | undefined;
   let every: ReturnType<typeof setInterval> | undefined;
+  if (updatePreview) noteRunningVersion();
   if (isHosted() && !updatePreview) updater.status = { kind: 'unsupported', reason: HOSTED_REASON };
   else if (!updatePreview && isDesktop()) {
     void (async () => {
       try {
         updater.version = await (await import('@tauri-apps/api/app')).getVersion();
+        if (stopped) return;
+        noteRunningVersion();
         updater.supported = await invoke<boolean>('update_supported');
         if (stopped) return;
         if (!updater.supported) {
@@ -144,4 +154,11 @@ export function startScheduler(): () => void {
     })();
   }
   return () => { stopped = true; clearTimeout(first); clearInterval(every); };
+}
+
+/** Reuse the native browser opener used by sign-in. */
+export async function openReleaseNotes(version: string): Promise<void> {
+  const url = releaseNotesUrl(version);
+  if (isDesktop()) await invoke('update_open_release_notes', { url });
+  else window.open(url, '_blank', 'noopener,noreferrer');
 }

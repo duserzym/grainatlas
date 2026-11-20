@@ -62,3 +62,14 @@ test('key check rejects malformed base64, missing comments and invalid key bytes
     wrap('untrusted comment: minisign public key: test\n' + Buffer.from('Ed').toString('base64') + '!'),
   ]) assert.throws(() => assertPublicKey(key));
 });
+
+test('running version has bundled user-facing release notes', () => {
+  const notes = readFileSync(new URL(`../../../release-notes/${config.version}.md`, import.meta.url), 'utf8');
+  assert.ok(notes.trim());
+  assert.ok(Array.from(notes).length <= 600);
+  assert.doesNotMatch(notes, /^\s*#/m);
+  assert.ok((notes.match(/^- /gm) ?? []).length <= 5);
+  const updater = readFileSync(new URL('./updater.svelte.ts', import.meta.url), 'utf8');
+  assert.match(updater, /endpoint: STABLE_ENDPOINT/);
+  assert.doesNotMatch(updater, /pickEndpoint|api\.github\.com|prefs\.channel/);
+});

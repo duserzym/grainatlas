@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  checkButtonView, friendlyUpdateError, pickEndpoint, STABLE_ENDPOINT, transition,
+  checkButtonView, friendlyUpdateError, compareVersions, loadPrefs, savePrefs, recordVersion, currentNotes, releaseNotesUrl, STABLE_ENDPOINT, transition,
   UPDATE_APP, UPDATE_HOST, UPDATE_UNSUPPORTED_REASON, updateErrorDetails, updateErrorKind,
 } from './updates.ts';
 
@@ -88,10 +88,52 @@ test('Details preserves native diagnostics and caps the raw excerpt at 120 chara
   for (const length of [119, 120]) assert.equal(updateErrorDetails('x'.repeat(length)), 'x'.repeat(length));
 });
 
-test('stable feed and existing beta channel selection remain separate', () => {
-  const beta = 'https://github.com/duserzym/grainatlas/releases/download/v0.2.0-beta.1/latest.json';
-  const releases = [{ published_at: '2026-11-19', assets: [{ name: 'latest.json', browser_download_url: beta }] }];
-  assert.equal(pickEndpoint('stable', releases), STABLE_ENDPOINT);
-  assert.equal(pickEndpoint('beta', releases), beta);
-  assert.equal(pickEndpoint('beta', []), STABLE_ENDPOINT);
+function memory(value) {
+  return { value: JSON.stringify(value), getItem() { return this.value; }, setItem(_key, value) { this.value = value; } };
+}
+
+test('legacy beta and stable preferences migrate silently and retain other settings', () => {
+  for (const channel of ['beta', 'stable']) {
+    const storage = memory({ channel, autoDownload: false, lastCheck: 12, lastResult: 'Up to date' });
+    const prefs = loadPrefs(storage);
+    assert.deepEqual(prefs, { autoDownload: false, lastCheck: 12, lastResult: 'Up to date', lastSeenVersion: null, pendingNotes: null });
+    assert.equal('channel' in JSON.parse(storage.value), false);
+    savePrefs(prefs, storage);
+    assert.deepEqual(loadPrefs(storage), prefs);
+  }
+});
+
+test('first install is silent, upgrades show once, equal and older versions stay silent', () => {
+  const prefs = loadPrefs();
+  const first = recordVersion('0.1.8', 'Bundled notes', prefs);
+  assert.equal(first.show, false);
+  assert.equal(first.prefs.lastSeenVersion, '0.1.8');
+  const upgrade = recordVersion('0.1.9', 'New notes', first.prefs);
+  assert.equal(upgrade.show, true);
+  assert.equal(recordVersion('0.1.9', '', upgrade.prefs).show, false);
+  assert.equal(recordVersion('0.1.7', '', upgrade.prefs).show, false);
+  assert.equal(recordVersion('0.1.9', '', { ...prefs, lastSeenVersion: '0.1.9-beta.1' }).show, true);
+});
+
+test('bundled notes win, matching manifest notes persist for reopening, and missing notes fall back', () => {
+  const prefs = { ...loadPrefs(), lastSeenVersion: '0.1.7', pendingNotes: { version: '0.1.8', notes: 'Saved notes' } };
+  assert.equal(currentNotes('0.1.8', ' Bundled notes\n', prefs), 'Bundled notes');
+  const result = recordVersion('0.1.8', '', prefs);
+  assert.equal(result.notes, 'Saved notes');
+  assert.equal(recordVersion('0.1.8', undefined, result.prefs).notes, 'Saved notes');
+  assert.equal(currentNotes('0.1.9', undefined, prefs), 'Updated to v0.1.9.');
+});
+
+test('malformed preferences cannot break startup version comparison', () => {
+  for (const value of ['bad JSON', {}, { lastSeenVersion: 'broken', pendingNotes: { version: 'bad', notes: 3 } }]) {
+    const prefs = loadPrefs(memory(value));
+    assert.equal(prefs.lastSeenVersion, null);
+    assert.equal(prefs.pendingNotes, null);
+  }
+  assert.equal(compareVersions('1.10.0', '1.9.0'), 1);
+  assert.equal(compareVersions('1.0.0+build', '1.0.0'), 0);
+});
+
+test('release note links use the exact version tag', () => {
+  assert.equal(releaseNotesUrl('0.2.0'), 'https://github.com/duserzym/grainatlas/releases/tag/v0.2.0');
 });

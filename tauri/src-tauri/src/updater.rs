@@ -42,6 +42,22 @@ fn info(update: &Update, ready: bool) -> UpdateInfo {
     }
 }
 
+/// Only release-note links enter the system browser through this command.
+#[tauri::command]
+pub fn update_open_release_notes(url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|e| e.to_string())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || !parsed.path().starts_with("/duserzym/grainatlas/releases/tag/v")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+    {
+        return Err("Invalid release notes URL".into());
+    }
+    crate::signin::open_browser(&url)
+}
+
 #[tauri::command]
 pub async fn update_check(
     app: AppHandle,
@@ -194,6 +210,21 @@ mod tests {
     }
     impl Drop for Scratch {
         fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn release_notes_reject_urls_outside_this_repositorys_release_tags() {
+        for url in [
+            "https://example.com/duserzym/grainatlas/releases/tag/v0.1.8",
+            "http://github.com/duserzym/grainatlas/releases/tag/v0.1.8",
+            "https://github.com/duserzym/other/releases/tag/v0.1.8",
+            "https://github.com/duserzym/grainatlas/releases/latest",
+            "https://user@github.com/duserzym/grainatlas/releases/tag/v0.1.8",
+            "https://github.com:8443/duserzym/grainatlas/releases/tag/v0.1.8",
+            "file:///tmp/release-notes",
+        ] {
+            assert!(super::update_open_release_notes(url.into()).is_err());
+        }
     }
 
     #[test]

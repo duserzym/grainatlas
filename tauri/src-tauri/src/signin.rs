@@ -83,7 +83,7 @@ fn connect_url(server: &str, callback: &str, state: &str) -> String {
     )
 }
 
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(url).status();
     #[cfg(target_os = "windows")]

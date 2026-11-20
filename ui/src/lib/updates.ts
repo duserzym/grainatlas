@@ -3,7 +3,6 @@ export const RELEASES_PAGE = 'https://github.com/duserzym/grainatlas/releases/la
 export const UPDATE_APP = 'grainatlas';
 export const UPDATE_HOST = new URL(STABLE_ENDPOINT).host;
 export const UPDATE_UNSUPPORTED_REASON = `${UPDATE_APP} cannot replace itself in this folder. Download the new version from GitHub.`;
-export type Channel = 'stable' | 'beta';
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
@@ -107,20 +106,6 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-interface Release {
-  draft?: boolean;
-  published_at?: string | null;
-  assets?: { name?: string; browser_download_url?: string }[];
-}
-/** GitHub lists newest first; published dates also handle an unordered list. */
-export function pickEndpoint(channel: Channel, releases: unknown): string {
-  if (channel === 'stable' || !Array.isArray(releases)) return STABLE_ENDPOINT;
-  const newest = (releases as Release[]).filter((r) => r && !r.draft).sort((a, b) =>
-    (Date.parse(b.published_at ?? '') || 0) - (Date.parse(a.published_at ?? '') || 0))[0];
-  const url = newest?.assets?.find((a) => a.name === 'latest.json')?.browser_download_url;
-  return url?.startsWith('https://') ? url : STABLE_ENDPOINT;
-}
-
 export type UpdateEvent =
   | { type: 'check'; manual?: boolean }
   | { type: 'checked'; info: UpdateInfo | null; checkedAt: number }
@@ -153,26 +138,50 @@ export function transition(status: UpdateStatus, event: UpdateEvent): UpdateStat
 }
 
 export interface UpdatePrefs {
-  channel: Channel;
   autoDownload: boolean;
   lastCheck: number | null;
   lastResult: string;
+  lastSeenVersion: string | null;
+  pendingNotes: { version: string; notes: string } | null;
 }
 interface PrefStorage { getItem(key: string): string | null; setItem(key: string, value: string): void }
 const PREF_KEY = 'grainatlas.updates';
 export function loadPrefs(storage?: PrefStorage): UpdatePrefs {
-  const defaults: UpdatePrefs = { channel: 'stable', autoDownload: true, lastCheck: null, lastResult: '' };
+  const defaults: UpdatePrefs = { autoDownload: true, lastCheck: null, lastResult: '', lastSeenVersion: null, pendingNotes: null };
   try {
     const p = JSON.parse(storage?.getItem(PREF_KEY) ?? 'null');
     if (!p || typeof p !== 'object') return defaults;
-    return {
-      channel: p.channel === 'beta' ? 'beta' : 'stable',
+    const prefs: UpdatePrefs = {
       autoDownload: typeof p.autoDownload === 'boolean' ? p.autoDownload : true,
       lastCheck: typeof p.lastCheck === 'number' && Number.isFinite(p.lastCheck) ? p.lastCheck : null,
       lastResult: typeof p.lastResult === 'string' ? p.lastResult : '',
+      lastSeenVersion: validVersion(p.lastSeenVersion) ? p.lastSeenVersion : null,
+      pendingNotes: validVersion(p.pendingNotes?.version) && typeof p.pendingNotes?.notes === 'string'
+        ? { version: p.pendingNotes.version, notes: p.pendingNotes.notes } : null,
     };
+    if ('channel' in p) savePrefs(prefs, storage);
+    return prefs;
   } catch { return defaults; }
 }
 export function savePrefs(prefs: UpdatePrefs, storage?: PrefStorage): void {
   try { storage?.setItem(PREF_KEY, JSON.stringify(prefs)); } catch { /* Storage can be unavailable. */ }
+}
+
+function validVersion(value: unknown): value is string {
+  return typeof value === 'string' && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+}
+
+export function releaseNotesUrl(version: string): string {
+  return `https://github.com/duserzym/grainatlas/releases/tag/v${encodeURIComponent(version.replace(/^v/, ''))}`;
+}
+
+export function currentNotes(version: string, bundled: string | undefined, prefs: UpdatePrefs): string {
+  return bundled?.trim() || (prefs.pendingNotes?.version === version ? prefs.pendingNotes.notes.trim() : '') || `Updated to v${version}.`;
+}
+
+/** Record every launch, including first installs and manual reinstalls. */
+export function recordVersion(version: string, bundled: string | undefined, prefs: UpdatePrefs) {
+  const show = prefs.lastSeenVersion !== null && compareVersions(version, prefs.lastSeenVersion) > 0;
+  const notes = currentNotes(version, bundled, prefs);
+  return { show, notes, prefs: { ...prefs, lastSeenVersion: version } };
 }

@@ -1127,6 +1127,7 @@ pub fn run() {
             finish_quit,
             signin::sign_in_browser,
             signin::sign_in_cancel,
+            updater::update_open_release_notes,
             updater::update_check,
             updater::update_download,
             updater::update_install,
