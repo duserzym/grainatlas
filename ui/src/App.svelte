@@ -539,6 +539,7 @@
     <SyncChip bind:detailsOpen={syncDetailsOpen} />
     <div class="right">
       <CheckUpdatesButton />
+      <VersionChip />
       {#if !narrowHeader}<ThemeSwitch />{/if}
       {#if app.storageWarning && hiddenStorageWarning === app.storageWarning}
         <button class="danger" onclick={() => (hiddenStorageWarning = null)} title={app.storageWarning} data-testid="storage-full">Storage full</button>
@@ -626,7 +627,6 @@
   {/if}
   {#if app.busy}<Busy task={app.busy} />{/if}
   {/key}
-  {#if !isViewer}<VersionChip />{/if}
   {#if dropping}
     <div class="dropzone" aria-hidden="true"><span class="glass">Drop to open{app.empty ? '' : ' in a new tab'}</span></div>
   {/if}

@@ -1,16 +1,16 @@
 import { isHosted } from '@lab/bridge';
 import { isDesktop } from './core/core';
-import { friendlyUpdateError, loadPrefs, pickEndpoint, savePrefs, STABLE_ENDPOINT, transition, type UpdateEvent, type UpdateInfo, type UpdatePrefs, type UpdateStatus } from './updates';
+import { checkButtonView, friendlyUpdateError, loadPrefs, pickEndpoint, savePrefs, STABLE_ENDPOINT, transition, UPDATE_UNSUPPORTED_REASON, type UpdateEvent, type UpdateInfo, type UpdatePrefs, type UpdateStatus } from './updates';
 
 const HOSTED_REASON = 'UPb Lab updates grainatlas with the shell.';
 const WEB_REASON = 'Updates come with the desktop app; the web page is always the version its server serves.';
-const INSTALL_REASON = 'Install grainatlas before updating. On Windows, run the setup file from the GitHub release page once. Later updates arrive in-app.';
+const INSTALL_REASON = UPDATE_UNSUPPORTED_REASON;
 function storage() {
   try { return globalThis.localStorage; } catch { return undefined; }
 }
 const previewName = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)
   ? new URLSearchParams(window.location.search).get('update-preview') : null;
-export const updatePreview = ['idle', 'checking', 'none', 'available', 'downloading', 'ready', 'error', 'unsupported'].includes(previewName ?? '');
+export const updatePreview = ['idle', 'checking', 'none', 'available', 'downloading', 'ready', 'installing', 'error', 'unsupported'].includes(previewName ?? '');
 const fake: UpdateInfo = { version: '0.2.0', currentVersion: '0.1.0', notes: 'Faster stitching, new checks', date: null, ready: false };
 function previewStatus(): UpdateStatus {
   switch (previewName) {
@@ -20,6 +20,7 @@ function previewStatus(): UpdateStatus {
     case 'available': return { kind: 'available', info: fake };
     case 'downloading': return { kind: 'downloading', info: fake, pct: 43 };
     case 'ready': return { kind: 'ready', info: { ...fake, ready: true } };
+    case 'installing': return { kind: 'installing', info: { ...fake, ready: true } };
     case 'error': return { kind: 'error', message: 'Updates are not configured for this build yet' };
     default: return { kind: 'unsupported', reason: INSTALL_REASON, info: fake };
   }
@@ -70,17 +71,18 @@ export async function check(manual = false): Promise<void> {
     if (updatePreview) {
       await new Promise((resolve) => setTimeout(resolve, 600));
       updater.status = previewName === 'idle' ? { kind: 'none', checkedAt: Date.now() } : previewStatus();
-      setPrefs({ lastCheck: Date.now(), lastResult: updater.status.kind === 'none' ? "You're up to date" : `Preview: ${updater.status.kind}` });
+      setPrefs({ lastCheck: Date.now(), lastResult: checkButtonView(updater.status, updater.version).text });
       if (updater.status.kind === 'none' && manual) updater.manualNoneUntil = Date.now() + 5000;
       return;
     }
     updater.supported = await invoke<boolean>('update_supported');
     const info = await invoke<UpdateInfo | null>('update_check', { endpoint: await endpoint() });
     const checkedAt = Date.now();
-    setPrefs({ lastCheck: checkedAt, lastResult: info ? `Version ${info.version} ${info.ready ? 'is ready to install' : 'is available'}` : "You're up to date" });
     send({ type: 'checked', info, checkedAt });
+    setPrefs({ lastCheck: checkedAt, lastResult: checkButtonView(updater.status, updater.version).text });
     if (!updater.supported && !updatePreview) {
       updater.status = { kind: 'unsupported', reason: INSTALL_REASON, info: info ?? undefined };
+      setPrefs({ lastResult: INSTALL_REASON });
       return;
     }
     if (!info && manual) updater.manualNoneUntil = checkedAt + 5000;
@@ -103,7 +105,7 @@ export async function download(): Promise<void> {
     });
     const info = await invoke<UpdateInfo>('update_download');
     send({ type: 'downloaded', info });
-    setPrefs({ lastResult: `Version ${info.version} is ready to install` });
+    setPrefs({ lastResult: checkButtonView(updater.status, updater.version).text });
   } catch (error) { fail(error); }
   finally { off?.(); }
 }

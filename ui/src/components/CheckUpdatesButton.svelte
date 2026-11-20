@@ -6,7 +6,6 @@
   import { checkButtonView, RELEASES_PAGE } from '../lib/updates';
 
   const view = $derived(checkButtonView(updater.status, updater.version, updater.prefs.autoDownload));
-  const info = $derived('info' in updater.status ? updater.status.info : null);
   let open = $state(false);
   let anchor = $state<HTMLSpanElement>();
   let button = $state<HTMLButtonElement>();
@@ -81,8 +80,8 @@
       aria-busy={view.busy}
       aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? 'check-updates-popover' : undefined}
       data-badge={view.badge ? 'true' : undefined} data-busy={view.busy ? 'true' : undefined} onclick={toggle}>
-      <svg class:rotating={updater.status.kind === 'checking'} viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <path d="M12.76 5.25a5.5 5.5 0 1 0 0 5.5M12.76 1.75v3.5h-3.5"
+      <svg class:rotating={view.busy} viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <path d="M13.5 6a5.75 5.75 0 0 0-10-1.5M2.5 2v3h3M2.5 10a5.75 5.75 0 0 0 10 1.5M13.5 14v-3h-3"
           fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
       {#if view.badge}<span class="dot" aria-hidden="true"></span>{/if}
@@ -91,8 +90,8 @@
       <div class="glass panel" id="check-updates-popover" data-testid="check-updates-popover"
         role="dialog" aria-label="Updates" tabindex="-1" bind:this={popover} style:left={`${left}px`} style:top={`${top}px`}>
         <p role="status">{view.text}</p>
-        {#if updater.status.kind === 'unsupported' && info}<p class="small">{updater.status.reason}</p>{/if}
-        {#if info}<p class="faint small">Current version: v{info.currentVersion}</p>{/if}
+        {#if view.secondary}<p class="faint small">{view.secondary}</p>{/if}
+        {#if view.details !== null}<p class="faint small" style:user-select="text">Details: {view.details}</p>{/if}
         {#if view.action === 'download'}<button onclick={download}>Download</button>
         {:else if view.action === 'install'}<button class="primary" onclick={install}>Restart to update</button>
         {:else if view.action === 'releases' || updater.status.kind === 'unsupported'}<a class="btn" href={RELEASES_PAGE} target="_blank" rel="noreferrer">Open download page</a>{/if}

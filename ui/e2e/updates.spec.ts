@@ -1,15 +1,25 @@
 import { test, expect } from '@playwright/test';
 
-const installReason = 'Install grainatlas before updating. On Windows, run the setup file from the GitHub release page once. Later updates arrive in-app.';
+const installReason = 'grainatlas cannot replace itself in this folder. Download the new version from GitHub.';
 const releases = 'https://github.com/duserzym/grainatlas/releases/latest';
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
   for (const theme of ['light', 'dark']) {
     test.describe(`Portable update instructions, ${viewport.width} × ${viewport.height}, ${theme}`, () => {
       test.use({ viewport });
-      test('popover and settings explain the one-time Windows install', async ({ page }) => {
+      test('popover and settings explain unsupported installation folders', async ({ page }) => {
         await page.addInitScript(theme => localStorage.setItem('grainatlas.theme', theme), theme);
         await page.goto('/?update-preview=unsupported');
+        for (const control of [page.getByTestId('check-updates'), page.getByTestId('version-chip')]) {
+          await expect(control).toBeVisible();
+          const bounds = await control.boundingBox();
+          expect(bounds).not.toBeNull();
+          expect(bounds!.x).toBeGreaterThanOrEqual(0);
+          expect(bounds!.y).toBeGreaterThanOrEqual(0);
+          expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+          expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(100);
+        }
+        await expect(page.getByTestId('version-chip')).toHaveText(/^v\d+\.\d+\.\d+/);
         await page.getByTestId('check-updates').click();
         const popover = page.getByTestId('check-updates-popover');
         await expect(popover.getByText(installReason, { exact: true })).toBeVisible();
@@ -27,6 +37,54 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
         await expect(panel.getByRole('link', { name: 'Open download page' })).toHaveAttribute('href', releases);
         await expect(panel.getByRole('button', { name: /Download|Restart to update/ })).toHaveCount(0);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      });
+
+      test('header, popover and settings use canonical state text', async ({ page }) => {
+        await page.addInitScript(theme => localStorage.setItem('grainatlas.theme', theme), theme);
+        for (const state of ['idle', 'checking', 'none', 'available', 'downloading', 'ready', 'installing', 'error']) {
+          await page.goto(`/?update-preview=${state}`);
+          const chip = page.getByTestId('version-chip');
+          await expect(chip).toBeVisible();
+          const version = (await chip.innerText()).trim();
+          const text: Record<string, string> = {
+            idle: `Current version: ${version}`,
+            checking: 'Checking for updates…',
+            none: `Up to date (${version})`,
+            available: 'Update available: v0.2.0',
+            downloading: 'Downloading v0.2.0… 43%',
+            ready: 'v0.2.0 is ready',
+            installing: 'Installing v0.2.0 and restarting…',
+            error: 'Updates are not configured for this build yet.',
+          };
+          const check = page.getByTestId('check-updates');
+          await expect(check).toHaveAttribute('title', `Check for updates · ${version} · ${text[state]}`);
+          if (['checking', 'downloading', 'installing'].includes(state)) {
+            await expect(check).toHaveAttribute('data-busy', 'true');
+            await expect(check.locator('svg')).toHaveClass(/(?:^|\s)rotating(?:\s|$)/);
+          }
+          if (['available', 'ready'].includes(state)) await expect(check).toHaveAttribute('data-badge', 'true');
+          await check.click();
+          const popover = page.getByTestId('check-updates-popover');
+          // Opening idle starts a manual check; the preview completes with no update.
+          const expected = state === 'idle' ? text.none : text[state];
+          await expect(popover.getByRole('status')).toHaveText(expected);
+          if (state === 'available') await expect(popover.getByText(`Current version: ${version}`, { exact: true })).toBeVisible();
+          if (state === 'ready') await expect(popover.getByRole('button', { name: 'Restart to update' })).toBeVisible();
+          if (state === 'error') {
+            const details = popover.getByText('Details: Updates are not configured for this build yet', { exact: true });
+            await expect(details).toBeVisible();
+            await expect(details).toHaveCSS('user-select', 'text');
+          }
+          await popover.getByRole('link', { name: 'Update settings…' }).click();
+          const panel = page.getByTestId('updates-panel');
+          await expect(panel.getByRole('status')).toHaveText(expected);
+          if (state === 'available') await expect(panel.getByText(`Current version: ${version}`, { exact: true })).toBeVisible();
+          if (state === 'error') {
+            const details = panel.getByText('Details: Updates are not configured for this build yet', { exact: true });
+            await expect(details).toBeVisible();
+            await expect(details).toHaveCSS('user-select', 'text');
+          }
+        }
       });
     });
   }

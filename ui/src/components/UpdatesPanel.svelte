@@ -2,20 +2,12 @@
   import { isHosted } from '@lab/bridge';
   import { isDesktop } from '../lib/core/core';
   import { check, download, install, setPrefs, updater, updatePreview } from '../lib/updater.svelte';
-  import { friendlyUpdateError, RELEASES_PAGE, type Channel } from '../lib/updates';
+  import { checkButtonView, RELEASES_PAGE, type Channel } from '../lib/updates';
 
   const status = $derived(updater.status);
   const info = $derived('info' in status ? status.info : null);
   const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const line = $derived(status.kind === 'checking' ? 'Checking for updates'
-    : status.kind === 'none' ? `You're up to date, checked ${time(status.checkedAt)}`
-    : status.kind === 'available' ? `Version ${status.info.version} is available`
-    : status.kind === 'downloading' ? `Downloading ${status.info.version}${status.pct === null ? '' : `, ${status.pct}%`}`
-    : status.kind === 'ready' ? `Version ${status.info.version} is ready to install`
-    : status.kind === 'installing' ? 'Installing and restarting'
-    : status.kind === 'error' ? friendlyUpdateError(status.message)
-    : status.kind === 'unsupported' ? status.reason
-    : 'Checks run automatically in the background.');
+  const view = $derived(checkButtonView(status, updater.version, updater.prefs.autoDownload));
 </script>
 
 <h2>Updates</h2>
@@ -23,8 +15,9 @@
 {#if isHosted()}
   <p class="faint small">UPb Lab updates grainatlas with the shell; see its Settings &gt; Updates.</p>
 {:else}
-  <p class="small" role="status">{line}</p>
-  {#if status.kind === 'unsupported' && info}<p class="small">Version {info.version} is available</p>{/if}
+  <p class="small" role="status">{view.text}</p>
+  {#if view.secondary}<p class="faint small">{view.secondary}</p>{/if}
+  {#if view.details !== null}<p class="faint small" style:user-select="text">Details: {view.details}</p>{/if}
   <div class="buttons">
     {#if isDesktop() || updatePreview}
       <button disabled={status.kind === 'checking' || status.kind === 'downloading' || status.kind === 'installing'} onclick={() => check(true)}>Check now</button>

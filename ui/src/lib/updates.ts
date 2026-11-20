@@ -1,5 +1,8 @@
 export const STABLE_ENDPOINT = 'https://github.com/duserzym/grainatlas/releases/latest/download/latest.json';
 export const RELEASES_PAGE = 'https://github.com/duserzym/grainatlas/releases/latest';
+export const UPDATE_APP = 'grainatlas';
+export const UPDATE_HOST = new URL(STABLE_ENDPOINT).host;
+export const UPDATE_UNSUPPORTED_REASON = `${UPDATE_APP} cannot replace itself in this folder. Download the new version from GitHub.`;
 export type Channel = 'stable' | 'beta';
 export interface UpdateInfo {
   version: string;
@@ -19,15 +22,35 @@ export type UpdateStatus =
   | { kind: 'error'; message: string }
   | { kind: 'unsupported'; reason: string; info?: UpdateInfo };
 
-/** Keep native updater diagnostics out of the user-facing status line. */
-export function friendlyUpdateError(raw: string): string {
-  if (/pubkey|public key|base64|decode|not configured/i.test(raw)) return 'Updates are not configured for this build yet.';
-  if (/404|release JSON|could not fetch a valid release|not found|no assets/i.test(raw)) return 'No release has been published yet.';
-  if (/error sending request|dns|connect|timed out|timeout|offline|network|failed to fetch|ENOTFOUND|URLError/i.test(raw)) {
-    return "Can't reach the update server. Check your internet connection and try again.";
-  }
+export type UpdateErrorKind = 'not_configured' | 'certificate' | 'signature' | 'no_release' | 'offline' | 'not_writable' | 'other';
+
+/** Order matters: secure-connection failures often also mention a request or network. */
+export function updateErrorKind(raw: string): UpdateErrorKind {
+  if (!raw.trim() || /pubkey|public key|not configured/i.test(raw)) return 'not_configured';
+  if (/certificate|UnknownIssuer/i.test(raw)) return 'certificate';
+  if (/signature|minisign|\bverify\b|\bverified\b/i.test(raw)) return 'signature';
+  if (/\b404\b|release JSON|could not fetch a valid release|not found|no assets/i.test(raw)) return 'no_release';
+  if (/error sending request|dns|connect|timed out|timeout|offline|network|failed to fetch|ENOTFOUND|URLError/i.test(raw)) return 'offline';
+  if (/not writ(?:able|eable)|permission denied|access (?:is )?denied|read.only (?:file system|filesystem|folder)|EACCES|EPERM/i.test(raw)) return 'not_writable';
+  return 'other';
+}
+
+export function updateErrorDetails(raw: string): string {
   const message = raw.trim();
-  return `The update check failed: ${message.length > 120 ? `${message.slice(0, 119)}…` : message}`;
+  return message.length > 120 ? `${message.slice(0, 119)}…` : message;
+}
+
+/** Keep native updater diagnostics in Details, rather than the status line. */
+export function friendlyUpdateError(raw: string): string {
+  switch (updateErrorKind(raw)) {
+    case 'not_configured': return 'Updates are not configured for this build yet.';
+    case 'certificate': return `Could not verify the secure connection to ${UPDATE_HOST}.`;
+    case 'signature': return "The update's signature did not match. Nothing was installed.";
+    case 'no_release': return `No public release of ${UPDATE_APP} has been published.`;
+    case 'offline': return `No internet connection, or ${UPDATE_HOST} did not answer.`;
+    case 'not_writable': return UPDATE_UNSUPPORTED_REASON;
+    case 'other': return `The update check failed: ${updateErrorDetails(raw)}`;
+  }
 }
 
 /** Presentation only; checks and installation stay in the shared updater. */
@@ -35,6 +58,7 @@ export function checkButtonView(status: UpdateStatus, version: string, autoDownl
   const badge = status.kind === 'available' || status.kind === 'ready' || status.kind === 'unsupported' && !!status.info;
   const busy = ['checking', 'downloading', 'installing'].includes(status.kind);
   let text: string;
+  let secondary: string | null = null;
   let action: 'download' | 'install' | 'releases' | null = null;
   switch (status.kind) {
     case 'idle': text = `Current version: v${version}`; break;
@@ -42,18 +66,20 @@ export function checkButtonView(status: UpdateStatus, version: string, autoDownl
     case 'none': text = `Up to date (v${version})`; break;
     case 'available':
       text = `Update available: v${status.info.version}`;
+      secondary = `Current version: v${version}`;
       if (!autoDownload) action = 'download';
       break;
     case 'downloading': text = `Downloading v${status.info.version}…${status.pct === null ? '' : ` ${status.pct}%`}`; break;
     case 'ready': text = `v${status.info.version} is ready`; action = 'install'; break;
     case 'installing': text = `Installing v${status.info.version} and restarting…`; break;
     case 'unsupported':
-      text = status.info ? `Update available: v${status.info.version}` : status.reason;
+      text = status.reason;
       if (status.info) action = 'releases';
       break;
     case 'error': text = friendlyUpdateError(status.message); break;
   }
-  return { text, action, badge, busy };
+  const details = status.kind === 'error' ? updateErrorDetails(status.message) : null;
+  return { text, secondary, details, action, badge, busy };
 }
 
 /** Semver precedence; build metadata does not affect ordering. */
