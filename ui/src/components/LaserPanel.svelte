@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { spotDiameter } from '../lib/spot-size';
   import { exportSpotLabels } from '../lib/grain-lineage';
   // Laser registration of one area (roadmap phase 11): the operator drives the laser to three or
   // more spots spread over the area and types the stage position the laser software shows; the
@@ -95,8 +96,10 @@
   }
 
   async function exportList() {
+    const rows = ($state.snapshot(app.spots) as Spot[]).filter(s => s.area_id === areaId);
+    if (rows.some(s => spotDiameter(s) === null)) { problem = 'Some spots have no size. Use Fix sizes before exporting.'; return; }
     const a = adapters.find((x) => x.id === adapter) ?? adapters[0];
-    const text = await app.run('Writing the spot list', () => core.laserExport(exportSpotLabels($state.snapshot(app.spots) as Spot[], $state.snapshot(app.grains)), areaId, adapter));
+    const text = await app.run('Writing the spot list', () => core.laserExport(exportSpotLabels(rows.map(s => ({ ...s, diameter_um: spotDiameter(s)! })), $state.snapshot(app.grains)), areaId, adapter));
     if (text) download(text, `${app.project?.package.name ?? 'grainatlas'}_${areaId}_laser_${a.id}.${a.extension}`, 'text/csv');
   }
 </script>

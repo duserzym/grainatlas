@@ -1,3 +1,4 @@
+import { spotDiameter } from './spot-size.ts';
 import { fetchWithDeadline, databaseOfflineMessage } from './http.ts';
 import { idempotentWrite } from './idempotency.ts';
 import { serverFetch, ServerReadOnlyError } from './oversight.ts';
@@ -29,6 +30,7 @@ export interface MountSpots {
  * are left out; `skipped` counts them.
  */
 export function mountSpots(projectId: string, sample: string, spots: Spot[], grains: Record<string, Grain[]> = {}): { body: MountSpots; skipped: number } {
+  if (spots.some(s => s.kind === 'spot' && spotDiameter(s) === null)) throw new Error('Some spots have no size. Use Fix sizes before exporting.');
   const points = spots.filter((s) => s.kind === 'spot');
   const round = (v: number) => Math.round(v * 1000) / 1000;
   return {
@@ -42,7 +44,7 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[], gra
         area: s.area_id,
         x_um: round(s.x_um),
         y_um: round(s.y_um),
-        diameter_um: s.diameter_um,
+        diameter_um: spotDiameter(s)!,
         kind: 'spot',
       })),
     },

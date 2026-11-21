@@ -1,3 +1,4 @@
+import { spotDiameter } from './spot-size.ts';
 import type { Grain, Spot } from './core/types';
 import { formatName } from './spots.ts';
 
@@ -18,7 +19,7 @@ export function orderSpots(selected: Spot[], order: BatchOrder, tableIds: string
   }
   if (!selected.length) return [];
   const under = grains.filter((g) => selected.some((s) => s.grain_id === g.id));
-  const tol = under.length ? 0.6 * median(under.map((g) => g.eq_diameter_um)) : 3 * median(selected.map((s) => s.diameter_um));
+  const tol = under.length ? 0.6 * median(under.map((g) => g.eq_diameter_um)) : 3 * (median(selected.map(spotDiameter).filter((d): d is number => d !== null)) || 0);
   const rows: Spot[][] = [];
   let mean = 0;
   for (const s of [...selected].sort((a, b) => a.y_um - b.y_um)) {

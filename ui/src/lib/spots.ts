@@ -1,3 +1,4 @@
+import { spotDiameter } from './spot-size.ts';
 // Spot helpers for the canvas: naming (same rules as grainatlas-core
 // spots::format_name), snapping, hit tests and the stage mapping.
 
@@ -132,11 +133,12 @@ export function stageOf(area: AreaRecord | null, x: number, y: number): [number,
 }
 
 /** Distance (um) from a point to a spot's shape. */
-export function spotDistance(s: Spot, x: number, y: number): number {
+export function spotDistance(s: Spot, x: number, y: number, markerRadiusUm = 0): number {
+  if (spotDiameter(s) === null) return Math.max(0, Math.hypot(x - s.x_um, y - s.y_um) - markerRadiusUm);
   if (s.kind === 'line' && s.x2_um != null && s.y2_um != null) {
     const dx = s.x2_um - s.x_um, dy = s.y2_um - s.y_um;
     const t = Math.max(0, Math.min(1, ((x - s.x_um) * dx + (y - s.y_um) * dy) / (dx * dx + dy * dy || 1)));
-    return Math.max(0, Math.hypot(x - (s.x_um + t * dx), y - (s.y_um + t * dy)) - s.diameter_um / 2);
+    return Math.max(0, Math.hypot(x - (s.x_um + t * dx), y - (s.y_um + t * dy)) - spotDiameter(s)! / 2);
   }
   if (s.kind === 'raster' && s.x2_um != null && s.y2_um != null) {
     const [x0, x1] = [Math.min(s.x_um, s.x2_um), Math.max(s.x_um, s.x2_um)];
@@ -144,7 +146,7 @@ export function spotDistance(s: Spot, x: number, y: number): number {
     const dx = Math.max(x0 - x, 0, x - x1), dy = Math.max(y0 - y, 0, y - y1);
     return Math.hypot(dx, dy);
   }
-  return Math.max(0, Math.hypot(x - s.x_um, y - s.y_um) - s.diameter_um / 2);
+  return Math.max(0, Math.hypot(x - s.x_um, y - s.y_um) - spotDiameter(s)! / 2);
 }
 
 export function newId(): string {

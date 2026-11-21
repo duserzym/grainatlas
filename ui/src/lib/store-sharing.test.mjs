@@ -1133,3 +1133,58 @@ test('fixed and Auto label sizes round-trip with pins in project files and clean
     }
   }
 });
+
+test('spot viewing, selection, area switch and save preserve raw sizes, element hashes and empty diff', async () => {
+  const { elementsOf, diffElements, changeCounts } = await import('./sync.ts');
+  const { elementHash } = await import('./sync-hash.ts');
+  const { spotDiameter, selectionSize, nextSpotDiameter, areaCalibration } = await import('./spot-size.ts');
+  const p = structuredClone(source);
+  p.uuid = 'synthetic-size-mount';
+  p.areas.push({...structuredClone(p.areas[0]),id:'other',name:'Synthetic other'});
+  p.grainatlas_ui.spots = [20,40,null,0,'20'].map((diameter_um,i)=>({id:`synthetic-size-${i}`,name:`Synthetic ${i}`,area_id:i===1?'other':'area',grain_id:'grain',x_um:2,y_um:2,diameter_um,created:`2026-01-0${i+1}`,acquisition_id:'synthetic-acquisition'}));
+  const original = JSON.stringify(p.grainatlas_ui.spots);
+  app.project = structuredClone(p); app.spots = []; app.areaId='area'; app.adopt(structuredClone(p));
+  const before = elementsOf(app.fullProject()), hashes = await Promise.all(Object.values(before).map(elementHash));
+  for (const area of ['area','other','area']) {
+    app.areaId=area;
+    app.selection=app.spots.filter(s=>s.area_id===area).map(s=>s.id);
+    const here=app.spots.filter(s=>s.area_id===area);
+    for(const s of here) spotDiameter(s);
+    selectionSize(here,app.diameter); nextSpotDiameter(app.spots,area,25); areaCalibration(p.areas.find(a=>a.id===area),null);
+    const saved=app.fullProject();
+    assert.equal(JSON.stringify(saved.grainatlas_ui.spots),original);
+    const after=elementsOf(saved);
+    assert.deepEqual(await Promise.all(Object.values(after).map(elementHash)),hashes);
+    assert.deepEqual(changeCounts(diffElements(before,after)),{grains:0,spots:0,labels:0});
+  }
+});
+
+test('applying a size repair preview is one undo step and preserves registered names and links', async () => {
+  const { planSizeRepairs, applySizeRepairs } = await import('./spot-size.ts');
+  const p=structuredClone(source);
+  p.grainatlas_ui.spots=[{id:'valid-size',name:'Synthetic valid',area_id:'area',grain_id:'grain',x_um:2,y_um:2,diameter_um:20,acquisition_id:'synthetic-link'}, {id:'no-size',name:'Synthetic missing',area_id:'area',grain_id:'grain',x_um:4,y_um:4,diameter_um:null,acquisition_id:'synthetic-link'}];
+  app.project=p; app.adopt(p); app.clearHistory();
+  const plan=planSizeRepairs(app.spots,25), original=JSON.stringify(app.spots);
+  assert.equal(app.canUndo,false); assert.equal(JSON.stringify(app.spots),original);
+  app.checkpoint(); app.spots=applySizeRepairs(app.spots,plan); app.persist();
+  assert.equal(app.spots[1].diameter_um,20); assert.equal(app.spots[1].name,'Synthetic missing'); assert.equal(app.spots[1].acquisition_id,'synthetic-link');
+  app.undo(); assert.equal(JSON.stringify(app.spots),original); assert.equal(app.canUndo,false);
+});
+
+test('next-spot size resets on project/area changes, preserves user entry between them and never edits spots', async () => {
+  const { flush } = await import('svelte/internal/client');
+  const p=structuredClone(source);
+  p.uuid='synthetic-next-size'; p.areas.push({...structuredClone(p.areas[0]),id:'b',name:'Synthetic B'});
+  p.grainatlas_ui.spots=[{id:'size-a',area_id:'area',diameter_um:20,created:'2026-01-01'}, {id:'size-b',area_id:'b',diameter_um:40,created:'2026-01-02'}];
+  app.project=p; app.areaId='area'; app.adopt(p); flush();
+  const original=JSON.stringify(app.spots);
+  assert.equal(app.diameter,20);
+  app.diameter=25; flush(); app.selection=['size-a']; flush();
+  assert.equal(app.diameter,25);
+  app.areaId='b'; flush(); assert.equal(app.diameter,40);
+  app.areaId='area'; flush(); assert.equal(app.diameter,20);
+  const empty={...structuredClone(p),uuid:'synthetic-empty',grainatlas_ui:{...p.grainatlas_ui,spots:[]}};
+  app.project=empty; app.settings.default_diameter_um=35; app.adopt(empty); flush();
+  assert.equal(app.diameter,35);
+  assert.equal(JSON.stringify(p.grainatlas_ui.spots),original);
+});

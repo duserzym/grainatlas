@@ -1,3 +1,4 @@
+import { spotDiameter } from './spot-size';
 import type { Core } from './core/core';
 import type { Grain, LayoutResult, MosaicJson, Project, SheetRect, Spot, ToneParams } from './core/types';
 import type { BatchDetail, CapsuleOut, FractionOut, SourceOut } from './tims';
@@ -115,12 +116,13 @@ export async function renderPickList(input: {
       const png = await cropImage(g.area, rect, mosaic, tone, e, transform, o.cropSize); cropCalls++;
       const rw = rect[2] - rect[0], rh = rect[3] - rect[1], stroke = Math.max(rw, rh) / o.cropSize * .22;
       const spotShapes = g.spots.map(s => {
-        const [x, y] = applyAffine(transform, [s.x_um, s.y_um]), r = s.diameter_um / 2;
+        const [x, y] = applyAffine(transform, [s.x_um, s.y_um]), r = spotDiameter(s);
+        if (r === null) return `<circle cx="${x}" cy="${y}" r="${5 * Math.max(rw, rh) / o.cropSize}" stroke-dasharray="${3 * stroke} ${3 * stroke}"><title>Size not set</title></circle>`;
         if (s.kind !== 'spot' && s.x2_um !== null && s.y2_um !== null) {
           const [x2, y2] = applyAffine(transform, [s.x2_um, s.y2_um]);
           return s.kind === 'line' ? `<path d="M${x},${y} L${x2},${y2}"/>` : `<polygon points="${[[s.x_um, s.y_um], [s.x2_um, s.y_um], [s.x2_um, s.y2_um], [s.x_um, s.y2_um]].map(p => applyAffine(transform, p as [number, number]).join(',')).join(' ')}"/>`;
         }
-        return `<circle cx="${x}" cy="${y}" r="${r}"/>`;
+        return `<circle cx="${x}" cy="${y}" r="${r / 2}"/>`;
       }).join('');
       return `<svg width="${o.cropSize}" height="${o.cropSize}" viewBox="${rect[0]} ${rect[1]} ${rw} ${rh}"><image x="${rect[0]}" y="${rect[1]}" width="${rw}" height="${rh}" href="${png}"/>${imageOverlay(e, size, transform, `crop-${encodeURIComponent(g.area)}-${encodeURIComponent(g.id)}`)}<polygon points="${polygon.map(p => p.join(',')).join(' ')}" fill="none" stroke="#f8cf54" stroke-width="${stroke}"/><g fill="none" stroke="#68daff" stroke-width="${stroke}">${spotShapes}</g></svg>`;
     })();

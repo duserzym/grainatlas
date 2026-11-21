@@ -36,6 +36,8 @@
   import TimsSection from '../components/TimsSection.svelte';
   import type { FractionOut } from '../lib/tims';
   import type { OutboxEntry } from '../lib/tims-outbox';
+  import { spotDiameter, selectionSize, planSizeRepairs, applySizeRepairs, canvasArea, focusSpot, type SizeRepair } from '../lib/spot-size';
+  import FixSizesDialog from '../components/FixSizesDialog.svelte';
   import SizeBox from '../components/SizeBox.svelte';
   import { isHosted, open as openLink } from '@lab/bridge';
   import { spotLink } from '../lib/upbdb';
@@ -133,7 +135,7 @@
 
   let core = $state<Core | null>(null);
   app.core.then((c) => (core = c));
-  const areaId = $derived(app.areaId && app.stitched[app.areaId] ? app.areaId : (Object.keys(app.stitched)[0] ?? null));
+  const areaId = $derived(app.areaId);
   let viewer = $state<ReturnType<typeof Viewer>>();
   // The screen is made again on a tab switch: the tab keeps its view and gets it back.
   let viewport = $state<{ area: string; view: View } | null>(
@@ -324,8 +326,8 @@
     const ss = app.spots.filter((s) => app.selection.includes(s.id) && s.area_id === areaId);
     pendingFinding = null;
     if (!ss.length) return;
-    const xs = ss.flatMap((s) => [Math.min(s.x_um, s.x2_um ?? s.x_um) - s.diameter_um/2, Math.max(s.x_um, s.x2_um ?? s.x_um) + s.diameter_um/2]);
-    const ys = ss.flatMap((s) => [Math.min(s.y_um, s.y2_um ?? s.y_um) - s.diameter_um/2, Math.max(s.y_um, s.y2_um ?? s.y_um) + s.diameter_um/2]);
+    const xs = ss.flatMap((s) => [Math.min(s.x_um, s.x2_um ?? s.x_um) - (spotDiameter(s) ?? 0)/2, Math.max(s.x_um, s.x2_um ?? s.x_um) + (spotDiameter(s) ?? 0)/2]);
+    const ys = ss.flatMap((s) => [Math.min(s.y_um, s.y2_um ?? s.y_um) - (spotDiameter(s) ?? 0)/2, Math.max(s.y_um, s.y2_um ?? s.y_um) + (spotDiameter(s) ?? 0)/2]);
     const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
     viewer.centerOn((x0+x1)/2/umPerPx, (y0+y1)/2/umPerPx, Math.min(view.w/Math.max(100, (x1-x0)/umPerPx), view.h/Math.max(100, (y1-y0)/umPerPx)) * 0.65);
   });
@@ -409,9 +411,10 @@
   const ro = $derived(app.readOnly);
   const noPixels = $derived(!!app.remote && !bundlePixels(app));
   const tiles = $derived(app.remote && app.remoteTiles ? app.remoteTiles : core);
-  const area = $derived(app.project?.areas.find((a) => a.id === areaId) ?? null);
-  const mosaic = $derived(areaId ? app.stitched[areaId].mosaic : null);
-  const umPerPx = $derived(mosaic?.um_per_px ?? 1);
+  const areaView = $derived(canvasArea(areaId, app.project?.areas ?? [], app.stitched));
+  const area = $derived(areaView.area);
+  const mosaic = $derived(areaView.mosaic);
+  const umPerPx = $derived(areaView.umPerPx ?? NaN);
   /** Every detection of the area: grains and flagged artifacts. */
   const detections = $derived(areaId ? (app.grains[areaId] ?? []) : []);
   const grains = $derived(detections.filter((g) => !g.artifact));
@@ -448,7 +451,7 @@
   const cropExcluded = $derived(new Set(grains.filter(g => !imagePointVisible(g.centroid_um, imageEdits)).map(g=>g.id)));
   const cropRegistered = $derived(new Set(areaSpots.filter(s=>s.grain_id && cropExcluded.has(s.grain_id)).map(s=>s.grain_id)).size);
   const tableSpots = $derived(spotSort === 'name' ? [...spots].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-    : spotSort === 'diameter' ? [...spots].sort((a, b) => a.diameter_um - b.diameter_um) : spots);
+    : spotSort === 'diameter' ? [...spots].sort((a, b) => (spotDiameter(a) ?? Infinity) - (spotDiameter(b) ?? Infinity)) : spots);
   const tableArtifacts = $derived(artifacts.filter((g) => !showOnlyNew || g.added));
   const visibleGrains = $derived(grains.filter((g) => app.showNeighbourGrains || !owners.get(g.id)?.duplicate_of));
   const tableGrains = $derived(visibleGrains.filter((g) => !showOnlyNew || g.added));
@@ -553,14 +556,31 @@
     const m=inverseAffine(view?matrix(view):[1,0,0,1,0,0]);
     return `translate(${x} ${y}) matrix(${m[0]*umPerPx} ${m[1]*umPerPx} ${m[2]*umPerPx} ${m[3]*umPerPx} 0 0)`;
   }
+  // Missing sizes use a 5 px marker, never a guessed micrometre diameter.
+  function spotRadius(s: Spot) {
+    const diameter = spotDiameter(s);
+    return diameter === null ? 5 * k : diameter / 2;
+  }
   const rotDeg = $derived(view ? (view.rot * 180) / Math.PI : 0);
   const selSpots = $derived(areaSpots.filter((s) => app.selection.includes(s.id)));
   const selectedHere = $derived(selSpots.length);
-  const diameterRange = $derived.by(() => {
-    if (!selSpots.length) return '';
-    const lo = Math.min(...selSpots.map((s) => s.diameter_um)), hi = Math.max(...selSpots.map((s) => s.diameter_um));
-    return `⌀ ${lo}${lo === hi ? '' : `–${hi}`} µm`;
-  });
+  const sizeSummary = $derived(selectionSize(selSpots, app.diameter));
+  const sizeValue = $derived(sizeSummary.value);
+  const sizeTarget = $derived(JSON.stringify([app.id, app.project?.uuid, areaId, selSpots.length ? selSpots.map(s => s.id).sort() : 'next']));
+  const diameterRange = $derived(sizeSummary.range);
+  const missingSizes = $derived(app.spots.filter(s => spotDiameter(s) === null).length);
+  let sizeRepairs = $state<{ project: string; rows: SizeRepair[] } | null>(null);
+  function fixSizes() {
+    if (ro || !app.project) return;
+    sizeRepairs = { project: app.project.uuid, rows: planSizeRepairs(app.spots, app.settings.default_diameter_um) };
+  }
+  $effect(() => { if (sizeRepairs && sizeRepairs.project !== app.project?.uuid) sizeRepairs = null; });
+  function applyRepairs() {
+    if (ro || !sizeRepairs || app.project?.uuid !== sizeRepairs.project) { sizeRepairs = null; return; }
+    const next = applySizeRepairs(app.spots, sizeRepairs.rows);
+    if (next.some((s, i) => s !== app.spots[i])) { app.checkpoint(); app.spots = next; app.persist(); }
+    sizeRepairs = null;
+  }
   const selectedGrains = $derived(detections.filter((g) => selGrains.includes(g.id)));
 
   async function scrollAnchor(kind: 'spot' | 'grain', id: string | null) {
@@ -628,7 +648,7 @@
   // Store the latest geometry; rapid pointer events collapse into one frame.
   const contrastRings = $derived([
     ...(!isViewer && app.tool === 'spot' && cursorUm && !snapHint ? [{ id: 'ghost', x: cursorUm[0], y: cursorUm[1], r: app.diameter / 2 }] : []),
-    ...spots.filter((s) => activeIds.includes(s.id)).map((s) => ({ id: s.id, x: s.x_um, y: s.y_um, r: s.diameter_um / 2 })),
+    ...spots.filter((s) => activeIds.includes(s.id)).map((s) => ({ id: s.id, x: s.x_um, y: s.y_um, r: spotRadius(s) })),
   ]);
   function scheduleContrast(newPixels = false) {
     if (newPixels) contrastScene++;
@@ -654,10 +674,7 @@
   function activeHalo(id: string) {
     return activeColour(id) === '#111' ? '#fff' : '#111';
   }
-  const focus = $derived.by(() => {
-    const id = app.selection[0] ?? (selGrains.length ? null : infoId);
-    return app.spots.find((s) => s.id === id) ?? null;
-  });
+  const focus = $derived(focusSpot(areaSpots, app.selection, selGrains, infoId));
   // ---- results overlay (GET /v1/mounts/{id}/results; memory only) ------------------------------
   const mountId = $derived(app.mountId);
   const resultsBy = $derived<Record<string, SpotResult>>(app.results?.data ? matchResults(app.spots, app.results.data) : {});
@@ -956,7 +973,8 @@
   }
   async function exportSpots(format: 'csv' | 'geojson') {
     if (!core) return;
-    const text = await app.run(`Exporting ${format}`, () => core!.exportSpots(exportSpotLabels($state.snapshot(app.spots) as Spot[], $state.snapshot(app.grains) as Record<string, Grain[]>), $state.snapshot(app.grains) as Record<string, Grain[]>, format));
+    if (app.spots.some(s => spotDiameter(s) === null)) { app.notice = 'Some spots have no size. Use Fix sizes before exporting.'; return; }
+    const text = await app.run(`Exporting ${format}`, () => core!.exportSpots(exportSpotLabels(($state.snapshot(app.spots) as Spot[]).map(s => ({ ...s, diameter_um: spotDiameter(s)! })), $state.snapshot(app.grains) as Record<string, Grain[]>), $state.snapshot(app.grains) as Record<string, Grain[]>, format));
     if (text) download(text, `${app.pkg?.name ?? 'grainatlas'}_spots.${format === 'csv' ? 'csv' : 'geojson'}`, format === 'csv' ? 'text/csv' : 'application/geo+json');
   }
   async function setSample(v: string) {
@@ -1040,12 +1058,12 @@
     let best: Spot | null = null;
     let bs = Infinity;
     for (const s of spots) {
-      const d = spotDistance(s, xUm, yUm);
+      const d = spotDistance(s, xUm, yUm, 5 * k);
       let score: number;
       if (d <= 0) {
         const cx = s.kind === 'spot' ? s.x_um : (s.x_um + (s.x2_um ?? s.x_um)) / 2;
         const cy = s.kind === 'spot' ? s.y_um : (s.y_um + (s.y2_um ?? s.y_um)) / 2;
-        score = Math.hypot(xUm - cx, yUm - cy) / Math.max(s.diameter_um / 2, 1e-6) / 1e3;
+        score = Math.hypot(xUm - cx, yUm - cy) / Math.max(spotRadius(s), 1e-6) / 1e3;
       } else if (d <= 8 * k) score = 1 + d / k;
       else continue;
       if (score < bs) {
@@ -1518,7 +1536,7 @@
     if (!view) return;
     const s = app.spots.find((q) => q.id === id);
     const l = app.labels.find((q) => q.id === id);
-    const xUm = s ? s.x_um + s.diameter_um / 2 : l!.x_um;
+    const xUm = s ? s.x_um + spotRadius(s) : l!.x_um;
     const yUm = s ? s.y_um : l!.y_um;
     const [sx, sy] = toScreen(view, xUm / umPerPx, yUm / umPerPx);
     editing = { id, text: s?.name ?? l?.text ?? '', sx: sx + 6, sy: sy - 12 };
@@ -1561,7 +1579,7 @@
       return;
     }
     if (e.key === 'Escape' && (pluck || spotMenu)) { e.preventDefault(); pluck = null; spotMenu = null; return; }
-    if (app.busy || app.mosaicExportPrompt || app.grainExportPrompt || app.checkPrompt || app.renamePrompt || batch || e.defaultPrevented) return;
+    if (app.busy || app.mosaicExportPrompt || app.grainExportPrompt || app.checkPrompt || app.renamePrompt || batch || sizeRepairs || e.defaultPrevented) return;
     if (e.key.startsWith('Arrow')) app.flash = null;
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
@@ -1637,15 +1655,27 @@
     }
   }
 
+  function selectionDiameterChange(target: string) {
+    return (d: number) => { if (target === sizeTarget) setDiameter(d); };
+  }
+  function singleDiameterChange(id: string) {
+    const state = current(), project = state.project?.uuid, area = state.areaId;
+    return (d: number) => {
+      if (current() !== state || state.project?.uuid !== project || state.areaId !== area || state.readOnly || focus?.id !== id) return;
+      updateSpot(id, { diameter_um: d });
+    };
+  }
+
   /** A run of size steps on the same spots (arrow keys, −/+) is one undo step. */
   let lastDiameter: { ids: string; d: number; at: number } | null = null;
   function setDiameter(d: number) {
-    app.diameter = d;
+    if (ro) return;
+    if (!selSpots.length) app.diameter = d;
     if (selSpots.length) {
       const ids = selSpots.map((s) => s.id).join(' ');
       const now = performance.now();
       // Only while nothing changed them since the last step (an undo in between starts a new step).
-      const run = lastDiameter && lastDiameter.ids === ids && now - lastDiameter.at < 2000 && selSpots.every((s) => s.diameter_um === lastDiameter!.d);
+      const run = lastDiameter && lastDiameter.ids === ids && now - lastDiameter.at < 2000 && selSpots.every((s) => spotDiameter(s) === lastDiameter!.d);
       if (run) app.persist();
       else app.checkpoint();
       lastDiameter = { ids, d, at: now };
@@ -1707,7 +1737,11 @@
   <SpotBatchDialog spots={areaSpots.filter((s) => batch!.ids.includes(s.id))} project={app.spots} {grains} tableIds={tableSpots.map((s) => s.id)} pattern={patternFor(areaId ?? '')} numbering={batch.numbering} onapply={applyBatch} oncancel={() => batch = null} />
 {/if}
 
-{#if core && tiles && areaId && mosaic}
+{#if sizeRepairs && sizeRepairs.project === app.project?.uuid}
+  <FixSizesDialog rows={sizeRepairs.rows} spots={app.spots} areas={app.project?.areas ?? []} onapply={applyRepairs} oncancel={() => sizeRepairs = null} />
+{/if}
+
+{#if core && tiles && areaId && mosaic && Number.isFinite(umPerPx)}
   <div class="canvas" class:folded={app.layout.sideCollapsed} class:viewer-mode={isViewer} use:publishNoticeBounds>
     {#if rectangle?.moved}
       <div class="selection-rectangle" style:left="{Math.min(rectangle.x, rectangle.x2)}px" style:top="{Math.min(rectangle.y, rectangle.y2)}px" style:width="{Math.abs(rectangle.x2 - rectangle.x)}px" style:height="{Math.abs(rectangle.y2 - rectangle.y)}px"></div>
@@ -1750,7 +1784,7 @@
               {/each}
             {/if}
             {#if flashingSpot}
-              <circle class="shell-flash spot-flash" cx={flashingSpot.x_um} cy={flashingSpot.y_um} r={flashingSpot.diameter_um / 2 + 7 * k} data-testid="shell-spot-flash" />
+              <circle class="shell-flash spot-flash" cx={flashingSpot.x_um} cy={flashingSpot.y_um} r={spotRadius(flashingSpot) + 7 * k} stroke-dasharray={spotDiameter(flashingSpot) === null ? '3 3' : undefined} data-testid="shell-spot-flash" />
             {/if}
             {#if flashingGrain}
               <polygon class="shell-flash grain-flash" points={flashingGrain.polygon_um.map((p) => p.join(',')).join(' ')} data-testid="shell-grain-flash" />
@@ -1781,15 +1815,15 @@
             {#if (isViewer || app.layers.results) && range}
               <g class="results" data-testid="results-layer">
                 {#each shown as { s, r, v } (s.id)}
-                  {#if v}
+                  {#if v && spotDiameter(s) !== null}
                     {#if app.colourBy === 'date'}
-                      <circle class="result-ring outer" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2 + 1.875 * k} />
-                      <circle class="result-ring inner" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2 + 0.75 * k} />
+                      <circle class="result-ring outer" cx={s.x_um} cy={s.y_um} r={spotRadius(s) + 1.875 * k} />
+                      <circle class="result-ring inner" cx={s.x_um} cy={s.y_um} r={spotRadius(s) + 0.75 * k} />
                     {/if}
-                    <circle class="rfill" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} fill={(app.colourBy === 'date' ? ageColor : rampColor)(tOf(v.value))} data-testid="result-dot" data-spot-id={s.id} />
+                    <circle class="rfill" cx={s.x_um} cy={s.y_um} r={spotRadius(s)} fill={(app.colourBy === 'date' ? ageColor : rampColor)(tOf(v.value))} data-testid="result-dot" data-spot-id={s.id} />
                   {/if}
-                  {#if r.flags.length}
-                    <circle class="rflag" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2 + 4 * k} data-testid="result-flag"><title>{r.flags.join(', ')}</title></circle>
+                  {#if r.flags.length && spotDiameter(s) !== null}
+                    <circle class="rflag" cx={s.x_um} cy={s.y_um} r={spotRadius(s) + 4 * k} data-testid="result-flag"><title>{r.flags.join(', ')}</title></circle>
                   {/if}
                 {/each}
               </g>
@@ -1804,20 +1838,22 @@
                   class:review-coloured={!!colour} data-review-colour={colour ?? undefined} style:--review-spot-colour={colour ?? undefined}
                   data-contrast={active ? (autoColour ? (contrasts[s.id] ?? 'light') : 'fixed') : undefined}
                   style:--active-spot-colour={active ? activeColour(s.id) : undefined} style:--active-spot-halo={active ? activeHalo(s.id) : undefined}>
-                  {#if s.kind === 'line' && s.x2_um != null && s.y2_um != null}
-                    <line class="swath" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} style:stroke-width="{s.diameter_um}px" />
+                  {#if spotDiameter(s) === null}
+                    <circle cx={s.x_um} cy={s.y_um} r={5 * k} stroke-dasharray="3 3" data-testid="spot-no-size"><title>Size not set</title></circle>
+                  {:else if s.kind === 'line' && s.x2_um != null && s.y2_um != null}
+                    <line class="swath" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} style:stroke-width="{spotDiameter(s)}px" />
                     {#if colourHalo}<line class="contrast-halo" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} />{/if}
                     <line class="axis" x1={s.x_um} y1={s.y_um} x2={s.x2_um} y2={s.y2_um} />
                   {:else if s.kind === 'raster' && s.x2_um != null && s.y2_um != null}
                     {#if colourHalo}<rect class="contrast-halo" x={s.x_um} y={s.y_um} width={s.x2_um - s.x_um} height={s.y2_um - s.y_um} />{/if}
                     <rect x={s.x_um} y={s.y_um} width={s.x2_um - s.x_um} height={s.y2_um - s.y_um} />
                   {:else}
-                    {#if active || colourHalo}<circle class="contrast-halo" cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />{/if}
-                    <circle cx={s.x_um} cy={s.y_um} r={s.diameter_um / 2} />
+                    {#if active || colourHalo}<circle class="contrast-halo" cx={s.x_um} cy={s.y_um} r={spotRadius(s)} />{/if}
+                    <circle cx={s.x_um} cy={s.y_um} r={spotRadius(s)} />
                     <circle class="dot" cx={s.x_um} cy={s.y_um} r={1.2 * k} />
                   {/if}
                   {#if app.layers.labels && editing?.id !== s.id}
-                    <text transform={screenLabel(s.x_um + s.diameter_um / 2 + 3 * k, s.y_um)} dy="4">{s.name}</text>
+                    <text transform={screenLabel(s.x_um + spotRadius(s) + 3 * k, s.y_um)} dy="4">{s.name}</text>
                   {/if}
                 </g>
               {/each}
@@ -1879,7 +1915,7 @@
         <button onclick={() => viewer?.fitAll()}>Fit</button>
         {#if Object.keys(app.stitched).length > 1}
           <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
-            {#each Object.keys(app.stitched) as id (id)}<option value={id}>{areaLabel(id)}</option>{/each}
+            {#each (app.project?.areas.map(a => a.id) ?? Object.keys(app.stitched)) as id (id)}<option value={id}>{areaLabel(id)}</option>{/each}
           </select>
         {/if}
         <select bind:value={app.colourBy} aria-label="Colour by">
@@ -1894,7 +1930,7 @@
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
       {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
       <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
-        {#each Object.keys(app.stitched) as id (id)}<option value={id} title={app.grains[id] === undefined ? 'no grains yet' : undefined}>{app.grains[id] === undefined ? '○ ' : ''}{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
+        {#each (app.project?.areas.map(a => a.id) ?? Object.keys(app.stitched)) as id (id)}<option value={id} title={app.grains[id] === undefined ? 'no grains yet' : undefined}>{app.grains[id] === undefined ? '○ ' : ''}{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
       </select>
       <span class="sep"></span>
       {#each ro ? toolList.filter((t) => t.id === 'select' || t.id === 'measure') : toolList as t (t.id)}
@@ -1903,7 +1939,8 @@
       <span class="sep" class:hidden={ro}></span>
       <div class="diam" class:hidden={ro}>
         ⌀
-        <SizeBox value={app.diameter} onchange={setDiameter} label="Spot diameter (µm) for the next spot and the selected spots; keys 1–6 pick a preset" testid="size-toolbar" />
+        <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeSummary.caption}; keys 1–6 pick a preset`} testid="size-toolbar" />
+        <span class="faint small">{sizeSummary.caption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
       </div>
       {#if !ro}
         <span class="sep"></span>
@@ -1966,7 +2003,7 @@
           <p>{selSpots[0].name} → {selSpots[selSpots.length - 1].name}</p>
           <p class="faint small">Samples: {[...new Set(selSpots.map((s) => s.sample))].join(', ') || '–'}</p>
           <p>{diameterRange}</p>
-          <div class="field">Diameter µm <SizeBox value={selSpots[0].diameter_um} onchange={setDiameter} label="Selected spots diameter µm" testid="size-panel" disabled={ro} /></div>
+          <div class="field">Diameter µm <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label="Selected spots diameter µm" testid="size-panel" disabled={ro} /></div>
           {@render spotBatchButtons()}
         {:else if selGrains.length > 1}
           <p>{selectedGrains.length} grains selected</p>
@@ -1977,7 +2014,7 @@
             <label class="field">Name <input type="text" value={focus.name} onchange={(e) => updateSpot(focus.id, { name: e.currentTarget.value })} data-testid="panel-name" /></label>
             <label class="field" title="The spot's number; the name follows the pattern">n <input type="number" min="1" value={focus.n} onchange={(e) => setSpotN(focus.id, Math.max(1, Math.round(+e.currentTarget.value)))} data-testid="panel-n" /></label>
           </div>
-          <div class="field">Diameter µm <SizeBox value={focus.diameter_um} onchange={(d) => updateSpot(focus.id, { diameter_um: d })} label="Diameter µm" testid="size-panel" disabled={ro} /></div>
+          <div class="field">Diameter µm <SizeBox value={spotDiameter(focus)} target={JSON.stringify([app.id, app.project?.uuid, areaId, focus.id])} placeholder="not set" onchange={singleDiameterChange(focus.id)} label="Diameter µm" testid="size-panel" disabled={ro} /></div>
           <div class="two">
             <label class="field">Kind
               <select value={focus.kind} onchange={(e) => updateSpot(focus.id, { kind: e.currentTarget.value as SpotKind })}><option value="spot">spot</option><option value="line" disabled={focus.x2_um == null}>line</option><option value="raster" disabled={focus.x2_um == null}>raster</option></select>
@@ -2077,6 +2114,7 @@
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
       <fieldset class="plain tabbody" disabled={(ro && tab !== 'link' && tab !== 'checks') || (tab === 'grains' && !!app.busy)}>
       {#if tab === 'spots'}
+        {#if missingSizes}<p class="faint small" data-testid="spots-no-size">{missingSizes} {missingSizes === 1 ? 'spot has' : 'spots have'} no size{#if !ro} <button onclick={fixSizes}>Fix sizes…</button>{/if}</p>{/if}
         {#if !ro && !noPixels && areaId && !grains.length}
           <p class="faint small-text" role="status" data-testid="spots-grain-status">{detections.length ? 'No grains found; only flagged outlines. Open Grains to review them.' : segmentationStatus.message}</p>
           <div class="row">
@@ -2111,7 +2149,7 @@
             <tbody>
               {#each tableSpots as s (s.id)}
                 <tr data-spot-id={s.id} class:selected={app.selection.includes(s.id)} onclick={(e) => spotRow(s, e)}>
-                  <td class="spot-name">{s.name}</td><td class="num">{s.diameter_um}</td>
+                  <td class="spot-name">{s.name}</td><td class="num">{spotDiameter(s) ?? 'not set'}</td>
                 </tr>
               {:else}
                 <tr><td colspan="2" class="muted">{areaSpots.length ? 'No spots match the current filter' : ro ? 'No registered spots in this area.' : 'Pick the Spot tool (S) and click on a grain.'}</td></tr>
@@ -2335,11 +2373,11 @@
       <details class="spot-entry" open={app.layout.spotEntryOpen} ontoggle={(e) => { if (app.layout.spotEntryOpen === e.currentTarget.open) return; app.layout.spotEntryOpen = e.currentTarget.open; app.saveLayout(); }}>
         <summary>Spot entry</summary>
         <div class="entry-body">
-          <div class="diam">⌀ <SizeBox value={app.diameter} onchange={setDiameter} label="Spot diameter (µm) for the next spot and the selected spots" testid="size-side" /></div>
-          <span class="faint small">{selectedHere ? `next spot and ${selectedHere} selected` : 'next spot'}</span>
+          <div class="diam">⌀ <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeSummary.caption}`} testid="size-side" /></div>
+          <span class="faint small">{sizeSummary.caption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
           <div class="presets">
             {#each app.settings.spot_presets_um as d, i (d)}
-              <button class="icon" aria-pressed={app.diameter === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
+              <button class="icon" aria-pressed={sizeValue === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
             {/each}
           </div>
           <div class="next-entry">
@@ -2402,6 +2440,11 @@
         <span class="bar"><span style:width="{scalebar.px}px"></span>{scalebar.len >= 1000 ? `${scalebar.len / 1000} mm` : `${scalebar.len} µm`}</span>
       {/if}
     </div>
+  </div>
+{:else}
+  <div class="panel" role="status">
+    <p>{Number.isFinite(umPerPx) ? 'Waiting for the stitched mosaic.' : 'Area calibration is not available.'}</p>
+    <button onclick={() => app.screen = 'area'}>Open area</button>
   </div>
 {/if}
 

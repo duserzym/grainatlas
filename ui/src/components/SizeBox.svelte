@@ -1,26 +1,38 @@
 <script lang="ts">
+  import { SizeEditor } from '../lib/size-editor';
   import { parseDiameter, stepDiameter } from '../lib/spots';
 
-  let { value, onchange, label, testid, disabled = false }: {
-    value: number;
+  let { value, target, onchange, label, testid, placeholder = '', disabled = false }: {
+    value: number | null;
+    target: string;
+    placeholder?: string;
     onchange: (d: number) => void;
     label: string;
     testid?: string;
     disabled?: boolean;
   } = $props();
   let text = $state('');
-  let typing = $state(false);
-  $effect(() => { if (!typing) text = String(value); });
+  const editor = new SizeEditor();
+  $effect.pre(() => { const reset = editor.sync(value, target); if (reset !== null) text = reset; });
 
+  function focus() {
+    const reset = editor.sync(value, target);
+    if (reset !== null) text = reset;
+    editor.focus(target, onchange);
+  }
   function commit() {
-    const d = parseDiameter(text);
-    text = String(d ?? value);
-    if (d !== null && d !== value) onchange(d);
+    const d = editor.commit(text, value, target);
+    text = String(d ?? value ?? '');
   }
   function step(direction: number, e: MouseEvent | KeyboardEvent) {
-    const d = stepDiameter(parseDiameter(text) ?? value, direction, e.shiftKey ? 5 : e.altKey ? 0.5 : 1);
-    text = String(d);
-    if (d !== value) onchange(d);
+    const reset = editor.sync(value, target);
+    if (reset !== null) text = reset;
+    // Buttons are an explicit new edit of the currently displayed target.
+    editor.focus(target, onchange);
+    const base = parseDiameter(text) ?? value;
+    if (base === null) return;
+    text = String(stepDiameter(base, direction, e.shiftKey ? 5 : e.altKey ? 0.5 : 1));
+    commit();
   }
   function key(e: KeyboardEvent) {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
@@ -31,7 +43,7 @@
       e.preventDefault();
       e.stopPropagation();
       if (e.key === 'Enter') commit();
-      else text = String(value);
+      else text = String(value ?? '');
     }
   }
 </script>
@@ -39,8 +51,8 @@
 <div class="size-box">
   <button type="button" class="icon" tabindex="-1" {disabled} title="1 µm smaller (Shift: 5 µm)" aria-label="1 µm smaller (Shift: 5 µm)"
     onpointerdown={(e) => e.preventDefault()} onclick={(e) => step(-1, e)}>−</button>
-  <input type="text" inputmode="decimal" bind:value={text} {disabled} aria-label={label} title={label} data-testid={testid}
-    onfocus={() => (typing = true)} onblur={() => { commit(); typing = false; }} onkeydown={key} />
+  <input type="text" inputmode="decimal" bind:value={text} {disabled} {placeholder} aria-label={label} title={label} data-testid={testid}
+    onfocus={focus} onblur={() => { commit(); editor.blur(); }} onkeydown={key} />
   <button type="button" class="icon" tabindex="-1" {disabled} title="1 µm larger (Shift: 5 µm)" aria-label="1 µm larger (Shift: 5 µm)"
     onpointerdown={(e) => e.preventDefault()} onclick={(e) => step(1, e)}>+</button>
   <span>µm</span>

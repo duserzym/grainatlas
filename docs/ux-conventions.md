@@ -92,6 +92,12 @@ The Delete tool removes the whole grain selection when clicking a selected grain
 
 Spot size comes only from the size input in the side panel, for new and selected
 spots; placed spots are never resized by dragging.
+On opening a project or changing area, the next spot uses the most common valid
+size in that area. Ties use the most recently created spot among the tied sizes;
+missing creation times count as oldest, then later array position wins. An area
+with no valid sizes uses the same rule across the project, then the Settings
+default if the project has none. The size inputs show selected spots' sizes when
+spots are selected; mixed or unset sizes stay blank until explicitly edited.
 
 ## 3. One click for a good result; every control still there; Reset
 

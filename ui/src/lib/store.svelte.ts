@@ -1,3 +1,4 @@
+import { nextSpotDiameter } from './spot-size';
 import { readLabelOptions, labelUI } from './print-labels';
 import { printCache } from './print-cache';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout, resetLayoutStorage, type LayoutPrefs } from './layout-prefs';
@@ -175,7 +176,13 @@ class AppState {
   storedCopy = $state.raw<StoredCopy | null>(null);
   loadingProject = false;
   cancelTask: (() => void) | null = null;
-  areaId = $state<string | null>(null);
+  private _areaId = $state<string | null>(null);
+  get areaId(): string | null { return this._areaId; }
+  set areaId(value: string | null) {
+    if (value === this._areaId) return;
+    this._areaId = value;
+    this.diameter = nextSpotDiameter(this.spots, value, this.settings.default_diameter_um);
+  }
   stitched = $state<Record<string, StitchSummary>>({});
   /** Bumps when pyramid pixels change (re-stitch, re-tone): the canvas drops its tile cache. */
   pixelsVersion = $state(0);
@@ -617,6 +624,7 @@ class AppState {
     if (ui?.overlays) this.overlays = ui.overlays;
     if (ui?.grains) this.grains = grainMapWithoutBlankArtifacts(ui.grains);
     if (ui?.spots) this.spots = ui.spots;
+    this.diameter = nextSpotDiameter(this.spots, this.areaId, this.settings.default_diameter_um);
     if (ui?.labels) this.labels = ui.labels;
     if (ui?.tone) this.tone = ui.tone;
     for (const a of p.areas) this.params[a.id] = JSON.parse(JSON.stringify(a.params));
