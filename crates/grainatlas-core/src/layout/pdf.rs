@@ -1,6 +1,7 @@
 //! SVG pages → one multi-page PDF through `svg2pdf` (each page converted to an
 //! XObject chunk, then assembled with `pdf-writer`). Text uses the embedded
 //! DejaVu Sans font (Bitstream Vera licence, see assets/fonts/LICENSE_DEJAVU),
+//! plus IBM Plex Sans Condensed Medium for spot labels (SIL OFL 1.1).
 //! so the PDF is the same natively and in the browser.
 
 use std::collections::{HashMap, HashSet};
@@ -20,6 +21,9 @@ fn options() -> &'static usvg::Options<'static> {
     OPT.get_or_init(|| {
         let mut db = usvg::fontdb::Database::new();
         db.load_font_data(FONT.to_vec());
+        db.load_font_data(
+            include_bytes!("../../assets/fonts/IBMPlexSansCondensed-Medium.ttf").to_vec(),
+        );
         db.set_sans_serif_family("DejaVu Sans");
         let mut o = usvg::Options {
             font_family: "DejaVu Sans".into(),
@@ -118,8 +122,14 @@ impl PdfBuilder {
                                 .replace('&', "&amp;")
                                 .replace('<', "&lt;")
                                 .replace('>', "&gt;");
-                            self.seed
-                                .push_str(&format!("<text font-size=\"1\">{text}</text>"));
+                            let families: std::collections::BTreeSet<_> = glyphs
+                                .iter()
+                                .filter_map(|(id, _)| options().fontdb.face(*id))
+                                .flat_map(|f| f.families.iter().map(|(name, _)| name.as_str()))
+                                .collect();
+                            for family in families {
+                                self.seed.push_str(&format!("<text font-family=\"{family}\" font-weight=\"500\" font-size=\"1\">{text}</text>"));
+                            }
                         }
                         self.glyphs.extend(glyphs);
                     }
@@ -143,7 +153,16 @@ impl PdfBuilder {
             .replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;");
-        let seed = format!("<text font-size=\"1\">{text}</text>");
+        let mut seed = format!("<text font-size=\"1\">{text}</text>");
+        if self.glyphs.iter().any(|(id, _)| {
+            options().fontdb.face(*id).is_some_and(|f| {
+                f.families
+                    .iter()
+                    .any(|(name, _)| name == "IBM Plex Sans Condensed")
+            })
+        }) {
+            seed.push_str(&format!("<text font-family=\"IBM Plex Sans Condensed\" font-weight=\"500\" font-size=\"1\">{text}</text>"));
+        }
         let svg = format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">{seed}</svg>"#
         );
@@ -428,6 +447,17 @@ pub fn pdf_from_svgs(pages: &[String]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plex_and_dejavu_subsets_are_shared_across_pages_and_image_layers() {
+        let png = crate::layout::base64(&crate::image::encode_png_gray(1, 1, &[80]));
+        let pages: Vec<_> = ["ABC12_S_197", "Z-002 Ω", "office_12"].iter().map(|text| format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="50mm" viewBox="0 0 50 50"><text x="2" y="5" font-size="3">Header</text><image href="data:image/png;base64,{png}" width="20" height="10"/><text x="2" y="20" font-family="IBM Plex Sans Condensed" font-weight="500" font-kerning="none" font-size="3">{text}</text></svg>"#)).collect();
+        let pdf = pdf_from_svgs(&pages).unwrap();
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(text.contains("IBMPlexSansCond-Medium"));
+        assert!(text.contains("DejaVuSans"));
+        assert_eq!(text.matches("/FontFile2").count(), 2);
+        assert_eq!(text.matches("/Subtype /Type0").count(), 2);
+    }
     #[test]
     fn png_idat_is_reused_without_reencoding() {
         let px: Vec<_> = (0..120).map(|i| (i * 13) as u8).collect();

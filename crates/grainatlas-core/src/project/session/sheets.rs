@@ -133,10 +133,7 @@ impl Session {
             Some(SheetArea { rec, img: print_image(project, rec, o, tone.get(&rec.id).unwrap_or(&rec.params.tone)) })
         }).collect();
         if areas.is_empty() { return Err(Error::Invalid("no stitched area to print".into())); }
-        let mut plan = match plan { Some(plan) => plan, None => sheets::plan_sheets(&params.expect("parameters or plan"), &areas, &grains, &own, &self.meta()?) };
-        if plan.print_spots.is_none() {
-            plan.print_spots = project.extra.get("grainatlas_ui").and_then(|ui|ui.get("spots")).and_then(|spots|serde_json::from_value(spots.clone()).ok());
-        }
+        let plan = match plan { Some(plan) => plan, None => sheets::plan_sheets(&params.expect("parameters or plan"), &areas, &grains, &own, &self.meta()?) };
         // Reject stale or malformed host plans before the renderer dereferences their ids.
         validate_plan(&plan, &areas, &grains)?;
         let edited = if edits.trim().is_empty() { sheets::apply_edits(&plan, &[], &areas, &grains) }

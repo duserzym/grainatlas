@@ -14,12 +14,59 @@
   import { PrintQuality, printPdfName } from '../lib/print-quality';
   import { createPrintDocument, type PrintDocument } from '../lib/print-document';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
+  import SpotLabelOverlay from '../components/SpotLabelOverlay.svelte';
+  import { isSheetsStyle, pinLabel, spotDisplay, sheetGeometryControls, parseLabelSize } from '../lib/print-labels';
+  import type { SpotLabelReport } from '../lib/core/types';
 
   import PickListImport from '../components/PickListImport.svelte';
   import { buildPickListRows, renderPickList, type PickListOptions } from '../lib/tims-picklist';
   import { bundlePixels } from '../lib/bundle-tone';
 
   const app = current();
+  let moveLabels = $state(false);
+  let renderedDisplay = $state('');
+  let renderedGeometry = $state('');
+  let displayTimer: ReturnType<typeof setTimeout> | undefined;
+  let displayRequest = 0;
+  const displayKey = () => JSON.stringify([style, style === 'spots' ? app.printLabels : null, style === 'spots' ? revision(app.spots) : 0]);
+  const geometryKey = (c = controls()) => fingerprint(sheetGeometryControls(c));
+  function savePin(label: SpotLabelReport['labels'][number], origin: [number, number] | null) {
+    app.printLabels = pinLabel($state.snapshot(app.printLabels), label, origin);
+    app.persistPrintLabels();
+  }
+  function resetLabels() {
+    if (!labelPins || !confirm(`Reset ${labelPins} pinned spot label${labelPins === 1 ? '' : 's'}?`)) return;
+    app.printLabels = { ...$state.snapshot(app.printLabels), pins: {} }; app.persistPrintLabels();
+  }
+  function labelsChanged(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const size = parseLabelSize(input.value);
+    if (size === null) { input.value = app.printLabels.size_mm === 'auto' ? 'Auto' : String(app.printLabels.size_mm); return; }
+    app.printLabels = { ...$state.snapshot(app.printLabels), size_mm: size };
+    input.value = size === 'auto' ? 'Auto' : String(size);
+    app.persistPrintLabels();
+  }
+  async function refreshLabels() {
+    if (destroyed || app.busy || pending || !result || !isSheetsStyle(style)) return;
+    if (sheetMode === 'whole') { await generateSheets(); return; }
+    if (!automaticPlan || geometryKey() !== renderedGeometry) return;
+    const token = ++displayRequest, key = displayKey(), c = controls();
+    const generationKey = fingerprint(c);
+    pending = true;
+    try {
+      const base = spotDisplay(automaticPlan, style === 'spots', $state.snapshot(app.spots), $state.snapshot(app.printLabels));
+      const r = await (await app.core).printPlanRender(base, $state.snapshot(history.edits), $state.snapshot(app.grains), $state.snapshot(app.tone));
+      if (destroyed || token !== displayRequest || key !== displayKey()) return;
+      automaticPlan = base; showSheets(r); madeControls = c; madeWith = generationKey; renderedDisplay = key;
+    } catch (error) { app.error = String(error); }
+    finally { if (!destroyed) pending = false; }
+  }
+  $effect(() => {
+    const key = displayKey();
+    if (!result || !isSheetsStyle(style) || !renderedDisplay || renderedDisplay === key || app.busy || pending || geometryKey() !== renderedGeometry) return;
+    clearTimeout(displayTimer); displayTimer = setTimeout(() => void refreshLabels(), 80);
+    return () => clearTimeout(displayTimer);
+  });
   let importingPickList = $state(false);
   let pick = $state<PickListOptions>({ set: '', batch: '', cropMargin: 30, cropSize: 35, paper: 'a4', title: `${app.pkg?.name ?? app.project?.package.name ?? 'Mount'} pick list ${new Date().toLocaleDateString('en-CA')}` });
   const pickStore = $derived(app.tims.store);
@@ -56,7 +103,7 @@
     dpi: 300,
     by_number: false,
   });
-  let style = $state<'sheets' | 'layout' | 'picklist'>('sheets');
+  let style = $state<'sheets' | 'spots' | 'layout' | 'picklist'>('sheets');
   let sheetMode = $state<'grains' | 'whole'>('grains');
   let orientation = $state<WholeParams['orientation']>('auto');
   let wholeScale = $state<number | 'auto'>('auto');
@@ -90,6 +137,14 @@
   });
   let spotText = $state((savedPrint?.params.spot_sizes_um ?? [15, 20, 25, 30, 35, 50]).join(', '));
   let sheets = $state.raw<SheetResult | null>(null);
+  const labelReports = $derived((whole ?? sheets)?.registration.spot_labels ?? []);
+  const labelOverlap = $derived(labelReports.reduce((sum, page) => sum + page.counts.still_overlapping, 0));
+  const labelPinnedOverlap = $derived(labelReports.reduce((sum, page) => sum + (page.counts.pinned_overlapping ?? 0), 0));
+  const labelTicks = $derived(labelReports.reduce((sum, page) => sum + (page.counts.with_ticks ?? 0), 0));
+  const labelLeaders = $derived(labelReports.reduce((sum, page) => sum + page.counts.with_leaders, 0));
+  const labelAmbiguous = $derived(labelReports.reduce((sum, page) => sum + (page.counts.ambiguous ?? 0), 0));
+  const labelContextOmitted = $derived(labelReports.reduce((sum, page) => sum + (page.counts.context_omitted ?? 0), 0));
+  const labelPins = $derived(Object.keys(app.printLabels.pins).length);
   let result = $state.raw<LayoutResult | null>(null);
   let pageIdx = $state(0);
   let urls = $state<string[]>([]);
@@ -136,10 +191,10 @@
   const exportBlocked = $derived(!!app.busy || stale || pending || !!sheets?.problems?.length);
   const exportReason = $derived(app.busy ? app.busy.label : stale ? 'Inputs changed; make sheets again' : pending ? 'Wait for the strip preview' : exportBlocked ? 'Fix strip problems before export' : '');
   function controls(): PrintControls {
-    return $state.snapshot({ params, sheet, style, sheetMode, orientation, wholeScale, grid, wholeArea, spotText, pick });
+    return $state.snapshot({ params, sheet, style, sheetMode, orientation, wholeScale, grid, wholeArea, spotText, pick, spotLabels: app.printLabels });
   }
   function fingerprint(c = controls()) {
-    const ids = c.style === 'sheets' && c.sheetMode === 'whole' ? [c.wholeArea]
+    const ids = isSheetsStyle(c.style) && c.sheetMode === 'whole' ? [c.wholeArea]
       : c.style === 'layout' && c.params.area_ids.length ? c.params.area_ids : Object.keys(app.stitched);
     return printFingerprint({
       identity: [app.id, app.project?.uuid, app.projectPath, revision(app.packageSource), revision(app.pkg),
@@ -151,7 +206,7 @@
         a.stage_sign, a.mosaic, app.stitched[a.id]?.mosaic, a.params, app.params[a.id], a.area_meta]),
       tone: Object.fromEntries(ids.map(id => [id, app.tone[id]])),
       grains: Object.fromEntries(ids.map(id => [id, app.grains[id]])),
-      spots: c.style === 'picklist' || c.style === 'layout' && c.params.show_spots ? app.spots : undefined,
+      spots: c.style === 'spots' || c.style === 'picklist' || c.style === 'layout' && c.params.show_spots ? app.spots : undefined,
       labels: c.style === 'layout' && c.params.show_labels ? app.labels : undefined,
       edits: app.project?.print_sheets,
       image_edits: app.project?.image_edits,
@@ -168,12 +223,15 @@
         ({ sheets, whole, result, automaticPlan, history, savedDrops, pageIdx, editMode, editor, urls, quality } = cached);
         madeWith = cached.fingerprint;
         madeControls = cached.controls;
+        renderedDisplay = displayKey();
+        renderedGeometry = geometryKey(cached.controls);
       } else { cached.quality?.release(); for (const url of cached.urls) url && URL.revokeObjectURL(url); }
     }
   }
   restoreCached();
   watchQuality();
   onDestroy(() => {
+    clearTimeout(displayTimer); displayRequest++;
     printDocument?.cleanup();
     destroyed = true; const stopped = quality?.stop(); qualityUnsubscribe?.();
     if (result && !pending && madeWith && madeWith === fingerprint()) {
@@ -198,7 +256,7 @@
     storePrintEdits(app, $state.snapshot(automaticPlan) as SheetPlan, $state.snapshot(history.edits));
     app.persist();
     savedDrops = [];
-    if (madeControls) madeWith = fingerprint(madeControls);
+    if (madeControls) { madeWith = fingerprint(madeControls); renderedGeometry = geometryKey(madeControls); }
   }
   function replacePages(pages: string[]) {
     const old = urls;
@@ -276,16 +334,17 @@
       : history.count && previousPlan ? { params: $state.snapshot(previousPlan.params), um_per_mm: previousPlan.um_per_mm, edits: $state.snapshot(history.edits) } : null;
     const generationControls = controls();
     const generationKey = fingerprint(generationControls);
+    const generationGeometry = geometryKey(generationControls);
     const r = sheetMode === 'whole'
-      ? await app.run('Laying out whole area', () => core.printWhole(wholePrintOptions(p, { areaId: wholeArea, orientation, scale: wholeScale, grid }), tones))
+      ? await app.run('Laying out whole area', () => core.printWhole({ ...wholePrintOptions(p, { areaId: wholeArea, orientation, scale: wholeScale, grid }), ...(style === 'spots' ? { print_spots: $state.snapshot(app.spots), print_labels: $state.snapshot(app.printLabels), print_grains: $state.snapshot(app.grains[wholeArea] ?? []) } : {}) }, tones))
       : await app.run('Laying out print sheets', () => core.printSheets(p, $state.snapshot(app.grains) as Record<string, Grain[]>, tones));
     if (!r) return;
     if ('ownership' in r) {
-      r.plan = { ...r.plan, print_spots: $state.snapshot(app.spots) };
+      r.plan = spotDisplay(r.plan, style === 'spots', $state.snapshot(app.spots), $state.snapshot(app.printLabels));
       app.ownership = r.ownership;
       whole = null;
-      const replayed = stored?.edits.length
-        ? await app.run('Replaying strip edits', () => core.printPlanRender($state.snapshot(r.plan) as SheetPlan, stored, $state.snapshot(app.grains) as Record<string, Grain[]>, tones))
+      const replayed = stored?.edits.length || style === 'spots'
+        ? await app.run('Replaying strip edits', () => core.printPlanRender($state.snapshot(r.plan) as SheetPlan, stored ?? [], $state.snapshot(app.grains) as Record<string, Grain[]>, tones))
         : r;
       if (!replayed) return;
       history.load(stored?.edits ?? []);
@@ -304,6 +363,8 @@
     pageIdx = 0;
     madeWith = generationKey;
     madeControls = generationControls;
+    renderedDisplay = displayKey();
+    renderedGeometry = generationGeometry;
   }
   async function registration() {
     if (exportBlocked) return;
@@ -373,7 +434,7 @@
       const doc = printDocument = createPrintDocument(pages, result.paper_mm);
       await doc.decodeImages();
       if (cancelled || destroyed || stale || printDocument !== doc) { doc.cleanup(); return; }
-      await doc.print(style === 'picklist' ? pick.title : style === 'sheets' ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title);
+      await doc.print(style === 'picklist' ? pick.title : isSheetsStyle(style) ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title);
     } catch (error) { app.error = error instanceof Error ? error.message : String(error); }
     finally { app.cancelTask = null; }
   }
@@ -411,18 +472,28 @@
   {#if app.layout.printCollapsed}
     <aside class="glass folded-side"><button class="icon" title="Show print controls" aria-label="Show print controls" onclick={() => { app.layout.printCollapsed = false; app.saveLayout(); }}>»</button></aside>
   {/if}
-  <aside class="glass side" class:arranging={sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange} class:concealed={app.layout.printCollapsed}>
-    <div class="side-content" class:arranging={sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange} data-testid="print-controls-scroll">
+  <aside class="glass side" class:arranging={sheets && isSheetsStyle(style) && sheetMode === 'grains' && editMode && editor.arrange} class:concealed={app.layout.printCollapsed}>
+    <div class="side-content" class:arranging={sheets && isSheetsStyle(style) && sheetMode === 'grains' && editMode && editor.arrange} data-testid="print-controls-scroll">
     <button class="icon fold" title="Fold print controls" aria-label="Fold print controls" onclick={() => { app.layout.printCollapsed = true; app.saveLayout(); }}>«</button>
-    {#if sheets && style === 'sheets' && sheetMode === 'grains'}
+    {#if sheets && isSheetsStyle(style) && sheetMode === 'grains'}
       <div class="seg" role="group" aria-label="Print arrangement">
         <button aria-label="Switch to automatic layout" aria-pressed={!editor.arrange} onclick={()=>{if(!editor.arrange)return;if(history.count)stripEditor?.confirmAutomatic();else{editMode=false;editor.arrange=false;}}}>Automatic</button>
-        <button data-testid="arrange-mode" aria-pressed={!!editor.arrange} disabled={app.readOnly} onclick={()=>{editor.arrange=true;editMode=true;}}>Arrange</button>
+        <button data-testid="arrange-mode" aria-pressed={!!editor.arrange} disabled={app.readOnly} onclick={()=>{editor.arrange=true;editMode=true;moveLabels=false;}}>Arrange</button>
       </div>
-      {#if !editor.arrange}<label class="check"><input type="checkbox" bind:checked={editMode} disabled={app.readOnly} data-testid="edit-strips" /> Edit strips</label>{/if}
+      {#if !editor.arrange}<label class="check"><input type="checkbox" bind:checked={editMode} onchange={() => { if (editMode) moveLabels = false; }} disabled={app.readOnly} data-testid="edit-strips" /> Edit strips</label>{/if}
+    {/if}
+    {#if style === 'spots'}
+      <datalist id="spot-label-sizes"><option value="Auto"></option>{#each [1.6, 1.8, 2, 2.2, 2.4, 2.6, 2.8, 3, 3.2, 3.4, 3.6, 3.8, 4] as size}<option value={size}></option>{/each}</datalist>
+      <label class="field">Label size (mm) <input aria-label="Label size (mm)" data-testid="spot-label-size" type="text" list="spot-label-sizes" value={app.printLabels.size_mm === 'auto' ? 'Auto' : app.printLabels.size_mm} onchange={labelsChanged} /></label>
+      <label class="check"><input type="checkbox" bind:checked={moveLabels} onchange={() => { if (moveLabels) editMode = false; }} data-testid="move-labels" /> Move labels</label>
+      <button onclick={resetLabels} disabled={!labelPins} data-testid="reset-labels">Reset labels ({labelPins})</button>
+      {#if app.printLabels.size_mm === 'auto' && labelReports.find(p => p.sheet === pageIdx + 1)}
+        <p class="faint small" data-testid="spot-label-chosen-size">Labels {labelReports.find(p => p.sheet === pageIdx + 1)?.size_mm.toFixed(1)} mm on this page</p>
+      {/if}
+      <p class="faint small" role="status" data-testid="spot-label-overlaps">{labelOverlap} spot labels still overlap; {labelAmbiguous} ambiguous; {labelTicks} ticks; {labelLeaders} leaders{#if labelPinnedOverlap}; {labelPinnedOverlap} pinned label{labelPinnedOverlap === 1 ? ' overlaps' : 's overlap'}{/if}{#if labelContextOmitted}; {labelContextOmitted} repeated context labels omitted{/if}.{#if labelOverlap || labelAmbiguous || labelPinnedOverlap}{' '}<button onclick={() => { pageIdx = Math.max(0, (labelReports.find(p => p.counts.still_overlapping || p.counts.ambiguous || p.counts.pinned_overlapping)?.sheet ?? 1) - 1); editMode = false; moveLabels = true; }}>Show page</button>{/if}</p>
     {/if}
     <div bind:this={editorControls}></div>
-    {#if !(sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange)}
+    {#if !(sheets && isSheetsStyle(style) && sheetMode === 'grains' && editMode && editor.arrange)}
     <h2>Print layout</h2>
     {#if result}
       <p class="faint small" data-testid="preview-note">Preview uses reduced resolution without export enhancement. PDF and print use full quality.</p>
@@ -436,6 +507,7 @@
     {#if unreadablePrint}<p class="faint small" data-testid="unreadable-print-edits">Stored strip edits could not be read. They will be kept when saving. A new strip edit replaces them.</p>{/if}
     <div class="seg" role="radiogroup" aria-label="Style">
       <label class="check"><input type="radio" bind:group={style} value="sheets" data-testid="style-sheets" /> Print sheets</label>
+      <label class="check"><input type="radio" bind:group={style} value="spots" data-testid="style-spots" /> Grains with spots</label>
       <label class="check"><input type="radio" bind:group={style} value="layout" data-testid="style-layout" /> Grains or areas</label>
       <label class="check"><input type="radio" bind:group={style} value="picklist" disabled={!hasPlucks} data-testid="style-picklist" /> Pick list</label>
     </div>
@@ -454,7 +526,7 @@
         <p class="faint small" data-testid="picklist-count">{result.items} rows · {result.pages.length} pages</p>
         <div class="two"><button onclick={pdf} disabled={exportBlocked} title={exportReason} data-testid="export-pdf">Save PDF</button><button onclick={browserPrint} disabled={exportBlocked} title={exportReason}>Print…</button></div>
       {/if}
-    {:else if style === 'sheets'}
+    {:else if isSheetsStyle(style)}
       <label class="field">Print
         <select aria-label="Print" bind:value={sheetMode} data-testid="sheet-mode" onchange={() => { sheets = null; whole = null; result = null; }}>
           <option value="grains">Grain sheets</option>
@@ -594,7 +666,7 @@
     {/if}
     {/if}
     </div>
-    {#if sheets && style === 'sheets' && sheetMode === 'grains' && editMode && editor.arrange}
+    {#if sheets && isSheetsStyle(style) && sheetMode === 'grains' && editMode && editor.arrange}
       <footer class="arrange-export" data-testid="arrange-footer">
         <p class="faint small" data-testid="print-quality" data-ready={qualityState?.ready??true}>{pending?'Rendering pieces':qualityState?.error?qualityState.error.message:qualityState?.ready||!qualityState?'Print quality ready':qualityCancelled?'Print quality paused; export resumes it.':`Preparing print quality: page ${Math.min(qualityState.next+1,qualityState.total)} of ${qualityState.total}`}</p>
         {@render qualityProgress()}
@@ -604,16 +676,19 @@
     {/if}
   </aside>
   <section class="preview" data-testid="layout-view">
-    {#if sheets && automaticPlan && editorControls && style === 'sheets' && sheetMode === 'grains'}
+    {#if sheets && automaticPlan && editorControls && isSheetsStyle(style) && sheetMode === 'grains'}
       {#key automaticPlan}
-        <StripEditor bind:this={stripEditor} onautomatic={()=>{if(editor.arrange){editor.arrange=false;editMode=false;}}} base={automaticPlan} result={sheets} {urls} controls={editorControls} {droppedNotice} {history} bind:editorState={editor} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
+        <StripEditor bind:this={stripEditor} onautomatic={()=>{if(editor.arrange){editor.arrange=false;editMode=false;}}} base={automaticPlan} result={sheets} {urls} controls={editorControls} {droppedNotice} {history} bind:editorState={editor} storedDropped={savedDrops.length} bind:page={pageIdx} enabled={editMode && !moveLabels && !app.readOnly} onresult={showSheets} onpending={v => pending = v} onchange={storeHistory} />
       {/key}
     {/if}
-    {#if result && urls[pageIdx] && !(editMode && sheets && style === 'sheets' && sheetMode === 'grains')}
+    {#if result && urls[pageIdx] && !(editMode && sheets && isSheetsStyle(style) && sheetMode === 'grains')}
       {@const pw = result.paper_mm[0] * PX_PER_MM}
       {@const ph = result.paper_mm[1] * PX_PER_MM}
-      <PanZoom bind:this={panzoom} w={pw} h={ph} fitKey="{pageIdx}/{urls[pageIdx]}" label="Page preview">
+      <PanZoom bind:this={panzoom} w={pw} h={ph} fitKey="{pageIdx}/{result.paper_mm.join(',')}" label="Page preview">
         <img class="page" src={urls[pageIdx]} alt="Page {pageIdx + 1}" width={pw} height={ph} data-testid="page" />
+        {#if style === 'spots' && moveLabels}
+          <SpotLabelOverlay report={labelReports.find(p => p.sheet === pageIdx + 1)} paper={result.paper_mm} pixelsPerMM={PX_PER_MM} onpin={savePin} />
+        {/if}
       </PanZoom>
       <div class="pager glass" data-ui>
         <button class="icon" disabled={pageIdx === 0} onclick={() => pageIdx--}>‹</button>

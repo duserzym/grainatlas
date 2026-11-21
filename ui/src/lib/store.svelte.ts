@@ -1,3 +1,4 @@
+import { readLabelOptions, labelUI } from './print-labels';
 import { printCache } from './print-cache';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout, resetLayoutStorage, type LayoutPrefs } from './layout-prefs';
 export { DEFAULT_LAYOUT, type LayoutPrefs } from './layout-prefs';
@@ -208,6 +209,8 @@ class AppState {
   checksRequested = $state(false);
   checksRan = $state(false);
   checkPrompt = $state<{ summary: string; answer: (proceed: boolean) => void } | null>(null);
+  private printLabelWrite = {};
+  printLabels = $state(readLabelOptions(null));
   spots = $state.raw<Spot[]>([]);
   overlays = $state<Record<string, Overlay>>({});
   /** This session's next run number; null = one above the project's (or sample's) highest. */
@@ -553,7 +556,7 @@ class AppState {
     }
     p.settings = $state.snapshot(this.settings) as Settings;
     const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
-    p['grainatlas_ui'] = { grains: grainMapWithoutBlankArtifacts(this.grains), spots: this.spots, labels: this.labels, tone: $state.snapshot(this.tone), overlays };
+    p['grainatlas_ui'] = { grains: grainMapWithoutBlankArtifacts(this.grains), spots: this.spots, labels: this.labels, tone: $state.snapshot(this.tone), overlays, ...labelUI($state.snapshot(this.printLabels)) };
     const adopted = $state.snapshot({ grainatlas_ui: {
       tone: (this.project.grainatlas_ui as { tone?: unknown } | undefined)?.tone,
       bundle_tone: (this.project.grainatlas_ui as { bundle_tone?: unknown } | undefined)?.bundle_tone,
@@ -580,6 +583,18 @@ class AppState {
     });
   }
 
+  /** Presentation-only changes never schedule sync work. Read-only views keep these in memory. */
+  persistPrintLabels() {
+    if (this.readOnly || this.loadingProject || this.storedCopy) return;
+    this.dirty = true;
+    const uuid = this.project?.uuid, path = this.projectPath?.path ?? null;
+    deferredWrites.enqueue(this.printLabelWrite, () => {
+      if (this.readOnly || this.loadingProject || this.storedCopy || this.project?.uuid !== uuid || (this.projectPath?.path ?? null) !== path) return;
+      const p = this.fullProject();
+      if (p) appStorage.track(this, 'project', () => persistProject(p, path));
+    });
+  }
+
   flushPersistence() { flushWrites(); }
 
   /** Restores UI-held parts of a saved project. */
@@ -598,6 +613,7 @@ class AppState {
     this.mountLabelsCount = null;
     this.checksRan = false;
     const ui = $state.snapshot(p['grainatlas_ui']) as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
+    this.printLabels = readLabelOptions(ui);
     if (ui?.overlays) this.overlays = ui.overlays;
     if (ui?.grains) this.grains = grainMapWithoutBlankArtifacts(ui.grains);
     if (ui?.spots) this.spots = ui.spots;

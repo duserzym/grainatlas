@@ -69,6 +69,12 @@ enum Cmd {
         /// Grain sheets: lines (default, mount order) or packed (fewer sheets).
         #[arg(long, value_name = "lines|packed", value_parser = parse_packing)]
         packing: Option<Packing>,
+        /// Draw the project's saved spots with automatic paper-space labels.
+        #[arg(long)]
+        spots: bool,
+        /// Label em size in paper millimetres; overrides the saved preference.
+        #[arg(long, requires = "spots", value_parser = parse_label_size)]
+        label_size: Option<f64>,
         /// Also write each sheet as SVG.
         #[arg(long)]
         svg: bool,
@@ -303,6 +309,8 @@ fn main() -> Result<()> {
             paper,
             scale,
             packing,
+            spots,
+            label_size,
             svg,
             title,
             lab,
@@ -340,7 +348,7 @@ fn main() -> Result<()> {
                 if no_grid {
                     p.grid = false;
                 }
-                whole::render(&project, &out, p, svg)?;
+                whole::render(&project, &out, p, svg, spots, label_size)?;
                 return Ok(());
             }
             let mut p: SheetParams = match params {
@@ -365,7 +373,7 @@ fn main() -> Result<()> {
             if let Some(lab) = lab {
                 p.lab = lab;
             }
-            render_sheets(&project, &out, p, svg, edits.as_deref())?;
+            render_sheets(&project, &out, p, svg, edits.as_deref(), spots, label_size)?;
         }
         Cmd::Batch(options) => {
             let (report, failed) = legacy::batch(options)?;
@@ -1030,7 +1038,7 @@ fn stitch(options: StitchOptions) -> Result<serde_json::Value> {
 }
 
 /// Only reads the saved project; exports always go outside its folder.
-fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits: Option<&Path>) -> Result<()> {
+fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits: Option<&Path>, spots: bool, label_size: Option<f64>) -> Result<()> {
     let folder = folder.canonicalize()?;
     let out = resolved_path(out)?;
     if out.starts_with(&folder) {
@@ -1131,12 +1139,17 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits
         (a.rec.id.clone(),grainatlas_core::project::image_edits::oriented_grains(&gs,a.img.image_transform()))
     }).collect();
     let plan = sheets::plan_sheets(&p, &areas, &grains, &own, &meta);
-    let edited = if let Some(file) = edits {
+    let mut edited = if let Some(file) = edits {
         let stored: sheets::PrintEdits = serde_json::from_slice(&std::fs::read(file).with_context(|| file.display().to_string())?)?;
         sheets::replay(&plan, &stored, &areas, &grains)
     } else { sheets::apply_edits(&plan, &[], &areas, &grains) };
     for dropped in &edited.dropped { eprintln!("edit {} dropped: {}", dropped.index, dropped.reason); }
     if !edited.problems.is_empty() { bail!("cannot export sheets: {}", edited.problems.iter().map(|p| p.message.as_str()).collect::<Vec<_>>().join("; ")); }
+    if spots {
+        let (spots, labels) = print_spots(&project, label_size)?;
+        edited.plan.print_spots = Some(spots);
+        edited.plan.print_labels = Some(labels);
+    }
     let mut r = sheets::render_plan(&edited.plan, &areas, &grains, &own);
     for area in &areas {
         for g in source_grains.get(&area.rec.id).into_iter().flatten().filter(|g| area.img.edits.is_some_and(|e| !e.visible(g.centroid_um))) {
@@ -1175,7 +1188,7 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits
         if Path::new(file)
             .file_name()
             .is_none_or(|n| Path::new(n) != Path::new(file))
-            || resolved_path(&out.join(file))?.starts_with(&folder)
+            || resolved_path(&out.join(file))?.parent() != Some(out.as_path())
         {
             bail!("export must be a file outside the project folder: {file}");
         }
@@ -1205,6 +1218,21 @@ fn render_sheets(folder: &Path, out: &Path, mut p: SheetParams, svg: bool, edits
         start.elapsed().as_secs_f64() * 1000.0
     );
     Ok(())
+}
+
+/// Read preferences and exact stored spot records; no project mutation or sync.
+fn print_spots(project: &Project, size: Option<f64>) -> Result<(Vec<grainatlas_core::spots::Spot>, grainatlas_core::layout::labels::Options)> {
+    let ui = project.extra.get("grainatlas_ui");
+    let spots = ui.and_then(|u| u.get("spots")).map(|v| serde_json::from_value(v.clone())).transpose().context("saved spots")?.unwrap_or_default();
+    let pins = ui.and_then(|u| u.get("print_label_pins")).map(|v| serde_json::from_value(v.clone())).transpose().context("saved print label pins")?.unwrap_or_default();
+    let size_mm = size.or_else(|| ui.and_then(|u| u.get("print_label_size_mm")).and_then(|v| v.as_f64())).unwrap_or_default();
+    Ok((spots, grainatlas_core::layout::labels::Options { size_mm, pins }))
+}
+fn parse_label_size(s: &str) -> std::result::Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && (1.6..=12.0).contains(&v) => Ok(v),
+        _ => Err("label size must be between 1.6 and 12 mm".into()),
+    }
 }
 
 /// Assemble level 0, including the smaller tiles at the right and bottom edges.
@@ -1414,6 +1442,17 @@ fn parse_packing(s: &str) -> std::result::Result<Packing, String> {
 mod packing_tests {
     use super::*;
 
+    #[test]
+    fn sheets_parse_spots_and_size() {
+        for layout in ["grains", "whole"] {
+            let cli=Cli::try_parse_from(["grainatlas","sheets","mount-a.grainatlas","--out","print-a","--spots","--label-size","3","--svg","--layout",layout]).unwrap();
+            assert!(matches!(cli.cmd,Cmd::Sheets{spots:true,label_size:Some(3.0),svg:true,..}));
+        }
+        assert!(Cli::try_parse_from(["grainatlas","sheets","mount-a.grainatlas","--out","print-a","--label-size","3"]).is_err());
+        for size in ["NaN","0","13"] {
+            assert!(Cli::try_parse_from(["grainatlas","sheets","mount-a.grainatlas","--out","print-a","--spots","--label-size",size]).is_err());
+        }
+    }
     #[test]
     fn sheets_and_stitch_parse_packing_and_reject_unknown_modes() {
         for mode in ["lines", "packed"] {

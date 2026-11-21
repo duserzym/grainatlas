@@ -59,7 +59,7 @@ function oldFullProject() {
     if (segment) a.params.segment = { ...JSON.parse(JSON.stringify(segment)), signal: segment.signal ?? null };
   }
   p.settings = JSON.parse(JSON.stringify(app.settings));
-  p.grainatlas_ui = { grains: grainMapWithoutBlankArtifacts(JSON.parse(JSON.stringify(app.grains))), spots: JSON.parse(JSON.stringify(app.spots)), labels: JSON.parse(JSON.stringify(app.labels)), tone: JSON.parse(JSON.stringify(app.tone)), overlays: Object.fromEntries(Object.entries(app.overlays).map(([k, o]) => [k, { ...JSON.parse(JSON.stringify(o)), url: null }])) };
+  p.grainatlas_ui = { grains: grainMapWithoutBlankArtifacts(JSON.parse(JSON.stringify(app.grains))), spots: JSON.parse(JSON.stringify(app.spots)), labels: JSON.parse(JSON.stringify(app.labels)), tone: JSON.parse(JSON.stringify(app.tone)), overlays: Object.fromEntries(Object.entries(app.overlays).map(([k, o]) => [k, { ...JSON.parse(JSON.stringify(o)), url: null }])), print_label_size_mm: 'auto' };
   saveBundleTones(p, app.bundle && JSON.parse(JSON.stringify(app.bundle)), JSON.parse(JSON.stringify(app.params)), JSON.parse(JSON.stringify(app.tone)), JSON.parse(JSON.stringify(app.project)));
   return p;
 }
@@ -704,19 +704,36 @@ test('background bundle avoids the modal, preserves export time and verifies eve
   const bytes = Buffer.from('Invented image bytes');
   const hash = await sha256Hex(bytes);
   let corrupt = false, options;
-  const atlas = { project_id: 'synthetic', files: [{ path: 'tile.webp', size: bytes.length, sha256: hash }] };
-  const fake = { fullProject: () => structuredClone(source), stitched: {}, link: { nasRoot: '', quality: 100 },
+  const local = structuredClone(source);
+  local.grainatlas_ui.print_label_pins = { 'spot-1/band/0': [2, 3] };
+  local.grainatlas_ui.print_label_size_mm = 3;
+  const fake = { fullProject: () => structuredClone(local), stitched: {}, link: { nasRoot: '', quality: 100 },
     run: () => { throw new Error('A background bundle must not open the modal'); },
     core: Promise.resolve({ atlasZip: async (_p, opts) => {
+      assert.equal(_p.grainatlas_ui.print_label_pins, undefined);
+      assert.equal(_p.grainatlas_ui.print_label_size_mm, undefined);
       options = opts;
-      return syntheticZip([['atlas.json', Buffer.from(JSON.stringify(atlas))], ['tile.webp', corrupt ? Buffer.alloc(bytes.length) : bytes]]);
+      const projectBytes = Buffer.from(JSON.stringify(_p));
+      const atlas = { project_id: 'synthetic', files: [
+        { path: 'project.json', size: projectBytes.length, sha256: await sha256Hex(projectBytes) },
+        { path: 'tile.webp', size: bytes.length, sha256: hash },
+      ] };
+      return syntheticZip([['atlas.json', Buffer.from(JSON.stringify(atlas))], ['project.json', projectBytes], ['tile.webp', corrupt ? Buffer.alloc(bytes.length) : bytes]]);
     } }),
   };
   const first = await backgroundBundle(fake, 'synthetic', '2026-01-01T00:00:00Z');
   const second = await backgroundBundle(fake, 'synthetic', options.exported);
   assert.equal(first.atlasSha256, second.atlasSha256);
   assert.equal(options.exported, '2026-01-01T00:00:00Z');
-  assert.equal(first.files.length, 2);
+  assert.equal(first.files.length, 3);
+  const published = JSON.parse(new TextDecoder().decode(first.files.find(f => f.path === 'project.json').bytes));
+  assert.equal(Object.hasOwn(published.grainatlas_ui, 'print_label_pins'), false);
+  assert.equal(Object.hasOwn(published.grainatlas_ui, 'print_label_size_mm'), false);
+  assert.deepEqual(published.grainatlas_ui.spots, local.grainatlas_ui.spots);
+  assert.deepEqual(first.project.grainatlas_ui.print_label_pins, local.grainatlas_ui.print_label_pins);
+  assert.equal(first.project.grainatlas_ui.print_label_size_mm, 3);
+  assert.deepEqual(JSON.parse(JSON.stringify(local)).grainatlas_ui.print_label_pins, { 'spot-1/band/0': [2, 3] });
+  assert.equal(JSON.parse(JSON.stringify(local)).grainatlas_ui.print_label_size_mm, 3);
   corrupt = true;
   await assert.rejects(backgroundBundle(fake, 'synthetic', options.exported), /checksum differs: tile.webp/);
 });
@@ -1025,3 +1042,94 @@ for (const fallback of [false, true]) {
     assert.equal(app.error, null); assert.equal(app.project, null); assert.equal(app.cancelTask, null);
   });
 }
+test('real AppState saves label pins locally and reopening restores them without sync work', async () => {
+  const { labelUI, pinLabel, readLabelOptions } = await import('./print-labels.ts');
+  const { elementsOf } = await import('./sync.ts');
+  const { elementHash } = await import('./sync-hash.ts');
+  app.project = structuredClone(source); app.adopt(app.project); app.viewMode = false; app.remote = null; app.loadingProject = false; app.storedCopy = null;
+  const bytes = canonicalJson(elementsOf(app.fullProject()));
+  const hashes = await Promise.all(Object.values(elementsOf(app.fullProject())).map(elementHash));
+  const label = { spot_id: 'spot-1', occurrence: 'band/0', anchor_mm: [20, 30] };
+  const track = app.sync.track, image = app.sync.imagesEdited;
+  app.sync.track = () => { throw Error('UI pins must not schedule sync'); };
+  app.sync.imagesEdited = () => { throw Error('UI pins must not change image hashes'); };
+  try {
+    for (const position of [[42, 53], [46, 57], null]) {
+      app.printLabels = pinLabel(app.printLabels, label, position);
+      app.persistPrintLabels(); flushWrites();
+      const saved = JSON.parse(JSON.stringify(app.fullProject()));
+      assert.equal(canonicalJson(elementsOf(saved)), bytes);
+      assert.deepEqual(await Promise.all(Object.values(elementsOf(saved)).map(elementHash)), hashes);
+      assert.deepEqual(readLabelOptions(saved.grainatlas_ui), readLabelOptions(labelUI(app.printLabels)));
+      app.adopt(saved);
+      assert.deepEqual(app.printLabels, readLabelOptions(saved.grainatlas_ui));
+    }
+    app.viewMode = true;
+    const writes = saved.length;
+    app.printLabels = pinLabel(app.printLabels, label, [70, 80]); app.persistPrintLabels(); flushWrites();
+    assert.equal(saved.length, writes);
+    assert.deepEqual(app.printLabels.pins['spot-1/band/0'], [50, 50]);
+  } finally { app.sync.track = track; app.sync.imagesEdited = image; app.viewMode = false; app.adopt(structuredClone(source)); }
+});
+
+test('fixed and Auto label sizes round-trip with pins in project files and clean database copies', async t => {
+  const { editCopy } = await import('./remote.ts');
+  const { loadProjectFile } = await import('./actions.ts');
+  const { writeDraft } = await import('./drafts.ts');
+  const { savedProject } = await import('./deeplink.ts');
+  const { readLabelOptions } = await import('./print-labels.ts');
+  const oldCore = app.core, oldPkg = app.pkg;
+  t.after(() => {
+    flushWrites(); app.core = oldCore; app.pkg = oldPkg; app.remote = null; app.projectPath = null;
+    app.project = structuredClone(source); app.adopt(app.project);
+  });
+  let loaded;
+  app.pkg = null; // This bundle fixture has no raw package to re-render on load.
+  app.core = Promise.resolve({ blank: async () => {}, loadProject: async json => { loaded = JSON.parse(json); }, projectJson: async () => JSON.stringify(loaded) });
+  t.mock.method(app, 'run', async (_title, work) => work());
+  t.mock.method(app.sync, 'check', async () => {});
+  t.mock.method(app.sync, 'editBase', async () => {});
+  t.mock.method(app.sync, 'track', () => {});
+  t.mock.method(app.sync, 'imagesEdited', () => {});
+  for (const kind of ['project file', 'database copy']) {
+    for (const size_mm of [3, 'auto']) {
+      const p = structuredClone(source);
+      p.uuid = `label-roundtrip-${kind === 'project file' ? 'file' : 'database'}-${size_mm}`;
+      p.package.name = p.uuid;
+      app.project = p; app.adopt(p); app.remote = null; app.bundle = null;
+      app.viewMode = false; app.loadingProject = false; app.storedCopy = null; app.projectPath = null;
+      // Start Auto from a saved fixed size, so a missing/reset field cannot pass.
+      app.printLabels = { size_mm: size_mm === 'auto' ? 3 : 'auto', pins: {} };
+      app.persistPrintLabels(); flushWrites();
+      const preferences = { size_mm, pins: { 'spot-1/band/0': [22, 23] } };
+      app.printLabels = structuredClone(preferences);
+      app.persistPrintLabels(); flushWrites();
+      const local = savedProject(p.package.name);
+      assert.deepEqual(readLabelOptions(local.grainatlas_ui), preferences);
+      assert.equal(local.grainatlas_ui.print_label_size_mm, size_mm);
+      const file = JSON.parse(JSON.stringify(app.fullProject()));
+      assert.deepEqual(readLabelOptions(file.grainatlas_ui), preferences);
+      app.project = structuredClone(p); app.adopt(app.project);
+      if (kind === 'project file') {
+        // Exercise the actual local file load path, including stripping UI for
+        // the core and adopting it again in the store. No server bundle involved.
+        await loadProjectFile(new File([JSON.stringify(file)], 'Synthetic.gaproj', { type: 'application/json' }), app, true);
+        assert.equal(loaded.grainatlas_ui, undefined);
+      } else {
+        // A clean element outbox must still recover local presentation, without
+        // adopting the old registered rows from the full saved project.
+        local.grainatlas_ui.spots = [{ id: 'stale-local-spot' }];
+        storage.set(`grainatlas.project.${p.package.name}`, JSON.stringify(local));
+        writeDraft({ uuid: p.uuid, name: p.name, server: 'https://labels.test', mount: 'mount',
+          base_revision: 1, base: { spots: [], grains: [], labels: [] }, pending: null,
+          changes: { spots: 0, grains: 0, labels: 0 }, pixels_changed: false,
+          updated_at: '2026-01-01T00:00:00Z', source_keys: [`grainatlas.project.${p.package.name}`] });
+        app.remote = { server: 'https://labels.test', projectId: p.uuid, readOnly: true, atlas: { name: 'Synthetic' } };
+        await editCopy(app); flushWrites();
+        assert.deepEqual(app.spots, p.grainatlas_ui.spots);
+      }
+      assert.deepEqual(app.printLabels, preferences, `${kind}, ${size_mm}`);
+      assert.deepEqual(readLabelOptions(app.fullProject().grainatlas_ui), preferences);
+    }
+  }
+});

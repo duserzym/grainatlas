@@ -6,6 +6,7 @@
 
 pub mod pdf;
 pub mod sheets;
+pub mod labels;
 pub mod whole;
 
 use std::collections::BTreeMap;
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scale::round_bar_um;
 use crate::segment::Grain;
-use crate::spots::{Label, Spot, SpotKind};
+use crate::spots::{Label, Spot};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Paper {
@@ -269,7 +270,7 @@ fn layout_pages(p: &LayoutParams, areas: &[AreaImage], grains: &BTreeMap<String,
         .iter()
         .enumerate()
         .filter(|(pi, _)| only.is_none_or(|selected| selected == *pi))
-        .map(|(pi, list)| page_svg(p, page, um_per_mm, pi + 1, n, list, &placed_items, areas, spots, labels, image))
+        .map(|(pi, list)| page_svg(p, page, um_per_mm, pi + 1, n, list, &placed_items, areas, spots, labels, grains, image))
         .collect();
     LayoutResult { pages: svgs, um_per_mm, items: placed_items.len(), paper_mm: [page.w_mm, page.h_mm] }
 }
@@ -293,7 +294,7 @@ fn esc(s: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages: usize, list: &[(usize, f64, f64)], items: &[Item], areas: &[AreaImage], spots: &[Spot], labels: &[Label], image: &impl Fn(&AreaImage, [f64; 4], f64) -> Vec<u8>) -> String {
+fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages: usize, list: &[(usize, f64, f64)], items: &[Item], areas: &[AreaImage], spots: &[Spot], labels: &[Label], grains: &BTreeMap<String,Vec<Grain>>, image: &impl Fn(&AreaImage, [f64; 4], f64) -> Vec<u8>) -> String {
     let (w, h) = (page.w_mm, page.h_mm);
     let ox = p.margin_mm;
     let oy = p.margin_mm + HEADER_MM;
@@ -302,6 +303,7 @@ fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages
         s,
         r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}" font-family="DejaVu Sans, sans-serif"><rect width="{w}" height="{h}" fill="white"/>"#
     );
+    let mut spot_page=labels::Page::new([ox,oy,w-ox,h-p.margin_mm-10.0]);
     // Header.
     let title = if p.title.is_empty() { "grainatlas" } else { &p.title };
     let _ = write!(s, r#"<text x="{ox}" y="{}" font-size="4.2" fill="black">{}</text>"#, p.margin_mm + 5.0, esc(title));
@@ -333,33 +335,9 @@ fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages
         let m=a.image_transform();
         let tr_mount=|ux:f64,uy:f64| {let p=crate::project::image_edits::apply(m,[ux,uy]);tr(p[0],p[1])};
         if p.show_spots {
-            for sp in spots.iter().filter(|sp| sp.area_id == a.id) {
-                let centre=crate::project::image_edits::apply(m,[sp.x_um,sp.y_um]);
-                let inside = centre[0] >= it.rect[0] && centre[0] <= it.rect[2] && centre[1] >= it.rect[1] && centre[1] <= it.rect[3] && a.edits.is_none_or(|e| e.visible([sp.x_um,sp.y_um]));
-                if !inside {
-                    continue;
-                }
-                let (cx, cy) = tr_mount(sp.x_um, sp.y_um);
-                match (sp.kind, sp.x2_um, sp.y2_um) {
-                    (SpotKind::Line, Some(x2), Some(y2)) => {
-                        let (ex, ey) = tr_mount(x2, y2);
-                        let _ = write!(s, r##"<line x1="{cx:.3}" y1="{cy:.3}" x2="{ex:.3}" y2="{ey:.3}" stroke="#3fd3a4" stroke-opacity="0.5" stroke-width="{:.3}" stroke-linecap="round"/>"##, sp.diameter_um / um_per_mm);
-                    }
-                    (SpotKind::Raster, Some(x2), Some(y2)) => {
-                        if a.edits.is_some() {
-                            let points=[[sp.x_um,sp.y_um],[x2,sp.y_um],[x2,y2],[sp.x_um,y2]].map(|p| {let (x,y)=tr_mount(p[0],p[1]);format!("{x:.3},{y:.3}")}).join(" ");
-                            let _=write!(s,r##"<polygon points="{points}" fill="none" stroke="#cc79a7" stroke-width="0.25"/>"##);
-                        } else {
-                            let (ex, ey) = tr_mount(x2, y2);
-                            let _ = write!(s, r##"<rect x="{cx:.3}" y="{cy:.3}" width="{:.3}" height="{:.3}" fill="none" stroke="#cc79a7" stroke-width="0.25"/>"##, ex - cx, ey - cy);
-                        }
-                    }
-                    _ => {
-                        let _ = write!(s, r##"<circle cx="{cx:.3}" cy="{cy:.3}" r="{:.3}" fill="none" stroke="#ff8c42" stroke-width="0.25"/>"##, sp.diameter_um / 2.0 / um_per_mm);
-                    }
-                }
-                let _ = write!(s, r##"<text x="{:.3}" y="{:.3}" font-size="1.8" fill="#ffd27a" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text>"##, cx + sp.diameter_um / 2.0 / um_per_mm + 0.5, cy + 0.6, esc(&sp.name));
-            }
+            let spot_image=labels::Image {area:a.id,occurrence:format!("item/{i}"),crop:it.rect,display_to_paper:[1.0/um_per_mm,0.0,0.0,1.0/um_per_mm,x-it.rect[0]/um_per_mm,iy-it.rect[1]/um_per_mm],mount_to_display:m,edits:a.edits,repeated:vec![]};
+            spot_page.image(&spot_image,spots);
+            for g in grains.get(a.id).into_iter().flatten() {spot_page.grain(&spot_image,&g.polygon_um);}
             for l in labels.iter().filter(|l| l.area_id == a.id) {
                 let (lx, ly) = tr_mount(l.x_um, l.y_um);
                 let _ = write!(s, r##"<text x="{lx:.3}" y="{ly:.3}" font-size="2" fill="white" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text>"##, esc(&l.text));
@@ -401,6 +379,7 @@ fn page_svg(p: &LayoutParams, page: Paper, um_per_mm: f64, page_no: usize, pages
     let _ = write!(s, r#"<path d="M{ux} {fy} h{ul:.3} M{ux} {} v2 M{:.3} {} v2" stroke="black" stroke-width="0.4" id="image-bar"/><text x="{ux}" y="{}" font-size="2.6" fill="black">{} µm (sample)</text>"#, fy - 1.0, ux + ul, fy - 1.0, fy + 4.0, fmt_num(ub));
     let _ = write!(s, r#"<text x="{}" y="{}" font-size="3" fill="black" text-anchor="end">{page_no} / {pages}</text>"#, w - p.margin_mm, fy + 3.0);
     s.push_str("</svg>");
+    if p.show_spots { labels::decorations(&s,&mut spot_page); labels::render(&mut s,spot_page,&labels::Options::default(),page_no); }
     s
 }
 

@@ -364,6 +364,7 @@ export interface BandRecord {
 
 /** The `print_sheet` frame: paper sheet ↔ mosaic (not the laser stage registration). */
 export interface PrintRegistration {
+  spot_labels?: SpotLabelReport[];
   frame: 'print_sheet';
   layout?: 'whole_area' | 'lines' | 'packed' | 'edited' | '';
   grid_step_um?: number | null;
@@ -392,7 +393,8 @@ export interface PrintRegistration {
   bands: BandRecord[];
 }
 
-export interface SheetStats { sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; forced_cuts: number; worst_repeated_fraction: number; clusters: number; strays: number; bands_outside_body: number; bands_overlapping?: number; fill: { band_area: number; line_width: number; repeated: number; empty_epoxy: number }; header_mm: [number, number]; height_budget: { sheet: number; header_mm2: number; footer_margins_mm2: number; labels_notes_mm2: number; band_mm2: number; empty_epoxy_mm2: number; blank_below_mm: number; blank_right_mm2: number; other_line_mm2: number; blank_mm2?: number }[] }
+export interface SheetStats {
+  spot_labels?: SpotLabelReport[]; sheets: number; bands: number; grains: number; duplicates: number; filtered: number; artifacts: number; stripped: number; strip_refused: number; grains_cut: number; grains_twice: number; grains_unmarked: number; isolated: number; cuts: number; forced_cuts: number; worst_repeated_fraction: number; clusters: number; strays: number; bands_outside_body: number; bands_overlapping?: number; fill: { band_area: number; line_width: number; repeated: number; empty_epoxy: number }; header_mm: [number, number]; height_budget: { sheet: number; header_mm2: number; footer_margins_mm2: number; labels_notes_mm2: number; band_mm2: number; empty_epoxy_mm2: number; blank_below_mm: number; blank_right_mm2: number; other_line_mm2: number; blank_mm2?: number }[] }
 
 /** One detection and the area that owns the grain. */
 export interface GrainOwner {
@@ -409,7 +411,16 @@ export interface GrainOwner {
 
 export interface Ownership { grains: GrainOwner[]; samples: { sample: string; areas: string[] }[] }
 
+export interface SpotLabelOptions { size_mm: number | 'auto'; pins: Record<string, [number, number]> }
+export interface SpotLabelReport {
+  sheet: number;
+  size_mm: number;
+  counts: { anchors: number; occurrences: number; next_to_spot: number; with_ticks: number; with_leaders: number; pinned: number; pinned_overlapping?: number; context_omitted: number; ambiguous?: number; still_overlapping: number };
+  labels: { spot_id: string; occurrence: string; name: string; anchor_mm: [number, number]; box_mm: SheetRect; leader: [number, number][]; leader_path: string; connector_tick?: boolean; last_resort?: boolean; pinned: boolean; repeated: boolean }[];
+}
+
 export interface WholeParams {
+  print_spots?: Spot[]; print_labels?: SpotLabelOptions; print_grains?: Grain[];
   paper: string;
   orientation: 'auto' | 'landscape' | 'portrait';
   margin_mm: number;
@@ -429,6 +440,7 @@ export interface WholeResult {
   pages: string[];
   registration: PrintRegistration;
   stats: {
+    spot_labels?: SpotLabelReport[];
     sheets: number; orientation: string; um_per_mm: number; minimum_um_per_mm: number;
     image_rect_mm: number[]; gutter_rect_mm: number[]; embedded_px: number[]; embedded_dpi: number[];
     source_pixel_um: number; smallest_detail_300_um: number; smallest_detail_600_um: number;
@@ -460,7 +472,7 @@ export interface EditSummary { moves: number; crops: number; splits: number; joi
 export interface SheetBand { key: StripKey; offset_mm: number; grains: string[]; mosaic_rect_um: SheetRect; core_um: SheetRect; cuts: [number, number][]; cut_sources: string[]; gap_after_um: number | null; repeated_um?: SheetRect[] }
 export interface SheetStrip { transform?: { scale: number; rotation_deg: number }; key: StripKey; sheet: number; origin_mm: [number, number]; size_mm: [number, number]; sample: string; area: string; row: number; cont: boolean; labelled: boolean; label: string; bands: SheetBand[]; hidden?: boolean; neighbours?: StripKey[]; shares_gap_with?: StripKey | null }
 export interface SheetPlan {
-  params: SheetParams; print_spots?: Spot[]; meta: Record<string, unknown>; paper_mm: [number, number]; um_per_mm: number;
+  params: SheetParams; print_spots?: Spot[]; print_labels?: SpotLabelOptions; meta: Record<string, unknown>; paper_mm: [number, number]; um_per_mm: number;
   auto_scale: PrintRegistration['auto_scale'] | null; sheet_bodies: PrintRegistration['sheet_bodies']; strips: SheetStrip[];
   lines: { sheet: number; origin_mm: [number, number]; band_height_mm: number; right_mm: number; strips: number[] }[] | null;
   targets: Record<string, string[]>; strays: PrintRegistration['strays']; cut_stats: SheetStats; edit_summary?: EditSummary; left_off?: LeftOff[];

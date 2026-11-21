@@ -98,7 +98,7 @@
         const version = requested;
         const rendered = history.edits;
         const edits = $state.snapshot(rendered) as StripEdit[];
-        const r = await app.run('Rendering strips', () => core.printPlanRender({ ...$state.snapshot(base) as SheetPlan, print_spots: $state.snapshot(app.spots) }, edits, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.tone) as Record<string, ToneParams>));
+        const r = await app.run('Rendering strips', () => core.printPlanRender($state.snapshot(base) as SheetPlan, edits, $state.snapshot(app.grains) as Record<string, Grain[]>, $state.snapshot(app.tone) as Record<string, ToneParams>));
         if (disposed) return;
         if (r?.dropped?.length) {
           history.reject(rendered, r.dropped.map(d => d.index));

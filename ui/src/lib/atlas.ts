@@ -3,6 +3,7 @@ import { oversightSession } from './oversight';
 import { neutralTone, storedBundleTones } from './bundle-tone';
 import { canWrite } from './presentation';
 import { keepPrintEdits } from './strip-edit';
+import { withoutPrintLabelUI } from './print-labels';
 // Atlas bundles (upblab/docs/WORKFLOW.md section 3.1): save as a `<project_id>.atlas/`
 // folder or a zip, publish to UPbDB. The core writes the bytes (identical in the browser
 // and the desktop app); this file only moves them.
@@ -78,7 +79,7 @@ async function bundleZip(app: AppState, projectUuid?: string, options?: BundleOp
   if (!p) return null;
   if (projectUuid) p.uuid = projectUuid;
   const core = await app.core;
-  const build = () => core.atlasZip(p, options ?? bundleOptions(p, app));
+  const build = () => core.atlasZip(background ? withoutPrintLabelUI(p) : p, options ?? bundleOptions(p, app));
   const zip = background ? await build() : await app.run('Building the atlas bundle', build);
   return zip ? { project: p, zip } : null;
 }

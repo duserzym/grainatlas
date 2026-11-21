@@ -329,6 +329,8 @@ pub struct SheetArea<'a> {
 /// The `print_sheet` frame: paper sheet ↔ grainatlas mosaic.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PrintRegistration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot_labels: Option<Vec<super::labels::Report>>,
     #[serde(default)]
     pub project_uuid: Option<uuid::Uuid>,
     /// Absolute saved-project path on native hosts; empty for an unsaved/browser project.
@@ -451,6 +453,8 @@ pub struct BandGrain {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct SheetStats {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spot_labels: Option<Vec<super::labels::Report>>,
     pub sheets: usize,
     pub bands: usize,
     pub grains: usize,
@@ -539,6 +543,8 @@ pub struct SheetResult {
 /// whole strips without changing their bands; optional lines hold only legacy line data.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SheetPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print_labels: Option<super::labels::Options>,
     pub params: SheetParams,
     /// Read-only annotation snapshot. It never changes registered positions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1456,7 +1462,7 @@ fn place_lines(p: &SheetParams, areas: &[SheetArea], meta: &SheetMeta, cut: CutS
         }
     }
     let targets = areas.iter().zip(printed).map(|(a, gs)| (a.rec.id.clone(), gs.iter().map(|g| g.id).collect())).collect();
-    SheetPlan { print_spots: None, params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats, edit_summary: None, left_off: Vec::new() }
+    SheetPlan { print_labels: None, print_spots: None, params: p.clone(), meta: meta.clone(), paper_mm: [page.w_mm, page.h_mm], um_per_mm: k, auto_scale: auto, sheet_bodies: bodies, strips, lines: Some(lines), targets, strays, cut_stats: stats, edit_summary: None, left_off: Vec::new() }
 }
 
 /// Place the plan's strips around separate taken rectangles. The public packer also
@@ -1510,16 +1516,14 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     let (_, spots_off) = key_spots(&p.spot_sizes_um, k);
     let mut stats = plan.cut_stats.clone();
     let printed: Vec<Vec<&Grain>> = areas.iter().map(|a| plan.targets[&a.rec.id].iter().map(|id| grains[&a.rec.id].iter().find(|g| g.id == *id).expect("plan target in source grains")).collect()).collect();
-    // Index disposable display positions; the plan retains original mount coordinates.
-    let images: BTreeMap<_,_> = areas.iter().map(|a| (a.rec.id.as_str(), &a.img)).collect();
-    let mut spots_by_area: BTreeMap<&str,Vec<(&crate::spots::Spot,[f64;2])>> = BTreeMap::new();
-    for spot in plan.print_spots.as_deref().unwrap_or(&[]) {
-        let Some(img)=images.get(spot.area_id.as_str()) else {continue;};
-        let p=[spot.x_um,spot.y_um];
-        if img.edits.is_some_and(|e|!e.visible(p)) {continue;}
-        spots_by_area.entry(&spot.area_id).or_default().push((spot,arrange::point(img.image_transform(),p)));
+    // Display-only x index, built once rather than scanning every project spot
+    // for every band. Records and registration stay in their original frame.
+    let mut spot_index:BTreeMap<&str,Vec<(&crate::spots::Spot,[f64;2])>>=BTreeMap::new();
+    if let Some(spots)=&plan.print_spots {
+        let images:BTreeMap<_,_>=areas.iter().map(|a|(a.rec.id.as_str(),&a.img)).collect();
+        for spot in spots {if let Some(image)=images.get(spot.area_id.as_str()) {spot_index.entry(&spot.area_id).or_default().push((spot,arrange::point(image.image_transform(),[spot.x_um,spot.y_um])));}}
+        for spots in spot_index.values_mut(){spots.sort_by(|a,b|a.1[0].total_cmp(&b.1[0]));}
     }
-    for spots in spots_by_area.values_mut() { spots.sort_by(|a,b|a.1[0].total_cmp(&b.1[0])); }
     let runs: Vec<Run> = plan.strips.iter().map(|r| {
         let ai = areas.iter().position(|a| a.rec.id == r.area).expect("plan area in source areas");
         let pieces = r.bands.iter().map(|q| Piece {
@@ -1579,6 +1583,7 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
     }
 
     let mut reg = PrintRegistration {
+        spot_labels: None,
         project_uuid: None,
         project_path: String::new(),
         frame: "print_sheet".into(),
@@ -1722,7 +1727,6 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
                 }
                 if let Some(t) = strip.transform {
                     arrange_annotations(&mut s, q, [px, iy], k, t, &a.img);
-                    arrange_spots(&mut s, spots_by_area.get(strip.area.as_str()).map_or(&[],Vec::as_slice), q, [px,iy], k, t.scale, j, &a.img);
                 }
                 if let Some(gap) = q.gap_after_um {
                     let gx = px + pw + PIECE_GAP_MM / 2.0;
@@ -1815,6 +1819,35 @@ pub fn render_plan_with_images(plan: &SheetPlan, areas: &[SheetArea], grains: &B
             );
         }
         s.push_str("</svg>");
+        if plan.print_spots.is_some() {
+            let mut labels = super::labels::Page::new(plan.sheet_bodies[pi].body_rect_mm);
+            for (_,strip) in &pg {
+                let area = areas.iter().find(|a| a.rec.id == strip.area).expect("plan area");
+                for band in &strip.bands {
+                    let tr = arrange::band_transform(strip,band,k).mount_to_paper;
+                    let occurrence = serde_json::to_string(&(&band.key.area,&band.key.grains_hash,band.key.split)).expect("band key");
+                    let image = super::labels::Image { area:&strip.area, occurrence, crop:band.mosaic_rect_um, display_to_paper:tr, mount_to_display:area.img.image_transform(), edits:area.img.edits, repeated:band.repeated_um.clone().unwrap_or_else(|| {
+                        reg.bands.iter().find(|b| b.sheet==pi+1 && b.area==strip.area && b.mosaic_rect_um==band.mosaic_rect_um).map(|b|b.repeated_um.clone()).unwrap_or_default()
+                    }) };
+                    let candidates=spot_index.get(strip.area.as_str()).map_or(&[][..],Vec::as_slice);
+                    let first=candidates.partition_point(|(_,p)|p[0]<band.mosaic_rect_um[0]);
+                    let last=candidates.partition_point(|(_,p)|p[0]<=band.mosaic_rect_um[2]);
+                    labels.image(&image,candidates[first..last].iter().map(|(spot,_)|*spot));
+                    for grain in grains.get(&strip.area).into_iter().flatten() {
+                        if intersects(grain.bbox_um,band.mosaic_rect_um) {
+                            labels.grain(&image,&grain.polygon_um);
+                        }
+                    }
+                }
+            }
+            super::labels::decorations(&s,&mut labels);
+            // Legacy callers passed text sizes in piece coordinates. Retain their
+            // minimum while explicit display options use the upright paper size.
+            let options=plan.print_labels.clone().unwrap_or_else(||super::labels::Options { size_mm:plan.strips.iter().filter_map(|s|s.transform).map(|t|2.116667/t.scale).fold(2.4,f64::max),..Default::default() });
+            let report=super::labels::render(&mut s,labels,&options,pi+1);
+            reg.spot_labels.get_or_insert_with(Vec::new).push(report.clone());
+            stats.spot_labels.get_or_insert_with(Vec::new).push(report);
+        }
         svgs.push(s);
     }
     if image_area > 0.0 {
@@ -2405,30 +2438,4 @@ fn arrange_annotations(s: &mut String, q: &Piece, origin: [f64;2], k: f64, t: ar
         let label=img.edits.map_or_else(||format!("mount +y · {}°",t.rotation_deg),|e|format!("mount +y · paper {}° · image {}°{}{}",t.rotation_deg,e.rotate_deg,if e.flip_h {" H"} else {""},if e.flip_v {" V"} else {""}));
         let _ = write!(s,r#"<g data-orientation="{}" stroke="white" fill="white"><path d="M{gx} {} L{tx} {ty} M{} {} L{tx} {ty} L{} {}" fill="none" stroke-width="0.4"/><text x="{}" y="{}" font-size="{font}" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text></g>"#,t.rotation_deg,y+3.0,tx-2.0*m[2]-1.5*m[0],ty-2.0*m[3]-1.5*m[1],tx-2.0*m[2]+1.5*m[0],ty-2.0*m[3]+1.5*m[1],gx+2.0,y+5.0,esc(&label));
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn arrange_spots(s:&mut String, spots:&[(&crate::spots::Spot,[f64;2])], q:&Piece, origin:[f64;2], k:f64, scale:f64, index:usize, img:&AreaImage) {
-    let [x,y]=origin;
-    let font=2.5_f64.max(2.116667/scale);
-    let _ = write!(s,r#"<clipPath id="arrange-spots-{index}"><rect x="{x}" y="{y}" width="{}" height="{}"/></clipPath><g clip-path="url(#arrange-spots-{index})" fill="none" stroke="white" stroke-width="0.3">"#,q.w(k),q.h(k));
-    let first=spots.partition_point(|(_,p)|p[0]<q.rect[0]);let last=spots.partition_point(|(_,p)|p[0]<=q.rect[2]);
-    let image=img.image_transform();
-    let paper=|p:[f64;2]| {let p=arrange::point(image,p);[x+(p[0]-q.rect[0])/k,y+(p[1]-q.rect[1])/k]};
-    for (spot,p) in spots[first..last].iter().filter(|(_,p)|p[1]>=q.rect[1] && p[1]<=q.rect[3]) {
-        let sx=x+(p[0]-q.rect[0])/k;let sy=y+(p[1]-q.rect[1])/k;
-        let radius=spot.diameter_um/k/2.0;
-        let end=[spot.x2_um.unwrap_or(spot.x_um),spot.y2_um.unwrap_or(spot.y_um)];
-        let [ex,ey]=paper(end);
-        match spot.kind {
-            crate::spots::SpotKind::Spot => {let _=write!(s,r#"<circle cx="{sx}" cy="{sy}" r="{radius}"/>"#);}
-            crate::spots::SpotKind::Line => {let _=write!(s,r#"<path d="M{sx} {sy} L{ex} {ey}"/>"#);}
-            crate::spots::SpotKind::Raster => {
-                let points=[[spot.x_um,spot.y_um],[end[0],spot.y_um],end,[spot.x_um,end[1]]].map(paper);
-                let _=write!(s,r#"<polygon points="{}"/>"#,points.iter().map(|p|format!("{},{}",p[0],p[1])).collect::<Vec<_>>().join(" "));
-            }
-        }
-        let _=write!(s,r#"<text data-spot-label="{}" x="{}" y="{}" font-size="{font}" fill="white" stroke="black" stroke-width="0.25" paint-order="stroke">{}</text>"#,spot.id,sx+radius+0.8,sy,esc(&spot.name));
-    }
-    let _=write!(s,"</g>");
 }

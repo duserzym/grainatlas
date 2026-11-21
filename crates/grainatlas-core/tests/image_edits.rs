@@ -344,7 +344,9 @@ fn arranged_cropped_piece_rescales_rotates_and_maps_paper_back_to_mount() {
         let params=json!({"um_per_mm":4,"packing":"packed","min_cluster_grains":0,"min_cut_grains":1,"min_grain_um":0,"enhance":{"denoise":false,"sharpen":false}}).to_string();
         let automatic: SheetResult =
             serde_json::from_str(&session.print_sheets(&params, &grain_json, "").unwrap()).unwrap();
-        let base: SheetPlan = automatic.plan;
+        let mut base: SheetPlan = automatic.plan;
+        base.print_spots = Some(serde_json::from_value(project.extra["grainatlas_ui"]["spots"].clone()).unwrap());
+        base.print_labels = Some(Default::default());
         let arranging = vec![StripEdit::Arrange {}];
         let arranged: SheetResult = serde_json::from_str(
             &session
@@ -474,16 +476,16 @@ fn arranged_cropped_piece_rescales_rotates_and_maps_paper_back_to_mount() {
                             == Some("50000000-0000-4000-8000-000000000001")
                     })
                     .unwrap();
-                let unplaced = [
-                    spot.attribute("x").unwrap().parse::<f64>().unwrap()
-                        - 15.0 / base.um_per_mm / 2.0
-                        - 0.8,
-                    spot.attribute("y").unwrap().parse::<f64>().unwrap(),
-                ];
-                let mut matrix = arrange::matrix(strip);
-                matrix[4] -= matrix[0] * strip.origin_mm[0] + matrix[2] * strip.origin_mm[1];
-                matrix[5] -= matrix[1] * strip.origin_mm[0] + matrix[3] * strip.origin_mm[1];
-                let recovered = apply(t.paper_to_mount, apply(matrix, unplaced));
+                let marker = doc.descendants().find(|n| n.attribute("data-spot-marker") == Some("50000000-0000-4000-8000-000000000001")).unwrap();
+                let circle = marker.descendants().find(|n| n.has_tag_name("circle")).unwrap();
+                let paper_spot = [circle.attribute("cx").unwrap().parse::<f64>().unwrap(), circle.attribute("cy").unwrap().parse::<f64>().unwrap()];
+                assert!((circle.attribute("r").unwrap().parse::<f64>().unwrap() - 15.0 / t.um_per_mm / 2.0).abs() < 1e-9);
+                let report = &r.registration.spot_labels.as_ref().unwrap()[b.sheet - 1];
+                let label = report.labels.iter().find(|l| l.spot_id == "50000000-0000-4000-8000-000000000001").unwrap();
+                assert_eq!(label.anchor_mm, paper_spot);
+                assert_eq!(spot.text(), Some(label.name.as_str()));
+                assert!(spot.ancestors().all(|n| n.attribute("transform").is_none()), "labels remain upright in paper space");
+                let recovered = apply(t.paper_to_mount, paper_spot);
                 assert!(
                     (recovered[0] - 75.0).abs() < 0.01 && (recovered[1] - 120.0).abs() < 0.01,
                     "spot uses the same composed frame"

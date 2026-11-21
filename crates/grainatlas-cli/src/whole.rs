@@ -2,13 +2,21 @@
 use super::*;
 use grainatlas_core::layout::whole::{WholeParams, whole_sheet};
 
-pub(super) fn render(folder: &Path, out: &Path, mut p: WholeParams, svg: bool) -> Result<()> {
+pub(super) fn render(folder: &Path, out: &Path, mut p: WholeParams, svg: bool, spots: bool, label_size: Option<f64>) -> Result<()> {
     let folder = folder.canonicalize()?;
     let out = resolved_path(out)?;
     if out.starts_with(&folder) {
         bail!("--out must be outside the project folder");
     }
     let project = Project::from_json(&std::fs::read_to_string(folder.join("project.json"))?)?;
+    if spots {
+        let (spots, labels) = print_spots(&project, label_size)?;
+        p.print_spots = Some(spots);
+        p.print_labels = Some(labels);
+        // Whole-area rendering also uses saved grain polygons as soft obstacles.
+        let id = &p.select_area(&project.areas)?.id;
+        p.print_grains = project.extra.get("grainatlas_ui").and_then(|u| u.get("grains")).and_then(|g| g.get(id)).map(|v| serde_json::from_value(v.clone())).transpose()?;
+    }
     let rec = p.select_area(&project.areas)?;
     let (m, px) = saved_mosaic(&folder.join("mosaic").join(&rec.id))?;
     let meta = match open(Path::new(&project.package.path)) {

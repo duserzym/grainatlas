@@ -20,6 +20,7 @@ import { current, type AppState } from './store.svelte';
 import { savedProject, sameId } from './deeplink';
 import { authToken } from './atlas';
 import { pixelSignature } from './sync-pixels';
+import { readLabelOptions } from './print-labels';
 
 export interface AtlasArea {
   id: string;
@@ -237,7 +238,8 @@ export async function editCopy(app: AppState = current()) {
   const packageCopy = savedProject(p.package.name);
   // Image and recipe drafts can have no pending elements. Keep their complete local project record for the resumable publication.
   const imageDraft = !!draft && (!!draft.publish_job || draftSyncStatus(draft).pixels);
-  const existing = draft?.pending === null && !imageDraft ? null : sameUuid ?? (draft ? packageCopy : null);
+  const local = sameUuid ?? (draft ? packageCopy : null);
+  const existing = draft?.pending === null && !imageDraft ? null : local;
   if (packageCopy && !sameId(packageCopy.uuid, p.uuid) && !confirm(`This computer already has a project for ${p.package.name} (${packageCopy.uuid}). Replace it with this project from the server?`)) return;
   if (app.bundle) {
     app.remote = { ...remote, readOnly: false };
@@ -257,6 +259,9 @@ export async function editCopy(app: AppState = current()) {
   app.adopt(p);
   app.remote = { ...remote, readOnly: false };
   if (existing && sameId(existing.uuid, p.uuid)) { app.project = existing; app.adopt(existing); }
+  // A clean element outbox still has local print preferences. Restore them
+  // independently of the registered rows, which come from the current database.
+  if (local && sameId(local.uuid, p.uuid)) app.printLabels = readLabelOptions(local.grainatlas_ui);
   keepDraftPrintRecipe(app.project!, draft ?? null);
   app.tone = {}; // Server tiles already carry the raw display tone.
   const pending = draft ? draftElements(draft) : null;

@@ -63,7 +63,8 @@ export class PrintLRU<T> {
   }
 }
 export interface PrintControls {
-  params: LayoutParams; sheet: SheetParams; style: 'sheets' | 'layout' | 'picklist'; pick?: import('./tims-picklist').PickListOptions; sheetMode: 'grains' | 'whole';
+  params: LayoutParams; sheet: SheetParams; style: 'sheets' | 'spots' | 'layout' | 'picklist'; pick?: import('./tims-picklist').PickListOptions; sheetMode: 'grains' | 'whole';
+  spotLabels?: import("./core/types.ts").SpotLabelOptions;
   orientation: WholeParams['orientation']; wholeScale: number | 'auto'; grid: boolean; wholeArea: string; spotText: string;
 }
 export interface PrintEditorState { arrange?: boolean; selections?: StripKey[]; snap?: boolean; selection: StripKey | null; splitting: boolean; axis: 'x' | 'y' }

@@ -18,6 +18,12 @@ pub const GUTTER_MM: f64 = 12.0;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WholeParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print_grains: Option<Vec<crate::segment::Grain>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print_spots: Option<Vec<crate::spots::Spot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print_labels: Option<super::labels::Options>,
     pub paper: String,
     /// "auto", "landscape" or "portrait". Only the paper rotates.
     pub orientation: String,
@@ -40,6 +46,7 @@ pub struct WholeParams {
 impl Default for WholeParams {
     fn default() -> Self {
         Self {
+            print_spots: None, print_labels: None, print_grains: None,
             paper: "tabloid".into(),
             orientation: "auto".into(),
             margin_mm: SheetParams::default().margin_mm,
@@ -90,6 +97,8 @@ impl WholeParams {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WholeStats {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot_labels: Option<Vec<super::labels::Report>>,
     pub sheets: usize,
     pub orientation: String,
     pub um_per_mm: f64,
@@ -267,7 +276,8 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
     let png = image(a, ow, oh);
     let step = p.grid.then(|| round_bar_um(40.0 * k));
     let corners = [[0.0, 0.0], [size[0], 0.0], [0.0, size[1]], size];
-    let stats = WholeStats {
+    let mut stats = WholeStats {
+        spot_labels: None,
         sheets: 1,
         orientation: if page.w_mm > page.h_mm {
             "landscape"
@@ -296,7 +306,8 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
                 .map(|v| [v[0] / 1e6, v[1] / 1e6])
         }),
     };
-    let reg = PrintRegistration {
+    let mut reg = PrintRegistration {
+        spot_labels: None,
         project_uuid: None,
         project_path: String::new(),
         frame: "print_sheet".into(),
@@ -394,6 +405,17 @@ pub fn whole_sheet_with_image(p: &WholeParams, area: &SheetArea, meta: &SheetMet
         "page 1/1",
     );
     s.push_str("</svg>");
+    if let Some(spots)=&p.print_spots {
+        // Keep the whole-area gutter free for its labels/ticks and coordinates.
+        let mut labels=super::labels::Page::new(b);
+        let tr=[1.0/k,0.0,0.0,1.0/k,x,y];
+        let image=super::labels::Image{area:a.id,occurrence:format!("whole/{}",a.id),crop:[0.0,0.0,size[0],size[1]],display_to_paper:tr,mount_to_display:a.image_transform(),edits:a.edits,repeated:vec![]};
+        labels.image(&image,spots);
+        for grain in p.print_grains.as_deref().unwrap_or(&[]) { let display=grain.polygon_um.iter().map(|point|super::sheets::arrange::point(a.image_transform(),*point)).collect::<Vec<_>>();labels.grain(&image,&display); }
+        super::labels::decorations(&s,&mut labels);
+        let report=super::labels::render(&mut s,labels,&p.print_labels.clone().unwrap_or_default(),1);
+        reg.spot_labels=Some(vec![report.clone()]);stats.spot_labels=Some(vec![report]);
+    }
     Ok(WholeResult {
         pages: vec![s],
         registration: reg,

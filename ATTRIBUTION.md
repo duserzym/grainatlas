@@ -55,6 +55,12 @@
   Bitstream Vera Fonts copyright Bitstream, Inc.; DejaVu changes are in the
   public domain; licence in `crates/grainatlas-core/assets/fonts/LICENSE_DEJAVU`.
 
+- IBM Plex Sans Condensed Medium
+  (`crates/grainatlas-core/assets/fonts/IBMPlexSansCondensed-Medium.ttf`),
+  copyright 2017 IBM Corp., from the official Google Fonts repository, used
+  for print spot labels. SIL Open Font License 1.1; licence in
+  `crates/grainatlas-core/assets/fonts/LICENSE_PLEX_CONDENSED`.
+
 ## Algorithms implemented here from the literature
 
 - Phase correlation: Kuglin and Hines (1975); sub-pixel peak estimator after

@@ -953,3 +953,395 @@ request is made by image editing.
 The histogram uses resident pixels, or at most four tiles from the published
 overview when full-resolution pixels are not loaded. Levels Auto uses that
 sample; opening the editor never downloads the full mosaic for a histogram.
+
+## Spots and labels on print sheets
+
+**Print sheets draws no spots in any mode, including Arrange.**
+This changes the earlier Arrange pieces, which drew spots with fixed labels.
+**Grains with spots draws them in every mode:** Lines, Packed, Edit strips,
+Arrange and Whole area. Choose it in Style to use the usual sheet controls
+with registered laser spots.
+Switching between this style and Print sheets changes display only. It keeps
+cuts, saved strip edits, grain ownership, scale and arrangement. Display options
+are on the render plan, outside the cutting parameters in `project.print_sheets`.
+Export PDF, Registration and Print use the same current render and print-quality
+job as the preview. Print still uses the hidden print document in the main window.
+
+Every spot whose registered position is inside a printed image is drawn, including
+lines and rasters. Circles have their registered diameter, lines have their
+registered width, and rasters use their registered corners. Image edits and the
+band or piece transform map these shapes to paper mm, including piece scale and
+rotation. Markers are clipped to the image and have dark and light strokes.
+Labels stay upright. A spot in a repeated strip is also labelled there, in grey;
+unique anchor counts exclude these repeated occurrences. The report separately
+lists occurrences so context copies can be inspected.
+
+Names are exactly the project spot names, with XML escaping when writing SVG.
+Placement never renames, moves or edits spots, grains or links. It changes neither
+sync elements nor their hashes. Regression tests compare adding, moving and
+clearing pins through the real AppState save path with the same sync JSON and
+hashes. A SHA-256 regression also compares the spots-off SVG bytes with the
+existing synthetic print editor fixture rendered at revision cc57ab0.
+
+Label size is the SVG em size in paper mm. **Auto** is the default; a fixed
+number from 1.6 to 4.0 mm retains fixed-size placement. Spot and rail labels use
+IBM Plex Sans Condensed Medium (SIL OFL 1.1). Header, strip and other print text
+retain DejaVu Sans, and spots-off SVG bytes remain unchanged. Glyph advance
+widths, ascender and descender come from the bundled Plex TTF with ttf-parser;
+kerning and ligatures are disabled. Glyphs missing from Plex, including Ω, use
+the bundled DejaVu Sans advance and face in both SVG and PDF. Boxes add 0.8 mm
+horizontally and 0.5 mm vertically. Every SVG page with labels embeds Plex in
+one `@font-face` with a base64 TTF data URI; pages needing fallback glyphs also
+embed DejaVu Sans. Image/blob previews therefore use the same fonts on macOS
+and Windows. PDF export registers, embeds and subsets both faces.
+The browser width check keeps its 3 % bound. Its former 3.75 % error came from
+Ω falling back to a system face while Rust reserved a full em for that missing
+Plex glyph; the 0.8 mm plate padding was correct.
+
+Auto chooses one size for the whole page. Its descending list is 3.2, 2.9, 2.6
+and 2.4 mm. Auto never goes below 2.4 mm (about 7 pt); a smaller fixed size can
+still be entered. Sizes above the paper-scale cap are omitted: the padded box
+height should be at most 1.5 times the median equivalent-area grain diameter
+on paper. The paper-space polygons already include print scale and rotation.
+The cap has a 2.4 mm floor because readability takes priority. Without grain
+outlines, the upper bound is 3.2 mm.
+
+Trials reuse the marker, grain, decoration and image grids. They try adjacent
+slots and short straight connections in eight directions at three distances,
+and stop at the largest size with zero conflicts, zero ambiguous associations
+and at most 15 % in-image leaders among the labels placed on the page. A leader
+counts against this limit only when its label box touches an image. Straight
+connector ticks shorter than 3 mm do not count against the limit. Labels on white-paper rails do not
+count: when paper is available, larger text on rails is preferable to smaller
+text inside the image.
+If no trial qualifies, use 2.4 mm and run its full bounded rail and repair search.
+The fallback result is compared with its trial by conflict count, ambiguous
+count, omitted context count, in-image leader count, total tick and leader count, then total leader length; keep
+it when that score improves or stays equal. A qualifying trial with omitted
+context also runs full repair at its chosen size before settling the omissions.
+Expensive fallback is run only once. There is no clock-based early exit.
+The report gives `size_mm` per page; Print shows “Labels 2.6 mm on this page” in
+Auto. Pin offsets remain paper mm from the anchor to the box's top left at every
+chosen size; a box moved beyond the body is brought back inside for printing.
+
+On images, labels have a white plate at 0.9 opacity, corner radius 0.35 times
+box height, a 0.08 mm mid-grey outline and dark `#111` text. Repeated labels
+use `#777`. Labels on white paper have no plate or outline; each horizontal
+rail tier shares a baseline. Leaders are 0.14 mm `#333`, with a white casing
+clipped to the image. Their visible ends leave 0.25 mm gaps at the spot and
+label; the stored conservative collision paths include those gaps. Every label
+whose box is more than 0.8 mm from its physical marker edge has a straight
+0.1 mm connector tick to the nearest point on the box, unless it already needs
+a routed leader. Ticks have the same white image casing and reach both edges.
+They participate in marker, label and leader crossings and the 0.8 mm leader
+clearance checks. `connector_tick` identifies them in the report. Rail leaders
+approach the middle of the near label edge. Marker geometry keeps registered
+size with a thinner dark casing; circles under 0.8 mm also get a 0.25 mm centre
+dot. Legacy Arrange callers without explicit display options keep their previous
+minimum text-size allowance.
+
+The placer works once per sheet, after all its geometry is known. It reserves
+all markers and the existing header, footer, strip text, notes, repeated-strip
+text, gap marks, bars, ticks and grid labels. The faint whole-area grid strokes
+are background references: labels may cover them and leaders may cross them.
+Treating those strokes as hard walls fenced nearby markers into grid cells and
+caused four false placement conflicts in the twelve-spot whole-area regression.
+Grain polygons and image borders have soft costs. A label can cover its own image or free paper in the body but
+cannot cover another image. Rotated image polygons are checked in paper space.
+
+Candidates start with four corner positions and four positions centred on the
+spot's horizontal or vertical axis. The centred ring-0 positions have the same
+base costs as the corners, including for wide boxes (over three times their
+height). Their gap is capped at 2.9 mm to keep a short connector while leaving
+room for a small manual move. Corners retain one box height of clearance.
+Further candidates use five distance rings, outward square rings and slots
+along image edges and adjacent paper. Costs include
+distance, nearby direction consistency, zoning and grain-edge coverage, image
+border straddling, leader length and bends. Hard conflicts dominate these costs.
+An 8 mm uniform grid restricts marker, decoration, grain and placed-label queries
+to local neighbours. For a candidate without a connector, measure the exact
+shortest distance from its box to its own physical marker and query nearby
+markers within 1.2 times that distance. Another marker at or below that ratio
+makes the unconnected label ambiguous. These boxes lie within 0.8 mm of their
+own marker. A drawn tick or leader identifies its marker explicitly and carries
+no ambiguity count or penalty. Its collision checks still apply. Ambiguity
+costs 10000, above grain coverage and below the 1000000 cost of a hard conflict.
+Greedy placement, annealing, local repair, farther slots and group matching use
+this cost.
+A straight local connection of at least 3 mm adds 24, so an adjacent axial
+plate can be preferred to a distant corner that covers less grain. Wide boxes
+prefer 2.5 mm of marker clearance (48 per nearby marker); small boundary repairs
+include clear decoration-edge slots for wide boxes before spending route budget
+on other labels. Their first assignment pass requires that clearance where a
+complete placement permits it. This preserves room for a small manual pin drag.
+
+Anchors sort by spot id and stable band occurrence. Pins are placed first, then
+anchors with the fewest free local candidates. Greedy placement tries nearby
+labels with their connector ticks before longer leaders. Centred adjacent
+plates use at most 2.9 mm clearance from the marker bounds. Rail slots reserve
+one box height around markers,
+leaving room for a small manual label move without covering a fixed marker.
+
+After greedy placement and a short first annealing pass, remaining hard conflicts
+seed local groups. Conflicting anchors join when their centre distance is at most
+`3 × max(label heights) + max(label widths)`. Each group's hull is the axis-aligned
+bounds of its anchor centres. Any current label box wholly inside that hull,
+expanded by the group's maximum label height, joins too. Growth and merging repeat
+until stable. An automatic plate outside the body also brings nearby plates
+into its group, so a clear neighbour cannot fence it outside the page. This
+expansion is measured from the conflicting anchor. Groups are processed by
+their smallest spot id and occurrence.
+
+Clear adjacent plates stay fixed outside local repair. Small dense components
+of up to 16 anchors can move together to clear connector crossings. They use
+at most 32 candidates per anchor and 4096 forward-search nodes, sharing the
+page's six-million pair-check budget. A component grows through markers within
+two label heights plus the collision gap. Straight candidates are tried first;
+a blocked interior anchor can use the existing bounded two-bend last resort.
+Grain-corner waypoints expose narrow epoxy gaps missed by the fixed grid.
+Blocked plates try at most two successful routes, with reflected alternatives
+checked against all current geometry. Different paths to the same box remain
+separate candidates, allowing the assignment to use either side of a corridor.
+A hard conflict, an existing leader, or a
+plate covering the middle of another grain sends that anchor to an image boundary
+rail. Rails are rows of slots on white paper above and below wide images, or
+left and right of tall images. The first tier starts at the outermost nearby
+image decoration (grid letters, tick numbers and stage corner text), plus
+1.5 mm. Further tiers advance outward by one label height plus 1.5 mm.
+Tiers start beside the image, regardless of unused space at the body edges.
+Plates keep the 1.5 mm decoration gutter; leader strokes keep the normal
+collision margin around decoration. A rail must fit inside the body and cannot
+cross a different band. Thus open white paper beside a line can be used, while
+most 2.5 mm packed gaps cannot.
+
+Each tier preserves anchor order along the image's long axis. Dynamic
+programming minimises the sum of squared label-centre displacement along that
+axis over 0.5 mm offsets and exact anchor-centred offsets, with at least 0.8 mm
+between plates. It checks adjacent leader geometry and verifies all pairs in
+the resulting assignment. An anchor tries the innermost tier on both sides
+before a further tier. Blocked vertical exits are rejected once, rather than
+searched again at every tier. After joint boundary repair, rails move inward
+where a collision-free position exists, and each occupied tier is assigned
+again to reduce displacement. This preserves short local leaders and fixed
+adjacent labels while freeing blocked exits.
+
+An automatic label inside its image has a single straight leader of at most
+two label heights (7.24 mm at a fixed 2.4 mm font size). The segment must
+clear every grain except the grain containing its anchor. A label needing a
+longer connection or a bend goes to a boundary rail. Saved pins keep their
+explicit positions.
+
+Rail leaders run perpendicular to the image edge from the spot to 0.2 mm
+beyond the image, then straight to the centre of the label edge facing the
+image. For horizontal rails the first segment is vertical. The outside segment
+is at least 45 degrees to the rail, except that a first-tier label may use a
+flatter segment when its horizontal displacement is under 3 mm. A failed angle
+or collision check sends the label to a further tier or the other side.
+Rail leaders never use A*. Sorted order is verified with segment and clearance
+checks, including leaders on other rails, pins and fixed adjacent labels.
+A leader approach closer than 0.8 mm centre to centre is a hard conflict; only
+the first 2 mm around anchors is exempt from this clearance. Crossings remain
+conflicts there too.
+
+If a boundary rail is unavailable, local groups search epoxy and nearby paper.
+Groups use Hungarian slot matching with six padding steps
+(12, 20, 32, 48, 72 and 100 mm).
+Dense components also include nearby blocking plates and leaders in a hull
+expanded by three label heights. They try four deterministic route orders, and
+can move clear members to other clear slots to open a corridor. Outside labels
+and leaders remain fixed obstacles. Only improvements that do not create
+outside conflicts are retained. Groups larger than 80 anchors split
+canonically at their median along their longer axis. Route attempts are capped
+at 512 per group and 1024 per page; route results are cached for unchanged
+obstacles and rechecked before reuse after a placement changes.
+Failed parts search further slots and refine only their unpinned labels.
+Small boundary repairs with fewer than 32 straight candidates also try the
+bounded routed fallback. A blocked nearest-point connection can try a facing
+corner or edge midpoint, with the same length and collision checks. Route trials
+keep the nearest 16 distinct slots and choose up to 16 more by spatial spread,
+within the existing 32-trial limit. Nearest-only trials could all use one blocked
+exit after a pin and leave two automatic labels colliding.
+Small boundary repairs (at most 20 labels) also try exact decoration-edge slots
+and a bounded set of detours for blocked plates. Their compact candidate pools
+use a deterministic forward-checking search with 20000 nodes per pass before
+the existing refinement. The first pass prefers marker clearance of one label
+height for wide plates, so a small pin drag has room; the second pass permits
+tighter placements. All ordinary collision, routing and page budgets still apply.
+
+Refinement uses a fixed-seed xorshift generator, with 8 moves per conflicting
+unpinned label before grouping and up to 36 after a failed placement, capped at
+1024 moves per pass. Resolved labels skip these moves. Local routes are straight.
+Only when rails and straight routes fail may a bounded 0.4 mm A* search run. Its
+shortcut path is accepted only with at most two bends. A longer zig-zag is
+rejected and the unresolved label remains counted as a conflict. Collision
+checks use the rendered polyline or flattened curve. Fixed iteration limits,
+canonical ordering and a fixed random seed make placement deterministic.
+The last resort first tries a bounded visibility graph, then at most 512 A*
+expansions per route, with a shared page budget of 32000 search steps. The report marks
+these routes with `last_resort`. A failed route remains in the conflict count.
+Boundary repair keeps at most 128 candidates per label (64 local, 32 on each
+rail side across four nearby tiers) and tries at most 8192 moves. A page permits
+at most two repairs and six million candidate geometry checks after bounding-box
+rejection. Candidate bounds are cached before the pair checks.
+It never stops on a wall-clock deadline. Candidate route scores and nearest-slot
+distances are cached. Short routes use available room for marker clearance,
+while keeping their straight segment and length limit.
+
+The report includes every placed label box, marker centre, occurrence, leader
+and pin, and counts anchors, nearby labels, leaders, pins and labels involved in
+remaining hard conflicts, plus `counts.ambiguous` for remaining uncertain
+associations without a connector. `still_overlapping` counts automatic labels;
+`pinned_overlapping` counts pinned labels with hard conflicts, once per label.
+A conflict between an automatic label and a pin still counts against the
+automatic label. Pins remain obstacles for every automatic label and leader. `with_ticks` counts straight marker-to-box
+connectors shorter than 3 mm. `with_leaders` counts connectors of at least 3 mm
+and all rail or routed leaders. These two counts do not overlap.
+`next_to_spot` counts unconnected labels and short ticks, so it overlaps
+`with_ticks`. Print shows the tick and leader counts separately.
+A conflict count includes labels covering markers or
+decorations, leader crossings and close approaches, leader/label intersections
+and violations of the in-image leader rule. Label boxes and leaders stay inside
+the page body. Impossible owned placements remain visible inside the body and
+report their remaining conflicts; owned labels are never omitted.
+
+Labels in repeated (hatched) context strips are optional because the spot is
+labelled at full strength in its owning band. When a context label has no
+conflict-free slot, omit its text and leader but keep its marker. The per-page
+`counts.context_omitted` records these omissions; `occurrences` still includes
+their markers. Omitted context does not count as overlap, and conflicts are
+recounted after removal so another label is not penalised for touching a removed
+box. Print shows overlap and ambiguous-label counts together, can jump to the
+first page affected by either, and reports any omitted context labels. Registration and stats include `spot_labels`
+only when spots are displayed.
+
+Turn on **Move labels** to drag a label box in the preview. The overlay is inside
+the usual PanZoom content and follows pan, zoom and the view zoom keys. A drag
+pins the box's top-left offset from its marker centre in paper mm. This offset
+follows a strip when it moves; the name remains upright. Double-click a label or
+press Delete while it is focused to unpin it. Reset labels asks for confirmation
+and gives the number of pins being removed. Pins can deliberately create a
+conflict: the user's chosen position takes priority. The report counts it under
+`pinned_overlapping`, and Print shows “1 pinned label overlaps” (or the plural).
+Every other label and leader must avoid the pinned box and leader. A pin covering
+a marker or decoration therefore leaves `still_overlapping` at 0 when all
+automatic labels are clear; it does not hide conflicts on automatic labels.
+
+Pins and size (`auto` or a number) are saved only under
+`grainatlas_ui.print_label_pins` and `grainatlas_ui.print_label_size_mm`.
+Occurrence keys use the band identity rather than its page number or position;
+Whole area uses its area identity. The print fingerprint includes display style,
+size, spot revision and offsets. These fields never enter `project.print_sheets`
+or element sync. Server-bound atlas bundles omit both fields; local saves and
+local atlas exports retain them. Editable database copies use their existing
+local project/draft storage. A read-only view keeps label preferences only in that tab's memory,
+consistent with the rule that read-only views write no local storage. The
+existing database image workflow requires Edit a copy before print pixels are
+available; this change does not download an entire database mount in a view.
+
+The command line uses the same placer and the exact saved `grainatlas_ui.spots`:
+
+```bash
+grainatlas sheets mount-a.grainatlas --out /tmp/mount-a-print --spots --svg
+grainatlas sheets mount-a.grainatlas --out /tmp/mount-a-packed --packing packed --spots --label-size 3
+grainatlas sheets mount-a.grainatlas --out /tmp/mount-a-edited --edits edits.json --spots
+grainatlas sheets mount-a.grainatlas --out /tmp/mount-a-whole --layout whole --spots
+```
+
+The saved pins and label size apply; `--label-size MM` overrides only the size
+and requires `--spots`. The project is opened read-only, all output stays under
+`--out`, and `spot_labels` appears in the registration and stats JSON. Without
+`--spots` the existing output is unchanged.
+
+Synthetic tests cover 200 sparse anchors, a crowded 60-anchor cluster, touching
+grains, image edges, pins, impossible placement, escaped names, determinism,
+40 isolated anchors beside a group of 12, and 300 isolated anchors beside three
+groups of 15. An eight-grain row at 8 µm/mm, with `AB12_S_211`-style names,
+reproduces the old corner ambiguity at 3.2 mm and requires zero ambiguous labels
+and zero conflicts. Every box more than 0.8 mm from its marker must have a
+connector. Other cases check exact circle, line and raster distances, hairline
+SVG styling, exhaustive ambiguity and tick/leader counts, ambiguity penalties
+for unconnected boxes, and Auto keeping 3.2 mm for a tick-connected pin that
+formerly forced 2.9 mm through a false ambiguity. The supervisor's 12-spot,
+8 mm grid fixture at 3 mm label size,
+including the fitted-preview (+15 CSS px, +12 CSS px) pin drag, is checked
+through `print_plan_render` with actual Lines and Packed sheet geometry and
+decorations. At 1280 × 800 CSS px, the 21 rem sidebar and 24 px of layout spacing
+leave a 920 px preview. Tabloid landscape is 431.8 mm wide; the 0.94 fit factor
+gives 2.00278 CSS px/mm, so the drag is (+7.48959 mm, +5.99167 mm).
+The pin regression also requires zero automatic conflicts after a deliberate
+pin over its own marker, with exactly one `pinned_overlapping` warning.
+The same synthetic `print_edit_bundle` input, all twelve server spot records,
+Auto label size, Auto whole-area scale and grid are also checked through
+`print_whole`.
+
+The realistic timing page has 600 anchors: 420 spaced one grain apart (22 by
+12 mm), and 180 in groups of 4 to 12 on adjacent grains. Names have 10 to 14
+characters and diameters are 20 to 35 µm at 8 µm/mm. The body is 594 by 420 mm.
+The explicit release test requires placement under 300 ms; the debug bound is
+8 s. The original sparse 600-anchor timing still requires under 150 ms.
+On the development Mac, round 9 release timings with Auto on were 147.041 ms
+for 600 realistic anchors (533 ticks, 67 longer leaders, zero conflicts and zero
+ambiguous labels), 15.890 ms for 600 sparse anchors, and 0.657 ms for decoration
+collection with 10 MiB of base64 images. The extreme 60-anchor fallback took
+135.884 ms, with one tick, 59 longer leaders, 18 reported conflicts and zero
+ambiguous labels. These impossible owned placements remain visible inside the
+body; the test independently reconstructs their conflict and ambiguity counts.
+Round 8 timings were 265.803 ms, 21.023 ms, 0.731 ms and 325.567 ms respectively.
+Round 10 release timings are 143.185 ms for 600 realistic anchors (533 ticks,
+67 leaders, zero conflicts and zero ambiguity), 14.905 ms for 600 sparse anchors,
+0.808 ms for decoration collection and 131.981 ms for the 60-anchor fallback
+(one tick, 59 leaders, 18 conflicts and zero ambiguity). The boundary whole-area
+fixture takes 274.635 ms (3 ticks, 42 leaders, zero conflicts and zero ambiguity),
+and the dense sheet takes 1.577 ms (72 ticks, zero leaders or conflicts).
+All existing limits and timing tests remain unchanged.
+Straight trials avoid route-cache work, and impossible plates
+are rejected before checking their full connector geometry.
+The 300 ms realistic, 150 ms sparse and 500 ms fallback limits remain enforced.
+Timings exclude image rendering and PDF export.
+Image data is stripped from a temporary parsing copy before decoration
+collection; the output SVG and its images are unchanged. Run the timing tests with:
+
+```bash
+cargo test -p grainatlas-core --release layout::labels::tests --lib -- --ignored --nocapture
+cargo test -p grainatlas-core --release --test boundary_labels -- --ignored --nocapture
+```
+
+Browser timing, Playwright and the 10 % Print performance comparison must be run
+by the supervisor because this worktree cannot bind a browser-test port.
+
+The boundary fixture is a 280 by 26 mm synthetic image on tabloid paper at
+25 µm/mm, with 45 anchors, 2 to 6 mm spacing, full names, grid text on all four
+edges and stage coordinates. Tests check zero conflicts, order and spacing in
+each tier, the first-tier decoration distance, and an independent search for
+free positions on every closer tier. Mean centre displacement must be under
+4 mm and the maximum under 15 mm. They also check vertical image exits, the
+45-degree outside rule, the short in-image rule, 0.8 mm leader clearance,
+decoration avoidance and tall-image side rails. Inner-tier probes include the
+same 0.8 mm spacing between plates as the final rail validation.
+The review helper writes standalone SVGs, PDFs and placement reports with
+synthetic names only, without opening a port. Auto still chooses 2.4 mm on the thin
+whole-area page (3 short ticks, 42 longer or rail leaders, zero conflicts and
+zero ambiguous labels), and 3.2 mm on the grain sheet (72 adjacent labels with
+short ticks, zero longer leaders, zero conflicts and zero ambiguous labels).
+The whole-area page still uses the readability floor because its larger
+short-slot trials do not qualify. Placement release tests took 385.498 ms and
+1.672 ms respectively; both keep the 500 ms limit. The review helper including
+SVG drawing took 420.234 ms and 1.886 ms. A third demo puts a repeated context
+marker at the body's left edge with no clear text slot: at 3.2 mm it keeps both
+markers, omits one context label and retains the owned label with one short tick,
+zero conflicts and zero ambiguity (1.399 ms including drawing). The eight-grain
+association row keeps 3.2 mm, all eight ticks, zero conflicts and zero ambiguity
+(0.290 ms). Round 8 placement tests took 344.820 ms and 1.758 ms; its review
+helper took 336.986 ms, 1.998 ms, 2.826 ms and 0.298 ms respectively.
+The round 8 PDFs were rendered with Poppler and visually inspected.
+Plex's PostScript name (`IBMPlexSansCond-Medium`) is checked in the exported PDF.
+Every label test page asserts that label boxes and leaders stay in the body,
+including the Lines, Packed and whole-area print pipelines, deliberate conflicts
+and pins. The impossible-name fixture uses a body wide enough for its full name
+and a hard obstacle filling that body; the former 2 mm body could not physically
+contain the text. Context omission and shuffled-anchor determinism are checked
+separately. Run:
+
+```bash
+cargo run --release -p grainatlas-core --example spot_label_demo -- OUT_DIR
+```
