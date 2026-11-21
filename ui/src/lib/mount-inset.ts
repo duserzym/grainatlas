@@ -108,6 +108,8 @@ export function mosaicToMount(a: StageArea, layout: MountLayout, x: number, y: n
 export interface GroupRegion {
   name: string;
   color: string;
+  /** Review ids across the whole mount, in the shell's order. */
+  spots: string[];
   regions: { area: string; points: Pt[]; hull: Pt[] }[];
   /** Polygon centroid of the largest padded region, in mount µm. */
   anchor: Pt;
@@ -171,7 +173,7 @@ export function groupRegions(groups: ReviewGroup[], spots: Pick<Spot, 'id' | 'ar
     const regions = [...points].map(([area, points]) => ({ area, points, hull: paddedHull(points, pad) }));
     if (!regions.length) return [];
     const largest = regions.map(r => ({ ...polygonCentre(r.hull), id: r.area })).reduce((a, b) => b.area > a.area ? b : a);
-    return [{ name: group.name, color: group.color, regions, anchor: largest.centre, anchorArea: largest.id }];
+    return [{ name: group.name, color: group.color, spots: [...group.spots], regions, anchor: largest.centre, anchorArea: largest.id }];
   });
 }
 

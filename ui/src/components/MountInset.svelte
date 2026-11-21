@@ -10,6 +10,7 @@
   import type { View } from '../lib/canvas/view';
   import { presentation } from '../lib/presentation';
   import { sendViewerInset } from '../lib/viewer-inset';
+  import { sampleNames, sampleText, shortMountName } from '../lib/mount-inset-header';
   import {
     applyFit, areaExtent, defaultInset, ENLARGED_W, fitTransform, mapAspect, maxWidth, MIN_W, mosaicToMount, mountLayout,
     NORMAL_W, shownWidth, STEP, storedWidth, union, viewQuad, type Box, type GroupRegion, type Pt,
@@ -24,9 +25,13 @@
     view: View | undefined;
     selected: Spot[];
     groups?: GroupRegion[];
+    mountLabel?: string;
+    onmount?: () => void;
+    onsample?: (group: GroupRegion, area: string) => void;
     onarea: (id: string) => void;
   }
-  let { areas, current, mosaics, tiles, lut, view, selected, groups = [], onarea }: Props = $props();
+  let { areas, current, mosaics, tiles, lut, view, selected, groups = [], mountLabel = 'Mount', onmount, onsample, onarea }: Props = $props();
+  const isViewer = $derived(presentation.current === 'viewer');
 
   // ---- geometry -------------------------------------------------------------------------
   const extents = $derived(Object.fromEntries(areas.map(a => [a.id, areaExtent(a, mosaics[a.id])])) as Record<string, Pt>);
@@ -36,11 +41,13 @@
   const aspect = $derived(mapAspect(bounds));
   const currentArea = $derived(areas.find(a => a.id === current) ?? null);
   const currentLabel = $derived(layout.areas.find(a => a.id === current)?.label ?? '');
-  const headerLabel = $derived(groups.length ? `${groups.length} ${groups.length === 1 ? 'sample' : 'samples'}` : currentLabel);
+  const names = $derived(sampleNames(groups, areas));
 
   // ---- size and room --------------------------------------------------------------------
   const HEAD = 26, NOTE = 16, PAD = 8;
   let root = $state<HTMLDivElement>();
+  let nameNode = $state<HTMLSpanElement>();
+  let headerMetrics = $state<{ width: number; measure: (text: string) => number } | null>(null);
   let room = $state({ w: 0, h: 0, top: PAD, bottom: 0 });
   let inset = $state<{ collapsed: boolean; width: number } | null>(null);
   let animate = $state(0);
@@ -56,12 +63,28 @@
   const chrome = $derived(HEAD + (layout.positioned ? 0 : NOTE) + 2);
   const limit = $derived(maxWidth(room.w, room.bottom - room.top, aspect, chrome));
   const width = $derived(shownWidth(inset?.width ?? NORMAL_W, limit));
+  const headerLabel = $derived(sampleText(names, currentLabel, headerMetrics?.width ?? 0, headerMetrics?.measure));
+  const mountTitle = $derived(!headerLabel.text && headerLabel.title ? `${mountLabel}: ${headerLabel.title}` : mountLabel);
   const mapH = $derived(Math.round(width * aspect));
   /** Too little room for a useful map: only the Mount button, disabled. */
   const fits = $derived(width >= 60 && mapH >= 24);
   const collapsed = $derived(!inset || inset.collapsed || !fits);
   /** At the enlarged size (or the most the room allows): the size button makes it normal again. */
   const enlarged = $derived(width >= Math.min(ENLARGED_W, Math.floor(limit)));
+
+  // Measure complete captions in the space left after the mount name, at the rendered font.
+  $effect(() => {
+    const node = nameNode;
+    if (!node) { headerMetrics = null; return; }
+    const ctx = document.createElement('canvas').getContext('2d');
+    const measureText = () => {
+      if (ctx) ctx.font = getComputedStyle(node).font;
+      headerMetrics = { width: node.clientWidth, measure: text => ctx?.measureText(text).width ?? Array.from(text).length * 6 };
+    };
+    const observer = new ResizeObserver(measureText);
+    observer.observe(node); measureText();
+    return () => observer.disconnect();
+  });
 
   function measure() {
     const host = root?.parentElement;
@@ -158,7 +181,7 @@
   const polygon = (ps: Pt[]) => ps.map(p => p.map(v => v.toFixed(1)).join(',')).join(' ');
   const shapes = $derived(layout.areas.map(a => {
     const [x0, y0] = px([a.box[0], a.box[1]]), [x1, y1] = px([a.box[2], a.box[3]]);
-    return { ...a, x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), on: a.id === current, active: a.id in mosaics };
+    return { ...a, x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), on: a.id === current, active: isViewer || a.id in mosaics };
   }));
   const currentShape = $derived(shapes.find(s => s.on) ?? null);
   const short = (text: string, w: number) => {
@@ -276,7 +299,12 @@
   function activate(id: string, e: KeyboardEvent | MouseEvent) {
     if (e instanceof KeyboardEvent && e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault(); e.stopPropagation();
-    if (id !== current && id in mosaics) onarea(id);
+    if (isViewer || (id !== current && id in mosaics)) onarea(id);
+  }
+  function activateSample(group: GroupRegion, area: string, e: KeyboardEvent | MouseEvent) {
+    if (!isViewer || (e instanceof KeyboardEvent && e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault(); e.stopPropagation();
+    onsample?.(group, area);
   }
 </script>
 
@@ -284,12 +312,12 @@
   style:top="{room.top}px" style:visibility={inset ? 'visible' : 'hidden'}>
   {#if collapsed}
     <button class="opener" onclick={toggle} aria-expanded="false" disabled={!fits} data-testid="mount-inset-open"
-      title={fits ? 'Show where this area is on the mount' : 'Too little room for the mount map'}>Mount</button>
+      title={fits ? mountLabel : `${mountLabel}: too little room for the mount map`}>Mount · {shortMountName(mountLabel)}</button>
   {:else}
     <div class="body" style:width="{width}px" transition:open data-testid="mount-inset-body">
       <div class="head">
-        <span class="title">Mount</span>
-        <span class="faint name" title={headerLabel}>{headerLabel}</span>
+        <button class="title" title={mountTitle} onclick={() => isViewer && onmount?.()} data-testid="mount-inset-label"><span class="mount-prefix">{'Mount: '}</span>{mountLabel}</button>
+        <span class="faint name" title={headerLabel.title} bind:this={nameNode}>{headerLabel.text}</span>
         <button class="icon" onclick={enlarge} title={enlarged ? 'Smaller' : 'Larger'} aria-label={enlarged ? 'Smaller mount map' : 'Larger mount map'}
           disabled={limit < NORMAL_W + STEP} data-testid="mount-inset-enlarge">{enlarged ? '−' : '+'}</button>
         <button class="icon" onclick={toggle} aria-expanded="true" aria-label="Hide mount map" title="Hide mount map" data-testid="mount-inset-close">×</button>
@@ -320,7 +348,11 @@
           {#each samples as g}
             <g class="sample" style:--group-color={g.color} data-testid="mount-inset-group">
               {#each g.regions as r}
-                <polygon class="region" points={polygon(r.hull)} data-area={r.area} />
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                <polygon class="region" class:interactive={isViewer} points={polygon(r.hull)} data-area={r.area}
+                  role={isViewer ? 'button' : 'img'} tabindex={isViewer ? 0 : undefined}
+                  aria-label={`${g.name}: ${r.points.length} ${r.points.length === 1 ? 'spot' : 'spots'}. Show and list sessions`}
+                  onclick={e => activateSample(g, r.area, e)} onkeydown={e => activateSample(g, r.area, e)} />
                 {#each r.points as p}<circle class="group-dot" cx={p[0]} cy={p[1]} r="2" />{/each}
               {/each}
             </g>
@@ -355,12 +387,13 @@
 
 <style>
   .inset { position: absolute; right: var(--space-2); z-index: 20; padding: var(--space-1); border-radius: var(--radius-sm); font-size: 0.72rem; }
-  .opener { padding: 2px var(--space-2); font-size: 0.75rem; }
+  .opener { padding: 2px var(--space-2); font-size: 0.75rem; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
   .body { position: relative; display: grid; gap: 2px; transform-origin: top right; }
   .head { display: flex; align-items: center; gap: var(--space-1); height: 24px; min-width: 0; }
-  .title { font-weight: 600; }
-  .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .head .icon { padding: 0 var(--space-2); line-height: 20px; }
+  .head .title { font-weight: 600; font-size: inherit; padding: 0; border-color: transparent; background: transparent; text-align: left; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mount-prefix { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .head .icon { flex: 0 0 18px; min-width: 18px; padding: 0; line-height: 20px; }
   svg { display: block; }
   .surface { fill: var(--image-bg); }
   .area .box { fill: transparent; stroke: var(--ov-label); stroke-opacity: 0.45; stroke-width: 1; }
@@ -374,6 +407,9 @@
   .here { fill: var(--ov-label); font-size: 10px; font-weight: 600; paint-order: stroke; stroke: var(--image-bg); stroke-width: 3px; pointer-events: none; }
   .sample { pointer-events: none; }
   .region { fill: var(--group-color); fill-opacity: 0.18; stroke: var(--group-color); stroke-width: 1.5; stroke-linejoin: round; }
+  .region.interactive { pointer-events: auto; cursor: pointer; }
+  .region.interactive:hover { fill-opacity: 0.35; stroke-width: 2; }
+  .region.interactive:focus-visible { outline: none; fill-opacity: 0.35; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 3 2; }
   .group-dot { fill: var(--group-color); stroke: var(--image-bg); stroke-width: 0.75; }
   .sample-label { fill: var(--ov-label); font-size: 9px; font-weight: 600; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: var(--image-bg); stroke-width: 3px; pointer-events: none; }
   .current-outline { fill: none; stroke: var(--accent); stroke-width: 2; pointer-events: none; }

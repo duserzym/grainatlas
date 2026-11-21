@@ -43,7 +43,7 @@
   import { spotLink } from '../lib/upbdb';
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
-  import MountInset from '../components/MountInset.svelte';
+  import MountInset from '../lib/ViewerMountInset.svelte';
   import { areaExtent, groupRegions, mountLayout } from '../lib/mount-inset';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
   import { DATE_CHOICES, dateLabel, dateOf, fmtValue, matchResults, metricsOf, otherDates, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
@@ -1923,7 +1923,7 @@
         </select>
         {#if app.colourBy === 'date'}<select bind:value={app.dateChoice} aria-label="Date">{@render dateOptions()}</select>{/if}
       </div>
-      <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
+      <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} {viewer} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
     {:else}
     <div class="glass toolbar" data-ui title={!app.project?.upbdb.mount_id ? 'Link the mount to the database first to pluck grains for TIMS' : undefined}>
       <button aria-pressed={editImage} disabled={ro} data-testid="edit-image" onclick={()=>{editImage=!editImage;imageTool=null;}}>Edit image</button>
