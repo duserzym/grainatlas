@@ -12,6 +12,55 @@ interface PrintSnapshot { pages: number; images: number; decoded: number; title:
 interface PrintState { calls: PrintSnapshot[]; opened: number; roots: Element[] }
 declare global { interface Window { __printDialog: PrintState } }
 
+test('Windows desktop sends Tabloid to the selected printer and does not retry on Letter', async ({ page }) => {
+  const unexpected = await mockServer(page, { standalone: true });
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await page.getByTestId('edit-copy').click();
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Layout', exact: true }).click();
+  await page.getByLabel('Paper', { exact: true }).selectOption('tabloid');
+  await page.getByTestId('sheet-scale').fill('4');
+  await page.getByTestId('sheet-packing').selectOption('lines');
+  await page.getByLabel('denoise (NLM)').uncheck();
+  await page.getByLabel('sharpen', { exact: true }).uncheck();
+  await page.getByTestId('sheets').click();
+  await expect(page.getByTestId('sheet-stats')).toBeVisible();
+  await expect(page.getByTestId('busy')).toHaveCount(0);
+
+  // The invented bundle stays on the WASM core. Stub only the Windows
+  // printing commands at the point where the prepared pages are printed.
+  await page.evaluate(() => {
+    const jobs: unknown[] = [];
+    const w = window as Window & { __windowsJobs?: unknown[]; __TAURI_INTERNALS__?: unknown };
+    w.__windowsJobs = jobs;
+    Object.defineProperty(navigator, 'platform', { value: 'Win32' });
+    window.print = () => { throw new Error('Windows must not fall back to browser printing'); };
+    w.__TAURI_INTERNALS__ = { invoke: async (command: string, args: { job: { printer: string } }) => {
+      if (command === 'windows_print_printers') return { names: ['Letter printer', 'Tabloid printer'], defaultName: 'Letter printer' };
+      if (command === 'windows_print_document') {
+        jobs.push(args.job);
+        if (args.job.printer === 'Letter printer') throw new Error('This printer does not support the selected paper size.');
+      }
+    } };
+  });
+  await page.getByRole('button', { name: 'Print…', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Print sheets' });
+  await expect(dialog.getByText('17 × 11 in', { exact: false })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Print', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('does not support');
+  await expect(page.locator('#ga-print-root')).toHaveCount(1);
+  await dialog.getByLabel('Printer').selectOption('Tabloid printer');
+  await dialog.getByLabel('Copies').fill('2');
+  await dialog.getByLabel('Pages', { exact: true }).fill('2');
+  await dialog.getByRole('button', { name: 'Print', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('#ga-print-root')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as Window & { __windowsJobs?: unknown[] }).__windowsJobs)).toEqual([
+    { printer: 'Letter printer', copies: 1, pageRanges: '', paperMm: [431.8, 279.4] },
+    { printer: 'Tabloid printer', copies: 2, pageRanges: '2', paperMm: [431.8, 279.4] },
+  ]);
+  expect(unexpected).toEqual([]);
+});
+
 for (const mode of ['browser', 'Windows WebView2', 'native promise'] as const) {
   test.describe(mode, () => {
     if (mode === 'Windows WebView2') {

@@ -64,6 +64,23 @@ it('gives repeated core mask, pattern, clip and scale-bar IDs a page namespace',
   }
 });
 
+it('keeps prepared pages for a retry if Windows refuses the print job', async () => {
+  const { root, doc, win } = printEnvironment();
+  const printing = createPrintDocument([], [431.8, 279.4]);
+  const submit = vi.fn(async () => {
+    expect(doc.title).toBe('Tabloid print');
+    win.dispatchEvent(new Event('afterprint'));
+    throw new Error('This printer does not support the selected paper size');
+  });
+  await expect(printing.print('Tabloid print', submit)).rejects.toThrow('does not support');
+  expect(win.print).not.toHaveBeenCalled();
+  expect(root.remove).not.toHaveBeenCalled();
+  expect(doc.title).toBe('App title');
+  await printing.print('Tabloid print', async () => {});
+  printing.cleanup();
+  expect(root.remove).toHaveBeenCalledOnce();
+});
+
 it('rewrites fragment hrefs and quoted URLs without changing embedded PNGs or other attributes', () => {
   const svg = `<svg><clipPath id='arrange-spots-0'/><image id="whole-mosaic" xlink:href="data:image/png;base64,AAAA"/>
     <use href='#whole-mosaic'/><use xlink:href="#whole-mosaic"/>

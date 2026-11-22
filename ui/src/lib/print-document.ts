@@ -59,13 +59,16 @@ export function createPrintDocument(pages: string[], paper: readonly number[]) {
   document.body.append(root);
   let previousTitle: string | undefined;
   let printTitle: string | undefined;
+  function restoreTitle() {
+    // App.svelte owns title changes; do not overwrite a newer app title.
+    if (previousTitle !== undefined && document.title === printTitle) document.title = previousTitle;
+    previousTitle = undefined;
+  }
   function cleanup() {
     window.removeEventListener('afterprint', cleanup);
     root.remove();
     root.replaceChildren();
-    // App.svelte owns title changes; do not overwrite a newer app title.
-    if (previousTitle !== undefined && document.title === printTitle) document.title = previousTitle;
-    previousTitle = undefined;
+    restoreTitle();
   }
   window.addEventListener('afterprint', cleanup);
   return {
@@ -82,10 +85,16 @@ export function createPrintDocument(pages: string[], paper: readonly number[]) {
         await (img.decode ? img.decode() : loaded);
       }));
     },
-    async print(title: string) {
+    async print(title: string, submit?: () => Promise<void>) {
       previousTitle = document.title;
       printTitle = title;
       document.title = title;
+      if (submit) {
+        window.removeEventListener('afterprint', cleanup);
+        try { await submit(); }
+        finally { restoreTitle(); }
+        return;
+      }
       const printing = window.print() as void | PromiseLike<void>;
       // Chromium fires afterprint during the call, so listen before calling.
       // WebKit's native sheet can fire it while still paginating, even after

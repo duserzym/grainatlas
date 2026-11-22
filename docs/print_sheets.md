@@ -965,7 +965,10 @@ Switching between this style and Print sheets changes display only. It keeps
 cuts, saved strip edits, grain ownership, scale and arrangement. Display options
 are on the render plan, outside the cutting parameters in `project.print_sheets`.
 Export PDF, Registration and Print use the same current render and print-quality
-job as the preview. Print still uses the hidden print document in the main window.
+job as the preview. Print uses the hidden print document in the main window.
+On Windows, the desktop print dialog shows the layout's paper size and sends
+it to the chosen printer at 100% scale. If the printer does not report that
+paper size, choose another printer or change the paper in Layout.
 
 Every spot whose registered position is inside a printed image is drawn, including
 lines and rasters. Circles have their registered diameter, lines have their

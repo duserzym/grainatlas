@@ -11,7 +11,7 @@ export const server = 'https://upbdb.test';
 export const projectId = '10000000-0000-4000-8000-000000000001';
 export const mountId = '20000000-0000-4000-8000-000000000001';
 // Serve only the invented bundle and database reads needed to enter Edit and print.
-interface SavedFixture { saved?: string; syncOnSave?: boolean; spots?: unknown[] }
+interface SavedFixture { saved?: string; syncOnSave?: boolean; spots?: unknown[]; standalone?: boolean }
 export async function mockServer(page: Page, fixture: SavedFixture = {}) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
@@ -26,15 +26,18 @@ export async function mockServer(page: Page, fixture: SavedFixture = {}) {
     spots: ui.spots.map((s: any) => ({ ...s, project_uuid: projectId, kind: s.kind ?? 'spot', acquisition_ids: [] })),
     labels: ui.labels.map((l: any) => ({ ...l, project_uuid: projectId })),
   };
-  await page.addInitScript(({ server, syncOnSave }) => {
+  await page.addInitScript(({ server, syncOnSave, standalone }) => {
     const w = window as any;
-    w.__LAB_SHELL__ = { module: 'grainatlas' };
-    w.__TAURI_INTERNALS__ = { invoke: async (cmd: string) => {
-      if (cmd === 'bridge_token') return 'synthetic-token';
-      return null;
-    } };
+    if (standalone) sessionStorage.setItem('grainatlas.upbdb.token', 'synthetic-token');
+    else {
+      w.__LAB_SHELL__ = { module: 'grainatlas' };
+      w.__TAURI_INTERNALS__ = { invoke: async (cmd: string) => {
+        if (cmd === 'bridge_token') return 'synthetic-token';
+        return null;
+      } };
+    }
     localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave, quality: 100, nasRoot: '' }));
-  }, { server, syncOnSave: fixture.syncOnSave ?? true });
+  }, { server, syncOnSave: fixture.syncOnSave ?? true, standalone: fixture.standalone ?? false });
   await page.route(`${server}/**`, async route => {
     const request = route.request(), pathname = new URL(request.url()).pathname;
     const headers = { 'access-control-allow-origin': '*' };

@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "grainatlas-cli"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "grainatlas-core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "getrandom 0.3.4",
  "image",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "grainatlas-desktop"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "grainatlas-core",
  "serde",
@@ -1695,11 +1695,13 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]
 name = "grainatlas-wasm"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "grainatlas-core",
  "js-sys",

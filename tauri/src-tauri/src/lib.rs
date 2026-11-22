@@ -55,6 +55,8 @@ mod profile;
 mod recent;
 mod project_save;
 mod print_export;
+#[cfg(windows)]
+mod windows_print;
 mod signin;
 mod store;
 mod mirror;
@@ -1181,6 +1183,10 @@ pub fn run() {
             register,
             save_bytes,
             save_print_pdf,
+            #[cfg(windows)]
+            windows_print::windows_print_printers,
+            #[cfg(windows)]
+            windows_print::windows_print_document,
             save_project,
             atlas_zip,
             save_atlas,

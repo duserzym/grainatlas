@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Print layout: paper, scale, packing, preview, PDF export and the
-  // system print dialog. Two styles: print sheets (every grain of
+  // Print layout: paper, scale, packing, preview, PDF export and printing.
+  // Two styles: print sheets (every grain of
   // the mount once, at a fixed scale, with a mount map and the print_sheet
   // registration for hand spot registration) and the grain / area layout.
   import { current } from '../lib/store.svelte';
@@ -13,6 +13,9 @@
   import { printCache, printFingerprint, revision, type PrintControls, type PrintEditorState } from '../lib/print-cache';
   import { PrintQuality, printPdfName } from '../lib/print-quality';
   import { createPrintDocument, type PrintDocument } from '../lib/print-document';
+  import WindowsPrintDialog, { type WindowsPrintOptions } from '../components/WindowsPrintDialog.svelte';
+  import { isDesktop } from '../lib/core/core';
+  import { invoke } from '@tauri-apps/api/core';
   import PanZoom from '../lib/canvas/PanZoom.svelte';
   import SpotLabelOverlay from '../components/SpotLabelOverlay.svelte';
   import { isSheetsStyle, pinLabel, spotDisplay, sheetGeometryControls, parseLabelSize } from '../lib/print-labels';
@@ -162,6 +165,7 @@
   let qualityUnsubscribe: (() => void) | undefined;
   let destroyed = false;
   let printDocument: PrintDocument | undefined;
+  let windowsPrint = $state<{ doc: PrintDocument; title: string; paper: [number, number]; pages: number } | null>(null);
   let stale = $state(false);
   let qualityCancelled = $state(false);
   const qualityState = $derived.by(() => { qualityRevision; return quality ? { ready: quality.ready, next: quality.next, total: quality.total, error: quality.error } : null; });
@@ -434,9 +438,26 @@
       const doc = printDocument = createPrintDocument(pages, result.paper_mm);
       await doc.decodeImages();
       if (cancelled || destroyed || stale || printDocument !== doc) { doc.cleanup(); return; }
-      await doc.print(style === 'picklist' ? pick.title : isSheetsStyle(style) ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title);
+      const title = style === 'picklist' ? pick.title : isSheetsStyle(style) ? sheet.title || app.pkg?.name || app.project?.package.name || 'Print sheets' : params.title;
+      if (isDesktop() && /^Win/i.test(navigator.platform)) {
+        windowsPrint = { doc, title, paper: result.paper_mm, pages: pages.length };
+      } else {
+        await doc.print(title);
+      }
     } catch (error) { app.error = error instanceof Error ? error.message : String(error); }
     finally { app.cancelTask = null; }
+  }
+  async function submitWindowsPrint(options: WindowsPrintOptions) {
+    const job = windowsPrint;
+    if (!job) return;
+    await job.doc.print(job.title, () => invoke<void>('windows_print_document', {
+      job: { ...options, paperMm: job.paper },
+    }));
+  }
+  function closeWindowsPrint() {
+    windowsPrint?.doc.cleanup();
+    windowsPrint = null;
+    printDocument = undefined;
   }
   function toggleArea(id: string) {
     params.area_ids = params.area_ids.includes(id) ? params.area_ids.filter((a) => a !== id) : [...params.area_ids, id];
@@ -444,6 +465,11 @@
 </script>
 
 <PickListImport bind:open={importingPickList} />
+
+{#if windowsPrint}
+  <WindowsPrintDialog paper={windowsPrint.paper} pages={windowsPrint.pages}
+    submit={submitWindowsPrint} close={closeWindowsPrint} />
+{/if}
 
 {#snippet droppedNotice(editing: boolean)}
   {#if droppedEdits.length}
