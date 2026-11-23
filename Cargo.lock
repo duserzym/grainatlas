@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "grainatlas-cli"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "clap",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "grainatlas-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "getrandom 0.3.4",
  "image",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "grainatlas-desktop"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "grainatlas-core",
  "serde",
@@ -1701,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "grainatlas-wasm"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "grainatlas-core",
  "js-sys",
