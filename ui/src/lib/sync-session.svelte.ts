@@ -513,6 +513,11 @@ export class SyncSession {
     if (edited) this.imagesEdited();
     if (edited && this.backgroundPending && !this.busy) this.automatic.edit();
   }
+  /** A scheduled check can wait for its next turn if the project is occupied. */
+  async poll() {
+    if (this.disposed || !this.ready || this.app.busy || this.busy || this.imageBusy || this.backgroundPending) return;
+    if (this.app.remote?.server ?? this.draft?.server ?? this.app.server) await this.check();
+  }
   /** Every opening path calls this before returning. Later polling never replaces the base. */
   async check(): Promise<void> {
     flushWrites();

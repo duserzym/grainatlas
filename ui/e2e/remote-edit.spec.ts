@@ -270,6 +270,42 @@ test('Canvas creates and selects a mount, and keeps duplicate-label errors in th
   expect(unexpected).toEqual([]);
 });
 
+test('background checks use the saved interval and skip hidden windows', async ({ page }) => {
+  await page.clock.install();
+  const { databaseRequests, syncRequests, unexpected } = await mockServer(page, undefined, false, undefined, { standalone: true });
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('edit-copy')).toBeEnabled();
+  const checks = () => databaseRequests.filter(path => path === `/v1/atlas/projects/${projectId}`).length;
+  expect(checks()).toBe(1);
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Settings', exact: true }).click();
+  const interval = page.getByRole('spinbutton', { name: 'Background check interval (seconds)' });
+  await expect(interval).toHaveValue('120');
+  await page.clock.fastForward(60_000);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  expect(checks()).toBe(1);
+  await page.clock.fastForward(60_000);
+  await expect.poll(checks).toBe(2);
+  await expect(page.getByTestId('sync-chip')).not.toHaveText('Syncing…');
+
+  await interval.fill('45');
+  await interval.press('Tab');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('grainatlas.upbdb')!).syncPollSeconds)).toBe(45);
+  await page.clock.fastForward(40_000);
+  expect(checks()).toBe(2);
+  await page.clock.fastForward(5000);
+  await expect.poll(checks).toBe(3);
+  await expect(page.getByTestId('sync-chip')).not.toHaveText('Syncing…');
+
+  await page.evaluate(() => Object.defineProperty(document, 'hidden', { value: true, configurable: true }));
+  await page.clock.fastForward(45_000);
+  expect(checks()).toBe(3);
+  await page.evaluate(() => Reflect.deleteProperty(document, 'hidden'));
+  await page.clock.fastForward(45_000);
+  await expect.poll(checks).toBe(4);
+  expect(syncRequests).toEqual([]);
+  expect(unexpected).toEqual([]);
+});
+
 test('registration creates and selects a mount when the mount list is empty', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const { createBodies, unexpected } = await mockServer(page, () => {}, true);

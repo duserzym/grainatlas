@@ -9,7 +9,7 @@
   import { app } from '../lib/store.svelte';
   import ThemeSwitch from '../components/ThemeSwitch.svelte';
   import UpdatesPanel from '../components/UpdatesPanel.svelte';
-  import { normalizeServer } from '../lib/upbdb';
+  import { MAX_SYNC_POLL_SECONDS, MIN_SYNC_POLL_SECONDS, normalizeServer, normalizeSyncPollSeconds } from '../lib/upbdb';
   import { openFromServer } from '../lib/remote';
   import { canSignInWithBrowser, cancelSignIn, signInWithBrowser } from '../lib/signin';
 
@@ -39,6 +39,14 @@
     app.link.server = normalizeServer(serverText) ?? '';
     serverText = app.link.server;
     app.saveLink();
+  }
+
+  function saveSyncPollInterval(input: HTMLInputElement) {
+    if (Number.isFinite(input.valueAsNumber)) {
+      app.link.syncPollSeconds = normalizeSyncPollSeconds(input.valueAsNumber);
+      app.saveLink();
+    }
+    input.value = String(app.link.syncPollSeconds);
   }
 
   const browserSignIn = canSignInWithBrowser(hosted);
@@ -123,6 +131,10 @@
     <h2>UPbDB</h2>
     <label class="check"><input type="checkbox" bind:checked={app.link.syncAutomatically} onchange={() => app.saveLink()} data-testid="sync-automatically" /> Sync automatically</label>
     <label class="check"><input type="checkbox" bind:checked={app.link.syncOnSave} onchange={() => app.saveLink()} data-testid="sync-on-save" /> Sync to the database when saving</label>
+    <label class="field">Background check interval (seconds)
+      <input type="number" min={MIN_SYNC_POLL_SECONDS} max={MAX_SYNC_POLL_SECONDS} value={app.link.syncPollSeconds}
+        onchange={e => saveSyncPollInterval(e.currentTarget)} />
+    </label>
     <label class="field">Server
       <input type="url" placeholder="http://localhost:8000" bind:value={serverText} onchange={saveServer} aria-invalid={serverBad} data-testid="server" />
     </label>

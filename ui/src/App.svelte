@@ -5,13 +5,14 @@
   import { grainNumber } from './lib/grain-lineage';
   import { onMount, tick, untrack } from 'svelte';
   import { authToken } from './lib/atlas';
+  import { LINK_KEY, loadLink } from './lib/upbdb';
   import { oversightSession } from './lib/oversight';
   import { oversight, onOversight } from '@lab/bridge';
   import { presentation } from './lib/presentation';
   import { appStorage } from './lib/app-storage';
   import VersionChip from './components/VersionChip.svelte';
   import { startScheduler } from './lib/updater.svelte';
-  import { app, current, tabs, type AppState, type Screen } from './lib/store.svelte';
+  import { app, current, shared, tabs, type AppState, type Screen } from './lib/store.svelte';
   import { isHosted, notify, onCommand, onOpenFiles, SHELL_EVENTS } from '@lab/bridge';
   import { findAllGrains, liveChanged, liveIdle, liveKey, openLoose, openOffered, openPathsInTabs, saveProject, saveProjectFile, startDeepLink, stitchAll } from './lib/actions';
   import { isDesktop } from './lib/core/core';
@@ -499,17 +500,46 @@
     };
   });
 
+  let polling = false;
+  async function pollProjects() {
+    if (polling || document.hidden) return;
+    polling = true;
+    try {
+      const active = current();
+      for (const tab of [active, ...tabs.list.filter(tab => tab !== active)]) {
+        if (document.hidden) break;
+        await tab.sync.poll();
+      }
+    } finally { polling = false; }
+  }
+
+  $effect(() => {
+    const timer = window.setInterval(() => void pollProjects(), shared.link.syncPollSeconds * 1000);
+    return () => window.clearInterval(timer);
+  });
+
   onMount(() => {
-    const retry = () => { for (const tab of tabs.list) if (tab.project && !tab.sync.wakeAutomatic()) void tab.sync.check(); };
-    const focused = () => { if (!isHosted()) retry(); };
-    const timer = window.setInterval(() => { for (const tab of tabs.list) if (tab.project && !tab.sync.backgroundPending) void tab.sync.check(); }, 30_000);
+    const wakePending = () => { for (const tab of tabs.list) if (tab.project) tab.sync.wakeAutomatic(); };
+    const retry = () => { wakePending(); void pollProjects(); };
+    const focused = () => { if (!isHosted()) wakePending(); };
+    const pollPreferenceChanged = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && (event.key === LINK_KEY || event.key === null)) {
+        app.link.syncPollSeconds = loadLink().syncPollSeconds;
+      }
+    };
     window.addEventListener('online', retry);
     window.addEventListener('focus', focused);
+    window.addEventListener('storage', pollPreferenceChanged);
     const closing = (event: BeforeUnloadEvent) => {
       if (tabs.list.some(tab => !tab.readOnly && (tab.dirty || tab.sync.unsynced))) { event.preventDefault(); event.returnValue = ''; }
     };
     window.addEventListener('beforeunload', closing);
-    return () => { clearInterval(timer); window.removeEventListener('online', retry); window.removeEventListener('focus', focused); window.removeEventListener('beforeunload', closing); };
+    return () => {
+      window.removeEventListener('online', retry);
+      window.removeEventListener('focus', focused);
+      window.removeEventListener('storage', pollPreferenceChanged);
+      window.removeEventListener('beforeunload', closing);
+    };
   });
 </script>
 

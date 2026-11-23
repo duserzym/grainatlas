@@ -7,6 +7,11 @@ The Settings switch `Sync automatically` defaults to on. The separate
 Hosted projects continue to use the shell flow. Read-only projects, projects without
 edit access and projects waiting for a choice do not sync automatically.
 
+The `Background check interval (seconds)` in Settings → UPbDB defaults to 120 s.
+It accepts 30 to 3,600 s and applies to periodic database checks. Open projects
+are checked one at a time while GrainAtlas is visible, starting with the active
+project. Opening a project and reconnecting can still trigger an immediate check.
+
 | Status | Meaning |
 | --- | --- |
 | Saved | Local work is waiting, or a current server revision has not been established. |

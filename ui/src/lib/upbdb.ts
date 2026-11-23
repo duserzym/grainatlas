@@ -66,6 +66,7 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[], gra
 export interface LinkSettings {
   syncOnSave: boolean;
   syncAutomatically: boolean;
+  syncPollSeconds: number;
   /** Base URL of the UPbDB service, e.g. `http://localhost:8000`; empty = none. */
   server: string;
   /** Bearer token pasted when grainatlas runs on its own (hosted, the shell's token is used). */
@@ -78,10 +79,21 @@ export interface LinkSettings {
   nasRoot: string;
 }
 
-const LINK_KEY = 'grainatlas.upbdb';
+export const LINK_KEY = 'grainatlas.upbdb';
 const TOKEN_KEY = 'grainatlas.upbdb.token';
 
-export const DEFAULT_LINK: LinkSettings = { server: '', token: '', rememberToken: false, quality: 100, nasRoot: '', syncOnSave: true, syncAutomatically: true };
+export const MIN_SYNC_POLL_SECONDS = 30;
+export const MAX_SYNC_POLL_SECONDS = 3600;
+export const DEFAULT_LINK: LinkSettings = {
+  server: '', token: '', rememberToken: false, quality: 100, nasRoot: '',
+  syncOnSave: true, syncAutomatically: true, syncPollSeconds: 120,
+};
+
+export function normalizeSyncPollSeconds(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(MAX_SYNC_POLL_SECONDS, Math.max(MIN_SYNC_POLL_SECONDS, Math.round(value)))
+    : DEFAULT_LINK.syncPollSeconds;
+}
 
 export function loadLink(): LinkSettings {
   const out = { ...DEFAULT_LINK };
@@ -91,14 +103,14 @@ export function loadLink(): LinkSettings {
   } catch {
     /* storage may be unavailable */
   }
-  return out;
+  return { ...out, syncPollSeconds: normalizeSyncPollSeconds(out.syncPollSeconds) };
 }
 
 export function saveLink(l: LinkSettings) {
   if (!canWrite()) return;
   try {
     const { token, ...rest } = l;
-    localStorage.setItem(LINK_KEY, JSON.stringify(rest));
+    localStorage.setItem(LINK_KEY, JSON.stringify({ ...rest, syncPollSeconds: normalizeSyncPollSeconds(rest.syncPollSeconds) }));
     localStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(TOKEN_KEY);
     if (token) (l.rememberToken ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
