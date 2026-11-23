@@ -1,3 +1,5 @@
+import { mountSession } from './mount-browser';
+import { catchUpAction } from './start-catch-up';
 import { staleOpenElements, automaticSpotRemovals, type MissingElements } from './stale-open';
 import { isHosted } from '@lab/bridge';
 import { BackgroundSync } from './background-sync';
@@ -18,7 +20,7 @@ import { draftElements, draftPrintRecipe, ensureDraft, listDrafts, pendingElemen
 import { pixelSignature } from './sync-pixels';
 import { draftSyncStatus, plainSyncStatus } from './sync-status';
 import { appStorage } from './app-storage';
-import { appliedCounts, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
+import { appliedCounts, describeChanges, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 interface HeldSync { identity: string; mine: Elements; current: ReadElements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
@@ -372,6 +374,37 @@ export class SyncSession {
   }
   private idleWaiters: (() => void)[] = [];
   async settled() { flushWrites(); while (this.busy) await new Promise<void>(resolve => this.idleWaiters.push(resolve)); }
+  /** Latest identified server rows, never the editable overlay or pending draft. */
+  get lastServerRead() { return this.checkedElements?.identity === this.identity ? this.checkedElements.elements : null; }
+  /** Explicit opt-in for a local copy opened from the start screen. */
+  async catchUp() {
+    const identity = this.identity;
+    const server = this.app.remote?.server ?? this.draft?.server ?? this.app.server;
+    if (isHosted() || this.app.hosted || oversightSession.readOnly || this.app.readOnly || !server || !canWrite()) return;
+    const token = await authToken(this.app, server);
+    const epoch = mountSession();
+    await this.settled();
+    if (!token || await authToken(this.app, server) !== token || epoch !== mountSession() || !this.isCurrent(identity) || this.app.readOnly || this.reachable !== true || !this.draft?.mount
+      || oversightSession.readOnly || this.app.hosted || isHosted()) return;
+    const localChanges = hasChanges(this.counts);
+    const newer = this.baseRevision != null && (this.elementsRevision ?? this.status?.revision ?? 0) > this.baseRevision;
+    // The chip also calls unseen own database additions 'both-changed'. With a
+    // clean element diff these are incoming rows, so use the normal clean pull.
+    // update() rechecks that diff before and after fetching; UI/check semantics stay intact.
+    const state = this.state === 'both-changed' && !localChanges && newer ? 'server-newer' : this.state;
+    const decision = catchUpAction({ state, localChanges, newer,
+      automatic: this.automaticEnabled, staleOpen: !!this.staleOpen, review: !!this.review, confirmation: !!this.confirmation,
+      imageDecision: this.imageDecision, intentFailure: !!this.intentFailure, held: !!this.held.length, linkConflict: !!this.draft.link_conflict });
+    if (decision === 'update') {
+      const counts = this.databaseChanges ? changeCounts(this.databaseChanges) : null;
+      await this.update();
+      if (this.isCurrent(identity) && this.reachable === true && !this.review && !this.error && this.baseRevision === this.status?.revision && !hasChanges(this.counts))
+        this.app.notice = `Updated from the database: ${counts ? describeChanges(counts) || 'up to date' : 'up to date'}`;
+    } else if (decision === 'review') {
+      this.app.notice = 'The database has newer changes than this local copy.';
+      this.app.noticeAction = { label: 'Review', run: () => { if (this.isCurrent(identity)) void this.action(); } };
+    }
+  }
   private finished() {
     this.busy = false;
     for (const resolve of this.idleWaiters.splice(0)) resolve();

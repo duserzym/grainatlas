@@ -3,19 +3,22 @@
   import { app } from '../lib/store.svelte';
   import { mountMirror } from '../lib/mount-mirror';
   import { authToken } from '../lib/atlas';
-  import { DRAFTS_CHANGED, listDrafts, type Draft } from '../lib/drafts';
-  import { sameId, type RecentEntry } from '../lib/deeplink';
+  import { DRAFTS_CHANGED, listDrafts, storedDraftProject, type Draft } from '../lib/drafts';
+  import type { RecentEntry } from '../lib/deeplink';
   import type { MountOut } from '../lib/upbdb';
-  import { openFromServer } from '../lib/remote';
+  import { bundleProjects } from '../lib/offline-bundles';
+  import { openOfflineCopy, openFromServer } from '../lib/remote';
   import { oversightSession } from '../lib/oversight';
-  import { SERVER_SESSION_CHANGED, mirrorServer, accountLabs, defaultScope, readResponse, checkedJson, browserAccount, recentRevisionIds, recentRevisions, cacheKey, hideMountCache, readCache, writeCache, mountPage, mountPath, localMatch, tileBadges, type BrowserAccount, type BrowserLab, type MountCache } from '../lib/mount-browser';
+  import { SERVER_SESSION_CHANGED, mirrorServer, accountLabs, defaultScope, readResponse, checkedJson, browserAccount, recentRevisionIds, recentRevisions, cacheKey, hideMountCache, readCache, writeCache, mountPage, mountPath, localMatch, startEntries, separateLocal, entryStatus, tileBadges, type BrowserAccount, type BrowserLab, type MountCache } from '../lib/mount-browser';
   import MountThumbnail from './MountThumbnail.svelte';
-  let { recent, onopen, onlink, oncontent, onauth, onoffline, refresh = 0 }: { recent: RecentEntry[]; onopen: (r: RecentEntry) => void; onlink: (m: MountOut) => void; oncontent: (n: number) => void; onauth: (value: boolean) => void; onoffline: (value: boolean) => void; refresh?: number } = $props();
+  let { recent, onopen, onlink, oncontent, onauth, onoffline, onrows, refresh = 0 }: { recent: RecentEntry[]; onopen: (r: RecentEntry) => Promise<boolean>; onlink: (m: MountOut) => void; oncontent: (n: number) => void; onauth: (value: boolean) => void; onoffline: (value: boolean) => void; onrows: (rows: MountOut[]) => void; refresh?: number } = $props();
+  let cachedBundles = $state<string[]>([]);
   let account = $state<BrowserAccount | null>(null);
   let token = $state('');
   let server = $state('');
   let rows = $state<MountOut[]>([]);
   let drafts = $state<Draft[]>([]);
+  const entries = $derived(startEntries(rows, recent, drafts, server));
   let next = $state<string | null>(null);
   let total = $state(0);
   let loading = $state(false);
@@ -117,8 +120,10 @@
     const timer = setInterval(() => void connect(), 5000);
     window.addEventListener(DRAFTS_CHANGED, update);
     const online = () => void connect(true);
+    const disconnected = () => { offline = true; };
+    window.addEventListener('offline', disconnected);
     window.addEventListener('online', online);
-    return () => { alive = false; ++version; clearInterval(timer); clearTimeout(debounce); window.removeEventListener(SERVER_SESSION_CHANGED, clear); window.removeEventListener(DRAFTS_CHANGED, update); window.removeEventListener('online', online); };
+    return () => { alive = false; ++version; clearInterval(timer); clearTimeout(debounce); window.removeEventListener(SERVER_SESSION_CHANGED, clear); window.removeEventListener(DRAFTS_CHANGED, update); window.removeEventListener('online', online); window.removeEventListener('offline', disconnected); };
   });
   $effect(() => {
     const me = account, atServer = server, atToken = token;
@@ -138,6 +143,31 @@
     }
     return () => { active = false; };
   });
+  $effect(() => onrows(rows));
+  $effect(() => {
+    const me = account;
+    let active = true;
+    cachedBundles = [];
+    if (me) void bundleProjects(mountMirror, me.mirrorId, me.id).then(ids => { if (active) cachedBundles = ids; }).catch(() => {});
+    return () => { active = false; };
+  });
+  async function openDatabase(mount: MountOut, match: ReturnType<typeof localMatch>) {
+    const published = mount.atlas?.project_id;
+    const local = match?.recent ?? (match?.draft ? { id: match.draft.uuid, name: match.draft.name, when: match.draft.updated_at, areas: 0, spots: 0 } : null);
+    try {
+      if (local && !separateLocal(mount, match)) {
+        if (await onopen(local)) return;
+        if (!offline && published) {
+          const location = local.path ?? local.package_path ?? (match?.draft ? storedDraftProject(match.draft)?.package.path : null) ?? 'the recorded location';
+          if (await openFromServer(server, published, null, null, mount.id, undefined, true)) app.notice = `The local copy was not found at ${location}; showing the database version.`;
+        }
+      } else if (published) {
+        if (offline) {
+          if (!await openOfflineCopy(server, published, mount.id, mount.label)) app.notice = 'The offline copy is no longer available; connect to the database to open it.';
+        } else if (await openFromServer(server, published, null, null, mount.id, undefined, true) && app.screen === 'open') app.screen = 'canvas';
+      }
+    } catch (e) { app.error = e instanceof Error ? e.message : String(e); }
+  }
   $effect(() => onoffline(offline));
   $effect(() => {
     const changed = refresh; const as = oversightSession.state?.viewAs?.username;
@@ -181,32 +211,37 @@
       </form>
     {/if}
     {#if selected.length}<div class="row" aria-label="Active filters">{#each selected as [key, value]}<button class="small" onclick={() => change(key, '')}>{key.replaceAll('_', ' ')}: {value} ×</button>{/each}</div>{/if}
-    {#if offline}<p role="status" data-testid="offline-cache">Offline{asOf ? `, as of ${new Date(asOf).toLocaleString()}` : ''}</p>{/if}
-    {#if error}<p role="status" class="faint small">{error}</p>{/if}
+    {#if offline}<p role="status" data-testid="offline-cache" title={error || undefined}>Offline copy{asOf ? ` · as of ${new Date(asOf).toLocaleString()}` : ''}</p>{/if}
+    {#if error && !offline}<p role="status" class="faint small">{error}</p>{/if}
     {#if loading}<p class="faint small" role="status">Loading mounts…</p>{/if}
     <div class="tiles" style={`--tile-size: ${size}px`}>
-      {#each rows as mount (mount.id)}
-        {@const match = localMatch(mount, recent, drafts, server)}
+      {#each entries.tiles as { mount, match } (mount.id)}
         {@const local = match?.recent ?? (match?.draft ? { id: match.draft.uuid, name: match.draft.name, when: match.draft.updated_at, areas: 0, spots: 0 } : null)}
         {@const published = mount.atlas?.project_id}
-        {@const localProject = match?.draft?.linked_uuid ?? local?.id}
-        {@const separateDraft = !!local && !!published && !sameId(localProject, published)}
-        {@const openPublished = published && !offline && (!local || separateDraft)}
+        {@const separateDraft = separateLocal(mount, match)}
+        {@const hasLocal = !!local && !separateDraft}
+        {@const hasOffline = !oversightSession.state?.viewAs && !!published && cachedBundles.includes(published.toLowerCase())}
+        {@const disabledReason = hasLocal ? '' : offline ? hasOffline ? '' : 'Not on this computer; needs a connection' : published ? '' : 'No published database version'}
         {@const revision = match?.draft ? revisions[match.draft.linked_uuid ?? match.draft.uuid] : undefined}
         <article class="glass panel tile" data-testid="mount-tile">
           {#key mount.atlas?.thumbnail ?? mount.id}
           <MountThumbnail url={mount.atlas?.thumbnail ?? null} cached={mount.thumbnail_data} fallback={match?.recent?.thumbnail} {server} {token} {offline} onsave={data => { mount.thumbnail_data = data; for (const page of Object.values(cache.pages)) { const row = page.rows.find(r => r.id === mount.id); if (row) row.thumbnail_data = data; } save(); }} />
           {/key}
-          <button class="title" disabled={!local && !openPublished} onclick={() => openPublished ? openFromServer(server, published, null, null, mount.id) : local && onopen(local)}>{mount.label}</button>
+          <button class="title" disabled={!!disabledReason} title={disabledReason || undefined} onclick={() => openDatabase(mount, match)}>{mount.label}</button>
           <p class="faint small">{mount.creator?.name ?? 'Unknown owner'}{mount.lab ? ` · ${mount.lab.handle}` : ''}</p>
           <p class="small">{(mount.sample_names ?? []).slice(0, 3).join(', ')}{Math.max(0, (mount.sample_count ?? mount.sample_names?.length ?? 0) - 3) ? ` +${(mount.sample_count ?? mount.sample_names?.length ?? 0) - 3}` : ''}</p>
           <p class="small">{mount.grain_count} grains · {mount.spot_count} spots</p>
           <p class="faint small">{mount.last_changed_at ? new Date(mount.last_changed_at).toLocaleString() : 'No changes yet'}</p>
-          <div class="badges">{#each tileBadges(mount, match, account.id, revision) as badge}<span class="small">{badge}</span>{/each}</div>
+          <div data-testid="tile-status">
+            {#each entryStatus(mount, match, revision, { offline, hasOffline }) as part, i}
+              <p class="small" class:faint={i === 0} class:badges={i > 0}><span>{part}</span></p>
+            {/each}
+          </div>
+          <div class="badges">{#each tileBadges(mount, match, account.id, revision).filter(b => b.startsWith('Shared ·')) as badge}<span class="small">{badge}</span>{/each}</div>
           <div class="row">
-            {#if local}<button onclick={() => onopen(local)}>{separateDraft ? 'Open other local copy' : 'Open local'}</button>{/if}
-            {#if published && (!local || separateDraft)}<button disabled={offline} onclick={() => openFromServer(server, published, null, null, mount.id)}>Open from server</button>{/if}
-            {#if !match}<button disabled={offline || !mount.can_edit || oversightSession.readOnly} onclick={() => onlink(mount)}>Link a local project…</button>{/if}
+            <button class:primary={!disabledReason} disabled={!!disabledReason} title={disabledReason || undefined} onclick={() => openDatabase(mount, match)}>{offline && !hasLocal ? hasOffline ? 'Open offline copy' : 'Needs a connection' : 'Open'}</button>
+            {#if local && separateDraft}<button onclick={() => onopen(local)}>Open other local copy</button>{/if}
+            {#if !match}<button disabled={offline || !mount.can_edit || oversightSession.readOnly} title={offline ? 'Needs a connection' : oversightSession.readOnly ? 'Viewing as another account is read-only' : !mount.can_edit ? 'No permission to edit this mount' : undefined} onclick={() => onlink(mount)}>Link a local project…</button>{/if}
           </div>
         </article>
       {/each}

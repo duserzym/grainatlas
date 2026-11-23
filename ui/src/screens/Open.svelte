@@ -1,4 +1,12 @@
+<script module lang="ts">
+  type OpenNote = { name: string; kind: 'missing' | 'unreachable' | 'unlocated' | 'unsupported' | 'wrong'; path: string | null };
+  // Keep a failed location available when the database fallback takes us to Canvas.
+  let lastNote: OpenNote | null = null;
+</script>
 <script lang="ts">
+  import { isHosted } from '@lab/bridge';
+  import { startEntries } from '../lib/mount-browser';
+  import type { AppState } from '../lib/store.svelte';
   import { appStorage } from '../lib/app-storage';
   import PickListImport from '../components/PickListImport.svelte';
   let importingPickList = $state(false);
@@ -17,7 +25,7 @@
   import { isDesktop } from '../lib/core/core';
   import { RECENT_KEY, readRecent, type RecentEntry } from '../lib/deeplink';
   import type { Project } from '../lib/core/types';
-  import { openRecent, recentCounts, recentLocation, relocateRecent, removeRecent, samePackage, storedProject, updateRecentCounts, baseName, type PathStatus, type RecentLocation } from '../lib/recent';
+  import { openRecent, recentCounts, recentLocation, relocateRecent, removeRecent, samePackage, storedProject, updateRecentCounts, baseName, type PathStatus } from '../lib/recent';
 
   let over = $state(false);
   let input: HTMLInputElement;
@@ -28,7 +36,8 @@
 
   /** The row being checked or opened, and the row whose inline message is shown. */
   let busy = $state<string | null>(null);
-  let note = $state<{ name: string; kind: 'missing' | 'unreachable' | 'unlocated' | 'unsupported' | 'wrong'; path: string | null } | null>(null);
+  let note = $state<OpenNote | null>(lastNote);
+  $effect(() => { lastNote = note; });
   /** Rows whose numbers were read from the project file (saved projects). */
   let fresh = $state<Record<string, boolean>>({});
 
@@ -106,12 +115,9 @@
     return recentLocation(r, kept(r.name))?.path ?? null;
   }
 
-  async function openAt(location: RecentLocation) {
-    await openPaths([location.path]);
-  }
-
   async function choose(r: RecentEntry) {
-    if (busy) return;
+    if (busy) return false;
+    let openedTab: AppState | null = null;
     busy = r.name;
     note = null;
     const draft = localDrafts.find(d => d.uuid === r.id);
@@ -121,18 +127,32 @@
       const out = await openRecent(r, kept(r.name), {
         canOpenPaths: desktop,
         focusExisting: (name) => {
-          const t = tabs.list.find((x) => x.pkg?.name === name);
-          if (t) tabs.select(t.id);
+          const t = tabs.list.find((x) => r.id ? x.project?.uuid.toLowerCase() === r.id.toLowerCase() : x.pkg?.name === name);
+          if (t) {
+            if (t.screen === 'open') t.screen = t.pkg ? 'area' : 'canvas';
+            tabs.select(t.id); openedTab = t;
+          }
           return !!t;
         },
         status: (path) => invoke<PathStatus>('path_status', { path }),
-        open: openAt,
+        open: async location => { openedTab = await openPaths([location.path]); },
       });
       if (out.kind === 'missing' || out.kind === 'unreachable') note = { name: r.name, kind: out.kind, path: out.path };
       else if (out.kind === 'unlocated') note = { name: r.name, kind: 'unlocated', path: null };
       else if (out.kind === 'unsupported') note = { name: r.name, kind: 'unsupported', path: out.path };
+      if ((out.kind === 'opened' || out.kind === 'focused') && openedTab) {
+        const tab = openedTab as AppState;
+        if (!tab.project || r.id && tab.project.uuid.toLowerCase() !== r.id.toLowerCase()) return false;
+        if (signedIn && !mountOffline && !app.hosted && !isHosted()) {
+          if (out.kind === 'focused') await tab.sync.check();
+          await tab.sync.catchUp();
+        }
+        return true;
+      }
+      return false;
     } catch (err) {
       app.error = String(err);
+      return false;
     } finally {
       busy = null;
     }
@@ -200,6 +220,7 @@
     const f = (e.target as HTMLInputElement).files?.[0];
     if (f) await loadProjectFile(f).catch((err) => (app.error = String(err)));
   }
+  let visibleMounts = $state<MountOut[]>([]);
   let mountContent = $state(false);
   let mountOffline = $state(false);
   let signedIn = $state(false);
@@ -208,6 +229,13 @@
   let linkNote = $state('');
   let linking = $state(false);
   let localDrafts = $state<Draft[]>([]);
+  const entries = $derived(startEntries(visibleMounts, recent, localDrafts, signedIn ? app.server : null));
+  const localRows = $derived.by(() => {
+    const visible = new Set(entries.localOnly);
+    const failed = note?.name;
+    return failed ? recent.filter(r => visible.has(r) || failed === r.name) : entries.localOnly;
+  });
+  const databaseFirst = $derived(signedIn && !!app.server && !mountOffline && app.layout.startView === 'database');
   let split: HTMLDivElement;
   let projectInput: HTMLInputElement;
   const hasContent = $derived(recent.length > 0 || mountContent);
@@ -248,7 +276,7 @@
     const handle = event.currentTarget as HTMLElement;
     handle.setPointerCapture(event.pointerId);
     const move = (e: PointerEvent) => {
-      app.layout.recentWidth = Math.max(180, Math.min(360, e.clientX - split.getBoundingClientRect().left));
+      app.layout.recentWidth = Math.max(180, Math.min(360, databaseFirst ? split.getBoundingClientRect().right - e.clientX : e.clientX - split.getBoundingClientRect().left));
     };
     const stop = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', stop); handle.removeEventListener('pointercancel', stop); app.saveLayout(); };
     handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', stop); handle.addEventListener('pointercancel', stop);
@@ -264,6 +292,7 @@
     <button disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(undefined, undefined, true)}>New mount…</button>
     <button onclick={() => importingPickList = true} data-testid="import-pick-list">Import pick list…</button>
     <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
+    <span role="group" aria-label="Start screen">{#each [['database', 'Database first'], ['local', 'Local first']] as [value, label]}<button class:primary={app.layout.startView === value} aria-pressed={app.layout.startView === value} onclick={() => { app.layout.startView = value as 'database' | 'local'; app.saveLayout(); }}>{label}</button>{/each}</span>
     {#if hasContent}<span class="faint small">Drop a folder or images here</span>{/if}
   </div>
   <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={() => chosen(input)} data-testid="package-input" />
@@ -286,16 +315,17 @@
       <button onclick={pick} data-testid="deeplink-open">Open package…</button><button onclick={() => app.deepLink = null}>Dismiss</button>
     </div>
   {/if}
-  <div class="split" bind:this={split} style={`--recent-width: ${app.layout.recentWidth}px`}>
+  <div class="split" class:database-first={databaseFirst} bind:this={split} style={`--recent-width: ${app.layout.recentWidth}px`}>
+    {#snippet localColumn()}
     <aside class="glass panel recent-list">
-      <h2>Recent projects</h2>
-      {#each recent as r (r.name)}
+      <h2>{signedIn ? 'On this computer only' : 'Recent projects'}</h2>
+      {#each localRows as r (r.name)}
         {@const c = shown(r)}
         <div class="recent-item" data-testid="recent-row">
           <button class="recent-title" disabled={!!busy} onclick={() => choose(r)} title={where(r) ?? 'Location not recorded'}>{r.name}{busy === r.name ? ' opening…' : ''}</button>
           <p class="faint small">{c.areas} areas · {c.spots} spots{c.cached ? ' · cached' : ''}</p>
           <p class="faint small">{new Date(r.when).toLocaleString()}</p>
-          <p class="small">On this computer</p>
+          <p class="small">{unlinked(r) ? 'On this computer' : 'Linked to a database mount'}</p>
           {#if unlinked(r)}<button class="small" disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(r)}>Link to a mount</button>{/if}
           {#if note?.name === r.name}
             <div class="note" role="status" data-testid="recent-note">
@@ -319,9 +349,18 @@
       {:else}<p class="muted">None yet.</p>{/each}
       <details><summary>Sync drafts</summary><DraftList /></details>
     </aside>
+    {/snippet}
+    {#snippet mountColumn()}
+    <StartMounts {recent} onopen={choose} onlink={m => showLink(undefined, m)} oncontent={n => mountContent = n > 0} onrows={rows => visibleMounts = rows} onauth={value => { signedIn = value; if (!value) mountContent = false; }} onoffline={value => mountOffline = value} refresh={refreshMounts} />
+    {/snippet}
+    {#each databaseFirst ? ['mounts', 'splitter', 'local'] : ['local', 'splitter', 'mounts'] as column (column)}
+      {#if column === 'mounts'}{@render mountColumn()}
+      {:else if column === 'local'}{@render localColumn()}
+      {:else}
     <div class="splitter" role="slider" tabindex="0" aria-label="Recent projects width" aria-orientation="vertical" aria-valuenow={app.layout.recentWidth} aria-valuemin="180" aria-valuemax="360" onpointerdown={resize}
       onkeydown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); app.layout.recentWidth = Math.max(180, Math.min(360, app.layout.recentWidth + (e.key === 'ArrowLeft' ? -10 : 10))); app.saveLayout(); } }}></div>
-    <StartMounts {recent} onopen={choose} onlink={m => showLink(undefined, m)} oncontent={n => { if (n > 0) mountContent = true; }} onauth={value => { signedIn = value; if (!value) mountContent = false; }} onoffline={value => mountOffline = value} refresh={refreshMounts} />
+      {/if}
+    {/each}
   </div>
   {#if linkDialog}
     <dialog use:showModal class="glass panel mount-dialog" aria-label={linkDialog.create ? 'New mount' : 'Link a local project'} oncancel={e => { e.preventDefault(); if (!linking) linkDialog = null; }}>
@@ -345,6 +384,7 @@
   .over { border-color: var(--accent); background: var(--accent-soft); }
   .drop p { margin: var(--space-2) 0 0; }
   .split { display: grid; grid-template-columns: minmax(180px, var(--recent-width)) 8px minmax(0, 1fr); gap: var(--space-2); align-items: start; min-width: 0; }
+  .split.database-first { grid-template-columns: minmax(0, 1fr) 8px minmax(180px, var(--recent-width)); }
   .splitter { align-self: stretch; min-height: 160px; cursor: col-resize; touch-action: none; border-left: 2px solid var(--hairline); }
   .splitter:focus-visible { outline: 2px solid var(--accent); }
   .recent-list { min-width: 0; padding: var(--space-3); }
@@ -355,5 +395,5 @@
   .note { font-size: .8rem; padding-top: var(--space-2); }
   .mount-dialog::backdrop { background: color-mix(in srgb, var(--bg) 55%, transparent); }
   .mount-dialog { margin: auto; width: min(500px, 90vw); max-height: 80vh; overflow: auto; display: grid; gap: var(--space-3); }
-  @media (max-width: 850px) { .split { grid-template-columns: minmax(0, 1fr); } .splitter { display: none; } }
+  @media (max-width: 850px) { .split, .split.database-first { grid-template-columns: minmax(0, 1fr); } .splitter { display: none; } }
 </style>

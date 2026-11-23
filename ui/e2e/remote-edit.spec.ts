@@ -68,9 +68,10 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
   const replies = new Map<string, object>();
   let failures = quiet.failures ?? 0;
   const createBodies: any[] = [];
-  const mounts = unregistered ? [] : [{ id: mountId, label: 'Synthetic mount', mount_type: 'epoxy_1in', grain_count: 2, spot_count: 3, can_edit: true }];
+  const mounts = unregistered ? [] : [{ id: mountId, label: 'Synthetic mount', mount_type: 'epoxy_1in', grain_count: 2, spot_count: 3, can_edit: true, atlas: { project_id: projectId, thumbnail: null, version: 1 } }];
   const unexpected: string[] = [];
   let revision = 1;
+  let offline = false;
   const hashes = { grains: 'grains-1', spots: 'spots-1', labels: 'labels-1' };
   let elements = {
     grains: ui.grains.a.map((g: any) => ({ ...g, area_id: 'a', sample: 'Synthetic area', project_uuid: projectId, retired: false, merged_from: [] })),
@@ -116,6 +117,7 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
   const imageJobs = new Map<string, any>(), imageReplies = new Map<string, object>();
   await page.route(`${server}/**`, async route => {
     const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
+    if (offline) return route.abort('connectionrefused');
     const json = (value: unknown, status = 200) => route.fulfill({ status, json: value, headers: { 'access-control-allow-origin': '*' } });
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
     if (pathname.startsWith('/v1/')) {
@@ -241,7 +243,14 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
     unexpected.push(`${request.method()} ${pathname}`);
     return route.fulfill({ status: 404, json: { detail: 'Unexpected synthetic endpoint' } });
   });
-  return { project, atlas, syncBodies, syncRequests, unexpected, uploads, bundleRequests, createBodies, databaseRequests, imagePuts, imageStarts, imageStatuses, imageCommits };
+  return { project, atlas, syncBodies, syncRequests, unexpected, uploads, bundleRequests, createBodies, databaseRequests, imagePuts, imageStarts, imageStatuses, imageCommits,
+    goOffline() { offline = true; },
+    addServerSpot() {
+      const spot = { ...elements.spots[0], id: '40000000-0000-4000-8000-000000000099', name: 'Synthetic incoming spot', acquisition_ids: ['50000000-0000-4000-8000-000000000099'] };
+      elements.spots = [...elements.spots, spot]; revision++; hashes.spots = `spots-${revision}`;
+      return spot;
+    },
+  };
 }
 
 test('Canvas creates and selects a mount, and keeps duplicate-label errors in the form', async ({ page }) => {
@@ -765,4 +774,78 @@ test('quiet images fall back to one zip publish when the new routes are unavaila
   await expect(page.getByTestId('sync-chip')).toHaveText('Up to date', { timeout: 30000 });
   expect(mock.uploads).toHaveLength(1); expect(mock.imagePuts).toHaveLength(0);
   expect(mock.unexpected).toEqual([]);
+});
+
+
+test('start-screen Open catches up a clean linked editable copy with one newer database spot', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true });
+  await openQuietEdit(page);
+  const original = mock.project.grainatlas_ui.spots;
+  const incoming = mock.addServerSpot();
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+  await expect(page.getByTestId('recent-row')).toHaveCount(0);
+  await page.getByTestId('mount-tile').getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.getByText('Updated from the database: 1 spot', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('spot')).toHaveCount(original.length + 1);
+  await expect(page.locator(`tr[data-spot-id="${incoming.id}"]`)).toContainText(incoming.name);
+  for (const spot of original) await expect(page.locator(`tr[data-spot-id="${spot.id}"]`)).toContainText(spot.name);
+  expect(mock.syncBodies).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+
+test('a cached database bundle opens read-only offline with cached server spots', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true });
+  // Cache only after the start screen establishes this credential's mirror binding.
+  await page.goto('/');
+  await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  await page.waitForFunction(projectId => new Promise<boolean>(resolve => {
+    const open = indexedDB.open('grainatlas-mirror');
+    open.onerror = () => resolve(false);
+    open.onsuccess = () => {
+      const db = open.result;
+      const read = db.transaction('items').objectStore('items').get(`mirror/invented-dataset/invented-account/bundles/${projectId}.json`);
+      read.onsuccess = () => { db.close(); resolve(!!JSON.parse(read.result ?? 'null')?.elements); };
+      read.onerror = () => { db.close(); resolve(false); };
+    };
+  }), projectId);
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+  await page.waitForFunction(() => new Promise<boolean>(resolve => {
+    const open = indexedDB.open('grainatlas-mirror');
+    open.onerror = () => resolve(false);
+    open.onsuccess = () => {
+      const db = open.result;
+      const read = db.transaction('items').objectStore('items').get('mirror/invented-dataset/invented-account/start-screen.json');
+      read.onsuccess = () => { db.close(); resolve(Object.values(JSON.parse(read.result ?? '{}').pages ?? {}).some((page: any) => page.rows?.length)); };
+      read.onerror = () => { db.close(); resolve(false); };
+    };
+  }));
+  mock.goOffline(); await page.reload();
+  await expect(page.getByTestId('offline-cache')).toContainText('Offline copy');
+  const open = page.getByTestId('mount-tile').getByRole('button', { name: 'Open offline copy', exact: true });
+  await expect(open).toBeEnabled(); await open.click();
+  await expect(page.getByTestId('edit-copy')).toBeDisabled();
+  await expect(page.getByTestId('edit-copy')).toHaveAttribute('title', 'Offline copy: read-only until the database is reachable');
+  await expect(page.getByTestId('spot')).toHaveCount(mock.project.grainatlas_ui.spots.length);
+  await expect(page.getByText(/Offline copy of Synthetic mount · as of .* · read-only/)).toBeVisible();
+  expect(mock.syncBodies).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test('a database tile title refreshes an already open read-only database view', async ({ page }) => {
+  const mock = await mockServer(page, undefined, false, undefined, { standalone: true });
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  const incoming = mock.addServerSpot();
+  await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.getByTestId('mount-tile').getByText('Database only', { exact: true })).toBeVisible();
+  await page.getByTestId('mount-tile').getByRole('button', { name: 'Synthetic mount', exact: true }).click();
+  await expect(page.locator(`tr[data-spot-id="${incoming.id}"]`)).toContainText(incoming.name);
+  await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+  expect(mock.bundleRequests.filter(r => r.path === 'atlas.json')).toHaveLength(2);
+  expect(mock.syncBodies).toEqual([]); expect(mock.unexpected).toEqual([]);
 });

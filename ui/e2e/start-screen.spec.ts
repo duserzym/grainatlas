@@ -29,6 +29,7 @@ async function setup(page: Page, options: Options = {}) {
       w.__scope = { viewAs: { username: 'robin', name: 'Robin Example' }, onBehalf: false };
       w.__TAURI_INTERNALS__ = { invoke: async (cmd: string) => cmd === 'bridge_token' ? 'invented-token' : cmd === 'bridge_oversight' ? w.__scope : null };
     }
+    if (options.unlinked) projectId = '10000000-0000-4000-8000-000000000002';
     if (options.local || options.unlinked) {
       localStorage.setItem('grainatlas.recent', JSON.stringify([{ id: projectId, name: 'Invented local project', when: '2026-01-01T00:00:00Z', areas: 1, spots: 20 }]));
       localStorage.setItem('grainatlas.drafts', JSON.stringify([projectId]));
@@ -52,10 +53,10 @@ async function setup(page: Page, options: Options = {}) {
     ]);
     if (r.method() === 'POST' && u.pathname === '/v1/atlas/projects/revisions' && options.holdRevisions) await revisionGate;
     if (await mockRevisionRead(route, [{ project_uuid: projectId, mount_id: mountId(0), revision: 4 }])) return;
-    if (u.pathname === `/v1/atlas/projects/${projectId}/link`) {
+    if (/^\/v1\/atlas\/projects\/[^/]+\/link$/.test(u.pathname)) {
       if (r.headers()['x-upbdb-oversight'] !== 'on-behalf') return json({ code: 'oversight_confirm', owner: 'Robin Example' }, 403);
       expect(r.postDataJSON()).toEqual({ mount_id: mountId(0), make_current: false });
-      return json({ project_uuid: projectId, mount_id: mountId(0), revision: 4 });
+      return json({ project_uuid: u.pathname.split('/')[4], mount_id: mountId(0), revision: 4 });
     }
     if (u.pathname === '/v1/mounts') {
       expect(u.searchParams.get('limit')).toBe('50');
@@ -70,6 +71,19 @@ async function fits(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const tile = page.getByTestId('mount-tile').first();
   if (await tile.count()) { const box = await tile.boundingBox(); expect(box!.x + box!.width).toBeLessThanOrEqual((page.viewportSize()?.width ?? 0) + 1); }
+}
+async function waitForMountCache(page: Page) {
+  await page.waitForFunction(() => new Promise<boolean>(resolve => {
+    const open = indexedDB.open('grainatlas-mirror');
+    open.onerror = () => resolve(false);
+    open.onsuccess = () => {
+      const db = open.result;
+      if (!db.objectStoreNames.contains('items')) { db.close(); resolve(false); return; }
+      const read = db.transaction('items').objectStore('items').get('mirror/invented-dataset/viewer/start-screen.json');
+      read.onsuccess = () => { db.close(); resolve(Object.values(JSON.parse(read.result ?? '{}').pages ?? {}).some((page: any) => page.rows?.length)); };
+      read.onerror = () => { db.close(); resolve(false); };
+    };
+  }));
 }
 for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }]) {
   for (const theme of ['light', 'dark']) {
@@ -88,31 +102,128 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
             expect(mock.calls.filter(c => c.path === '/v1/mounts')).toHaveLength(2);
             expect(mock.calls.filter(c => c.path === '/v1/mounts')[1].query.after).toBe('50');
           }
+          if (count) await expect(page.getByTestId('mount-tile').first().getByRole('button', { name: 'Open', exact: true })).toHaveClass(/primary/);
           await fits(page);
         });
       }
       test('signed out shows local projects only', async ({ page }) => {
         const mock = await setup(page, { signedOut: true, unlinked: true }); await page.goto('/');
         await expect(page.getByText('Sign in to see your mounts')).toBeVisible();
+        await expect(page.locator('.recent-list').getByRole('heading')).toHaveText('Recent projects');
+        await expect.poll(() => page.locator('.recent-list').evaluate(el => !!(el.compareDocumentPosition(document.querySelector('[data-testid="mount-browser"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+        expect((await page.locator('.recent-list').boundingBox())!.x).toBeLessThan((await page.getByTestId('mount-browser').boundingBox())!.x);
         await expect(page.getByTestId('recent-row')).toHaveCount(1); await expect(page.getByTestId('mount-tile')).toHaveCount(0);
         expect(mock.calls).toHaveLength(0); await fits(page);
       });
       test('offline cached metadata and local actions survive reload', async ({ page }) => {
         const mock = await setup(page, { count: 1, local: true }); await page.goto('/');
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
-        await page.waitForFunction(async () => {
-          const databases = await indexedDB.databases(); return databases.length > 0;
-        });
+        await waitForMountCache(page);
         mock.goOffline(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-        await expect(page.getByTestId('offline-cache')).toContainText('Offline, as of');
-        await expect(page.getByRole('button', { name: 'Open local', exact: true })).toBeEnabled(); await fits(page);
-        await page.reload(); await expect(page.getByTestId('offline-cache')).toContainText('Offline, as of');
+        await expect(page.getByTestId('offline-cache')).toContainText('Offline copy · as of');
+        const tile = page.getByTestId('mount-tile');
+        await expect(tile.getByTestId('tile-status').locator('p')).toHaveText(['Local copy on this computer', '1 change not yet uploaded']);
+        await expect(tile.getByText(/Offline copy · as of/)).toHaveCount(0);
+        await expect(page.getByTestId('offline-cache')).toHaveAttribute('title', /.+/);
+        await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0);
+        const open = tile.getByRole('button', { name: 'Open', exact: true });
+        await expect(open).toBeEnabled(); await expect(open).toHaveClass(/primary/); await fits(page);
+        await page.reload(); await expect(page.getByTestId('offline-cache')).toContainText('Offline copy · as of');
       });
       test('badges use one batched revision lookup', async ({ page }) => {
         const mock = await setup(page, { count: 1, local: true }); await page.goto('/');
         const tile = page.getByTestId('mount-tile');
-        for (const badge of ['On this computer', 'Local changes', 'Newer on server', 'Shared · Write']) await expect(tile.getByText(badge, { exact: true })).toBeVisible();
+        const lines = tile.getByTestId('tile-status').locator('p');
+        await expect(lines).toHaveText(['Database · local copy not yet synced', '1 change not yet uploaded', 'Newer in database']);
+        for (let i = 1; i < 3; i++) {
+          const previous = (await lines.nth(i - 1).boundingBox())!, current = (await lines.nth(i).boundingBox())!;
+          expect(current.y).toBeGreaterThanOrEqual(previous.y + previous.height);
+        }
+        await expect(tile.getByRole('button', { name: 'Open', exact: true })).toHaveClass(/primary/);
+        await expect(tile.getByText('Shared · Write', { exact: true })).toBeVisible();
         expect(mock.calls.filter(c => c.path === '/v1/atlas/projects/revisions')).toHaveLength(1); await fits(page);
+      });
+      test('database leads by default, local choice persists, Settings shares the choice', async ({ page }) => {
+        await setup(page, { count: 1, local: true }); await page.goto('/');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+        const mounts = page.getByTestId('mount-browser'), local = page.locator('.recent-list');
+        await expect(local.getByRole('heading')).toHaveText('On this computer only');
+        await expect.poll(() => mounts.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('.recent-list')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+        expect((await mounts.boundingBox())!.x).toBeLessThan((await local.boundingBox())!.x);
+        await expect(page.getByTestId('recent-row')).toHaveCount(0);
+        await page.getByRole('button', { name: 'Local first', exact: true }).click();
+        await expect.poll(() => local.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('[data-testid="mount-browser"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+        expect((await local.boundingBox())!.x).toBeLessThan((await mounts.boundingBox())!.x);
+        await page.reload();
+        await expect(page.getByRole('button', { name: 'Local first', exact: true })).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+        expect((await local.boundingBox())!.x).toBeLessThan((await mounts.boundingBox())!.x);
+        await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Settings', exact: true }).click();
+        await expect(page.getByRole('combobox', { name: 'Start screen' })).toHaveValue('local');
+        await page.getByRole('combobox', { name: 'Start screen' }).selectOption('database');
+        expect(await page.evaluate(() => JSON.parse(localStorage.getItem('grainatlas.layout')!).startView)).toBe('database');
+        await fits(page);
+      });
+      test('unlinked local projects stay in the local column beside database mounts', async ({ page }) => {
+        await setup(page, { count: 1, unlinked: true }); await page.goto('/');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+        await expect(page.getByTestId('recent-row')).toHaveCount(1);
+        await expect(page.locator('.recent-list').getByRole('heading')).toHaveText('On this computer only');
+        await expect(page.getByTestId('recent-row')).toContainText('Invented local project'); await fits(page);
+      });
+      test('offline without a local bundle leads with local projects and explains the disabled Open', async ({ page }) => {
+        const mock = await setup(page, { count: 1 }); await page.goto('/');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+        mock.goOffline(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+        await expect(page.getByTestId('offline-cache')).toContainText('Offline copy');
+        const tile = page.getByTestId('mount-tile');
+        await expect(tile.getByTestId('tile-status').locator('p')).toHaveText(['Not on this computer']);
+        await expect(tile.getByText(/Offline copy · as of/)).toHaveCount(0);
+        await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0);
+        const open = tile.getByRole('button', { name: 'Needs a connection', exact: true });
+        await expect(open).toBeDisabled(); await expect(open).not.toHaveClass(/primary/); await expect(open).toHaveAttribute('title', 'Not on this computer; needs a connection');
+        const mounts = page.getByTestId('mount-browser'), local = page.locator('.recent-list');
+        await expect.poll(() => local.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('[data-testid="mount-browser"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+        expect((await local.boundingBox())!.x).toBeLessThan((await mounts.boundingBox())!.x);
+        await expect(page.getByRole('button', { name: 'Database first', exact: true })).toHaveAttribute('aria-pressed', 'true'); await fits(page);
+      });
+      test('offline cached bundle has a read-only status and primary Open offline copy action', async ({ page }) => {
+        const mock = await setup(page, { count: 1 }); await page.goto('/');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+        await waitForMountCache(page);
+        // Synthetic bundle metadata; the unit tests exercise the read-only open itself.
+        await page.evaluate(async projectId => {
+          const db = await new Promise<IDBDatabase>((resolve, reject) => {
+            const request = indexedDB.open('grainatlas-mirror', 1);
+            request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+          });
+          const record = JSON.stringify({ atlas: { project_id: projectId }, project: { uuid: projectId }, elements: null, revision: 4, at: new Date().toISOString() });
+          const prefix = 'mirror/invented-dataset/viewer/bundles/';
+          await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction('items', 'readwrite'), items = tx.objectStore('items');
+            items.put(record, `${prefix}${projectId}.json`);
+            items.put(JSON.stringify([{ project: projectId, bytes: new TextEncoder().encode(record).length }]), `${prefix}index.json`);
+            tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+          });
+          db.close();
+        }, projectId);
+        mock.goOffline(); await page.reload();
+        await expect(page.getByTestId('offline-cache')).toContainText('Offline copy · as of');
+        const tile = page.getByTestId('mount-tile');
+        await expect(tile.getByTestId('tile-status').locator('p')).toHaveText(['Offline copy available (read-only)']);
+        await expect(tile.getByText(/Offline copy · as of/)).toHaveCount(0);
+        await expect(page.getByTestId('offline-cache')).toHaveAttribute('title', /.+/);
+        await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0);
+        const open = tile.getByRole('button', { name: 'Open offline copy', exact: true });
+        await expect(open).toBeEnabled(); await expect(open).toHaveClass(/primary/); await fits(page);
+      });
+      test('database HTTP errors stay visible outside offline mode', async ({ page }) => {
+        await setup(page, { count: 1 }); await page.goto('/');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+        await page.route(`${server}/v1/mounts?**`, route => route.fulfill({ status: 503, json: { detail: 'Synthetic database unavailable' }, headers: { 'access-control-allow-origin': '*' } }));
+        await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+        await expect(page.getByRole('status').filter({ hasText: 'Database 503:' })).toContainText('Synthetic database unavailable');
+        await expect(page.getByTestId('offline-cache')).toHaveCount(0); await fits(page);
       });
       test('superuser defaults to own lab and can choose All labs', async ({ page }) => {
         const mock = await setup(page, { superuser: true, count: 1 }); await page.goto('/');
@@ -149,14 +260,14 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await page.getByTestId('mount-select').selectOption(mountId(0));
         await expect(page.getByRole('dialog')).toHaveCount(0);
         const writes = mock.calls.filter(c => c.path.endsWith('/link'));
-        expect(writes).toHaveLength(2); expect(writes[0].headers['x-upbdb-oversight']).toBeUndefined(); expect(writes[1].headers['x-upbdb-oversight']).toBe('on-behalf'); expect(prompts).toBe(1); await fits(page);
+        expect(writes).toHaveLength(2); expect(writes.every(c => c.path === '/v1/atlas/projects/10000000-0000-4000-8000-000000000002/link')).toBe(true); expect(writes[0].headers['x-upbdb-oversight']).toBeUndefined(); expect(writes[1].headers['x-upbdb-oversight']).toBe('on-behalf'); expect(prompts).toBe(1); await fits(page);
       });
       test('sign-out keeps the mirror hidden and same-account sign-in shows it before revalidation', async ({ page }) => {
         const mock = await setup(page, { count: 1, local: true }); await page.goto('/');
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
         await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
         await page.getByTestId('sign-out').click();
-        await page.getByRole('button', { name: 'Open', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
         await expect(page.getByText('Sign in to see your mounts')).toBeVisible();
         await expect(page.getByTestId('mount-tile')).toHaveCount(0); await expect(page.getByTestId('recent-row')).toHaveCount(1); await fits(page);
         await page.reload();
@@ -181,7 +292,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         mock.account('another-viewer');
         await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
         await page.getByTestId('token').fill('another-token'); await page.getByTestId('token').press('Tab');
-        await page.getByRole('button', { name: 'Open', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
         await expect(page.getByTestId('mount-tile')).toHaveCount(0);
         await expect(page.getByText('No mounts match these filters.')).toBeVisible();
         await expect.poll(() => mock.calls.filter(c => c.path === '/v1/accounts/me').length).toBeGreaterThan(1);
@@ -189,7 +300,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await page.getByTestId('sign-out').click();
         mock.account('viewer'); mock.hold();
         await page.getByTestId('token').fill('new-token-same-account'); await page.getByTestId('token').press('Tab');
-        await page.getByRole('button', { name: 'Open', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
         await expect(page.getByRole('status').filter({ hasText: 'Loading mounts' })).toBeVisible();
         mock.release();
@@ -201,12 +312,12 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
         await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
         await page.getByTestId('server').fill('https://other.example.test'); await page.getByTestId('server').press('Tab');
-        await page.getByRole('button', { name: 'Open', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
         await expect(page.getByText('No mounts match these filters.')).toBeVisible();
         await expect(page.getByTestId('mount-tile')).toHaveCount(0);
         await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
         await page.getByTestId('server').fill(server); await page.getByTestId('server').press('Tab');
-        await page.getByRole('button', { name: 'Open', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
       });
       test('combined server filters, sorting and removable chips', async ({ page }) => {
@@ -266,7 +377,7 @@ test('revision badges reuse a fresh answer across screens and reloads, then reva
   await page.clock.install();
   const mock = await setup(page, { count: 1, local: true });
   await page.goto('/');
-  const badge = page.getByTestId('mount-tile').getByText('Newer on server', { exact: true });
+  const badge = page.getByTestId('mount-tile').getByText(/Newer in database/);
   await expect(badge).toBeVisible();
   const revisions = () => mock.calls.filter(c => c.path === '/v1/atlas/projects/revisions');
   const nav = page.getByRole('navigation', { name: 'Screens' });
@@ -331,6 +442,6 @@ test('a stalled revision lookup never holds the mount list, Refresh or navigatio
   await expect(page.getByTestId('mount-browser')).toHaveCount(0);
   mock.releaseRevisions();
   await nav.getByRole('button', { name: 'Open', exact: true }).click();
-  await expect(page.getByTestId('mount-tile').getByText('Newer on server', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('mount-tile').getByText(/Newer in database/)).toBeVisible();
   expect(mock.calls.filter(c => c.path === '/v1/atlas/projects/revisions')).toHaveLength(1);
 });

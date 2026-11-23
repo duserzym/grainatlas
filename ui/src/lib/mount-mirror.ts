@@ -1,11 +1,13 @@
 import { isDesktop } from './core/core.ts';
 
 /** Keyed reads only: never enumerate accounts or fall back to a last-used mirror.
- * Browser builds use the same paths as IndexedDB keys; desktop owns the app-data root. */
+ * Bundles use IndexedDB on both surfaces; other desktop metadata uses app-data files. */
 export interface MirrorStorage {
   getItem(key: string): string | null | Promise<string | null>;
   setItem(key: string, value: string): void | Promise<void>;
+  removeItem?(key: string): void | Promise<void>;
 }
+const bundleStorageKey = (key: string) => /^mirror\/[^/]+\/[^/]+\/bundles\/[^/]+\.json$/.test(key);
 class MountMirror implements MirrorStorage {
   private opening?: Promise<IDBDatabase>;
   private queue: Promise<void> = Promise.resolve();
@@ -20,7 +22,7 @@ class MountMirror implements MirrorStorage {
   }
   async getItem(key: string) {
     await this.queue;
-    if (isDesktop()) {
+    if (isDesktop() && !bundleStorageKey(key)) {
       const { invoke } = await import('@tauri-apps/api/core');
       return invoke<string | null>('mirror_read', { key });
     }
@@ -31,9 +33,25 @@ class MountMirror implements MirrorStorage {
       request.onerror = () => reject(request.error);
     });
   }
+  removeItem(key: string) {
+    // Bundles live in IndexedDB on both surfaces; native metadata paths are unchanged.
+    if (!bundleStorageKey(key)) return Promise.reject(new Error('Only bundle records can be removed'));
+    const write = this.queue.then(async () => {
+      const db = await this.db();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('items', 'readwrite');
+        tx.objectStore('items').delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+      });
+    });
+    this.queue = write.catch(() => {});
+    return write;
+  }
+
   setItem(key: string, value: string) {
     const write = this.queue.then(async () => {
-      if (isDesktop()) {
+      if (isDesktop() && !bundleStorageKey(key)) {
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('mirror_write', { key, contents: value });
       } else {

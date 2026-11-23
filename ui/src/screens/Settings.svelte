@@ -189,6 +189,7 @@
       <button onclick={clearCache} disabled={clearingCache}>Clear image cache</button>
     </div>
     <div class="field">Theme <ThemeSwitch labels /></div>
+    <label class="field">Start screen<select value={app.layout.startView} onchange={e => { app.layout.startView = e.currentTarget.value as 'database' | 'local'; app.saveLayout(); }}><option value="database">Database first</option><option value="local">Local first</option></select></label>
     <div class="openrow">
       <p class="faint small grow">Panel positions and folded panels are remembered on this computer{app.hosted ? '' : ', and the desktop app remembers its window'}. Reset puts everything back where it starts.</p>
       <button onclick={() => app.resetLayout()} data-testid="reset-layout">Reset layout</button>

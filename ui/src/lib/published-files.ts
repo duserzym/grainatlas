@@ -35,6 +35,7 @@ export async function publishedFile(remote: Remote, path: string, signal?: Abort
     const controller = new AbortController();
     const promise = imageCache.load(hash, async () => {
       controller.signal.throwIfAborted();
+      if (remote.cacheOnly?.()) throw new Error('This image is not cached on this computer');
       return downloadFile(url, init, controller.signal);
     });
     job = { promise, controller, users: 0 };

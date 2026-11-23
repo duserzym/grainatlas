@@ -1188,3 +1188,195 @@ test('next-spot size resets on project/area changes, preserves user entry betwee
   assert.equal(app.diameter,35);
   assert.equal(JSON.stringify(p.grainatlas_ui.spots),original);
 });
+
+test('start-screen catch-up pulls an unseen server spot and preserves existing registered identity and links', async t => {
+  const { session, base, hashes } = quietSession('catch-up-synthetic');
+  t.after(() => { session.dispose(); app.link.token = ''; });
+  const { oversightSession } = await import('./oversight.ts');
+  const previous = oversightSession.state; oversightSession.set(null); t.after(() => oversightSession.set(previous));
+  app.link.token = 'synthetic-token';
+  addQuietSpot();
+  Object.assign(app.spots[0], { acquisition_id: 'synthetic-measurement', n: 1, created: '', created_by: '', sample: 'Synthetic', grain_number: 1 });
+  base.spots = JSON.parse(JSON.stringify(app.spots));
+  session.draft = { ...session.draft, base, base_revision: 1 };
+  const original = JSON.parse(JSON.stringify(app.spots[0]));
+  const added = { ...original, id: 'new-server-spot', name: 'Synthetic incoming', acquisition_id: 'synthetic-new-link', project_uuid: app.project.uuid };
+  const theirs = { ...structuredClone(base), spots: [...base.spots, added], revision: 2, hashes: { ...hashes, spots: 's2' } };
+  session.serverElements = theirs; session.elementsRevision = 2;
+  session.status = { ...session.status, revision: 2, hashes: theirs.hashes };
+  let reads = 0, writes = 0;
+  session.api = async () => ({ elements: async () => { reads++; return theirs; }, lookup: async () => session.status, sync: async () => { writes++; throw new Error('Catch-up must not upload'); } });
+  await session.catchUp();
+  assert.equal(reads, 1); assert.equal(writes, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(app.spots[0])), original);
+  assert.equal(app.spots[1].id, added.id); assert.equal(app.spots[1].acquisition_id, added.acquisition_id);
+  assert.equal(session.draft.base_revision, 2);
+  assert.equal(app.notice, 'Updated from the database: 1 spot');
+});
+
+test('start-screen catch-up waits for the opening check and ignores a changed project identity', async t => {
+  const { session } = quietSession('catch-up-wait-synthetic');
+  t.after(() => { session.dispose(); app.link.token = ''; });
+  const { oversightSession } = await import('./oversight.ts');
+  const previous = oversightSession.state; oversightSession.set(null); t.after(() => oversightSession.set(previous));
+  app.link.token = 'synthetic-token'; session.busy = true;
+  let updates = 0;
+  t.mock.method(session, 'update', async () => { updates++; });
+  let finished = false;
+  const pending = session.catchUp().then(() => { finished = true; });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(finished, false, 'catch-up is still waiting for the opening check');
+  assert.equal(updates, 0);
+  app.project = { ...app.project, uuid: 'synthetic-other-project' };
+  session.finished(); await pending;
+  assert.equal(updates, 0);
+});
+
+test('start-screen catch-up reviews local edits without silently merging and leaves hosted opens alone', async t => {
+  const { session, base } = quietSession('catch-up-review-synthetic');
+  t.after(() => { session.dispose(); app.link.token = ''; app.hosted = false; });
+  const { oversightSession } = await import('./oversight.ts');
+  const previous = oversightSession.state; oversightSession.set(null); t.after(() => oversightSession.set(previous));
+  app.link.token = 'synthetic-token'; app.link.syncAutomatically = false;
+  addQuietSpot(); session.draft = { ...session.draft, base };
+  session.status = { ...session.status, revision: 2 };
+  let actions = 0, updates = 0;
+  t.mock.method(session, 'update', async () => { updates++; });
+  t.mock.method(session, 'action', async () => { actions++; });
+  const before = JSON.stringify(app.spots);
+  await session.catchUp();
+  assert.equal(updates, 0); assert.equal(JSON.stringify(app.spots), before);
+  assert.equal(app.notice, 'The database has newer changes than this local copy.');
+  assert.equal(app.noticeAction.label, 'Review'); app.noticeAction.run(); assert.equal(actions, 1);
+  app.notice = 'Synthetic existing notice'; app.hosted = true;
+  await session.catchUp(); assert.equal(app.notice, 'Synthetic existing notice'); assert.equal(updates, 0);
+});
+
+test('offline bundle opens read-only with last database rows and no image or bundle network reads', async t => {
+  const { mountMirror } = await import('./mount-mirror.ts');
+  const { browserAccount, hideMountCache } = await import('./mount-browser.ts');
+  const { cacheBundle } = await import('./offline-bundles.ts');
+  const { openOfflineCopy, editCopy } = await import('./remote.ts');
+  const { oversightSession } = await import('./oversight.ts');
+  const oldScope = oversightSession.state; oversightSession.set(null); t.after(() => oversightSession.set(oldScope));
+  const { session } = quietSession('offline-bundle-synthetic');
+  app.stopNumbering();
+  t.after(() => { session.dispose(); app.remote = null; app.link.token = ''; });
+  app.link.token = 'synthetic-offline-token';
+  const map = new Map();
+  for (const [method, fn] of Object.entries({ getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) })) t.mock.method(mountMirror, method, fn);
+  hideMountCache();
+  t.mock.method(globalThis, 'fetch', async url => Response.json(String(url).includes('/accounts/me') ? { id: 'synthetic-account' } : String(url).includes('/v1/server') ? { dataset_id: 'synthetic-dataset' } : []));
+  const account = await browserAccount('https://offline.test', app.link.token, mountMirror);
+  const project = { ...structuredClone(source), uuid: 'offline-bundle-synthetic' };
+  const spot = { id: 'offline-spot', name: 'Synthetic cached spot', area_id: 'area', grain_id: 'grain', x_um: 2, y_um: 2, diameter_um: 20, acquisition_id: 'synthetic-cached-link' };
+  const elements = { ...structuredClone(session.elements), spots: [spot] };
+  const atlas = { format: 'grainatlas-atlas', version: 1, project_id: project.uuid, name: 'Synthetic cached mount', tile_size: 256, files: [],
+    areas: [{ ...project.areas[0], path: 'area', levels: [], w: 32, h: 24, um_per_px: 1 }] };
+  await cacheBundle(mountMirror, account.mirrorId, account.id, { atlas, project, elements, revision: 3, at: '2026-11-23T12:00:00Z' });
+  const network = t.mock.method(globalThis, 'fetch', async () => { throw new Error('No offline bundle or tile download'); });
+  app.project = null;
+  let checks = 0;
+  session.api = async () => { checks++; throw new Error('Synthetic offline check'); };
+  assert.equal(await openOfflineCopy('https://offline.test', project.uuid, 'mount', 'Synthetic cached mount', app), true);
+  assert.equal(app.readOnly, true); assert.equal(checks, 1);
+  assert.equal(app.spots[0].id, spot.id); assert.equal(app.spots[0].acquisition_id, spot.acquisition_id);
+  assert.match(app.notice, /^Offline copy of Synthetic cached mount · as of .* · read-only$/);
+  await editCopy(app); assert.equal(app.readOnly, true);
+  assert.equal(app.notice, 'Offline copy: read-only until the database is reachable');
+  const { publishedFile } = await import('./published-files.ts');
+  await assert.rejects(publishedFile(app.remote, 'missing.webp'), /not cached/);
+  assert.equal(network.mock.callCount(), 0);
+  assert.equal([...map.values()].some(value => value.includes('synthetic-offline-token')), false);
+  session.reachable = true;
+  const online = t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([1, 2])));
+  assert.deepEqual([...new Uint8Array(await publishedFile(app.remote, 'after-online.webp'))], [1, 2]);
+  assert.equal(online.mock.callCount(), 1, 'a successful database check permits uncached image reads again');
+});
+
+test('server open caches raw bundle and last server rows, never a pending local overlay, without extra identity requests', async t => {
+  const { mountMirror } = await import('./mount-mirror.ts');
+  const { browserAccount, hideMountCache } = await import('./mount-browser.ts');
+  const { readBundle, bundleKey } = await import('./offline-bundles.ts');
+  const { openFromServer } = await import('./remote.ts');
+  const { oversightSession } = await import('./oversight.ts');
+  const oldScope = oversightSession.state; oversightSession.set(null); t.after(() => oversightSession.set(oldScope));
+  const { atlas, published } = await serverOpenSetup(t);
+  atlas.project_id = published.uuid;
+  const map = new Map();
+  let cached;
+  const written = new Promise(resolve => { cached = resolve; });
+  t.mock.method(mountMirror, 'getItem', key => map.get(key) ?? null);
+  t.mock.method(mountMirror, 'setItem', (key, value) => { map.set(key, value); if (key === bundleKey('synthetic-dataset', 'synthetic-account', published.uuid)) cached(); });
+  t.mock.method(mountMirror, 'removeItem', key => map.delete(key));
+  hideMountCache();
+  const paths = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = new URL(url).pathname; paths.push(path);
+    const body = path.endsWith('/accounts/me') ? { id: 'synthetic-account' } : path.endsWith('/v1/server') ? { dataset_id: 'synthetic-dataset' } : path.endsWith('/v1/labs') ? [] : path.endsWith('/atlas.json') ? atlas : published;
+    return Response.json(body, { headers: { 'X-Atlas-Version': '7' } });
+  });
+  const account = await browserAccount('https://quiet.test', 'synthetic-token', mountMirror);
+  paths.length = 0;
+  const localSpot = { id: 'synthetic-pending-spot', name: 'Synthetic pending spot', area_id: 'area', grain_id: 'grain', x_um: 2, y_um: 2, diameter_um: 20 };
+  const { writeDraft } = await import('./drafts.ts');
+  writeDraft({ ...app.sync.draft, pending: { spots: [localSpot], grains: [], labels: [] }, changes: { spots: 1, grains: 0, labels: 0 } });
+  // The access-link path keeps the prior uncached request flow as a baseline.
+  const baselineStart = performance.now();
+  assert.equal(await openFromServer('https://quiet.test', published.uuid, null, 'synthetic-access', 'mount', app), true);
+  const baseline = { bundleRequests: paths.length, identityRequests: 0, ms: performance.now() - baselineStart };
+  assert.equal(baseline.bundleRequests, 2); paths.length = 0;
+  const started = performance.now();
+  assert.equal(await openFromServer('https://quiet.test', published.uuid, null, null, 'mount', app), true);
+  await written;
+  const record = await readBundle(mountMirror, account.mirrorId, account.id, published.uuid);
+  assert.equal(record.project.uuid, published.uuid);
+  assert.equal(app.spots[0].id, localSpot.id, 'the live view still shows the kept pending overlay');
+  assert.deepEqual(record.project.grainatlas_ui.spots, []);
+  assert.deepEqual(record.elements.spots, []); // The check's actual rows, independent of bundle/UI overlay.
+  assert.equal(record.revision, 1);
+  assert.deepEqual(paths, [`/atlas/projects/${published.uuid}/atlas.json`, `/atlas/projects/${published.uuid}/project.json`]);
+  assert.equal([...map.values()].some(value => value.includes('synthetic-token')), false);
+  console.info(JSON.stringify({ bundleCache: 'warm identity', baseline, after: { bundleRequests: paths.length, identityRequests: 0, ms: performance.now() - started } }));
+});
+
+for (const hosted of [false, true]) {
+  test(`server open skips bundle caching ${hosted ? 'for a hosted tab with a mirror binding' : 'without a mirror binding and never looks up identity'}`, async t => {
+    const { mountMirror } = await import('./mount-mirror.ts');
+    const { browserAccount, hideMountCache, mountSession } = await import('./mount-browser.ts');
+    const { openFromServer } = await import('./remote.ts');
+    const { oversightSession } = await import('./oversight.ts');
+    const oldScope = oversightSession.state; oversightSession.set(null);
+    t.after(() => { oversightSession.set(oldScope); app.hosted = false; });
+    const { atlas, published, reply } = await serverOpenSetup(t);
+    atlas.project_id = published.uuid;
+    const map = new Map(), paths = [];
+    let bindingRead;
+    const read = new Promise(resolve => { bindingRead = resolve; });
+    const get = t.mock.method(mountMirror, 'getItem', key => { if (key.startsWith('mirror-bindings/')) bindingRead(); return map.get(key) ?? null; });
+    const set = t.mock.method(mountMirror, 'setItem', (key, value) => map.set(key, value));
+    t.mock.method(mountMirror, 'removeItem', key => map.delete(key));
+    hideMountCache();
+    t.mock.method(globalThis, 'fetch', async url => {
+      const path = new URL(url).pathname; paths.push(path);
+      if (path.endsWith('/atlas.json')) return reply(atlas);
+      if (path.endsWith('/project.json')) return reply(published);
+      if (hosted) return Response.json(path.endsWith('/accounts/me') ? { id: 'synthetic-account' } : path.endsWith('/v1/server') ? { dataset_id: 'synthetic-dataset' } : []);
+      return Response.json({ detail: 'Synthetic refused identity' }, { status: 401 });
+    });
+    if (hosted) await browserAccount('https://quiet.test', 'synthetic-token', mountMirror);
+    const epoch = mountSession(), readsBefore = get.mock.callCount(), writesBefore = set.mock.callCount();
+    paths.length = 0; app.hosted = hosted;
+    const started = performance.now();
+    assert.equal(await openFromServer('https://quiet.test', published.uuid, null, null, 'mount', app), true);
+    if (!hosted) await read;
+    // Let the fire-and-forget cache continuation finish after the observed binding read.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(paths, [`/atlas/projects/${published.uuid}/atlas.json`, `/atlas/projects/${published.uuid}/project.json`]);
+    assert.equal(set.mock.callCount(), writesBefore);
+    assert.equal(get.mock.callCount() - readsBefore, hosted ? 0 : 1);
+    assert.equal(mountSession(), epoch, 'cache work must not invalidate the signed-in mirror');
+    assert.equal(app.project.uuid, published.uuid); assert.equal(app.screen, 'canvas');
+    console.info(JSON.stringify({ bundleCache: hosted ? 'hosted tab' : 'no binding', bundleRequests: paths.length, identityRequests: 0, ms: performance.now() - started }));
+  });
+}

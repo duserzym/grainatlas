@@ -1,3 +1,7 @@
+import { mountMirror } from './mount-mirror';
+import { boundMirror, relativeTime, mountSession } from './mount-browser';
+import { cacheBundle, readBundle } from './offline-bundles';
+import { oversightSession } from './oversight';
 import { fetchWithTimeout, HttpNetworkError } from './http.ts';
 import { serverFetch } from './oversight';
 import { canWrite } from './presentation';
@@ -7,7 +11,7 @@ import { canWrite } from './presentation';
 // copy" makes it a local project (annotations, tone and print sheets editable). This is how UPbDB's mount page embeds grainatlas and how a spot link from
 // anywhere reaches the images (`?server=&project=&spot=`).
 
-import { isBridgeCommand } from '@lab/bridge';
+import { isBridgeCommand, isHosted } from '@lab/bridge';
 import { hostedSync, ATLAS_EVENTS } from './hosted-sync';
 import { draftElements, keepDraftPrintRecipe, listDrafts, storedDraftProject } from './drafts';
 import { draftSyncStatus } from './sync-status';
@@ -61,6 +65,9 @@ export interface Remote {
   /** Pixel baseline from the fetched project.json, before local recipes or edits. */
   pixelsSignature?: string;
   readOnly: boolean;
+  offlineAt?: string;
+  /** Offline image reads can download again after a successful database check. */
+  cacheOnly?: () => boolean;
   /** UPbDB serves bundles to a bearer token or a signed read-only `access` token (12 h). */
   token: string | null;
   access: string | null;
@@ -113,7 +120,7 @@ function mosaicOf(a: AtlasArea, tile: number): MosaicJson {
 }
 
 /** Loads a published bundle and shows it on the Canvas, read-only; selects `spot` when given. */
-export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null, given?: AppState) {
+export async function openFromServer(serverIn: string, projectId: string, spot: string | null = null, access: string | null = null, mount: string | null = null, given?: AppState, refreshView = false) {
   // Callers that pass a tab chose it (and may reload the project there). Without one
   // (Settings, links), the project's own tab, the empty active tab or a new tab.
   let app = given ?? current();
@@ -121,7 +128,8 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
     const { targetTab } = await import('./actions');
     app = targetTab(projectId);
   }
-  if (!given && sameId(app.project?.uuid, projectId)) {
+  // A start-screen database Open explicitly refreshes a reused view as well.
+  if (!given && !refreshView && sameId(app.project?.uuid, projectId)) {
     if (spot) {
       const { applyShellFocus } = await import('./shellcmd');
       await applyShellFocus(app, { type: 'focus-spot', project: projectId, spot, flash: false });
@@ -137,6 +145,7 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   if (!isBridgeCommand({ type: 'open-project', project: projectId, server })) { app.error = 'Enter a valid project id and server address.'; return false; }
   hostedSync.status({ type: ATLAS_EVENTS.status, project: projectId, mount: null, name: projectId, mode: 'view', state: 'checking', revision: null, atlasVersion: null, changes: null, syncedAt: null }, true);
   const token = await authToken(app, server);
+  const epoch = mountSession();
   const at: Pick<Remote, 'server' | 'projectId' | 'token' | 'access' | 'version'> = { server, projectId, token, access };
   const controller = new AbortController();
   const cancel = () => controller.abort(new Error('cancelled'));
@@ -183,11 +192,39 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
     });
   } finally { if (app.cancelTask === cancel) app.cancelTask = null; }
   if (!r || controller.signal.aborted) return false;
+  const snapshot = JSON.parse(JSON.stringify(r)) as typeof r;
+  await showBundle(app, r, server, projectId, token, access, mount, at.version);
+  const serverRead = app.sync.lastServerRead;
+  const revision = app.sync.status?.revision ?? null;
+  if (!isHosted() && !app.hosted && token && !access && !oversightSession.state?.viewAs && sameId(app.project?.uuid, projectId)) {
+    // Cache failure never prevents opening. Reuse the established identity without a request.
+    void (async () => {
+      if (epoch !== mountSession()) return;
+      const account = await boundMirror(server, token, mountMirror);
+      if (!account || await authToken(app, server) !== token || epoch !== mountSession() || oversightSession.state?.viewAs) return;
+      await cacheBundle(mountMirror, account.mirrorId, account.id, { ...snapshot,
+        elements: serverRead, revision,
+        at: new Date().toISOString(), version: at.version });
+    })().catch(() => {});
+  }
+  if (spot) {
+    const s = app.spots.find((x) => sameId(x.id, spot));
+    if (s) {
+      app.areaId = s.area_id;
+      app.selection = [s.id];
+      app.focusSpot = s.id;
+    } else app.notice = `Spot ${spot} is not in ${r.atlas.name}.`;
+  }
+  return true;
+}
+
+async function showBundle(app: AppState, r: { atlas: AtlasJson; project: Project }, server: string, projectId: string,
+  token: string | null, access: string | null, mount: string | null, version?: number, offlineAt?: string, elements?: import('./sync').ReadElements | null) {
   const pixelsSignature = pixelSignature(r.project);
   // A clean element outbox can still carry a newer local print recipe.
   const openedProject = r.project;
   keepDraftPrintRecipe(openedProject, listDrafts(server).find(d => d.uuid === openedProject.uuid && (!d.server || normalizeServer(d.server) === server)) ?? null);
-  const remote: Remote = { server, projectId, atlas: r.atlas, version: at.version, pixelsSignature, readOnly: true, token, access, mount };
+  const remote: Remote = { server, projectId, atlas: r.atlas, version, pixelsSignature, readOnly: true, token, access, mount, offlineAt, cacheOnly: offlineAt ? () => app.sync.reachable !== true : undefined };
   app.cancelPixelsLoad?.();
   app.pixelsLoad = null;
   app.clearHistory(); app.viewMode = false; app.draftHere = null;
@@ -209,17 +246,33 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
   app.preview = {};
   app.pixelsVersion++;
   app.areaId = r.atlas.areas[0]?.id ?? null;
+  if (elements) {
+    app.spots = uiSpots(elements.spots, elements.grains, app.spots);
+    app.grains = groupedGrains(elements.grains, app.grains); app.labels = elements.labels.filter(l => !l.retired);
+  }
   app.sync.openedView();
   await app.sync.check();
   app.screen = 'canvas';
-  if (spot) {
-    const s = app.spots.find((x) => sameId(x.id, spot));
-    if (s) {
-      app.areaId = s.area_id;
-      app.selection = [s.id];
-      app.focusSpot = s.id;
-    } else app.notice = `Spot ${spot} is not in ${r.atlas.name}.`;
+}
+
+/** Open only this signed-in account's bundle; image reads use the content cache. */
+export async function openOfflineCopy(server: string, projectId: string, mount: string | null = null, name?: string, given?: AppState) {
+  if (oversightSession.state?.viewAs) return false;
+  const token = await authToken(given ?? current(), server);
+  if (!token) return false;
+  const epoch = mountSession();
+  const account = await boundMirror(server, token, mountMirror);
+  if (!account) return false;
+  const record = await readBundle(mountMirror, account.mirrorId, account.id, projectId);
+  if (!record || await authToken(given ?? current(), server) !== token || epoch !== mountSession() || oversightSession.state?.viewAs) return false;
+  const app = given ?? (await import('./actions')).targetTab(projectId);
+  // An already editable tab is a local mirror: keep its unsynced work intact.
+  if (sameId(app.project?.uuid, projectId) && !app.readOnly) {
+    await app.sync.check(); app.screen = 'canvas'; return true;
   }
+  await app.sync.settled();
+  await showBundle(app, record, server, projectId, token, null, mount, record.version, record.at, record.elements);
+  app.notice = `Offline copy of ${name ?? record.atlas.name} · as of ${relativeTime(record.at)} · read-only`;
   return true;
 }
 
@@ -230,6 +283,7 @@ export async function openFromServer(serverIn: string, projectId: string, spot: 
  */
 export async function editCopy(app: AppState = current()) {
   if (!canWrite()) return;
+  if (app.remote?.offlineAt && app.sync.reachable !== true) { app.notice = 'Offline copy: read-only until the database is reachable'; return; }
   const remote = app.remote;
   const p = app.project;
   if (!remote || !p) return;

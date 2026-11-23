@@ -7,6 +7,7 @@ import { serverFetch, oversightSession } from './oversight.ts';
 
 export const SERVER_SESSION_CHANGED = 'grainatlas:server-session-changed';
 let sessionEpoch = 0;
+export const mountSession = () => sessionEpoch;
 export const PAGE_SIZE = 50;
 export const CACHE_TILES = 500;
 export const CACHE_BYTES = 20 * 1024 * 1024;
@@ -59,19 +60,68 @@ export function accountLabs(account: Pick<BrowserAccount, 'can_manage_people'>, 
 export function defaultScope(account: BrowserAccount): Record<string, string> {
   return { sort: '-last_changed', ...(account.can_manage_people ? account.labs[0] ? { lab: account.labs[0].handle } : { mine: 'true' } : {}) };
 }
-export function localMatch(mount: MountOut, recent: RecentEntry[], drafts: Draft[], server: string): { recent?: RecentEntry; draft?: Draft } | null {
-  const linked = drafts.filter(d => d.server?.replace(/\/+$/, '') === server.replace(/\/+$/, '') && sameId(d.mount, mount.id));
-  const published = mount.atlas?.project_id;
-  const matchingDraft = linked.find(d => sameId(d.linked_uuid ?? d.uuid, published));
-  const matchingEntry = recent.find(r => sameId(r.id, published)) ?? recent.find(r => sameId(r.id, matchingDraft?.uuid));
-  if (matchingEntry || matchingDraft?.source_keys?.length) return { recent: matchingEntry, draft: matchingDraft };
-  // Allow access to a separate local project, including offline. It cannot
-  // stand in for a different published project when opening the mount online.
-  for (const draft of linked) {
-    const entry = recent.find(r => sameId(r.id, draft.uuid));
-    if (entry || draft.source_keys?.length) return { recent: entry, draft };
+type LocalMatch = { recent?: RecentEntry; draft?: Draft } | null;
+const idKey = (id: string | null | undefined) => id?.toLowerCase() ?? '';
+/** Index once for a whole page; matching never scans the entire recent list per tile. */
+function matchIndex(recent: RecentEntry[], drafts: Draft[], server: string) {
+  const entries = new Map<string, RecentEntry>();
+  for (const r of recent) if (r.id && !entries.has(idKey(r.id))) entries.set(idKey(r.id), r);
+  const linked = new Map<string, Draft[]>();
+  for (const d of drafts) if (server && d.server?.replace(/\/+$/, '') === server.replace(/\/+$/, '') && d.mount) {
+    const key = idKey(d.mount), group = linked.get(key) ?? [];
+    group.push(d); linked.set(key, group);
   }
-  return null;
+  return (mount: MountOut): LocalMatch => {
+    const group = linked.get(idKey(mount.id)) ?? [];
+    const published = mount.atlas?.project_id;
+    const draft = group.find(d => sameId(d.linked_uuid ?? d.uuid, published));
+    const entry = entries.get(idKey(published)) ?? entries.get(idKey(draft?.uuid));
+    if (entry || draft?.source_keys?.length) return { recent: entry, draft };
+    for (const d of group) {
+      const r = entries.get(idKey(d.uuid));
+      if (r || d.source_keys?.length) return { recent: r, draft: d };
+    }
+    return null;
+  };
+}
+export function localMatch(mount: MountOut, recent: RecentEntry[], drafts: Draft[], server: string): LocalMatch {
+  return matchIndex(recent, drafts, server)(mount);
+}
+export function separateLocal(mount: MountOut, match: LocalMatch) {
+  return !!match && !!mount.atlas?.project_id && !sameId(match.draft?.linked_uuid ?? match.recent?.id ?? match.draft?.uuid, mount.atlas.project_id);
+}
+export function startEntries(rows: MountOut[], recent: RecentEntry[], drafts: Draft[], server: string | null) {
+  const match = matchIndex(recent, drafts, server ?? '');
+  const hidden = new Set<RecentEntry>();
+  const tiles = rows.map(mount => {
+    const local = server ? match(mount) : null;
+    if (local?.recent) hidden.add(local.recent);
+    return { mount, match: local };
+  });
+  return { tiles, localOnly: recent.filter(r => !hidden.has(r)) };
+}
+export function relativeTime(at: string, now = Date.now()) {
+  const time = Date.parse(at), age = Math.max(0, now - time);
+  if (!Number.isFinite(time)) return 'unknown time';
+  if (age < 60_000) return 'just now';
+  if (age < 3_600_000) return `${Math.floor(age / 60_000)} min ago`;
+  if (age < 86_400_000) return `${Math.floor(age / 3_600_000)} h ago`;
+  if (age < 7 * 86_400_000) return `${Math.floor(age / 86_400_000)} d ago`;
+  return new Date(time).toLocaleDateString();
+}
+export function entryStatus(mount: MountOut, match: LocalMatch, revision?: number, { offline = false, hasOffline = false, now = Date.now(), storage }: { offline?: boolean; hasOffline?: boolean; now?: number; storage?: DraftStorage } = {}): string[] {
+  const parts: string[] = [];
+  const d = match?.draft;
+  if (match && !separateLocal(mount, match)) {
+    const at = d?.synced_at ?? d?.checked_at;
+    parts.push(offline ? 'Local copy on this computer' : `Database · local copy ${at ? `synced ${relativeTime(at, now)}` : 'not yet synced'}`);
+    if (d && (d.incomplete || draftSyncStatus(d, storage).pending)) {
+      const n = d.changes && d.changes.spots + d.changes.grains + d.changes.labels;
+      parts.push(n ? `${n} ${n === 1 ? 'change' : 'changes'} not yet uploaded` : 'Local changes');
+    }
+    if (!offline && d?.base_revision != null && revision != null && revision > d.base_revision) parts.push('Newer in database');
+  } else parts.push(offline ? hasOffline ? 'Offline copy available (read-only)' : 'Not on this computer' : 'Database only');
+  return parts;
 }
 /** "Local changes" comes from the same status as the Open list and the sync chip: a stale
  * `pixels_changed` flag in an otherwise synced draft is not local work. */
@@ -83,9 +133,9 @@ export function tileBadges(mount: MountOut, match: ReturnType<typeof localMatch>
   if (mount.creator?.id !== account && mount.role) badges.push(`Shared · ${mount.role === 'owner' ? 'Admin' : mount.role[0].toUpperCase() + mount.role.slice(1)}`);
   return badges;
 }
-export const DEFAULT_START_LAYOUT = { recentWidth: 240, tileSize: 'M' as 'S' | 'M' | 'L' };
-export function startLayout(value: { recentWidth?: number; tileSize?: string }) {
-  return { recentWidth: Math.max(180, Math.min(360, Number(value.recentWidth) || DEFAULT_START_LAYOUT.recentWidth)), tileSize: ['S', 'M', 'L'].includes(value.tileSize ?? '') ? value.tileSize as 'S' | 'M' | 'L' : DEFAULT_START_LAYOUT.tileSize };
+export const DEFAULT_START_LAYOUT = { recentWidth: 240, tileSize: 'M' as 'S' | 'M' | 'L', startView: 'database' as 'database' | 'local' };
+export function startLayout(value: { recentWidth?: number; tileSize?: string; startView?: string }) {
+  return { startView: value.startView === 'local' ? 'local' as const : DEFAULT_START_LAYOUT.startView, recentWidth: Math.max(180, Math.min(360, Number(value.recentWidth) || DEFAULT_START_LAYOUT.recentWidth)), tileSize: ['S', 'M', 'L'].includes(value.tileSize ?? '') ? value.tileSize as 'S' | 'M' | 'L' : DEFAULT_START_LAYOUT.tileSize };
 }
 
 /** Only the connect and idle intervals are bounded; a progressing transfer has no total deadline. */
@@ -110,6 +160,16 @@ export async function checkedJson<T>(response: Response): Promise<T> {
 }
 async function identityKey(server: string, token: string) {
   return `mirror-bindings/${await serverMirrorId(server)}/${await hash(token)}.json`;
+}
+/** Resolve only this credential's established mirror binding, without a network read. */
+export async function boundMirror(server: string, token: string, storage: MirrorStorage): Promise<BrowserAccount | null> {
+  if (!server || !token) return null;
+  try {
+    const binding = JSON.parse(await storage.getItem(await identityKey(server, token)) ?? 'null');
+    if (!binding) return null;
+    const cache = await readCache(storage, cacheKey(binding.mirrorId, binding.accountId));
+    return cache.account && cache.account.id === binding.accountId ? cache.account : null;
+  } catch { return null; }
 }
 // Retain fulfilled and rejected reads until sign-out/credential change. Store the
 // promise before any await so concurrent consumers share the same network work.

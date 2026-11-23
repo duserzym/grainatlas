@@ -9,6 +9,7 @@ export interface LayoutPrefs {
   spotEntryOpen: boolean;
   recentWidth: number;
   tileSize: 'S' | 'M' | 'L';
+  startView: 'database' | 'local';
 }
 export const LAYOUT_KEY = 'grainatlas.layout';
 export const DEFAULT_LAYOUT: LayoutPrefs = { panel: { x: 16, y: 150 }, sideCollapsed: false, infoCollapsed: false, menuCollapsed: false, layersOpen: false, spotEntryOpen: true, ...DEFAULT_START_LAYOUT };

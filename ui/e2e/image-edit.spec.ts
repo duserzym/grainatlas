@@ -127,7 +127,7 @@ test('rotation and flip inverse place a spot in mount µm, save and reopen retai
   // serves the original project, so neither the recipe nor the spot can come from it.
   await page.reload();
   await expect(page.getByRole('navigation',{name:'Screens'}).getByRole('button',{name:'Open',exact:true})).toHaveAttribute('aria-pressed','true');
-  await expect(page.getByRole('button',{name:'Open local',exact:true})).toBeVisible();
+  await expect(page.getByTestId('mount-tile').getByRole('button',{name:'Open',exact:true})).toBeVisible();
   await page.goto(projectURL);await expect(page.getByTestId('edit-copy')).toHaveText('Edit');await page.getByTestId('edit-copy').click();await page.getByTestId('edit-image').click();
   await expect(page.getByRole('button',{name:'Flip horizontal',exact:true})).toHaveAttribute('aria-pressed','true');await expect(page.getByLabel('Black point',{exact:true})).toHaveValue('18');await expect(page.getByLabel('White point',{exact:true})).toHaveValue('236');
   const reopened=JSON.parse(await saveImageProject(page));
