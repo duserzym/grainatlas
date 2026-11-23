@@ -3,7 +3,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { reviewGroups } from './shellcmd.ts';
-import { groupRegions, mosaicToMount, mountLayout } from './mount-inset.ts';
+import { defaultEditorInset, defaultInset, groupRegions, mosaicToMount, mountLayout } from './mount-inset.ts';
+
+test('editor inset starts collapsed below 1440 px and open at or above it', () => {
+  for (const width of [320, 1280, 1439]) {
+    assert.deepEqual(defaultEditorInset(width), { collapsed: true, width: 180 });
+  }
+  for (const width of [1440, 1920]) {
+    assert.deepEqual(defaultEditorInset(width), { collapsed: false, width: 180 });
+  }
+});
+
+test('Review inset keeps its image-area default independently of the editor breakpoint', () => {
+  assert.deepEqual(defaultInset(1280, 800), { collapsed: false, width: 180 });
+  assert.deepEqual(defaultInset(1440, 900), { collapsed: false, width: 180 });
+  assert.equal(defaultInset(320, 240).collapsed, true);
+});
 
 const group = (spots, name = 'Sample A') => ({ name, color: '#ab23cd', spots });
 const spot = (id, area_id, x_um, y_um) => ({ id, area_id, x_um, y_um });

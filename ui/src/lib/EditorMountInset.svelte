@@ -2,6 +2,7 @@
   import { isHosted } from '@lab/bridge';
   import type { ComponentProps } from 'svelte';
   import MountInset from '../components/MountInset.svelte';
+  import { defaultEditorInset } from './mount-inset';
   import { mountName } from './mount-inset-header';
   import { app } from './store.svelte';
 
@@ -11,6 +12,10 @@
   const selected = $derived.by(() => {
     const ids = new Set(app.selection);
     return ids.size ? app.spots.filter(s => ids.has(s.id)) : [];
+  });
+  // Initialise once per tab, not on resize or when switching editor screens.
+  $effect(() => {
+    if (!app.mountInset) app.mountInset = defaultEditorInset(window.innerWidth);
   });
 </script>
 

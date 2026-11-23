@@ -104,15 +104,17 @@
     const bounds = (selectors: string) => Array.from(host.querySelectorAll(selectors), el => el.getBoundingClientRect())
       .filter(b => b.width > 0 && b.height > 0);
     const right = Math.max(0, ...bounds(sideControls).map(b => r.right - b.left + PAD));
+    const notices = !isViewer ? host.closest('main')?.querySelector('.notices')?.getBoundingClientRect() : undefined;
     room = {
       w: r.width - right, h: r.height, right,
-      top: Math.max(0, ...bounds(topControls).map(b => b.bottom - r.top)) + PAD,
+      top: Math.max(0, notices ? notices.bottom - r.top : 0, ...bounds(topControls).map(b => b.bottom - r.top)) + PAD,
       bottom: Math.min(r.height, ...bounds(bottomControls).map(b => b.top - r.top)) - PAD,
     };
   }
   $effect(() => {
     const host = root?.parentElement;
     if (!host) return;
+    const main = !isViewer ? host.closest('main') : null;
     // Updating inset dimensions in a ResizeObserver callback can trigger another
     // notification in the same frame, especially when the Canvas toolbar wraps.
     let raf = 0;
@@ -125,12 +127,18 @@
       resize.disconnect();
       resize.observe(host!);
       for (const el of host!.querySelectorAll(`${topControls}, ${bottomControls}, ${sideControls}`)) resize.observe(el);
+      const notices = main?.querySelector('.notices');
+      if (notices) resize.observe(notices);
     }
     const changes = new MutationObserver(() => { observe(); scheduleMeasure(); });
     changes.observe(host, { childList: true });
+    // Notices live outside the image host. Track their arrival/removal and the
+    // main element's measured toolbar offsets, which also move the notices.
+    const noticeChanges = new MutationObserver(() => { observe(); scheduleMeasure(); });
+    if (main) noticeChanges.observe(main, { childList: true, attributes: true, attributeFilter: ['style'] });
     observe();
     measure(host);
-    return () => { resize.disconnect(); changes.disconnect(); cancelAnimationFrame(raf); };
+    return () => { resize.disconnect(); changes.disconnect(); noticeChanges.disconnect(); cancelAnimationFrame(raf); };
   });
 
   function userSet(next: InsetState) {

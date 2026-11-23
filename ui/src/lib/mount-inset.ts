@@ -223,6 +223,11 @@ export const SMALL_W = 360, SMALL_H = 270;
 
 export interface InsetState { collapsed: boolean; width: number }
 
+/** Editor tabs start with a chip below the full-size window breakpoint. */
+export function defaultEditorInset(windowW: number): InsetState {
+  return { collapsed: windowW < 1440, width: NORMAL_W };
+}
+
 /** Without a remembered inset: normal width, collapsed on a small image area. */
 export function defaultInset(viewerW: number, viewerH: number): InsetState {
   return { collapsed: viewerW < SMALL_W || viewerH < SMALL_H, width: NORMAL_W };
