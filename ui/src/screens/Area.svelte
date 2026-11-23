@@ -12,7 +12,9 @@
   import { autoTone, changeScale, exportPng, resetTone, scaleText, stitch, stitchAll, toggleBeforeAfter } from '../lib/actions';
   import { rawToCanvas } from '../lib/files';
   import Histogram from '../components/Histogram.svelte';
+  import EditorMountInset from '../lib/EditorMountInset.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
+  import type { View } from '../lib/canvas/view';
   import type { Core } from '../lib/core/core';
   import type { AreaMeta, TileOverride } from '../lib/core/types';
 
@@ -32,6 +34,8 @@
   const published = $derived(!!app.remote);
   let waitingTone = $state(neutralTone());
   const bundle = $derived(bundlePixels(app));
+  const remoteTiles = $derived(!bundle ? app.remoteTiles : null);
+  const tiles = $derived(remoteTiles ?? core);
   const areas = $derived<AreaMeta[]>(app.pkg?.areas ?? (published ? (app.project?.areas ?? []).map(a => ({ id: a.id, name: a.name, pixel_size_nm: a.pixel_size_nm, stage_sign: a.stage_sign, tiles: [], grid: null, field_um: null, pitch_um: null, meta: {} })) : []));
   const meta = $derived(areas.find(a => a.id === app.areaId) ?? null);
   const areaIdx = $derived(app.pkg?.areas.findIndex((a) => a.id === app.areaId) ?? -1);
@@ -42,6 +46,18 @@
   const compare = $derived(app.areaId ? (app.compare[app.areaId] ?? null) : null);
   const areaGrains = $derived(app.areaId ? (app.grains[app.areaId] ?? []) : []);
   const umPerPx = $derived((meta?.pixel_size_nm ?? 1000) / 1000);
+  const viewScale = $derived(summary?.mosaic.um_per_px ?? umPerPx);
+  const viewKey = $derived(`${meta?.id}/${summary ? 'mosaic' : 'tiles'}`);
+  let viewport = $state<{ key: string; view: View }>();
+  const view = $derived(viewport?.key === viewKey ? viewport?.view : undefined);
+
+  function setView(key: string, next: View | undefined) {
+    if (key === viewKey && next) viewport = { key, view: next };
+  }
+  function changeArea(id: string) {
+    app.areaId = id;
+    tileSel = null;
+  }
 
   async function findGrains(id: string) {
     const state = current();
@@ -133,7 +149,7 @@
       <ul>
         {#each areas as a (a.id)}
           <li>
-            <button class="arearow" aria-pressed={a.id === app.areaId} onclick={() => { app.areaId = a.id; tileSel = null; }} data-testid="area-{a.id}">
+            <button class="arearow" aria-pressed={a.id === app.areaId} onclick={() => changeArea(a.id)} data-testid="area-{a.id}">
               <span class="nm">{a.name}{#if app.grains[a.id] === undefined} <span class="faint" title="no grains yet" aria-label="no grains yet">○</span>{/if}</span>
               <span class="faint mono">{a.id}</span>
               {#if !published}<span class="faint">{a.grid ? `${a.grid[0]}×${a.grid[1]}` : ''} · {a.tiles.length} tiles</span>{/if}
@@ -168,9 +184,10 @@
         </div>
       </div>
       <div class="grid" data-testid="area-view" data-live={app.liveBusy[meta.id] ? 'busy' : 'idle'}>
-        {#if core}
-          {#key `${meta.id}/${summary ? 'mosaic' : 'tiles'}`}
-            <Viewer bind:this={viewer} core={!bundle && app.remoteTiles ? app.remoteTiles : core} areaId={meta.id} mosaic={summary?.mosaic ?? null} extent={frame} lut={imageLut} {imageEdits} umPerPx={summary?.mosaic?.um_per_px??meta.pixel_size_nm/1000} version={app.pixelsVersion}
+        {#if tiles}
+          {#key viewKey}
+            {@const sourceKey = viewKey}
+            <Viewer bind:this={viewer} bind:view={() => view, next => setView(sourceKey, next)} core={tiles} areaId={meta.id} mosaic={summary?.mosaic ?? null} extent={frame} lut={imageLut} {imageEdits} umPerPx={viewScale} version={app.pixelsVersion}
               preview={app.preview[meta.id] ?? null} onlevel={(l) => (app.drawLevel = l)} onclick={tileClick}>
               {#snippet overlay(v)}
                 {#each boxes as b (b.i)}
@@ -198,7 +215,11 @@
           {/key}
         {/if}
         {#if app.rendering}<span class="pill rendering" role="status">rendering…</span>{/if}
-        <div class="viewbtns glass" data-ui>
+        {#if tiles}
+          <EditorMountInset current={meta.id} {tiles} {lut} {view} frame={summary ? undefined : { ...frame, um_per_px: viewScale }}
+            allAreasClickable currentPictureOnly={!!remoteTiles} onarea={changeArea} />
+        {/if}
+        <div class="viewbtns glass" data-ui data-mount-inset-bottom>
           <button class="icon" title="Zoom in" onclick={() => viewer?.zoomBy(1.5)}>+</button>
           <button class="icon" title="Zoom out" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
           <button class="icon" title="Fit (double-click)" onclick={() => viewer?.fitAll()}>Fit</button>

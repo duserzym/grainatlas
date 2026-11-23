@@ -1,8 +1,6 @@
 <script lang="ts">
-  // Mount locator for the read-only viewer: every area of the mount at its stage position,
-  // the shown area highlighted, Review's sample regions or selected spots, and the visible image.
-  // Clicking an area shows it, like the Area menu. Size and collapsed state live in memory and
-  // go to UPb Lab (bridge v5.1), which remembers them; the viewer writes nothing.
+  // Locate the current image on the mount, with Review's regions when provided.
+  // The editor keeps the inset settings for this tab; Review sends them to UPb Lab.
   import { onDestroy } from 'svelte';
   import { cubicOut } from 'svelte/easing';
   import type { Core } from '../lib/core/core';
@@ -13,7 +11,7 @@
   import { sampleNames, sampleText, shortMountName } from '../lib/mount-inset-header';
   import {
     applyFit, areaExtent, defaultInset, ENLARGED_W, fitTransform, mapAspect, maxWidth, MIN_W, mosaicToMount, mountLayout,
-    NORMAL_W, shownWidth, STEP, storedWidth, union, viewQuad, type Box, type GroupRegion, type Pt,
+    NORMAL_W, shownWidth, STEP, storedWidth, union, viewQuad, type Box, type GroupRegion, type InsetState, type Pt,
   } from '../lib/mount-inset';
 
   interface Props {
@@ -24,13 +22,19 @@
     lut: Uint8Array;
     view: View | undefined;
     selected: Spot[];
+    /** The nominal tile preview, before a stitched mosaic is available. */
+    frame?: Pick<MosaicJson, 'w' | 'h' | 'um_per_px'>;
+    allAreasClickable?: boolean;
+    currentPictureOnly?: boolean;
+    editorInset?: InsetState;
     groups?: GroupRegion[];
     mountLabel?: string;
     onmount?: () => void;
     onsample?: (group: GroupRegion, area: string) => void;
     onarea: (id: string) => void;
   }
-  let { areas, current, mosaics, tiles, lut, view, selected, groups = [], mountLabel = 'Mount', onmount, onsample, onarea }: Props = $props();
+  let { areas, current, mosaics, tiles, lut, view, selected, frame, allAreasClickable, currentPictureOnly,
+    editorInset = $bindable(), groups = [], mountLabel = 'Mount', onmount, onsample, onarea }: Props = $props();
   const isViewer = $derived(presentation.current === 'viewer');
 
   // ---- geometry -------------------------------------------------------------------------
@@ -48,16 +52,17 @@
   let root = $state<HTMLDivElement>();
   let nameNode = $state<HTMLSpanElement>();
   let headerMetrics = $state<{ width: number; measure: (text: string) => number } | null>(null);
-  let room = $state({ w: 0, h: 0, top: PAD, bottom: 0 });
-  let inset = $state<{ collapsed: boolean; width: number } | null>(null);
+  let room = $state({ w: 0, h: 0, top: PAD, right: 0, bottom: 0 });
+  let inset = $state<InsetState | null>(null);
+  const remembered = $derived(isViewer ? presentation.inset : editorInset);
   let animate = $state(0);
 
   $effect(() => {
-    const received = presentation.inset;
+    const received = remembered;
     if (received) inset = { collapsed: received.collapsed, width: received.width };
   });
   $effect(() => {
-    if (!inset && room.w > 0) inset = presentation.inset ?? defaultInset(room.w, room.h);
+    if (!inset && room.w > 0) inset = remembered ?? defaultInset(room.w, room.h);
   });
 
   const chrome = $derived(HEAD + (layout.positioned ? 0 : NOTE) + 2);
@@ -81,45 +86,58 @@
       if (ctx) ctx.font = getComputedStyle(node).font;
       headerMetrics = { width: node.clientWidth, measure: text => ctx?.measureText(text).width ?? Array.from(text).length * 6 };
     };
-    const observer = new ResizeObserver(measureText);
-    observer.observe(node); measureText();
-    return () => observer.disconnect();
+    let raf = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(measureText);
+    });
+    observer.observe(node);
+    measureText();
+    return () => { observer.disconnect(); cancelAnimationFrame(raf); };
   });
 
-  function measure() {
-    const host = root?.parentElement;
-    if (!host) return;
+  const topControls = '.viewer-controls, [data-mount-inset-top]';
+  const bottomControls = '.legend, .status, [data-mount-inset-bottom]';
+  const sideControls = '[data-mount-inset-right]';
+  function measure(host: HTMLElement) {
     const r = host.getBoundingClientRect();
-    const controls = host.querySelector('.viewer-controls')?.getBoundingClientRect();
-    const below = ['.legend', '.status'].map(s => host.querySelector(s)?.getBoundingClientRect()).filter((b): b is DOMRect => !!b && b.height > 0);
+    const bounds = (selectors: string) => Array.from(host.querySelectorAll(selectors), el => el.getBoundingClientRect())
+      .filter(b => b.width > 0 && b.height > 0);
+    const right = Math.max(0, ...bounds(sideControls).map(b => r.right - b.left + PAD));
     room = {
-      w: r.width, h: r.height,
-      top: (controls ? controls.bottom - r.top : 0) + PAD,
-      bottom: Math.min(r.height, ...below.map(b => b.top - r.top)) - PAD,
+      w: r.width - right, h: r.height, right,
+      top: Math.max(0, ...bounds(topControls).map(b => b.bottom - r.top)) + PAD,
+      bottom: Math.min(r.height, ...bounds(bottomControls).map(b => b.top - r.top)) - PAD,
     };
   }
-  let resize: ResizeObserver | null = null, changes: MutationObserver | null = null;
-  function observe() {
-    const host = root?.parentElement;
-    if (!host || !resize || !changes) return;
-    resize.disconnect();
-    resize.observe(host);
-    for (const el of host.querySelectorAll<HTMLElement>('.viewer-controls, .legend, .status')) resize.observe(el);
-    measure();
-  }
   $effect(() => {
-    if (!root?.parentElement) return;
-    resize = new ResizeObserver(measure);
-    changes = new MutationObserver(observe);
-    changes.observe(root.parentElement, { childList: true });
+    const host = root?.parentElement;
+    if (!host) return;
+    // Updating inset dimensions in a ResizeObserver callback can trigger another
+    // notification in the same frame, especially when the Canvas toolbar wraps.
+    let raf = 0;
+    function scheduleMeasure() {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => measure(host!));
+    }
+    const resize = new ResizeObserver(scheduleMeasure);
+    function observe() {
+      resize.disconnect();
+      resize.observe(host!);
+      for (const el of host!.querySelectorAll(`${topControls}, ${bottomControls}, ${sideControls}`)) resize.observe(el);
+    }
+    const changes = new MutationObserver(() => { observe(); scheduleMeasure(); });
+    changes.observe(host, { childList: true });
     observe();
-    return () => { resize?.disconnect(); changes?.disconnect(); resize = changes = null; };
+    measure(host);
+    return () => { resize.disconnect(); changes.disconnect(); cancelAnimationFrame(raf); };
   });
 
-  /** The user changed the inset: keep it and tell the shell (never for a received inset). */
-  function userSet(next: { collapsed: boolean; width: number }) {
+  function userSet(next: InsetState) {
     inset = next;
-    sendViewerInset({ collapsed: next.collapsed, width: storedWidth(next.width) });
+    const setting = { collapsed: next.collapsed, width: storedWidth(next.width) };
+    if (isViewer) sendViewerInset(setting);
+    else editorInset = setting;
   }
   function motionMs(e: MouseEvent | KeyboardEvent): number {
     if (!(e instanceof MouseEvent) || e.detail === 0 || !root) return 0; // keyboard: no motion
@@ -179,9 +197,12 @@
     regions: g.regions.map(r => ({ ...r, points: r.points.map(px), hull: r.hull.map(px) })),
   })));
   const polygon = (ps: Pt[]) => ps.map(p => p.map(v => v.toFixed(1)).join(',')).join(' ');
+  function areaClickable(id: string) {
+    return isViewer || allAreasClickable || id in mosaics;
+  }
   const shapes = $derived(layout.areas.map(a => {
     const [x0, y0] = px([a.box[0], a.box[1]]), [x1, y1] = px([a.box[2], a.box[3]]);
-    return { ...a, x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), on: a.id === current, active: isViewer || a.id in mosaics };
+    return { ...a, x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), on: a.id === current, active: areaClickable(a.id) };
   }));
   const currentShape = $derived(shapes.find(s => s.on) ?? null);
   const short = (text: string, w: number) => {
@@ -231,9 +252,10 @@
     return p ? [{ id: s.id, p: px(p) }] : [];
   }));
   const quad = $derived.by(() => {
-    const m = mosaics[current];
+    const m = frame ?? mosaics[current];
     if (!view || !m || !currentArea) return null;
-    const q = viewQuad(view, m.um_per_px, [m.w, m.h], (x, y) => mosaicToMount(currentArea, layout, x, y));
+    const area = frame ? { ...currentArea, placement: null } : currentArea;
+    const q = viewQuad(view, m.um_per_px, [m.w, m.h], (x, y) => mosaicToMount(area, layout, x, y));
     return q ? q.map(p => px(p).map(v => v.toFixed(1)).join(',')).join(' ') : null;
   });
 
@@ -244,7 +266,11 @@
   let alive = true;
   onDestroy(() => { alive = false; });
   $effect(() => {
-    for (const [id, m] of Object.entries(mosaics)) {
+    if (!isViewer && collapsed) return;
+    // Published editor projects load a thumbnail only for each area the user visits.
+    const entries = currentPictureOnly ? [[current, mosaics[current]]] as const : Object.entries(mosaics);
+    for (const [id, m] of entries) {
+      if (!m) continue;
       const L = m.levels.length - 1;
       const info = m.levels[L];
       const key = `${id}/${m.sha256}/${L}`;
@@ -299,7 +325,7 @@
   function activate(id: string, e: KeyboardEvent | MouseEvent) {
     if (e instanceof KeyboardEvent && e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault(); e.stopPropagation();
-    if (isViewer || (id !== current && id in mosaics)) onarea(id);
+    if (isViewer || id !== current) onarea(id);
   }
   function activateSample(group: GroupRegion, area: string, e: KeyboardEvent | MouseEvent) {
     if (!isViewer || (e instanceof KeyboardEvent && e.key !== 'Enter' && e.key !== ' ')) return;
@@ -309,14 +335,18 @@
 </script>
 
 <div class="glass inset" class:open={!collapsed} data-ui data-testid="mount-inset" bind:this={root}
-  style:top="{room.top}px" style:visibility={inset ? 'visible' : 'hidden'}>
+  style:top="{room.top}px" style:right={room.right ? `${room.right}px` : undefined} style:visibility={inset ? 'visible' : 'hidden'}>
   {#if collapsed}
     <button class="opener" onclick={toggle} aria-expanded="false" disabled={!fits} data-testid="mount-inset-open"
       title={fits ? mountLabel : `${mountLabel}: too little room for the mount map`}>Mount · {shortMountName(mountLabel)}</button>
   {:else}
     <div class="body" style:width="{width}px" transition:open data-testid="mount-inset-body">
       <div class="head">
-        <button class="title" title={mountTitle} onclick={() => isViewer && onmount?.()} data-testid="mount-inset-label"><span class="mount-prefix">{'Mount: '}</span>{mountLabel}</button>
+        {#if isViewer}
+          <button class="title" title={mountTitle} onclick={onmount} data-testid="mount-inset-label"><span class="mount-prefix">{'Mount: '}</span>{mountLabel}</button>
+        {:else}
+          <span class="title" title={mountTitle} data-testid="mount-inset-label">{mountLabel}</span>
+        {/if}
         <span class="faint name" title={headerLabel.title} bind:this={nameNode}>{headerLabel.text}</span>
         <button class="icon" onclick={enlarge} title={enlarged ? 'Smaller' : 'Larger'} aria-label={enlarged ? 'Smaller mount map' : 'Larger mount map'}
           disabled={limit < NORMAL_W + STEP} data-testid="mount-inset-enlarge">{enlarged ? '−' : '+'}</button>

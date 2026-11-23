@@ -43,7 +43,8 @@
   import { spotLink } from '../lib/upbdb';
   import MountPicker from '../components/MountPicker.svelte';
   import LaserPanel from '../components/LaserPanel.svelte';
-  import MountInset from '../lib/ViewerMountInset.svelte';
+  import ViewerMountInset from '../lib/ViewerMountInset.svelte';
+  import EditorMountInset from '../lib/EditorMountInset.svelte';
   import { areaExtent, groupRegions, mountLayout } from '../lib/mount-inset';
   import { authToken, canSaveFolder, publish, saveAtlas } from '../lib/atlas';
   import { DATE_CHOICES, dateLabel, dateOf, fmtValue, matchResults, metricsOf, otherDates, rampColor, RAMP_CSS, valueOf, type SpotResult } from '../lib/results';
@@ -1923,9 +1924,10 @@
         </select>
         {#if app.colourBy === 'date'}<select bind:value={app.dateChoice} aria-label="Date">{@render dateOptions()}</select>{/if}
       </div>
-      <MountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} {viewer} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
+      <ViewerMountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} {viewer} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
     {:else}
-    <div class="glass toolbar" data-ui title={!app.project?.upbdb.mount_id ? 'Link the mount to the database first to pluck grains for TIMS' : undefined}>
+    <EditorMountInset current={areaId} tiles={tiles!} {lut} {view} currentPictureOnly={!!(app.remote && app.remoteTiles)} onarea={changeArea} />
+    <div class="glass toolbar" data-ui data-mount-inset-top title={!app.project?.upbdb.mount_id ? 'Link the mount to the database first to pluck grains for TIMS' : undefined}>
       <button aria-pressed={editImage} disabled={ro} data-testid="edit-image" onclick={()=>{editImage=!editImage;imageTool=null;}}>Edit image</button>
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" disabled={!!app.busy || app.sync.busy} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
       {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
@@ -2086,15 +2088,15 @@
 
     {#if !isViewer}
     {#if editImage}
-      <aside class="glass side image-editor" data-ui aria-label="Edit image controls">
+      <aside class="glass side image-editor" data-ui data-mount-inset-right aria-label="Edit image controls">
         <ImageEditPanel edits={imageEdits} bind:tool={imageTool} bind:radius={brushRadius} hist={imageHist} leftOff={cropExcluded.size} registered={cropRegistered} canUndo={app.canUndo} canRedo={app.canRedo} change={changeImage} undo={()=>app.undo()} redo={()=>app.redo()} close={()=>{editImage=false;imageTool=null;polygonPoints=[];}} finishPolygon={finishImagePolygon} polygonCount={polygonPoints.length} readOnly={ro} />
       </aside>
     {:else if app.layout.sideCollapsed}
-      <aside class="glass side-mini" data-ui>
+      <aside class="glass side-mini" data-ui data-mount-inset-top>
         <button class="icon" onclick={() => { app.layout.sideCollapsed = false; app.saveLayout(); }} title="Show the side panel" aria-label="Show the side panel" aria-expanded={false} data-testid="side-expand">‹ Panel</button>
       </aside>
     {:else}
-    <aside bind:this={side} class="glass side" data-ui>
+    <aside bind:this={side} class="glass side" data-ui data-mount-inset-right>
       <div class="panel-heading">
         <span>Image panels</span>
         <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away" aria-label="Fold the side panel" aria-expanded={true} data-testid="side-collapse">›</button>
@@ -2410,7 +2412,7 @@
     {/if}
 
     {#if !isViewer && dupCount}
-      <div class="glass owner-legend" data-ui data-testid="owner-legend">
+      <div class="glass owner-legend" data-ui data-mount-inset-bottom data-testid="owner-legend">
         {#if app.showNeighbourGrains}
           {#each ownerRows as row (row.area)}
             <div class="owner-row"><span class="owner-swatch" style:color={row.colour}></span><span>{plural(row.count, 'grain', 'grains')} held by {areaLabel(row.area)} (dashed)</span></div>

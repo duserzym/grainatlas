@@ -358,6 +358,7 @@ class AppState {
   liveKeys: Record<string, string> = {};
   /** The Canvas view of this tab (restored when the tab is shown again). */
   savedView: { areaId: string; view: import('./canvas/view').View } | null = null;
+  mountInset = $state<import('./mount-inset').InsetState>();
   /** Tab-owned effects survive screen changes and are disposed when this tab closes. */
   readonly stopNumbering: () => void;
 
