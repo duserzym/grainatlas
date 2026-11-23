@@ -26,7 +26,7 @@ export function bundleOptions(p: Project, app: AppState = current()): BundleOpti
   return { quality: app.link.quality, exported: new Date().toISOString(), nas_path: root ? `${root}${sep}${p.package.name}` : null };
 }
 
-/** The bearer token: the shell's when hosted, else the one pasted in Settings. */
+/** Resolve the shell, project handoff or Settings credential in that order. */
 export async function authToken(app: AppState = current(), server: string | null = app.remote?.server ?? app.server): Promise<string | null> {
   const observed = (token: string | null) => { observeServerToken(server, token); return token; };
   try {
@@ -35,7 +35,10 @@ export async function authToken(app: AppState = current(), server: string | null
   } catch {
     /* not hosted */
   }
-  return observed(app.sessionToken && normalizeServer(app.sessionServer) === normalizeServer(server) ? app.sessionToken : app.link.token.trim() || null);
+  // A UPb Lab handoff belongs to this tab. Observing it as the shared credential
+  // makes tabs with different tokens invalidate and reconnect each other.
+  if (app.sessionToken && normalizeServer(app.sessionServer) === normalizeServer(server)) return app.sessionToken;
+  return observed(app.link.token.trim() || null);
 }
 
 /** Entries of a STORE-only zip (what the core writes). */
