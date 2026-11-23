@@ -1,5 +1,5 @@
 import type { MountOut } from './upbdb.ts';
-import type { RecentEntry } from './deeplink.ts';
+import { sameId, type RecentEntry } from './deeplink.ts';
 import type { Draft, DraftStorage } from './drafts.ts';
 import { draftSyncStatus } from './sync-status.ts';
 import type { MirrorStorage } from './mount-mirror.ts';
@@ -60,10 +60,18 @@ export function defaultScope(account: BrowserAccount): Record<string, string> {
   return { sort: '-last_changed', ...(account.can_manage_people ? account.labs[0] ? { lab: account.labs[0].handle } : { mine: 'true' } : {}) };
 }
 export function localMatch(mount: MountOut, recent: RecentEntry[], drafts: Draft[], server: string): { recent?: RecentEntry; draft?: Draft } | null {
-  const same = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
-  const draft = drafts.find(d => d.server?.replace(/\/+$/, '') === server.replace(/\/+$/, '') && same(d.mount, mount.id));
-  const entry = recent.find(r => (draft && same(r.id, draft.uuid)) || same(r.id, mount.atlas?.project_id));
-  return entry || draft?.source_keys?.length ? { recent: entry, draft } : null;
+  const linked = drafts.filter(d => d.server?.replace(/\/+$/, '') === server.replace(/\/+$/, '') && sameId(d.mount, mount.id));
+  const published = mount.atlas?.project_id;
+  const matchingDraft = linked.find(d => sameId(d.linked_uuid ?? d.uuid, published));
+  const matchingEntry = recent.find(r => sameId(r.id, published)) ?? recent.find(r => sameId(r.id, matchingDraft?.uuid));
+  if (matchingEntry || matchingDraft?.source_keys?.length) return { recent: matchingEntry, draft: matchingDraft };
+  // Allow access to a separate local project, including offline. It cannot
+  // stand in for a different published project when opening the mount online.
+  for (const draft of linked) {
+    const entry = recent.find(r => sameId(r.id, draft.uuid));
+    if (entry || draft.source_keys?.length) return { recent: entry, draft };
+  }
+  return null;
 }
 /** "Local changes" comes from the same status as the Open list and the sync chip: a stale
  * `pixels_changed` flag in an otherwise synced draft is not local work. */

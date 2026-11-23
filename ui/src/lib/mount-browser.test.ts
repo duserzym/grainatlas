@@ -24,6 +24,15 @@ describe('tile matching and badges', () => {
     expect(localMatch({ ...mount, atlas: null }, [], [draft], 'https://other.example.test')).toBeNull();
     expect(localMatch({ ...mount, id: mount.id.toUpperCase() }, [], [draft], server)).not.toBeNull();
   });
+  it('prefers the published identity over a different draft on the same mount', () => {
+    const other = { ...draft, uuid: '30000000-0000-4000-8000-000000000001' };
+    const earlier = { ...recent[0], id: other.uuid };
+    expect(localMatch(mount, [earlier, ...recent], [other, draft], server)).toEqual({ recent: recent[0], draft });
+    expect(localMatch(mount, recent, [other], server)).toEqual({ recent: recent[0], draft: undefined });
+    expect(localMatch(mount, [earlier], [other], server)).toEqual({ recent: earlier, draft: other });
+    const alias = { ...other, linked_uuid: mount.atlas!.project_id };
+    expect(localMatch(mount, [earlier], [alias], server)).toEqual({ recent: earlier, draft: alias });
+  });
   it('compares the batched revision with the local base and shows explicit roles', () => {
     expect(tileBadges(mount, { draft }, 'viewer', 4)).toEqual(['On this computer', 'Local changes', 'Newer on server', 'Shared · Write']);
     expect(tileBadges(mount, { draft: { ...draft, changes: null, synced: true } }, 'owner', 3)).toEqual(['On this computer']);

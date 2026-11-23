@@ -4,7 +4,7 @@
   import { mountMirror } from '../lib/mount-mirror';
   import { authToken } from '../lib/atlas';
   import { DRAFTS_CHANGED, listDrafts, type Draft } from '../lib/drafts';
-  import type { RecentEntry } from '../lib/deeplink';
+  import { sameId, type RecentEntry } from '../lib/deeplink';
   import type { MountOut } from '../lib/upbdb';
   import { openFromServer } from '../lib/remote';
   import { oversightSession } from '../lib/oversight';
@@ -188,19 +188,24 @@
       {#each rows as mount (mount.id)}
         {@const match = localMatch(mount, recent, drafts, server)}
         {@const local = match?.recent ?? (match?.draft ? { id: match.draft.uuid, name: match.draft.name, when: match.draft.updated_at, areas: 0, spots: 0 } : null)}
+        {@const published = mount.atlas?.project_id}
+        {@const localProject = match?.draft?.linked_uuid ?? local?.id}
+        {@const separateDraft = !!local && !!published && !sameId(localProject, published)}
+        {@const openPublished = published && !offline && (!local || separateDraft)}
         {@const revision = match?.draft ? revisions[match.draft.linked_uuid ?? match.draft.uuid] : undefined}
         <article class="glass panel tile" data-testid="mount-tile">
           {#key mount.atlas?.thumbnail ?? mount.id}
           <MountThumbnail url={mount.atlas?.thumbnail ?? null} cached={mount.thumbnail_data} fallback={match?.recent?.thumbnail} {server} {token} {offline} onsave={data => { mount.thumbnail_data = data; for (const page of Object.values(cache.pages)) { const row = page.rows.find(r => r.id === mount.id); if (row) row.thumbnail_data = data; } save(); }} />
           {/key}
-          <button class="title" disabled={!local && (!mount.atlas || offline)} onclick={() => local ? onopen(local) : mount.atlas && openFromServer(server, mount.atlas.project_id, null, null, mount.id)}>{mount.label}</button>
+          <button class="title" disabled={!local && !openPublished} onclick={() => openPublished ? openFromServer(server, published, null, null, mount.id) : local && onopen(local)}>{mount.label}</button>
           <p class="faint small">{mount.creator?.name ?? 'Unknown owner'}{mount.lab ? ` · ${mount.lab.handle}` : ''}</p>
           <p class="small">{(mount.sample_names ?? []).slice(0, 3).join(', ')}{Math.max(0, (mount.sample_count ?? mount.sample_names?.length ?? 0) - 3) ? ` +${(mount.sample_count ?? mount.sample_names?.length ?? 0) - 3}` : ''}</p>
           <p class="small">{mount.grain_count} grains · {mount.spot_count} spots</p>
           <p class="faint small">{mount.last_changed_at ? new Date(mount.last_changed_at).toLocaleString() : 'No changes yet'}</p>
           <div class="badges">{#each tileBadges(mount, match, account.id, revision) as badge}<span class="small">{badge}</span>{/each}</div>
           <div class="row">
-            {#if local}<button onclick={() => onopen(local)}>Open local</button>{:else if mount.atlas}<button disabled={offline} onclick={() => openFromServer(server, mount.atlas!.project_id, null, null, mount.id)}>Open from server</button>{/if}
+            {#if local}<button onclick={() => onopen(local)}>{separateDraft ? 'Open other local copy' : 'Open local'}</button>{/if}
+            {#if published && (!local || separateDraft)}<button disabled={offline} onclick={() => openFromServer(server, published, null, null, mount.id)}>Open from server</button>{/if}
             {#if !match}<button disabled={offline || !mount.can_edit || oversightSession.readOnly} onclick={() => onlink(mount)}>Link a local project…</button>{/if}
           </div>
         </article>

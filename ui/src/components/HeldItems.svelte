@@ -2,9 +2,14 @@
   import { app } from '../lib/store.svelte';
   import { heldKind, nameList } from '../lib/sync';
   import { elementArea, showElement } from '../lib/held-items';
+  import { openFromServer } from '../lib/remote';
+  import { sameId } from '../lib/deeplink';
 
   const session = $derived(app.sync);
   const items = $derived(session.held);
+  const projectCollisions = $derived(items.some(item => item.code === 'label_collision' || item.code === 'foreign_project'));
+  const published = $derived(session.status?.atlas_version ? session.status.current_project_uuid : null);
+  const server = $derived(app.remote?.server ?? session.draft?.server ?? app.server);
   let index = $state(0);
   const at = $derived(Math.max(0, Math.min(index, items.length - 1)));
   const item = $derived(items[at]);
@@ -25,7 +30,16 @@
       <button disabled={at >= items.length - 1} onclick={() => index = at + 1} data-testid="held-next">Next</button>
       <button disabled={!here} title={here ? 'Select it on the canvas' : 'Not in this copy'} onclick={() => kind && showElement(app, kind, item.id)} data-testid="held-show">Show</button>
     </div>
-    <p class="faint small">Fix the held items here, then sync again. Items that depend on a held item are held too.</p>
+    {#if projectCollisions}
+      <p>Some of these changes conflict with items registered by another project on this mount. Open that project to review the registered grains and spots. Keep this draft to compare new outlines or placements.</p>
+      {#if published && !sameId(published, app.project?.uuid) && server && session.status}
+        {@const mount = session.status.mount_id}
+        <button disabled={session.busy} onclick={() => openFromServer(server, published, null, null, mount)}>Open current atlas</button>
+      {/if}
+      <p class="faint small">If the project with the registered items has no published atlas, open its saved project file.</p>
+    {:else}
+      <p class="faint small">Fix the held items here, then sync again. Items that depend on a held item are held too.</p>
+    {/if}
     <details>
       <summary class="faint small">Details</summary>
       <p class="faint small mono">{item.kind} {item.id}{item.code ? ` · ${item.code}` : ''}{#each item.related ?? [] as r} · {r.kind} {r.id}{/each}</p>
