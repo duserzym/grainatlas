@@ -8,7 +8,7 @@ const mountId = (i: number) => `20000000-0000-4000-8000-${String(i + 1).padStart
 function mount(i: number) {
   return { id: mountId(i), label: `Invented mount ${String(i + 1).padStart(3, '0')}`, mount_type: 'grain_tape', creator: { id: ownerId, name: 'Robin Example' }, lab: { handle: 'invented-lab', display_name: 'Invented Lab' }, role: 'write', can_edit: true, sample_names: ['Example A', 'Example B', 'Example C', 'Example D'], sample_count: 4, grain_count: 12, spot_count: 20, mineral: ['zircon'], session_dates: ['2026-01-01'], created_at: '2026-01-01T00:00:00Z', imaged_at: '2026-01-02T00:00:00Z', last_changed_at: '2026-01-03T00:00:00Z', content_revision: 4, atlas: { project_id: projectId, thumbnail: null, version: 1 } };
 }
-interface Options { count?: number; signedOut?: boolean; superuser?: boolean; local?: boolean; unlinked?: boolean; hosted?: boolean; legacyLabs?: boolean; holdRevisions?: boolean }
+interface Options { count?: number; signedOut?: boolean; superuser?: boolean; local?: boolean; unlinked?: boolean; hosted?: boolean; legacyLabs?: boolean; holdRevisions?: boolean; separate?: boolean }
 async function setup(page: Page, options: Options = {}) {
   const calls: { path: string; query: Record<string, string>; headers: Record<string, string>; method: string }[] = [];
   let offline = false;
@@ -29,7 +29,7 @@ async function setup(page: Page, options: Options = {}) {
       w.__scope = { viewAs: { username: 'robin', name: 'Robin Example' }, onBehalf: false };
       w.__TAURI_INTERNALS__ = { invoke: async (cmd: string) => cmd === 'bridge_token' ? 'invented-token' : cmd === 'bridge_oversight' ? w.__scope : null };
     }
-    if (options.unlinked) projectId = '10000000-0000-4000-8000-000000000002';
+    if (options.unlinked || options.separate) projectId = '10000000-0000-4000-8000-000000000002';
     if (options.local || options.unlinked) {
       localStorage.setItem('grainatlas.recent', JSON.stringify([{ id: projectId, name: 'Invented local project', when: '2026-01-01T00:00:00Z', areas: 1, spots: 20 }]));
       localStorage.setItem('grainatlas.drafts', JSON.stringify([projectId]));
@@ -102,10 +102,123 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
             expect(mock.calls.filter(c => c.path === '/v1/mounts')).toHaveLength(2);
             expect(mock.calls.filter(c => c.path === '/v1/mounts')[1].query.after).toBe('50');
           }
-          if (count) await expect(page.getByTestId('mount-tile').first().getByRole('button', { name: 'Open', exact: true })).toHaveClass(/primary/);
+          if (count) await expect(page.getByTestId('mount-tile').first().getByRole('button', { name: mount(0).label, exact: true })).toBeEnabled();
+          await expect(page.locator('button.primary:visible')).toHaveCount(1);
           await fits(page);
         });
       }
+      test('S fits the requested fully visible rows and every density has one primary action', async ({ page }) => {
+        await setup(page, { count: 60 });
+        // The existing preference must select S on first render, not just after a click.
+        await page.addInitScript(() => localStorage.setItem('grainatlas.layout', JSON.stringify({ tileSize: 'S' })));
+        await page.goto('/');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(50);
+        await expect(page.getByRole('radio', { name: 'S', exact: true })).toHaveAttribute('aria-checked', 'true');
+        await expect(page.getByRole('status').filter({ hasText: 'Loading mounts' })).toHaveCount(0);
+        const minimum = viewport.width === 1440 ? 11 : 9;
+        const fullyVisibleRows = () => page.getByTestId('mount-tile').evaluateAll(rows => rows.filter(row => {
+          const box = row.getBoundingClientRect();
+          const clip = document.querySelector('.open')!.getBoundingClientRect();
+          return box.top >= clip.top && box.bottom <= Math.min(innerHeight, clip.bottom) && box.left >= 0 && box.right <= innerWidth;
+        }).length);
+        await expect.poll(fullyVisibleRows).toBeGreaterThanOrEqual(minimum);
+        const first = page.getByTestId('mount-tile').first();
+        const rowBox = (await first.boundingBox())!;
+        expect(rowBox.height).toBeGreaterThanOrEqual(48); expect(rowBox.height).toBeLessThanOrEqual(56);
+        await expect(first.locator('.samples')).toHaveText('Example A +3');
+        await expect(first.locator('.samples')).toHaveAttribute('title', 'Example A, Example B, Example C, Example D');
+        await expect(first.locator('.changed')).toHaveAttribute('title', mount(0).last_changed_at);
+        await expect(first.locator('.changed')).toHaveText(/(?:just now|\d+ (?:min|h|d|mo|y) ago)/);
+        for (const size of ['S', 'M', 'L']) {
+          await page.getByRole('radio', { name: size, exact: true }).click();
+          await expect(page.locator('button.primary:visible')).toHaveCount(1);
+          await expect(page.locator('button.primary:visible')).toHaveText('Open project…');
+          await expect(first.getByRole('button', { name: mount(0).label, exact: true })).toBeEnabled();
+          expect(await first.locator('button button, button a, button input, button select').count()).toBe(0);
+          await fits(page);
+        }
+        await expect(first.locator('.preview')).toHaveCSS('height', '150px');
+        await page.getByRole('radio', { name: 'S', exact: true }).click();
+        await page.reload();
+        await expect(page.getByRole('radio', { name: 'S', exact: true })).toHaveAttribute('aria-checked', 'true');
+        await expect(page.getByTestId('mount-tile')).toHaveCount(50);
+        const drag = await page.evaluateHandle(() => {
+          const transfer = new DataTransfer(); transfer.items.add(new File(['invented'], 'invented.png', { type: 'image/png' })); return transfer;
+        });
+        const region = page.getByRole('region', { name: 'Open files', exact: true });
+        await region.dispatchEvent('dragenter', { dataTransfer: drag });
+        await first.dispatchEvent('dragenter', { dataTransfer: drag });
+        await expect(page.locator('.drop-overlay')).toBeVisible();
+        await expect(page.locator('.drop-overlay')).toHaveCSS('pointer-events', 'none');
+        await first.dispatchEvent('dragleave', { dataTransfer: drag });
+        await expect(page.locator('.drop-overlay')).toBeVisible();
+        await region.dispatchEvent('dragleave', { dataTransfer: drag });
+        await expect(page.locator('.drop-overlay')).toHaveCount(0);
+        await drag.dispose();
+      });
+      test('column headers use the existing sort and direction fields', async ({ page }) => {
+        const mock = await setup(page, { count: 60 }); await page.goto('/');
+        await page.getByRole('radio', { name: 'S', exact: true }).click();
+        const name = page.getByRole('columnheader').filter({ has: page.getByRole('button', { name: /^Name/ }) });
+        const changed = page.getByRole('columnheader').filter({ has: page.getByRole('button', { name: /^Last change/ }) });
+        await expect(changed).toHaveAttribute('aria-sort', 'descending');
+        await name.getByRole('button').click();
+        await expect(name).toHaveAttribute('aria-sort', 'ascending');
+        await expect(page.getByLabel('Sort mounts', { exact: true })).toHaveValue('label');
+        await expect(page.getByLabel('Sort direction', { exact: true })).toHaveValue('ascending');
+        await expect.poll(() => mock.calls.filter(c => c.path === '/v1/mounts').at(-1)?.query.sort).toBe('label');
+        await name.getByRole('button').click();
+        await expect(name).toHaveAttribute('aria-sort', 'descending');
+        await expect(page.getByLabel('Sort direction', { exact: true })).toHaveValue('descending');
+        await page.getByLabel('Sort mounts', { exact: true }).selectOption('last_changed');
+        await expect(changed).toHaveAttribute('aria-sort', 'descending');
+        await expect(name).toHaveAttribute('aria-sort', 'none');
+        await expect(page.getByRole('columnheader', { name: 'Grains', exact: true }).getByRole('button')).toHaveCount(0);
+        await fits(page);
+      });
+      test('Import contains exactly the original actions and preserves their targets', async ({ page }) => {
+        await setup(page, { count: 1 }); await page.goto('/');
+        const trigger = page.getByRole('button', { name: 'Import', exact: true });
+        await expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+        await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+        await trigger.focus(); await trigger.press('ArrowDown');
+        const menu = page.getByRole('menu', { name: 'Import', exact: true });
+        await expect(menu.getByRole('menuitem')).toHaveText(['Open package…', 'Import pick list…', 'Choose images…']);
+        await expect(menu.getByRole('menuitem').first()).toBeFocused();
+        await page.keyboard.press('ArrowUp'); await expect(menu.getByRole('menuitem').last()).toBeFocused();
+        await page.keyboard.press('Home'); await expect(menu.getByRole('menuitem').first()).toBeFocused();
+        await page.keyboard.press('End'); await expect(menu.getByRole('menuitem').last()).toBeFocused();
+        await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+        await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+        for (const [name, input] of [['Open package…', 'package-input'], ['Choose images…', 'images-input']]) {
+          await trigger.click();
+          const choosing = page.waitForEvent('filechooser');
+          await menu.getByRole('menuitem', { name, exact: true }).click();
+          const chooser = await choosing;
+          expect(await chooser.element().getAttribute('data-testid')).toBe(input);
+          await expect(menu).toHaveCount(0);
+        }
+        await trigger.click(); await menu.getByRole('menuitem', { name: 'Import pick list…', exact: true }).click();
+        await expect(page.getByTestId('pick-import-dialog')).toBeVisible();
+        await page.getByTestId('pick-import-dialog').getByRole('button', { name: 'Close', exact: true }).click();
+        await fits(page);
+      });
+      test('secondary mount actions are outside the open button and reachable by keyboard', async ({ page }) => {
+        await setup(page, { count: 60 }); await page.goto('/');
+        await page.getByRole('radio', { name: 'S', exact: true }).click();
+        const row = page.getByTestId('mount-tile').first();
+        const open = row.getByRole('button', { name: mount(0).label, exact: true });
+        await open.focus(); await page.keyboard.press('Tab');
+        const more = row.getByRole('button', { name: `More actions for ${mount(0).label}`, exact: true });
+        await expect(more).toBeFocused(); await more.press('Enter');
+        const link = row.getByRole('menuitem', { name: 'Link a local project…', exact: true });
+        await expect(link).toBeFocused();
+        expect(await open.locator('[role="menuitem"], button').count()).toBe(0);
+        await page.keyboard.press('Escape'); await expect(more).toBeFocused();
+        await more.press('ArrowDown'); await link.press('Enter');
+        await expect(page.getByRole('dialog', { name: 'Link a local project', exact: true })).toBeVisible();
+        await expect(page.getByRole('dialog')).toContainText('No unlinked local projects. Open a local project first.');
+      });
       test('signed out shows local projects only', async ({ page }) => {
         const mock = await setup(page, { signedOut: true, unlinked: true }); await page.goto('/');
         await expect(page.getByText('Sign in to see your mounts')).toBeVisible();
@@ -126,8 +239,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await expect(tile.getByText(/Offline copy · as of/)).toHaveCount(0);
         await expect(page.getByTestId('offline-cache')).toHaveAttribute('title', /.+/);
         await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0);
-        const open = tile.getByRole('button', { name: 'Open', exact: true });
-        await expect(open).toBeEnabled(); await expect(open).toHaveClass(/primary/); await fits(page);
+        const open = tile.getByRole('button', { name: mount(0).label, exact: true });
+        await expect(open).toBeEnabled(); await expect(open).not.toHaveClass(/primary/); await fits(page);
         await page.reload(); await expect(page.getByTestId('offline-cache')).toContainText('Offline copy · as of');
       });
       test('badges use one batched revision lookup', async ({ page }) => {
@@ -139,7 +252,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
           const previous = (await lines.nth(i - 1).boundingBox())!, current = (await lines.nth(i).boundingBox())!;
           expect(current.y).toBeGreaterThanOrEqual(previous.y + previous.height);
         }
-        await expect(tile.getByRole('button', { name: 'Open', exact: true })).toHaveClass(/primary/);
+        await expect(tile.getByRole('button', { name: mount(0).label, exact: true })).toBeEnabled();
         await expect(tile.getByText('Shared · Write', { exact: true })).toBeVisible();
         expect(mock.calls.filter(c => c.path === '/v1/atlas/projects/revisions')).toHaveLength(1); await fits(page);
       });
@@ -180,14 +293,14 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await expect(tile.getByTestId('tile-status').locator('p')).toHaveText(['Not on this computer']);
         await expect(tile.getByText(/Offline copy · as of/)).toHaveCount(0);
         await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0);
-        const open = tile.getByRole('button', { name: 'Needs a connection', exact: true });
+        const open = tile.getByRole('button', { name: mount(0).label, exact: true });
         await expect(open).toBeDisabled(); await expect(open).not.toHaveClass(/primary/); await expect(open).toHaveAttribute('title', 'Not on this computer; needs a connection');
         const mounts = page.getByTestId('mount-browser'), local = page.locator('.recent-list');
         await expect.poll(() => local.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('[data-testid="mount-browser"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
         expect((await local.boundingBox())!.x).toBeLessThan((await mounts.boundingBox())!.x);
         await expect(page.getByRole('radio', { name: 'Database first', exact: true })).toHaveAttribute('aria-checked', 'true'); await fits(page);
       });
-      test('offline cached bundle has a read-only status and primary Open offline copy action', async ({ page }) => {
+      test('offline cached bundle has a read-only status and enabled row open action', async ({ page }) => {
         const mock = await setup(page, { count: 1 }); await page.goto('/');
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
         await waitForMountCache(page);
@@ -214,8 +327,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await expect(tile.getByText(/Offline copy · as of/)).toHaveCount(0);
         await expect(page.getByTestId('offline-cache')).toHaveAttribute('title', /.+/);
         await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0);
-        const open = tile.getByRole('button', { name: 'Open offline copy', exact: true });
-        await expect(open).toBeEnabled(); await expect(open).toHaveClass(/primary/); await fits(page);
+        const open = tile.getByRole('button', { name: mount(0).label, exact: true });
+        await expect(open).toBeEnabled(); await expect(open).toHaveAttribute('title', 'Open offline copy'); await expect(open).not.toHaveClass(/primary/); await fits(page);
       });
       test('database HTTP errors stay visible outside offline mode', async ({ page }) => {
         await setup(page, { count: 1 }); await page.goto('/');
@@ -230,25 +343,25 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
         expect(mock.calls.find(c => c.path === '/v1/mounts')?.query.lab).toBe('invented-lab');
         const scope = page.getByLabel('Mount scope', { exact: true });
-        await expect(scope.getByRole('button', { name: 'second-lab', exact: true })).toBeVisible();
-        await expect(scope.getByRole('button', { name: 'other-lab', exact: true })).toHaveCount(0);
-        await page.getByRole('button', { name: 'All labs', exact: true }).click();
+        await expect(scope.getByRole('radio', { name: 'second-lab', exact: true })).toBeVisible();
+        await expect(scope.getByRole('radio', { name: 'other-lab', exact: true })).toHaveCount(0);
+        await page.getByRole('radio', { name: 'All labs', exact: true }).click();
         await expect.poll(() => mock.calls.filter(c => c.path === '/v1/mounts').at(-1)?.query.lab).toBeUndefined(); await fits(page);
       });
       test('ordinary accounts get a chip per lab from /labs', async ({ page }) => {
         await setup(page, { count: 1 }); await page.goto('/');
         const scope = page.getByLabel('Mount scope', { exact: true });
-        await expect(scope.getByRole('button', { name: 'invented-lab', exact: true })).toBeVisible();
-        await expect(scope.getByRole('button', { name: 'second-lab', exact: true })).toBeVisible();
-        await expect(scope.getByRole('button', { name: 'All labs', exact: true })).toHaveCount(0);
+        await expect(scope.getByRole('radio', { name: 'invented-lab', exact: true })).toBeVisible();
+        await expect(scope.getByRole('radio', { name: 'second-lab', exact: true })).toBeVisible();
+        await expect(scope.getByRole('radio', { name: 'All labs', exact: true })).toHaveCount(0);
       });
       test('older servers give superusers Mine and All labs without team-lab chips', async ({ page }) => {
         const mock = await setup(page, { count: 1, superuser: true, legacyLabs: true }); await page.goto('/');
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
         const scope = page.getByLabel('Mount scope', { exact: true });
-        await expect(scope.getByRole('button', { name: 'Mine', exact: true })).toHaveClass(/primary/);
-        await expect(scope.getByRole('button', { name: 'All labs', exact: true })).toBeVisible();
-        await expect(scope.getByRole('button', { name: 'invented-lab', exact: true })).toHaveCount(0);
+        await expect(scope.getByRole('radio', { name: 'Mine', exact: true })).toHaveAttribute('aria-checked', 'true');
+        await expect(scope.getByRole('radio', { name: 'All labs', exact: true })).toBeVisible();
+        await expect(scope.getByRole('radio', { name: 'invented-lab', exact: true })).toHaveCount(0);
         expect(mock.calls.find(c => c.path === '/v1/mounts')?.query.mine).toBe('true');
       });
       test('unlinked project asks before linking on behalf and preserves project UUID', async ({ page }) => {
@@ -323,7 +436,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
       test('combined server filters, sorting and removable chips', async ({ page }) => {
         const mock = await setup(page, { count: 1 }); await page.goto('/');
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
-        await page.getByRole('button', { name: 'Mine', exact: true }).click();
+        await page.getByRole('radio', { name: 'Mine', exact: true }).click();
         await page.getByRole('button', { name: 'Filters…', exact: true }).click();
         await page.getByLabel('Mineral', { exact: true }).fill('zircon');
         await page.getByLabel('Mineral', { exact: true }).press('Tab');
@@ -444,4 +557,18 @@ test('a stalled revision lookup never holds the mount list, Refresh or navigatio
   await nav.getByRole('button', { name: 'Open', exact: true }).click();
   await expect(page.getByTestId('mount-tile').getByText(/Newer in database/)).toBeVisible();
   expect(mock.calls.filter(c => c.path === '/v1/atlas/projects/revisions')).toHaveLength(1);
+});
+
+
+test('a separate local copy remains a keyboard-reachable secondary action', async ({ page }) => {
+  await setup(page, { count: 1, local: true, separate: true }); await page.goto('/');
+  await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+  await page.getByRole('radio', { name: 'S', exact: true }).click();
+  const row = page.getByTestId('mount-tile');
+  const more = row.getByRole('button', { name: `More actions for ${mount(0).label}`, exact: true });
+  await more.focus(); await more.press('ArrowDown');
+  const other = row.getByRole('menuitem', { name: 'Open other local copy', exact: true });
+  await expect(other).toBeFocused(); await expect(other).toBeEnabled(); await other.press('Enter');
+  await expect(page.getByTestId('recent-note')).toContainText('Opening by path needs the desktop app.');
+  await expect(page.getByTestId('recent-row')).toContainText('Invented local project');
 });

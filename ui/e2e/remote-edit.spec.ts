@@ -785,7 +785,7 @@ test('start-screen Open catches up a clean linked editable copy with one newer d
   await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Open', exact: true }).click();
   await expect(page.getByTestId('mount-tile')).toHaveCount(1);
   await expect(page.getByTestId('recent-row')).toHaveCount(0);
-  await page.getByTestId('mount-tile').getByRole('button', { name: 'Open', exact: true }).click();
+  await page.getByTestId('mount-tile').getByRole('button', { name: 'Synthetic mount', exact: true }).click();
   await expect(page.getByText('Updated from the database: 1 spot', { exact: true })).toBeVisible();
   await expect(page.getByTestId('spot')).toHaveCount(original.length + 1);
   await expect(page.locator(`tr[data-spot-id="${incoming.id}"]`)).toContainText(incoming.name);
@@ -826,8 +826,8 @@ test('a cached database bundle opens read-only offline with cached server spots'
   }));
   mock.goOffline(); await page.reload();
   await expect(page.getByTestId('offline-cache')).toContainText('Offline copy');
-  const open = page.getByTestId('mount-tile').getByRole('button', { name: 'Open offline copy', exact: true });
-  await expect(open).toBeEnabled(); await open.click();
+  const open = page.getByTestId('mount-tile').getByRole('button', { name: 'Synthetic mount', exact: true });
+  await expect(open).toBeEnabled(); await expect(open).toHaveAttribute('title', 'Open offline copy'); await open.click();
   await expect(page.getByTestId('edit-copy')).toBeDisabled();
   await expect(page.getByTestId('edit-copy')).toHaveAttribute('title', 'Offline copy: read-only until the database is reachable');
   await expect(page.getByTestId('spot')).toHaveCount(mock.project.grainatlas_ui.spots.length);
@@ -849,3 +849,21 @@ test('a database tile title refreshes an already open read-only database view', 
   expect(mock.bundleRequests.filter(r => r.path === 'atlas.json')).toHaveLength(2);
   expect(mock.syncBodies).toEqual([]); expect(mock.unexpected).toEqual([]);
 });
+
+// Round 3: real synthetic-bundle opens through the native row button.
+for (const input of ['click', 'Enter', 'Space'] as const) {
+  test(`compact mount row opens the published mount with ${input}`, async ({ page }) => {
+    const mock = await mockServer(page, undefined, false, undefined, { standalone: true });
+    await page.goto('/');
+    await expect(page.getByTestId('mount-tile')).toHaveCount(1);
+    await page.getByRole('radio', { name: 'S', exact: true }).click();
+    const row = page.getByTestId('mount-tile');
+    const open = row.getByRole('button', { name: 'Synthetic mount', exact: true });
+    if (input === 'click') await row.click({ position: { x: 100, y: 20 } });
+    else { await open.focus(); await expect(open).toBeFocused(); await open.press(input); }
+    await expect(page.getByTestId('edit-copy')).toHaveText('Edit');
+    await expect(page.getByTestId('spot')).toHaveCount(mock.project.grainatlas_ui.spots.length);
+    expect(mock.bundleRequests.some(r => r.path === 'atlas.json')).toBe(true);
+    expect(mock.syncBodies).toEqual([]); expect(mock.unexpected).toEqual([]);
+  });
+}

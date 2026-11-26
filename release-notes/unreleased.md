@@ -1,2 +1,3 @@
 - Controls use segmented view switches, quiet fact and status chips, named icon actions and thin progress bars in the lab’s design language.
 - Canvas groups tools in one row with floating image controls and panel tabs; Open uses mount rows and publishing shows connected steps.
+- Open has denser mount rows, three display sizes and grouped import actions.

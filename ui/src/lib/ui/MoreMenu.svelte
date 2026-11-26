@@ -3,12 +3,12 @@
   import { tick, type Snippet } from 'svelte';
   import IconButton from './IconButton.svelte';
   import { menuIndex } from '../ui-controls';
-  let { label, title, children }: { label: string; title?: string; children: Snippet } = $props();
+  let { label, title, triggerText, children }: { label: string; title?: string; triggerText?: string; children: Snippet } = $props();
   let open = $state(false);
   let root: HTMLDivElement;
   let menu = $state<HTMLDivElement>();
   const uid = $props.id();
-  function items() { return [...menu!.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]:not(:disabled)')]; }
+  function items() { return [...menu!.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]:not(:disabled), [role="menuitem"]:not(:disabled)')]; }
   function close(restore = true) { open = false; if (restore) root.querySelector<HTMLButtonElement>('button')?.focus(); }
   async function show(last = false) { open = true; await tick(); if (!open || !menu) return; const buttons = items(); (last ? buttons.at(-1) : buttons[0])?.focus(); }
   function keyboard(e: KeyboardEvent) {
@@ -24,12 +24,18 @@
 </script>
 <svelte:window onpointerdown={outside} />
 <div class="more" bind:this={root}>
+  {#if triggerText}
+  <button type="button" aria-label={label} title={title ?? label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? uid : undefined}
+    onclick={() => open ? close() : show()}
+    onkeydown={e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); void show(e.key === 'ArrowUp'); } }}>{triggerText}<span aria-hidden="true"> ▾</span></button>
+  {:else}
   <IconButton icon="more" {label} {title} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? uid : undefined}
     onclick={() => open ? close() : show()}
     onkeydown={e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); void show(e.key === 'ArrowUp'); } }} />
+  {/if}
   {#if open}
     <div id={uid} class="glass panel menu" role="menu" tabindex="-1" aria-label={label} bind:this={menu} onkeydown={keyboard}
-      onclick={e => { if ((e.target as Element).closest('[role="menuitemradio"]')) close(); }}>
+      onclick={e => { if ((e.target as Element).closest('[role="menuitemradio"], [role="menuitem"]:not(:disabled)')) close(); }}>
       {@render children()}
     </div>
   {/if}

@@ -263,6 +263,16 @@ same controls. No new theme tokens are required. UPb Lab’s press layer maps
 to the existing `--hairline` token. View and workflow changes are instant. Icon buttons use the `--motion` hover feedback and the `--hairline`
 background while pressed, without movement; focus rings use `--accent`.
 
+### Open page
+
+Open has one filled primary action, Open project…. Import groups the existing
+package, pick-list and image commands; New mount… stays secondary. A mount row
+is the open control, with separate keyboard-accessible secondary actions.
+The remembered S/M/L choice gives compact 54 px rows, two-line rows with the lab,
+or a responsive card grid. S must show at least 11 mounts at 1440 x 900 and
+9 at 1280 x 800 without scrolling. The local-project column keeps its saved
+width and splitter; the title and filter controls use the full page width.
+
 The segmented control is a labelled `radiogroup`: Tab reaches the selected
 radio, Left/Right wrap and select, and Home/End select the first/last radio.
 Native buttons in the stepper's ordered list work with Tab, Enter and Space;

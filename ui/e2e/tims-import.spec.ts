@@ -56,12 +56,12 @@ test('preview refuses a line, narrowing the range enables a confirmed import and
 
 test('Open offers an optional import, and offline notes remain in the dialog', async ({ page }) => {
   const mock = await mockTimsServer(page, generated);
-  await page.goto('/'); await page.getByTestId('import-pick-list').click();
+  await page.goto('/'); await page.getByRole('button', { name: 'Import', exact: true }).click(); await page.getByTestId('import-pick-list').click();
   const dialog = page.getByTestId('pick-import-dialog');
   await dialog.getByLabel('Notes', { exact: true }).fill('SAMPLE1\nK1-z1:S 195');
   mock.setOffline(true); await page.evaluate(() => window.dispatchEvent(new Event('offline')));
   await expect(dialog).toContainText('Import needs the database; your notes stay here');
   await expect(dialog.getByTestId('pick-preview')).toBeDisabled();
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click(); await page.getByTestId('import-pick-list').click();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click(); await page.getByRole('button', { name: 'Import', exact: true }).click(); await page.getByTestId('import-pick-list').click();
   await expect(dialog.getByLabel('Notes', { exact: true })).toHaveValue('SAMPLE1\nK1-z1:S 195');
 });

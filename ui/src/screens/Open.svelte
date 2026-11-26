@@ -7,6 +7,7 @@
   import StatusChip from '../lib/ui/StatusChip.svelte';
   import MetaChip from '../lib/ui/MetaChip.svelte';
   import SegmentedControl from '../lib/ui/SegmentedControl.svelte';
+  import MoreMenu from '../lib/ui/MoreMenu.svelte';
   import { isHosted } from '@lab/bridge';
   import { startEntries } from '../lib/mount-browser';
   import type { AppState } from '../lib/store.svelte';
@@ -31,6 +32,13 @@
   import { openRecent, recentCounts, recentLocation, relocateRecent, removeRecent, samePackage, storedProject, updateRecentCounts, baseName, type PathStatus } from '../lib/recent';
 
   let over = $state(false);
+  let dragDepth = 0;
+  function dragEnter(e: DragEvent) {
+    if (!e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault(); dragDepth++; over = true;
+  }
+  function dragLeave() { dragDepth = Math.max(0, dragDepth - 1); over = dragDepth > 0; }
+  function resetDrag() { dragDepth = 0; over = false; }
   let input: HTMLInputElement;
   let imagesInput: HTMLInputElement;
   const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp'];
@@ -211,7 +219,7 @@
 
   async function drop(e: DragEvent) {
     e.preventDefault();
-    over = false;
+    resetDrag();
     if (desktop || !e.dataTransfer) return;
     const r = await fromDrop(e.dataTransfer);
     if (r) await openFiles(r.name, r.files);
@@ -239,7 +247,7 @@
     return failed ? recent.filter(r => visible.has(r) || failed === r.name) : entries.localOnly;
   });
   const databaseFirst = $derived(signedIn && !!app.server && !mountOffline && app.layout.startView === 'database');
-  let split: HTMLDivElement;
+  let split = $state<HTMLDivElement>();
   let projectInput: HTMLInputElement;
   const hasContent = $derived(recent.length > 0 || mountContent);
   onMount(() => {
@@ -279,7 +287,7 @@
     const handle = event.currentTarget as HTMLElement;
     handle.setPointerCapture(event.pointerId);
     const move = (e: PointerEvent) => {
-      app.layout.recentWidth = Math.max(180, Math.min(360, databaseFirst ? split.getBoundingClientRect().right - e.clientX : e.clientX - split.getBoundingClientRect().left));
+      app.layout.recentWidth = Math.max(180, Math.min(360, databaseFirst ? split!.getBoundingClientRect().right - e.clientX : e.clientX - split!.getBoundingClientRect().left));
     };
     const stop = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', stop); handle.removeEventListener('pointercancel', stop); app.saveLayout(); };
     handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', stop); handle.addEventListener('pointercancel', stop);
@@ -288,23 +296,29 @@
 
 <PickListImport bind:open={importingPickList} />
 
-<section class="open">
-  <div class="glass panel action-bar" class:over ondragover={e => { e.preventDefault(); over = true; }} ondragleave={() => over = false} ondrop={drop} role="region" aria-label="Open files">
-    <button onclick={pick} data-testid="choose-folder">Open package…</button>
-    <button class="primary" onclick={() => projectInput.click()}>Open project…</button>
+<svelte:window ondragend={resetDrag} />
+<section class="open" aria-label="Open files" ondragenter={dragEnter} ondragleave={dragLeave}
+  ondragover={e => { e.preventDefault(); }} ondrop={drop}>
+  {#if over}<div class="drop-overlay" aria-hidden="true"><span>Drop a folder or images here</span></div>{/if}
+  {#snippet titleActions()}
+    <MoreMenu label="Import" triggerText="Import">
+      <button role="menuitem" onclick={pick} data-testid="choose-folder">Open package…</button>
+      <button role="menuitem" onclick={() => importingPickList = true} data-testid="import-pick-list">Import pick list…</button>
+      <button role="menuitem" onclick={pickImages} data-testid="choose-images">Choose images…</button>
+    </MoreMenu>
     <button disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(undefined, undefined, true)}>New mount…</button>
-    <button onclick={() => importingPickList = true} data-testid="import-pick-list">Import pick list…</button>
-    <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
-    <SegmentedControl label="Start screen" options={[{ value: 'database', label: 'Database first' }, { value: 'local', label: 'Local first' }]} value={app.layout.startView}
+    <button class="primary" onclick={() => projectInput.click()}>Open project…</button>
+  {/snippet}
+  {#snippet orderControl()}
+    <SegmentedControl label="Start screen" size="small" options={[{ value: 'database', label: 'Database first' }, { value: 'local', label: 'Local first' }]} value={app.layout.startView}
       onchange={value => { app.layout.startView = value as 'database' | 'local'; app.saveLayout(); }} />
-    {#if hasContent}<span class="faint small">Drop a folder or images here</span>{/if}
-  </div>
+  {/snippet}
   <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={() => chosen(input)} data-testid="package-input" />
   <input bind:this={imagesInput} type="file" multiple accept=".jpg,.jpeg,.png,.tif,.tiff,.bmp,image/*" hidden onchange={() => chosen(imagesInput)} data-testid="images-input" />
   <input bind:this={projectInput} type="file" accept=".json,.gaproj,application/json" hidden onchange={project} data-testid="project-input" />
   {#if !hasContent}
     <div class="glass drop" class:over role="button" tabindex="0" aria-label="Open a package folder, an area folder or images"
-      ondragover={e => { e.preventDefault(); over = true; }} ondragleave={() => over = false} ondrop={drop} onclick={pick} onkeydown={e => (e.key === 'Enter' || e.key === ' ') && pick()}>
+      onclick={pick} onkeydown={e => (e.key === 'Enter' || e.key === ' ') && pick()}>
       <h1>Open images</h1>
       <p class="muted">Drop a package folder, an area folder or image files here.</p>
       <p class="faint small">The files stay on this computer. For loose images, give the scale once.</p>
@@ -319,7 +333,6 @@
       <button onclick={pick} data-testid="deeplink-open">Open package…</button><button onclick={() => app.deepLink = null}>Dismiss</button>
     </div>
   {/if}
-  <div class="split" class:database-first={databaseFirst} bind:this={split} style={`--recent-width: ${app.layout.recentWidth}px`}>
     {#snippet localColumn()}
     <aside class="glass panel recent-list">
       <h2>{signedIn ? 'On this computer only' : 'Recent projects'}</h2>
@@ -354,18 +367,14 @@
       <details><summary>Sync drafts</summary><DraftList /></details>
     </aside>
     {/snippet}
-    {#snippet mountColumn()}
-    <StartMounts {recent} onopen={choose} onlink={m => showLink(undefined, m)} oncontent={n => mountContent = n > 0} onrows={rows => visibleMounts = rows} onauth={value => { signedIn = value; if (!value) mountContent = false; }} onoffline={value => mountOffline = value} refresh={refreshMounts} />
-    {/snippet}
-    {#each databaseFirst ? ['mounts', 'splitter', 'local'] : ['local', 'splitter', 'mounts'] as column (column)}
-      {#if column === 'mounts'}{@render mountColumn()}
-      {:else if column === 'local'}{@render localColumn()}
-      {:else}
+  {#snippet splitter()}
     <div class="splitter" role="slider" tabindex="0" aria-label="Recent projects width" aria-orientation="vertical" aria-valuenow={app.layout.recentWidth} aria-valuemin="180" aria-valuemax="360" onpointerdown={resize}
       onkeydown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); app.layout.recentWidth = Math.max(180, Math.min(360, app.layout.recentWidth + (e.key === 'ArrowLeft' ? -10 : 10))); app.saveLayout(); } }}></div>
-      {/if}
-    {/each}
-  </div>
+  {/snippet}
+  <StartMounts {recent} {titleActions} {orderControl} {localColumn} {splitter} {databaseFirst} bind:split
+    onopen={choose} onlink={m => showLink(undefined, m)} oncontent={n => mountContent = n > 0} onrows={rows => visibleMounts = rows}
+    onauth={value => { signedIn = value; if (!value) mountContent = false; }} onoffline={value => mountOffline = value} refresh={refreshMounts} />
+  {#if hasContent}<p class="drop-hint faint small">Drop a folder or images here</p>{/if}
   {#if linkDialog}
     <dialog use:showModal class="glass panel mount-dialog" aria-label={linkDialog.create ? 'New mount' : 'Link a local project'} oncancel={e => { e.preventDefault(); if (!linking) linkDialog = null; }}>
         <h2>{linkDialog.create ? 'New mount' : linkDialog.mount ? `Link to ${linkDialog.mount.label}` : `Link ${linkDialog.recent?.name}`}</h2>
@@ -381,17 +390,18 @@
 </section>
 
 <style>
-  .open { width: 100%; height: 100%; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); overflow: auto; min-height: 0; }
-  .action-bar, .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-  .action-bar { padding: var(--space-2) var(--space-3); }
+  .open { position: relative; isolation: isolate; width: 100%; height: 100%; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); overflow: auto; min-height: 0; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+  .drop-hint { margin: 0; }
+  .drop-overlay { position: absolute; inset: 0; z-index: 50; pointer-events: none; border: 2px solid var(--accent); background: var(--accent-soft); display: grid; place-items: center; }
+  .drop-overlay span { background: var(--glass-strong); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: var(--space-3); }
   .drop { padding: var(--space-6); text-align: center; cursor: pointer; border-style: dashed; }
   .over { border-color: var(--accent); background: var(--accent-soft); }
   .drop p { margin: var(--space-2) 0 0; }
-  .split { display: grid; grid-template-columns: minmax(180px, var(--recent-width)) 8px minmax(0, 1fr); gap: var(--space-2); align-items: start; min-width: 0; }
-  .split.database-first { grid-template-columns: minmax(0, 1fr) 8px minmax(180px, var(--recent-width)); }
   .splitter { align-self: stretch; min-height: 160px; cursor: col-resize; touch-action: none; border-left: 2px solid var(--hairline); }
   .splitter:focus-visible { outline: 2px solid var(--accent); }
-  .recent-list { min-width: 0; padding: var(--space-3); }
+  .recent-list { min-width: 0; padding: var(--space-2); }
+  .recent-list h2 { font-size: 1rem; overflow-wrap: anywhere; }
   h2 { margin: 0 0 var(--space-2); }
   .recent-item { padding: var(--space-2) 0; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
   .recent-item > div { margin-block: var(--space-1); }
@@ -400,5 +410,5 @@
   .note { font-size: .8rem; padding-top: var(--space-2); }
   .mount-dialog::backdrop { background: color-mix(in srgb, var(--bg) 55%, transparent); }
   .mount-dialog { margin: auto; width: min(500px, 90vw); max-height: 80vh; overflow: auto; display: grid; gap: var(--space-3); }
-  @media (max-width: 850px) { .split, .split.database-first { grid-template-columns: minmax(0, 1fr); } .splitter { display: none; } }
+  @media (max-width: 850px) { .splitter { display: none; } }
 </style>
