@@ -195,7 +195,7 @@
     {#if fragment}<label class="field">Fragment note <textarea rows="2" bind:value={fragmentNote}></textarea></label>{/if}
     <label class="field">Notes <textarea rows="2" bind:value={notes}></textarea></label>
     <strong>Grains</strong>
-    <ul>{#each grains as g, i (`${g.grain}:${g.spot ?? ''}`)}<li>{g.label}{g.spotName ? ` · ${g.spotName}` : ''} <button class="icon" aria-label={`Remove ${g.label}`} onclick={() => removeGrain(i)}>Remove</button></li>{/each}</ul>
+    <ul>{#each grains as g, i (`${g.grain}:${g.spot ?? ''}`)}<li>{g.label}{g.spotName ? ` · ${g.spotName}` : ''} <button class="icon" aria-label={`Remove ${g.label}`} title={`Remove ${g.label}`} onclick={() => removeGrain(i)}>Remove</button></li>{/each}</ul>
     <p class="faint small">Several grains can join one fraction. Shift-click to add grains.</p>
     {#if reason}<p class="faint small" data-testid="pluck-reason">{reason}</p>{/if}
     {#if error}<p class="danger" role="alert">{error}</p>{/if}

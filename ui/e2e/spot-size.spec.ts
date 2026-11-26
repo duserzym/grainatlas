@@ -141,7 +141,7 @@ for (const stalled of [false, true]) test(`dragging a spot edge moves it; only t
 for (const width of [1280, 1440]) test(`selection sizes, area calibration and stale hosted edits at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: width === 1280 ? 800 : 900 });
   const mock = await openSynthetic(page, false, true);
-  await page.locator('.side .tabs').getByRole('button', { name: /^Spots / }).click();
+  await page.locator('.side .tabs').getByRole('radio', { name: /^Spots / }).click();
   const entry = page.locator('details.spot-entry');
   if (!(await entry.evaluate(e => (e as HTMLDetailsElement).open))) await entry.locator('summary').click();
   const toolbar = page.getByTestId('size-toolbar'), side = page.getByTestId('size-side');

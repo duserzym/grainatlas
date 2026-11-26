@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusChip from '../lib/ui/StatusChip.svelte';
   import { areaImageEdits, levelsLut } from '../lib/image-edits';
   import { bundlePixels, neutralTone } from '../lib/bundle-tone';
   import { grainNumber } from '../lib/grain-lineage';
@@ -153,7 +154,7 @@
               <span class="nm">{a.name}{#if app.grains[a.id] === undefined} <span class="faint" title="no grains yet" aria-label="no grains yet">○</span>{/if}</span>
               <span class="faint mono">{a.id}</span>
               {#if !published}<span class="faint">{a.grid ? `${a.grid[0]}×${a.grid[1]}` : ''} · {a.tiles.length} tiles</span>{/if}
-              {#if app.stitched[a.id]}<span class="pill ok">{published ? 'published' : 'stitched'}</span>{/if}
+              {#if app.stitched[a.id]}<StatusChip tone="success" text={published ? 'published' : 'stitched'} />{/if}
             </button>
           </li>
         {/each}
@@ -214,15 +215,15 @@
             </Viewer>
           {/key}
         {/if}
-        {#if app.rendering}<span class="pill rendering" role="status">rendering…</span>{/if}
+        {#if app.rendering}<span class="rendering" role="status"><StatusChip text="rendering…" /></span>{/if}
         {#if tiles}
           <EditorMountInset current={meta.id} {tiles} {lut} {view} frame={summary ? undefined : { ...frame, um_per_px: viewScale }}
             allAreasClickable currentPictureOnly={!!remoteTiles} onarea={changeArea} />
         {/if}
         <div class="viewbtns glass" data-ui data-mount-inset-bottom>
-          <button class="icon" title="Zoom in" onclick={() => viewer?.zoomBy(1.5)}>+</button>
-          <button class="icon" title="Zoom out" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
-          <button class="icon" title="Fit (double-click)" onclick={() => viewer?.fitAll()}>Fit</button>
+          <button class="icon" title="Zoom in" aria-label="Zoom in" onclick={() => viewer?.zoomBy(1.5)}>+</button>
+          <button class="icon" title="Zoom out" aria-label="Zoom out" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
+          <button class="icon" title="Fit (double-click)" aria-label="Fit" onclick={() => viewer?.fitAll()}>Fit</button>
         </div>
       </div>
       {#if summary}
@@ -440,6 +441,7 @@
     border-radius: var(--radius-sm);
   }
   .rendering {
+    --glass: var(--glass-on-image);
     position: absolute;
     left: var(--space-2);
     top: var(--space-2);

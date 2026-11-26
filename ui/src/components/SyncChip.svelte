@@ -126,7 +126,7 @@
   .sync { display:flex; align-items:center; gap:var(--space-2); flex:1 1 22rem; min-width:0; font-size:0.8rem; }
   .sync button { height:2rem; font-size:inherit; white-space:nowrap; }
   .sync > [data-testid="sync-action"] { flex:none; padding-inline:var(--space-2); }
-  .sync .sync-pill { display:flex; align-items:center; gap:var(--space-2); border-radius:999px; min-width:3rem; max-width:max-content; padding-inline:var(--space-3); color:var(--text-muted); border-color:var(--hairline); }
+  .sync .sync-pill { display:flex; align-items:center; gap:var(--space-2); border-radius:var(--radius-sm); min-width:3rem; max-width:max-content; padding-inline:var(--space-3); color:var(--text-muted); border-color:var(--hairline); background:var(--glass); }
   .sync-pill span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   .sync-pill svg { flex:none; }
   .sync .state-in-sync { color:var(--ok); background:color-mix(in srgb, var(--ok) 7%, transparent); }

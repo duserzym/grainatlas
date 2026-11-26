@@ -1,4 +1,8 @@
 <script lang="ts">
+  import SegmentedControl from '../lib/ui/SegmentedControl.svelte';
+  import MetaChip from '../lib/ui/MetaChip.svelte';
+  import StatusChip from '../lib/ui/StatusChip.svelte';
+  import IconButton from '../lib/ui/IconButton.svelte';
   import { onMount, untrack } from 'svelte';
   import { app } from '../lib/store.svelte';
   import { mountMirror } from '../lib/mount-mirror';
@@ -177,7 +181,8 @@
 </script>
 <section class="mounts" data-testid="mount-browser">
   <div class="row"><h2>Mounts</h2><span class="faint small">{account ? `${rows.length} of ${total}` : ''}</span>
-    <span class="sizes" role="group" aria-label="Tile size">{#each ['S', 'M', 'L'] as s}<button class:primary={app.layout.tileSize === s} onclick={() => { app.layout.tileSize = s as 'S' | 'M' | 'L'; app.saveLayout(); }}>{s}</button>{/each}</span>
+    <div class="sizes"><SegmentedControl label="Tile size" size="small" options={['S', 'M', 'L'].map(value => ({ value, label: value }))} value={app.layout.tileSize}
+      onchange={value => { app.layout.tileSize = value as 'S' | 'M' | 'L'; app.saveLayout(); }} /></div>
   </div>
   {#if account}
     <div class="row" aria-label="Mount scope">
@@ -198,7 +203,7 @@
         <option value="ascending">Ascending</option><option value="descending">Descending</option>
       </select>
       <button aria-expanded={advanced} onclick={() => advanced = !advanced}>Filters…</button>
-      <button disabled={loading} onclick={() => load()}>Refresh</button>
+      <IconButton icon="refresh" label="Refresh" disabled={loading} onclick={() => load()} />
     </div>
     {#if advanced}
       <form class="row filters" onsubmit={e => { e.preventDefault(); void load(); }}>
@@ -230,14 +235,14 @@
           <button class="title" disabled={!!disabledReason} title={disabledReason || undefined} onclick={() => openDatabase(mount, match)}>{mount.label}</button>
           <p class="faint small">{mount.creator?.name ?? 'Unknown owner'}{mount.lab ? ` · ${mount.lab.handle}` : ''}</p>
           <p class="small">{(mount.sample_names ?? []).slice(0, 3).join(', ')}{Math.max(0, (mount.sample_count ?? mount.sample_names?.length ?? 0) - 3) ? ` +${(mount.sample_count ?? mount.sample_names?.length ?? 0) - 3}` : ''}</p>
-          <p class="small">{mount.grain_count} grains · {mount.spot_count} spots</p>
+          <div><MetaChip text={`${mount.grain_count} grains · ${mount.spot_count} spots`} /></div>
           <p class="faint small">{mount.last_changed_at ? new Date(mount.last_changed_at).toLocaleString() : 'No changes yet'}</p>
           <div data-testid="tile-status">
-            {#each entryStatus(mount, match, revision, { offline, hasOffline }) as part, i}
-              <p class="small" class:faint={i === 0} class:badges={i > 0}><span>{part}</span></p>
+            {#each entryStatus(mount, match, revision, { offline, hasOffline }) as part}
+              <p class="small"><StatusChip text={part} /></p>
             {/each}
           </div>
-          <div class="badges">{#each tileBadges(mount, match, account.id, revision).filter(b => b.startsWith('Shared ·')) as badge}<span class="small">{badge}</span>{/each}</div>
+          <div class="badges">{#each tileBadges(mount, match, account.id, revision).filter(b => b.startsWith('Shared ·')) as badge}<MetaChip text={badge} />{/each}</div>
           <div class="row">
             <button class:primary={!disabledReason} disabled={!!disabledReason} title={disabledReason || undefined} onclick={() => openDatabase(mount, match)}>{offline && !hasLocal ? hasOffline ? 'Open offline copy' : 'Needs a connection' : 'Open'}</button>
             {#if local && separateDraft}<button onclick={() => onopen(local)}>Open other local copy</button>{/if}
@@ -267,6 +272,5 @@
   .title { text-align: left; font-weight: 600; overflow-wrap: anywhere; }
   .tile p { overflow-wrap: anywhere; }
   .badges { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-  .badges span { background: var(--accent-soft); border-radius: var(--radius); padding: 2px 5px; }
   .tile .row button { font-size: .8rem; }
 </style>

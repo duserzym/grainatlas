@@ -1,0 +1,19 @@
+<!-- Ported from upblab ui/src/components/ui/ProgressBar.svelte at 72e91bc; keep in step. -->
+<!-- Usage: <ProgressBar value={ready} total={count} noun="capsules" />; null value means unknown. -->
+<script lang="ts">
+  import { progressState } from '../ui-controls';
+  let { value, total, noun, hideCaption = false }: { value?: number | null; total: number; noun: string; hideCaption?: boolean } = $props();
+  const progress = $derived(progressState(value, total, noun));
+</script>
+<div class="progress">
+  {#if !hideCaption}<span class="caption">{progress.caption}</span>{/if}
+  <div class="track" role="progressbar" aria-label={noun} aria-valuemin="0" aria-valuemax={progress.max} aria-valuenow={progress.now} aria-valuetext={progress.caption}>
+    <span class="fill" style:width={`${progress.percent}%`}></span>
+  </div>
+</div>
+<style>
+  .progress { min-width: 0; }
+  .caption { font-size: 11px; color: var(--text-muted); }
+  .track { height: 5px; border-radius: var(--radius-sm); overflow: hidden; background: var(--hairline); }
+  .fill { display: block; height: 100%; background: var(--accent); }
+</style>

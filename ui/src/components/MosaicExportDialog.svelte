@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProgressBar from '../lib/ui/ProgressBar.svelte';
   import { onMount } from 'svelte';
   import { current } from '../lib/store.svelte';
   import type { Core, MosaicExportOptions, MosaicExportPlan } from '../lib/core/core';
@@ -95,7 +96,7 @@
     {/if}
     {#if !streaming}<p class="faint small">This browser downloads a ZIP under 512 MiB. Use the desktop app or Chromium for larger exports.</p>{/if}
     {#if tooLarge}<p role="alert">The mosaic exceeds this browser's 512 MiB download limit.</p>{/if}
-    {#if exporting}<progress max="1" value={progress?.fraction ?? 0} aria-label="Mosaic export progress"></progress><p class="faint small" role="status">{cancelling ? 'Cancelling export...' : progress?.stage ?? 'Preparing export...'}</p>{/if}
+    {#if exporting}<ProgressBar total={1} value={progress?.fraction ?? 0} noun="Mosaic export progress" hideCaption /><p class="faint small" role="status">{cancelling ? 'Cancelling export...' : progress?.stage ?? 'Preparing export...'}</p>{/if}
     {#if error}<p role="alert">{error}</p>{/if}
     <div class="row"><button onclick={cancel} disabled={cancelling}>Cancel</button><button class="primary" disabled={!plan || estimating || exporting || tooLarge || overLimit} onclick={save}>Export</button></div>
   </div>
@@ -106,5 +107,4 @@
   fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
   .areas { max-height: 10rem; overflow: auto; margin-block: var(--space-2); }
   .row { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-3); }
-  progress { width: 100%; }
 </style>

@@ -4,6 +4,7 @@
   let lastNote: OpenNote | null = null;
 </script>
 <script lang="ts">
+  import SegmentedControl from '../lib/ui/SegmentedControl.svelte';
   import { isHosted } from '@lab/bridge';
   import { startEntries } from '../lib/mount-browser';
   import type { AppState } from '../lib/store.svelte';
@@ -292,7 +293,8 @@
     <button disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(undefined, undefined, true)}>New mount…</button>
     <button onclick={() => importingPickList = true} data-testid="import-pick-list">Import pick list…</button>
     <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
-    <span role="group" aria-label="Start screen">{#each [['database', 'Database first'], ['local', 'Local first']] as [value, label]}<button class:primary={app.layout.startView === value} aria-pressed={app.layout.startView === value} onclick={() => { app.layout.startView = value as 'database' | 'local'; app.saveLayout(); }}>{label}</button>{/each}</span>
+    <SegmentedControl label="Start screen" options={[{ value: 'database', label: 'Database first' }, { value: 'local', label: 'Local first' }]} value={app.layout.startView}
+      onchange={value => { app.layout.startView = value as 'database' | 'local'; app.saveLayout(); }} />
     {#if hasContent}<span class="faint small">Drop a folder or images here</span>{/if}
   </div>
   <input bind:this={input} type="file" webkitdirectory multiple hidden onchange={() => chosen(input)} data-testid="package-input" />

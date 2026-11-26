@@ -131,7 +131,7 @@
           <td><input type="text" inputmode="decimal" value={f.x_stage ?? ''} onchange={(e) => setStage(i, 'x_stage', e.currentTarget.value)} aria-label="Stage x {i + 1}" data-testid="fid-x" /></td>
           <td><input type="text" inputmode="decimal" value={f.y_stage ?? ''} onchange={(e) => setStage(i, 'y_stage', e.currentTarget.value)} aria-label="Stage y {i + 1}" data-testid="fid-y" /></td>
           <td class="num" class:bad={r != null && r > 5}>{r == null ? '–' : fit?.exact ? '0' : r.toFixed(1)}</td>
-          <td><button class="icon" onclick={() => remove(i)} aria-label="Remove fiducial {i + 1}">✕</button></td>
+          <td><button class="icon" onclick={() => remove(i)} aria-label="Remove fiducial {i + 1}" title="Remove fiducial {i + 1}">✕</button></td>
         </tr>
       {:else}
         <tr><td colspan="5" class="muted">No fiducials yet.</td></tr>

@@ -191,9 +191,18 @@
 .ga-root table.data tr.selected td { background: var(--accent-soft); }
 
 .ga-root .kbd { font-family: var(--font-mono); font-size: 0.75rem; border: 1px solid var(--hairline); border-radius: 4px; padding: 0 0.3rem; color: var(--text-muted); }
-.ga-root .pill { display: inline-block; font-size: 0.75rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
-.ga-root .pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
-.ga-root .pill.warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
+/* Facts use quiet rectangular chips; editor actions retain their measured hit targets. */
+.ga-root .toolbar button, .ga-root .tools button, .ga-root .presets button,
+.ga-root button.icon, .ga-root .two button[aria-pressed], .ga-root .seg button {
+  border-radius: calc(var(--radius-sm) / 2);
+  border-color: var(--hairline);
+}
+.ga-root [role='radio'] { transition: none; }
+.ga-root .tabs { background: var(--glass); outline: 1px solid var(--hairline); outline-offset: 2px; border-radius: var(--radius-sm); }
+.ga-root .tabs button { border-radius: calc(var(--radius-sm) / 2); border-color: var(--hairline); }
+.ga-root .seg label:has(input[type='radio']) { border-radius: calc(var(--radius-sm) / 2); box-shadow: inset 0 0 0 1px var(--hairline); }
+.ga-root .seg label:has(input:checked) { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.ga-root button[aria-checked='true'], .ga-root button[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
 /* the host page: only the body margin, nothing else global */
 body:has(> #grainatlas) { margin: 0; background: #eef2f8; }

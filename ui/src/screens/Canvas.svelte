@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { segmentedKeydown } from '../lib/ui-controls';
+  import StatusChip from '../lib/ui/StatusChip.svelte';
   import ImageEditPanel, { type ImageTool } from '../components/ImageEditPanel.svelte';
   import ImageEditOverlay from '../components/ImageEditOverlay.svelte';
   import { areaImageEdits, imagePointVisible, levelsLut, overviewHistogram, pointBounds, inverseAffine, storeImageEdits, type Point } from '../lib/image-edits';
@@ -1936,7 +1938,7 @@
       </select>
       <span class="sep"></span>
       {#each ro ? toolList.filter((t) => t.id === 'select' || t.id === 'measure') : toolList as t (t.id)}
-        <button class="icon" aria-pressed={app.tool === t.id} title="{t.title} ({t.key})" onclick={() => (app.tool = t.id)} data-testid="tool-{t.id}">{t.label}</button>
+        <button class="icon" aria-label={t.label} aria-pressed={app.tool === t.id} title="{t.title} ({t.key})" onclick={() => (app.tool = t.id)} data-testid="tool-{t.id}">{t.label}</button>
       {/each}
       <span class="sep" class:hidden={ro}></span>
       <div class="diam" class:hidden={ro}>
@@ -1946,10 +1948,10 @@
       </div>
       {#if !ro}
         <span class="sep"></span>
-        <button class="icon" title={`Add grain: click inside it; Shift-drag adds grains in a box; ${modName}-drag toggles grains in a box (G)`} aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
-        <button class="icon" data-testid="tool-split" title="Split grain: draw across it freehand; hold Shift for a straight cut" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
-        <button class="icon" title={(noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : `Outline a grain (O): drag or click corners; Shift extends, Alt cuts, ${modName} draws without snapping.`) + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
-        <button class="icon" disabled={noPixels} title={(noPixels ? "Brush needs raw image pixels. Open the raw package to paint grain edges." : "Grain brush (B): paint to add, Alt to erase.") + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
+        <button class="icon" aria-label="+Grain" title={`Add grain: click inside it; Shift-drag adds grains in a box; ${modName}-drag toggles grains in a box (G)`} aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
+        <button class="icon" aria-label="Split" data-testid="tool-split" title="Split grain: draw across it freehand; hold Shift for a straight cut" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
+        <button class="icon" aria-label="Outline" title={(noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : `Outline a grain (O): drag or click corners; Shift extends, Alt cuts, ${modName} draws without snapping.`) + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
+        <button class="icon" aria-label="Brush" disabled={noPixels} title={(noPixels ? "Brush needs raw image pixels. Open the raw package to paint grain edges." : "Grain brush (B): paint to add, Alt to erase.") + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
         {#if app.tool === 'grain-outline' && !noPixels}
           <label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
         {:else if app.tool === 'grain-brush'}
@@ -1958,17 +1960,17 @@
       {/if}
       {#if !ro}
         <span class="sep"></span>
-        <button class="icon" title={`Undo (${modName}+Z)`} disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()}>↶</button>
-        <button class="icon" title={`Redo (Shift+${modName}+Z)`} disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()}>↷</button>
+        <button class="icon" title={`Undo (${modName}+Z)`} aria-label="Undo" disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()}>↶</button>
+        <button class="icon" title={`Redo (Shift+${modName}+Z)`} aria-label="Redo" disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()}>↷</button>
       {/if}
-      {#if canPluck}<button class="icon" aria-pressed={app.tool === 'pluck'} title="Pluck grains for TIMS; Shift-click adds grains (P)" data-testid="tool-pluck" onclick={() => { app.tool = 'pluck'; }}>Pluck</button>{/if}
+      {#if canPluck}<button class="icon" aria-label="Pluck" aria-pressed={app.tool === 'pluck'} title="Pluck grains for TIMS; Shift-click adds grains (P)" data-testid="tool-pluck" onclick={() => { app.tool = 'pluck'; }}>Pluck</button>{/if}
       <span class="sep"></span>
-      <button class="icon" title="Zoom in (+)" onclick={() => viewer?.zoomBy(1.5)}>+</button>
-      <button class="icon" title="Zoom out (−)" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
-      <button class="icon" title="Fit (0)" onclick={() => viewer?.fitAll()}>Fit</button>
-      <button class="icon" title="Pixels 1:1" onclick={() => viewer?.oneToOne()}>1:1</button>
-      <button class="icon" title="Rotate left 15° ([)" onclick={() => viewer?.rotateBy(-Math.PI / 12)}>↺</button>
-      <button class="icon" title="Rotate right 15° (])" onclick={() => viewer?.rotateBy(Math.PI / 12)}>↻</button>
+      <button class="icon" title="Zoom in (+)" aria-label="Zoom in" onclick={() => viewer?.zoomBy(1.5)}>+</button>
+      <button class="icon" title="Zoom out (−)" aria-label="Zoom out" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
+      <button class="icon" title="Fit (0)" aria-label="Fit" onclick={() => viewer?.fitAll()}>Fit</button>
+      <button class="icon" title="Pixels 1:1" aria-label="1:1" onclick={() => viewer?.oneToOne()}>1:1</button>
+      <button class="icon" title="Rotate left 15° ([)" aria-label="Rotate left 15°" onclick={() => viewer?.rotateBy(-Math.PI / 12)}>↺</button>
+      <button class="icon" title="Rotate right 15° (])" aria-label="Rotate right 15°" onclick={() => viewer?.rotateBy(Math.PI / 12)}>↻</button>
     </div>
 
     {/if}
@@ -1986,7 +1988,7 @@
           {@const d = dateOf(r, app.dateChoice)}
           <div class="resbox" data-testid="spot-results">
             <div class="resdate" data-testid="result-date"><span class="num">{d ? fmtValue(d) : `no ${dateLabel(app.dateChoice)} date`}</span> {#if d}<span class="faint">{`${d.method ?? d.metric} · ${d.utype ?? '2σ'}${d.passes === false ? ' · fails filters' : ''}`}</span>{/if}</div>
-            {#if r.flags.length}<div class="flags">{#each r.flags as f (f)}<span class="flag">{f}</span>{/each}</div>{/if}
+            {#if r.flags.length}<div class="flags">{#each r.flags as f (f)}<StatusChip tone="warning" text={f} />{/each}</div>{/if}
             <table class="data kv">
               <tbody>
                 {#each otherDates(r, app.dateChoice) as { kind, value } (kind)}<tr><td>{dateLabel(kind)} date</td><td class="num">{fmtValue(value)} <span class="faint">{kind === 'preferred' ? `${value.method ?? value.metric} · ` : ''}{value.utype ?? '2σ'}{value.passes === false ? ' · fails filters' : ''}</span></td></tr>{/each}
@@ -2101,13 +2103,13 @@
         <span>Image panels</span>
         <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away" aria-label="Fold the side panel" aria-expanded={true} data-testid="side-collapse">›</button>
       </div>
-      <div class="tabs">
-        <button aria-pressed={tab === 'spots'} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
-        <button aria-pressed={tab === 'checks'} onclick={() => (tab = 'checks')} data-testid="tab-checks">Checks</button>
-        <button aria-pressed={tab === 'grains'} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
-        <button aria-pressed={tab === 'refOverlay'} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
-        <button aria-pressed={tab === 'laser'} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
-        <button aria-pressed={tab === 'link'} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to UPbDB" data-testid="tab-link">UPbDB</button>
+      <div class="tabs" tabindex="-1" role="radiogroup" aria-label="Canvas panel" onkeydown={segmentedKeydown}>
+        <button role="radio" aria-checked={tab === 'spots'} tabindex={tab === 'spots' ? 0 : -1} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
+        <button role="radio" aria-checked={tab === 'checks'} tabindex={tab === 'checks' ? 0 : -1} onclick={() => (tab = 'checks')} data-testid="tab-checks">Checks</button>
+        <button role="radio" aria-checked={tab === 'grains'} tabindex={tab === 'grains' ? 0 : -1} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
+        <button role="radio" aria-checked={tab === 'refOverlay'} tabindex={tab === 'refOverlay' ? 0 : -1} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
+        <button role="radio" aria-checked={tab === 'laser'} tabindex={tab === 'laser' ? 0 : -1} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
+        <button role="radio" aria-checked={tab === 'link'} tabindex={tab === 'link' ? 0 : -1} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to UPbDB" data-testid="tab-link">UPbDB</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if !ro && app.tool === 'select'}
@@ -2379,7 +2381,7 @@
           <span class="faint small">{sizeSummary.caption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
           <div class="presets">
             {#each app.settings.spot_presets_um as d, i (d)}
-              <button class="icon" aria-pressed={sizeValue === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
+              <button class="icon" aria-label={`${d} µm`} aria-pressed={sizeValue === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
             {/each}
           </div>
           <div class="next-entry">
@@ -2696,13 +2698,6 @@
     display: flex;
     gap: var(--space-1);
     flex-wrap: wrap;
-  }
-  .flag {
-    font-size: 0.75rem;
-    padding: 0 6px;
-    border-radius: 999px;
-    border: 1px solid #ff6b6b;
-    color: #ff6b6b;
   }
   :global(.ga-root) .results .rfill {
     stroke: none;

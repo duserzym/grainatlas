@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusChip from '../lib/ui/StatusChip.svelte';
   import { onMount, tick } from 'svelte';
   import { current } from '../lib/store.svelte';
   import { authToken } from '../lib/atlas';
@@ -152,7 +153,7 @@
       <p class="faint small">{currentPlan.summary.ok} ok · {currentPlan.summary.refused} refused · {currentPlan.summary.skipped} skipped · {currentPlan.summary.ignored} ignored</p>
       <label class="check"><input type="checkbox" bind:checked={showIgnored} /> Show ignored lines</label>
       <div class="table-scroll"><table class="data"><thead><tr>{#each ['Line', 'Text', 'Result', 'Sample', 'Mount', 'Spot', 'Grain', 'Capsule', 'Fraction'] as heading}<th>{heading}</th>{/each}</tr></thead><tbody>
-        {#each rows as row (row.number)}<tr class:open-mount={row.openMount} data-testid="pick-import-row"><td>{row.number}</td><td>{row.text}</td><td>{row.result}</td><td>{row.sample}</td><td>{row.mount}</td><td>{row.spot}</td><td>{row.grain}</td><td>{row.capsule}</td><td>{row.fraction}</td></tr>{/each}
+        {#each rows as row (row.number)}<tr class:open-mount={row.openMount} data-testid="pick-import-row"><td>{row.number}</td><td>{row.text}</td><td><StatusChip text={row.result} /></td><td>{row.sample}</td><td>{row.mount}</td><td>{row.spot}</td><td>{row.grain}</td><td>{row.capsule}</td><td>{row.fraction}</td></tr>{/each}
       </tbody></table></div>
       <ul data-testid="pick-import-batches">{#each currentPlan.batches as batch}<li>{batch.action === 'create' ? 'Create' : 'Reuse'} {sets.find(s => s.id === batch.set_id)?.name ?? batch.set_id} batch started {batch.started_on}{batch.explanation ? ` · ${batch.explanation}` : ''}</li>{/each}</ul>
     {/if}

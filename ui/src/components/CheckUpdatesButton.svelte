@@ -103,7 +103,7 @@
         role="dialog" aria-labelledby="whats-new-title" tabindex="-1" bind:this={popover} style:left={`${left}px`} style:top={`${top}px`}>
         <div class="card-heading">
           <strong id="whats-new-title">What's new in v{updater.version}</strong>
-          <button class="icon" aria-label="Dismiss what's new" onclick={dismissWhatsNew}>✕</button>
+          <button class="icon" aria-label="Dismiss what's new" title="Dismiss what's new" onclick={dismissWhatsNew}>✕</button>
         </div>
         <p class="small" style:white-space="pre-wrap">{updater.whatsNewNotes}</p>
       </div>

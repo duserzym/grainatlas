@@ -151,11 +151,11 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         await expect.poll(() => mounts.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('.recent-list')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
         expect((await mounts.boundingBox())!.x).toBeLessThan((await local.boundingBox())!.x);
         await expect(page.getByTestId('recent-row')).toHaveCount(0);
-        await page.getByRole('button', { name: 'Local first', exact: true }).click();
+        await page.getByRole('radio', { name: 'Local first', exact: true }).click();
         await expect.poll(() => local.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('[data-testid="mount-browser"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
         expect((await local.boundingBox())!.x).toBeLessThan((await mounts.boundingBox())!.x);
         await page.reload();
-        await expect(page.getByRole('button', { name: 'Local first', exact: true })).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.getByRole('radio', { name: 'Local first', exact: true })).toHaveAttribute('aria-checked', 'true');
         await expect(page.getByTestId('mount-tile')).toHaveCount(1);
         expect((await local.boundingBox())!.x).toBeLessThan((await mounts.boundingBox())!.x);
         await page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Settings', exact: true }).click();
@@ -185,7 +185,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
         const mounts = page.getByTestId('mount-browser'), local = page.locator('.recent-list');
         await expect.poll(() => local.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('[data-testid="mount-browser"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
         expect((await local.boundingBox())!.x).toBeLessThan((await mounts.boundingBox())!.x);
-        await expect(page.getByRole('button', { name: 'Database first', exact: true })).toHaveAttribute('aria-pressed', 'true'); await fits(page);
+        await expect(page.getByRole('radio', { name: 'Database first', exact: true })).toHaveAttribute('aria-checked', 'true'); await fits(page);
       });
       test('offline cached bundle has a read-only status and primary Open offline copy action', async ({ page }) => {
         const mock = await setup(page, { count: 1 }); await page.goto('/');
@@ -335,7 +335,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
       });
       test('tile size and splitter persist and Reset layout restores defaults', async ({ page }) => {
         await setup(page, { count: 12 }); await page.goto('/');
-        await page.getByRole('button', { name: 'L', exact: true }).click();
+        await page.getByRole('radio', { name: 'L', exact: true }).click();
         const splitter = page.getByRole('slider', { name: 'Recent projects width' });
         await splitter.focus(); await splitter.press('ArrowRight');
         expect(await page.evaluate(() => JSON.parse(localStorage.getItem('grainatlas.layout')!))).toMatchObject({ recentWidth: 250, tileSize: 'L' });

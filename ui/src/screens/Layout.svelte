@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProgressBar from '../lib/ui/ProgressBar.svelte';
   // Print layout: paper, scale, packing, preview, PDF export and printing.
   // Two styles: print sheets (every grain of
   // the mount once, at a fixed scale, with a mount map and the print_sheet
@@ -489,7 +490,7 @@
 {#snippet qualityProgress()}
   {#if qualityState && !qualityState.ready && !qualityCancelled && !qualityState.error && !stale && !pending && !app.busy}
     <div class="quality-progress" role="status" data-testid="print-quality-busy">
-      <progress aria-label="Preparing print quality" value={qualityState.next} max={qualityState.total}></progress>
+      <div class="quality-bar"><ProgressBar noun="Preparing print quality" value={qualityState.next} total={qualityState.total} hideCaption /></div>
       <button onclick={cancelQuality}>Pause</button>
     </div>
   {/if}
@@ -717,12 +718,12 @@
         {/if}
       </PanZoom>
       <div class="pager glass" data-ui>
-        <button class="icon" disabled={pageIdx === 0} onclick={() => pageIdx--}>‹</button>
+        <button class="icon" aria-label="Previous page" title="Previous page" disabled={pageIdx === 0} onclick={() => pageIdx--}>‹</button>
         <span class="num">{pageIdx + 1} / {result.pages.length}</span>
-        <button class="icon" data-testid="next-page" disabled={pageIdx >= result.pages.length - 1} onclick={() => pageIdx++}>›</button>
-        <button class="icon" title="Zoom out" onclick={() => panzoom?.zoomBy(1 / 1.5)}>−</button>
-        <button class="icon" title="Zoom in" onclick={() => panzoom?.zoomBy(1.5)}>+</button>
-        <button class="icon" title="Fit (double-click)" onclick={() => panzoom?.fitAll()}>Fit</button>
+        <button class="icon" aria-label="Next page" title="Next page" data-testid="next-page" disabled={pageIdx >= result.pages.length - 1} onclick={() => pageIdx++}>›</button>
+        <button class="icon" title="Zoom out" aria-label="Zoom out" onclick={() => panzoom?.zoomBy(1 / 1.5)}>−</button>
+        <button class="icon" title="Zoom in" aria-label="Zoom in" onclick={() => panzoom?.zoomBy(1.5)}>+</button>
+        <button class="icon" title="Fit (double-click)" aria-label="Fit" onclick={() => panzoom?.fitAll()}>Fit</button>
       </div>
     {:else if !result}
       <div class="glass panel empty"><p class="muted">Choose paper and scale, then lay out pages. Every page carries a 10 mm bar at paper scale and a µm bar at image scale, so the print scale can be checked with a ruler.</p></div>
@@ -769,7 +770,7 @@
   .arrange-export {padding:var(--space-2) var(--space-4) var(--space-4);display:grid;gap:var(--space-1);flex:none;background:var(--bg);border-top:1px solid var(--hairline);}
   .arrange-export p {margin:var(--space-1) 0;}
   .quality-progress {display:flex;align-items:center;gap:var(--space-2);}
-  .quality-progress progress {flex:1;min-width:0;accent-color:var(--accent);}
+  .quality-bar {flex:1;min-width:0;}
   .quality-progress button {padding:var(--space-1) var(--space-2);}
   .two {
     display: grid;

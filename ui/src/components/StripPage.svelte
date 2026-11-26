@@ -135,7 +135,7 @@
         {/if}
       </svg>
     </PanZoom>
-    <div class="tools glass" data-ui><button onclick={() => panzoom?.zoomBy(1 / 1.5)} aria-label="Zoom out">−</button><button onclick={() => panzoom?.zoomBy(1.5)} aria-label="Zoom in">+</button><button onclick={() => panzoom?.fitAll()}>Fit</button></div>
+    <div class="tools glass" data-ui><button onclick={() => panzoom?.zoomBy(1 / 1.5)} aria-label="Zoom out" title="Zoom out">−</button><button onclick={() => panzoom?.zoomBy(1.5)} aria-label="Zoom in" title="Zoom in">+</button><button onclick={() => panzoom?.fitAll()} title="Fit" aria-label="Fit">Fit</button></div>
   </div>
 </div>
 {/if}

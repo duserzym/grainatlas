@@ -54,7 +54,7 @@
         aria-label={minimized ? 'Expand spot and grain info' : 'Minimize spot and grain info'}
         title={minimized ? 'Expand info panel' : 'Minimize info panel'}>{minimized ? '⌄' : '⌃'}</button>
     {/if}
-    {#if onclose && !passive}<button class="icon close" onclick={onclose} aria-label="Close">✕</button>{/if}
+    {#if onclose && !passive}<button class="icon close" onclick={onclose} aria-label="Close" title="Close">✕</button>{/if}
   </header>
   {#if !minimized}<div class="body">{@render children()}</div>{/if}
 </div>

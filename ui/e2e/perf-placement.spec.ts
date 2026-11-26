@@ -132,7 +132,7 @@ test('measure 60 grain placements and 10 undos on a large published mount', asyn
   await page.getByTestId('side-collapse').click();
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
   await page.getByTestId('tool-spot').click();
-  await page.getByRole('button', { name: '+', exact: true }).click();
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
   const existing = new Set(mock.ui.spots.map(s => s.grain_id));
   const targets = mock.ui.grains[areaId].filter(g => !g.artifact && !existing.has(g.id)).slice(0, 60);
   expect(targets).toHaveLength(60);

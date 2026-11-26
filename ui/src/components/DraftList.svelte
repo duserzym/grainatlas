@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusChip from '../lib/ui/StatusChip.svelte';
   import { oversightSession } from '../lib/oversight';
   import { existingProject } from '../lib/open-target';
   import { draftSyncStatus, plainSyncStatus } from '../lib/sync-status';
@@ -103,7 +104,7 @@
     <h2>Work waiting to sync</h2>
     {#each drafts as draft (draft.uuid)}
       <div class="draft" data-testid="draft-row">
-        <div><strong>{draft.name}</strong> · <span class="faint small" data-testid="draft-status">{statusFor(draft)}</span><p class="faint small">{new Date(draft.updated_at).toLocaleString()}</p></div>
+        <div><strong>{draft.name}</strong> · <span class="faint small" data-testid="draft-status"><StatusChip text={statusFor(draft)} /></span><p class="faint small">{new Date(draft.updated_at).toLocaleString()}</p></div>
         <button disabled={busy !== null || (oversightSession.readOnly && draft.changes !== null)} onclick={() => draft.changes === null ? check(draft) : sync(draft)}>{draft.changes === null ? 'Check' : 'Sync'}</button>
         <button disabled={busy !== null} onclick={() => discard(draft)}>Discard</button>
       </div>

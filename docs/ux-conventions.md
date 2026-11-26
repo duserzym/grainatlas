@@ -210,3 +210,62 @@ spots are selected; mixed or unset sizes stay blank until explicitly edited.
 - **All apps** (rule 7): check every screen at 1440 x 900 and 1280 x 800,
   remember window and splitter geometry outside shared records, and offer
   Reset layout.
+
+## Control shapes (2026-11-25)
+
+Use one shape per kind of control: view switch = segmented control, workflow =
+stepper, facts = chips, rare actions = icon buttons, primary navigation =
+text-link breadcrumb. Pills (`btn` rounded buttons) are no longer the default
+for everything. The shared components live in `ui/src/lib/ui/`, ported from
+UPb Lab at `72e91bc`.
+
+| Component | Purpose and props |
+| --- | --- |
+| `SegmentedControl` | Switch views inside one bordered group with dividers. `options: {value, label, title?, ariaLabel?, testid?}[]`, bindable `value: string`, `label: string`, optional `onchange(value)` and `size: 'small' \| 'normal'` (normal by default). The selected radio uses `--accent-soft` and `--accent`. |
+| `Stepper` | Navigate a workflow. `steps: {label, fullName, detail, state: 'done' \| 'current' \| 'pending', hint?}[]`, `onselect(index)`, `label`, optional `trailing` snippet for actions. Short labels and counts appear below 22 px circles; full names and details form accessible names. Current hints are exposed in titles and accessible descriptions. Its row is 54 px high. |
+| `MetaChip` | Display a quiet neutral fact. `text: string`, optional `icon` (an `IconName` or snippet), `info: string` and `infoLabel: string`. Long text truncates with its complete value in `title`. An info button describes provenance without adding it to the fact. |
+| `IconButton` | A rare action with a named icon. `icon: IconName`, `label: string`, optional `title`, `disabled`, and standard button attributes and handlers, including `aria-expanded`. The label is its accessible name; the title defaults to that label. |
+| `StatusChip` | A short state fact. `text: string`, optional `tone: 'neutral' \| 'warning' \| 'success'` (neutral by default). Warning and success tints mix the existing `--warning` and `--ok` tokens; the text also names the state. |
+| `ProgressBar` | A 5 px progress bar and an “n of m noun” caption. `value?: number \| null`, `total: number`, `noun: string`. Missing values show “— of m noun”, omit `aria-valuenow` and leave the bar empty. Zero totals have no fill. Values outside the range are clamped. `hideCaption` keeps existing visible progress wording while exposing accessible values. |
+| `Icon` | Decorative inline SVG. `kind: 'refresh' \| 'edit' \| 'history' \| 'person' \| 'flask' \| 'building' \| 'info' \| 'check' \| 'chevron-left' \| 'calendar' \| 'rows' \| 'lanes'`. Uses a 24 × 24 viewBox, currentColor stroke, 1.6 px stroke width and round caps and joins; the default display is 18 × 18 px. |
+
+### Where each shape is used
+
+| Shape | Where |
+| --- | --- |
+| Segmented control | Start screen order, mount tile size, theme, Canvas side-panel views. Canvas keeps its measured strip and wraps at the same places. Native print Style radios retain their labels and geometry with the outlined treatment. |
+| Stepper | Workflows with existing selectable steps. Inline import, registration and sync commands stay buttons: these screens have no step navigation. |
+| Metadata chip | Mount grain/spot counts and shared provenance. |
+| Status chip | Mount and draft states, stitched/published areas, rendering, result flags, TIMS fraction states and pick-list preview results. |
+| Icon button | Mount refresh; existing rare actions retain their names and tooltips. |
+| Text/list navigation | Screen navigation and update-version navigation use plain text treatment. Open-project tabs, mount thumbnails and area rows remain navigation. |
+| Button | Primary actions and confirmations; independent pressed options keep their existing names and states with compact rectangular outlines. |
+| Thin progress bar | Background tasks, mosaic export, print preparation and full-resolution loading, with existing live status text. |
+
+Canvas tools, zoom palettes, print editors, size presets and spatial handles
+keep their measured geometry, position and interaction model. Crop and mask
+tools can be deselected; independent flips and layer selections are not
+exclusive view choices. Automatic/Arrange can ask before dropping edits, so
+it keeps its existing confirmation and pressed buttons.
+
+All colours come from the design tokens, so Light, Dark and System share the
+same controls. No new theme tokens are required. UPb Lab’s press layer maps
+to the existing `--hairline` token. View and workflow changes are instant. Icon buttons use the `--motion` hover feedback and the `--hairline`
+background while pressed, without movement; focus rings use `--accent`.
+
+The segmented control is a labelled `radiogroup`: Tab reaches the selected
+radio, Left/Right wrap and select, and Home/End select the first/last radio.
+Native buttons in the stepper's ordered list work with Tab, Enter and Space;
+only the current step has `aria-current="step"`. The metadata info tooltip
+opens on hover or focus and on click/Enter, uses `aria-describedby`, and closes
+on Escape. Icon buttons always have an accessible name, even with no text
+visible, and disabled buttons retain their native disabled behaviour. Progress
+bars expose min, max, current value when known, and the full caption as
+`aria-valuetext`.
+
+The local segmented component also accepts a `content(option)` snippet for
+existing theme icons, a group `testid`, wrapping labels and a disabled group.
+The theme’s host-controlled state stays disabled with no module choice
+selected. All existing test ids stay on their original control or wrapper.
+The Canvas strip uses the same keyboard rules through `segmentedKeydown`;
+handled keys stop before reaching image shortcuts.

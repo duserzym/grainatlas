@@ -22,7 +22,7 @@ type Mock = Awaited<ReturnType<typeof mockLargeServer>>;
 const areaId = 'a01';
 
 async function tab(page: Page, name: 'Grains' | 'Spots') {
-  await page.locator('.side .tabs').getByRole('button', { name: new RegExp(`^${name} `) }).click();
+  await page.locator('.side .tabs').getByRole('radio', { name: new RegExp(`^${name} `) }).click();
 }
 
 async function prepare(page: Page, initialTab: 'Grains' | 'Spots' = 'Grains', measured = false) {
@@ -37,7 +37,7 @@ async function prepare(page: Page, initialTab: 'Grains' | 'Spots' = 'Grains', me
   await layers.evaluate((d: HTMLDetailsElement) => { d.open = false; });
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
   if (initialTab === 'Grains') await tab(page, 'Grains');
-  else await expect(page.locator('.side .tabs').getByRole('button', { name: /^Spots / })).toHaveAttribute('aria-pressed', 'true');
+  else await expect(page.locator('.side .tabs').getByRole('radio', { name: /^Spots / })).toHaveAttribute('aria-checked', 'true');
   await page.getByTestId('tool-select').click();
   await page.getByRole('button', { name: 'Fit', exact: true }).click();
   await expect(page.getByTestId('busy')).toHaveCount(0);
@@ -372,7 +372,7 @@ test.describe('Windows Edge / WebView2 input', () => {
       await page.getByRole('combobox', { name: 'Area', exact: true }).focus();
       await dragBox(page, first, []);
       await expect(page.locator('[data-view]')).toBeFocused();
-      await expect(page.locator('.side .tabs').getByRole('button', { name: /^Grains / })).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('.side .tabs').getByRole('radio', { name: /^Grains / })).toHaveAttribute('aria-checked', 'true');
       await expectGrains(page, a);
       // Exercise fallback with modifiers too, keeping the selection across tab changes.
       await tab(page, 'Spots');
@@ -410,7 +410,7 @@ test.describe('Windows Edge / WebView2 input', () => {
     await dragBox(page, box, []);
     await expect(page.locator('[data-testid=spot].sel')).toHaveCount(ids.length);
     await expect(page.locator('polygon.grain.sel')).toHaveCount(0);
-    await expect(page.locator('.side .tabs').getByRole('button', { name: /^Spots / })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.side .tabs').getByRole('radio', { name: /^Spots / })).toHaveAttribute('aria-checked', 'true');
     await dragBox(page, box, ['Control']);
     await expect(page.locator('[data-testid=spot].sel')).toHaveCount(0);
     await dragBox(page, box, ['Shift']);
@@ -444,7 +444,7 @@ test.describe('Windows Edge / WebView2 input', () => {
     const box = await block(page, mock, [1, 4], [2, 3]);
     await dragBox(page, box, []);
     await expectGrains(page, await grainHits(page, mock, box));
-    await expect(page.locator('.side .tabs').getByRole('button', { name: /^Grains / })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.side .tabs').getByRole('radio', { name: /^Grains / })).toHaveAttribute('aria-checked', 'true');
     expect(mock.unexpected).toEqual([]);
   });
 

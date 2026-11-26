@@ -125,7 +125,7 @@
           {#each guides as g}<line data-testid="snap-guide" class="guide" x1={g.axis===0?g.at:0} x2={g.axis===0?g.at:plan.paper_mm[0]} y1={g.axis===1?g.at:0} y2={g.axis===1?g.at:plan.paper_mm[1]}/>{/each}
         </svg>
       </PanZoom>
-      <div class="tools glass" data-ui><button aria-label="Zoom out" onclick={()=>view.zoomBy(1/1.5)}>−</button><button aria-label="Zoom in" onclick={()=>view.zoomBy(1.5)}>+</button><button onclick={()=>view.fitAll()}>Fit</button><span class="small">{page+1} / {urls.length}</span></div>
+      <div class="tools glass" data-ui><button aria-label="Zoom out" title="Zoom out" onclick={()=>view.zoomBy(1/1.5)}>−</button><button aria-label="Zoom in" title="Zoom in" onclick={()=>view.zoomBy(1.5)}>+</button><button onclick={()=>view.fitAll()} title="Fit" aria-label="Fit">Fit</button><span class="small">{page+1} / {urls.length}</span></div>
       {#if hint}<p class="hint glass small" role="status">{hint}</p>{/if}
     </div>
   </div>

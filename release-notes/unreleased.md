@@ -1,0 +1,1 @@
+- Controls use segmented view switches, quiet fact and status chips, named icon actions and thin progress bars in the lab’s design language.

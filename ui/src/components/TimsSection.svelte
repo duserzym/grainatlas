@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusChip from '../lib/ui/StatusChip.svelte';
   import { untrack } from 'svelte';
   import { app } from '../lib/store.svelte';
   import type { FractionOut } from '../lib/tims';
@@ -32,7 +33,7 @@
       {@const batch = store?.batches.find(b => b.id === f.batch_id)}
       {@const set = store?.data.sets.find(s => s.id === batch?.capsule_set_id)}
       <p>{set?.name ?? f.capsule_set_name ?? 'No capsule set'}{f.capsule_number ? ` · ${set?.capsule_labels[f.capsule_number - 1] ?? f.capsule_label ?? f.capsule_number}` : ''}{batch ? ` · ${batch.started_on}` : ''}</p>
-      <p>{f.name} · {f.mineral} · {f.status}</p>
+      <p>{f.name} · {f.mineral} · <StatusChip text={f.status} /></p>
       {#each f.sources.filter(s => s.atlas_grain_id === grain && s.is_fragment) as s (s.id)}<p>Fragment: {s.fragment_note}</p>{/each}
       {#if f.notes}<p>{f.notes}</p>{/if}
       {#if f.sources.some(s => s.atlas_grain_id !== grain)}<p>Other grains: {f.sources.filter(s => s.atlas_grain_id !== grain).map(s => label(s.atlas_grain_id)).join(', ')}</p>{/if}

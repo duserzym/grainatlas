@@ -577,7 +577,7 @@
       {#if app.project && !app.readOnly}
         <button onclick={() => saveProject()} title={saveTitle} data-testid="save-project">{app.sync.canSyncOnSave ? 'Save and sync' : 'Save project'}</button>
       {/if}
-      <button class="icon overflow-toggle" bind:this={overflowButton} data-testid="header-overflow" aria-label="More project actions" aria-expanded={overflowOpen} aria-controls={overflowOpen ? 'header-overflow-panel' : undefined} onclick={() => overflowOpen = !overflowOpen}>…</button>
+      <button class="icon overflow-toggle" bind:this={overflowButton} data-testid="header-overflow" aria-label="More project actions" title="More project actions" aria-expanded={overflowOpen} aria-controls={overflowOpen ? 'header-overflow-panel' : undefined} onclick={() => overflowOpen = !overflowOpen}>…</button>
     </div>
     {/if}
     {#if menuCollapsed}<SyncChip bind:detailsOpen={syncDetailsOpen} />{/if}
@@ -619,11 +619,11 @@
           <div class="glass toast ok" role="status">
             <span>{app.notice}</span>
             {#if app.noticeAction}<button onclick={() => { const action = app.noticeAction; app.notice = null; action?.run(); }}>{app.noticeAction.label}</button>{/if}
-            <button class="icon" onclick={() => app.notice = null} aria-label="Dismiss">✕</button>
+            <button class="icon" onclick={() => app.notice = null} aria-label="Dismiss" title="Dismiss">✕</button>
           </div>
         {/if}
         {#if app.error}
-          <div class="glass toast" role="alert"><span>{app.error}</span><button class="icon" onclick={() => app.error = null} aria-label="Dismiss">✕</button></div>
+          <div class="glass toast" role="alert"><span>{app.error}</span><button class="icon" onclick={() => app.error = null} aria-label="Dismiss" title="Dismiss">✕</button></div>
         {/if}
       </div>
     {/if}
@@ -738,10 +738,9 @@
     gap: var(--space-1);
     margin-left: 0;
   }
-  .tab {
-    border-color: transparent;
-    background: transparent;
-  }
+  .tab { border-color: transparent; background: transparent; border-radius: 0; }
+  .tab[aria-pressed='true'] { background: transparent; border-color: transparent; color: var(--accent); text-decoration: underline; text-underline-offset: 5px; }
+  .tab:hover:not(:disabled) { background: transparent; border-color: transparent; text-decoration: underline; text-underline-offset: 5px; }
   .right {
     margin-left: auto;
     display: flex;
@@ -751,8 +750,8 @@
     min-width:0;
   }
   .topbar :global(button:not(.menu-toggle)) { height:2rem; white-space:nowrap; }
-  .topbar :global(.seg) { height:2rem; padding:0; align-items:center; }
-  .topbar :global(.seg button) { height:calc(2rem - 2px); }
+  .topbar :global([data-testid="theme-switch"]) { height:2rem; align-items:center; }
+  .topbar :global([data-testid="theme-switch"] button) { height:calc(2rem - 2px); }
   @container (max-width: 1100px) {
     .brand-label, .mark { display:none; }
     .topbar { gap:var(--space-1); padding-inline:var(--space-2); }

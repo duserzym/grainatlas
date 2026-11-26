@@ -22,9 +22,10 @@
 <style>
   button.glass {
     display: inline-flex; align-items: center; flex: none; align-self: center;
-    border-radius: 999px; font-size: 0.75rem;
-    background: var(--glass-strong); border-color: var(--glass-border);
+    border-radius: var(--radius-sm); font-size: 0.75rem;
+    background: transparent; border-color: transparent; box-shadow: none;
     padding: 0.4rem 0.65rem; color: var(--text); line-height: 1.2;
   }
+  button.glass:hover { background: transparent; border-color: transparent; text-decoration: underline; }
   .version { color: var(--text-muted); white-space: nowrap; }
 </style>

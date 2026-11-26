@@ -580,7 +580,7 @@ async function placeQuietSpot(page: Page, project: any) {
   await page.getByLabel('info panel', { exact: true }).uncheck();
   await page.getByTestId('side-collapse').click();
   await page.getByTestId('tool-spot').click();
-  await page.getByRole('button', { name: '+', exact: true }).click();
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
   // Inside the first grain but clear of its existing spots (a click on a spot selects it).
   const [gx] = project.grainatlas_ui.grains.a[0].centroid_um;
   const target = [gx, 150];
