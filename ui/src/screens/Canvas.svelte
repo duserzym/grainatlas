@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { segmentedKeydown } from '../lib/ui-controls';
+  import SegmentedControl from '../lib/ui/SegmentedControl.svelte';
+  import IconButton from '../lib/ui/IconButton.svelte';
+  import MoreMenu from '../lib/ui/MoreMenu.svelte';
+  import Stepper from '../lib/ui/Stepper.svelte';
+  import { tabKeydown } from '../lib/ui-controls';
+  import ProgressBar from '../lib/ui/ProgressBar.svelte';
   import StatusChip from '../lib/ui/StatusChip.svelte';
   import ImageEditPanel, { type ImageTool } from '../components/ImageEditPanel.svelte';
   import ImageEditOverlay from '../components/ImageEditOverlay.svelte';
@@ -154,6 +159,11 @@
     if (id !== app.areaId) app.areaId = id;
   }
   let editImage = $state(false);
+  let publicationOpen = $state(false);
+  const namedSpotCount = $derived(app.spots.filter(s => s.name.trim()).length);
+  const publishStage = $derived(publicationOpen || app.sync.imageBusy ? 2 : !app.checksRan ? 0 : namedSpotCount !== app.spots.length ? 1 : 2);
+  function activateTool(tool: Tool) { imageTool = null; app.tool = tool; }
+  function imageMode(value: string) { editImage = value === 'image'; imageTool = null; polygonPoints = []; }
   let imageTool = $state<ImageTool>(null);
   let brushRadius = $state(12);
   let imageDraft = $state<AreaImageEdits | null>(null);
@@ -247,8 +257,8 @@
   let spotAnchor: string | null = null;
   let grainAnchor: string | null = null;
   let side = $state<HTMLElement>();
-  // Notices float in main, outside the canvas's layout. Measure the wrapped toolbar
-  // and the actual panels rather than duplicating their sizes in App's CSS.
+  // Notices float in main, outside the canvas's layout. Measure the toolbar,
+  // floating controls and actual panels rather than duplicating their sizes in App's CSS.
   function publishNoticeBounds(canvas: HTMLDivElement) {
     const main = canvas.closest('main')!;
     const properties = ['--canvas-toolbar-bottom', '--canvas-notice-left', '--canvas-notice-right', '--canvas-notice-bottom'];
@@ -256,6 +266,8 @@
     function update() {
       const area = main.getBoundingClientRect();
       const toolbar = bounds('.toolbar');
+      const entry = bounds('.canvas-entry');
+
       let left = area.left;
       let right = bounds('.side, .side-mini')?.left ?? area.right;
       const floating = bounds('.floating');
@@ -264,8 +276,8 @@
         if (right - floating.right >= floating.left - left) left = floating.right;
         else right = floating.left;
       }
-      const bottom = Math.min(area.bottom, ...['.legend', '.owner-legend', '.status'].map(selector => bounds(selector)?.top ?? area.bottom));
-      const values = [toolbar ? toolbar.bottom - area.top : 0, left - area.left, area.right - right, area.bottom - bottom];
+      const bottom = Math.min(area.bottom, ...['.legend', '.owner-legend', '.status', '.zoom-controls'].map(selector => bounds(selector)?.top ?? area.bottom));
+      const values = [Math.max(toolbar?.bottom ?? area.top, entry?.bottom ?? area.top) - area.top, left - area.left, area.right - right, area.bottom - bottom];
       properties.forEach((property, i) => main.style.setProperty(property, `${Math.max(0, values[i])}px`));
     }
     const resize = new ResizeObserver(update);
@@ -280,7 +292,7 @@
       // Only watch direct canvas children and the chrome's attributes, never the
       // viewer's changing SVG. Floating-panel movement changes style, not size.
       changes.observe(canvas, { childList: true });
-      for (const element of canvas.querySelectorAll<HTMLElement>('.toolbar, .side, .side-mini, .floating, .legend, .owner-legend, .status')) {
+      for (const element of canvas.querySelectorAll<HTMLElement>('.toolbar, .canvas-entry, .tool-options, .zoom-controls, .side, .side-mini, .floating, .legend, .owner-legend, .status')) {
         resize.observe(element);
         changes.observe(element, { attributes: true, attributeFilter: ['style', 'class'] });
       }
@@ -1565,6 +1577,12 @@
   function splitModifier(e: KeyboardEvent) {
     if (splitStroke && e.key === 'Shift') splitStroke.straight = e.type === 'keydown';
   }
+  function toolShortcut(key: string): boolean {
+    const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split', o: 'grain-outline', b: 'grain-brush' };
+    if (key === 'p' && canPluck) { activateTool('pluck'); return true; }
+    if (!tools[key] || noPixels && (key === 'g' || key === 'b')) return false;
+    activateTool(tools[key]); return true;
+  }
   function key(e: KeyboardEvent) {
     splitModifier(e);
     if (splitStroke && e.key === 'Escape') {
@@ -1616,8 +1634,9 @@
       return;
     }
     if (editImage) {
-      if(e.key==='Escape') { imageDraft=null; imageDrag=null; polygonPoints=[]; imageTool=null; }
-      if(e.key==='Enter' && imageTool==='polygon') { e.preventDefault(); finishImagePolygon(); }
+      if(e.key==='Escape') { imageDraft=null; imageDrag=null; polygonPoints=[]; imageTool=null; return; }
+      if(e.key==='Enter' && imageTool==='polygon') { e.preventDefault(); finishImagePolygon(); return; }
+      if (!mod && !e.altKey) toolShortcut(e.key.toLowerCase());
       return;
     }
     if (lasso && (e.key === 'Enter' || e.key === 'Escape' || e.key === 'Backspace' || e.key === 'Delete')) {
@@ -1629,11 +1648,8 @@
       return;
     }
     if (mod || e.altKey) return;
-    const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split', o: 'grain-outline', b: 'grain-brush' };
-    const kk = e.key.toLowerCase();
-    if (kk === 'p' && canPluck) { app.tool = 'pluck'; return; }
-    if (tools[kk] && !(noPixels && (kk === 'g' || kk === 'b'))) app.tool = tools[kk];
-    else if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
+    if (toolShortcut(e.key.toLowerCase())) return;
+    if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
     else if (e.key === ']') viewer?.rotateBy(Math.PI / 12);
     else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -1929,48 +1945,60 @@
       <ViewerMountInset areas={app.project?.areas ?? []} current={areaId} mosaics={insetMosaics} tiles={tiles!} {lut} {view} {viewer} selected={insetSpots} groups={insetGroups} onarea={changeArea} />
     {:else}
     <EditorMountInset current={areaId} tiles={tiles!} {lut} {view} currentPictureOnly={!!(app.remote && app.remoteTiles)} onarea={changeArea} />
-    <div class="glass toolbar" data-ui data-mount-inset-top title={!app.project?.upbdb.mount_id ? 'Link the mount to the database first to pluck grains for TIMS' : undefined}>
-      <button aria-pressed={editImage} disabled={ro} data-testid="edit-image" onclick={()=>{editImage=!editImage;imageTool=null;}}>Edit image</button>
-      <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" title={app.remote?.offlineAt && app.sync.reachable !== true ? 'Offline copy: read-only until the database is reachable' : undefined} disabled={!!app.busy || app.sync.busy || !!app.remote?.offlineAt && app.sync.reachable !== true} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
-      {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
+    <div class="glass toolbar" data-ui data-mount-inset-top role="toolbar" aria-label="Canvas tools" data-testid="canvas-toolbar" title={!app.project?.upbdb.mount_id ? 'Link the mount to the database first to pluck grains for TIMS' : undefined}>
+      <SegmentedControl label="Canvas mode" size="small" value={editImage ? 'image' : 'view'} onchange={imageMode} disabled={ro}
+        options={[{ value: 'image', label: 'Edit image', testid: 'edit-image' }, { value: 'view', label: 'View', testid: 'canvas-view' }]} />
+      <span class="sep"></span>
+      <SegmentedControl label="Tool" size="small" value={app.tool} onchange={value => activateTool(value as Tool)}
+        options={(ro ? toolList.filter(t => t.id === 'select' || t.id === 'measure') : toolList.filter(t => t.id !== 'delete')).map(t => ({ value: t.id, label: t.label, title: `${t.title} (${t.key})`, testid: `tool-${t.id}` }))}>
+        {#snippet content(option)}{option.label} <kbd>{toolList.find(t => t.id === option.value)?.key}</kbd>{/snippet}
+      </SegmentedControl>
+      {#if !ro}
+        <span class="sep"></span>
+        <button class="icon" aria-label="+Grain" title={`Add grain: click inside it; Shift-drag adds grains in a box; ${modName}-drag toggles grains in a box (G)`} aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => activateTool('grain-add')}>+Grain</button>
+        <button class="icon" aria-label="Split" data-testid="tool-split" title="Split grain: draw across it freehand; hold Shift for a straight cut (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => activateTool('grain-split')}>Split</button>
+        <IconButton icon="trash" label="Delete" title={`${toolList[6].title} (D); Delete/Backspace removes selection`} aria-pressed={app.tool === 'delete'} data-testid="tool-delete" onclick={() => activateTool('delete')} />
+        <span class="toolbar-space"></span>
+        <IconButton icon="undo" label="Undo" title={`Undo (${modName}+Z)`} disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()} />
+        <IconButton icon="redo" label="Redo" title={`Redo (Shift+${modName}+Z)`} disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()} />
+        {#snippet extraTools()}
+        <button class="icon" role={editImage ? undefined : 'menuitemradio'} tabindex={editImage ? undefined : -1} aria-checked={editImage ? undefined : app.tool === 'grain-outline'} aria-label="Outline" title={(noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : `Outline a grain (O): drag or click corners; Shift extends, Alt cuts, ${modName} draws without snapping.`) + ' Switch to Select (V) to box-select.'} aria-pressed={editImage ? app.tool === 'grain-outline' : undefined} onclick={() => activateTool('grain-outline')} data-testid="tool-outline">Outline</button>
+        <button class="icon" role={editImage ? undefined : 'menuitemradio'} tabindex={editImage ? undefined : -1} aria-checked={editImage ? undefined : app.tool === 'grain-brush'} aria-label="Brush" disabled={noPixels} title={(noPixels ? "Brush needs raw image pixels. Open the raw package to paint grain edges." : "Grain brush (B): paint to add, Alt to erase.") + ' Switch to Select (V) to box-select.'} aria-pressed={editImage ? app.tool === 'grain-brush' : undefined} onclick={() => activateTool('grain-brush')} data-testid="tool-brush">Brush</button>
+        {#if canPluck}<button class="icon" role={editImage ? undefined : 'menuitemradio'} tabindex={editImage ? undefined : -1} aria-checked={editImage ? undefined : app.tool === 'pluck'} aria-label="Pluck" aria-pressed={editImage ? app.tool === 'pluck' : undefined} title="Pluck grains for TIMS; Shift-click adds grains (P)" data-testid="tool-pluck" onclick={() => activateTool('pluck')}>Pluck</button>{/if}
+        {/snippet}
+        {#if editImage}{@render extraTools()}{:else}<MoreMenu label="More tools" title={canPluck ? 'More: Outline, Brush, Pluck' : 'More: Outline, Brush'}>{@render extraTools()}</MoreMenu>{/if}
+      {/if}
+    </div>
+    <div class="glass canvas-entry" data-ui data-mount-inset-top>
+      <label class="area-picker">Area
       <select value={app.areaId} onchange={(e) => changeArea(e.currentTarget.value)} aria-label="Area">
         {#each (app.project?.areas.map(a => a.id) ?? Object.keys(app.stitched)) as id (id)}<option value={id} title={app.grains[id] === undefined ? 'no grains yet' : undefined}>{app.grains[id] === undefined ? '○ ' : ''}{app.pkg?.areas.find((a) => a.id === id)?.name ?? app.project?.areas.find((a) => a.id === id)?.name ?? id}</option>{/each}
       </select>
-      <span class="sep"></span>
-      {#each ro ? toolList.filter((t) => t.id === 'select' || t.id === 'measure') : toolList as t (t.id)}
-        <button class="icon" aria-label={t.label} aria-pressed={app.tool === t.id} title="{t.title} ({t.key})" onclick={() => (app.tool = t.id)} data-testid="tool-{t.id}">{t.label}</button>
-      {/each}
-      <span class="sep" class:hidden={ro}></span>
-      <div class="diam" class:hidden={ro}>
-        ⌀
-        <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeSummary.caption}; keys 1–6 pick a preset`} testid="size-toolbar" />
+      </label>
+      {#if !ro}
+        <span class="sep"></span><span class="faint small">Next spot</span>
+        <span class="mono" class:clash={nextNameClash} data-testid="next-name">{nextName}</span>
+        {#if nextNameClash}<span class="clash" data-testid="next-name-clash">already used</span>{/if}
+        <div class="diam">⌀ <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeSummary.caption}; keys 1–6 pick a preset`} testid="size-toolbar" /></div>
         <span class="faint small">{sizeSummary.caption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
+      {/if}
+      <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" title={app.remote?.offlineAt && app.sync.reachable !== true ? 'Offline copy: read-only until the database is reachable' : undefined} disabled={!!app.busy || app.sync.busy || !!app.remote?.offlineAt && app.sync.reachable !== true} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
+      {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
+    {#if !ro && (app.tool === 'grain-outline' && !noPixels || app.tool === 'grain-brush')}
+      <div class="tool-options">
+        {#if app.tool === 'grain-outline'}<label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
+        {:else}<label class="diam" title="Brush diameter (µm)">⌀ <input type="number" min="2" step="2" bind:value={brushUm} aria-label="Brush µm" />µm</label>{/if}
       </div>
-      {#if !ro}
-        <span class="sep"></span>
-        <button class="icon" aria-label="+Grain" title={`Add grain: click inside it; Shift-drag adds grains in a box; ${modName}-drag toggles grains in a box (G)`} aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => (app.tool = 'grain-add')}>+Grain</button>
-        <button class="icon" aria-label="Split" data-testid="tool-split" title="Split grain: draw across it freehand; hold Shift for a straight cut" aria-pressed={app.tool === 'grain-split'} onclick={() => (app.tool = 'grain-split')}>Split</button>
-        <button class="icon" aria-label="Outline" title={(noPixels ? "Outline a grain (O): uses your drawn path without edge snapping. Shift extends; Alt cuts." : `Outline a grain (O): drag or click corners; Shift extends, Alt cuts, ${modName} draws without snapping.`) + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-outline'} onclick={() => (app.tool = 'grain-outline')} data-testid="tool-outline">Outline</button>
-        <button class="icon" aria-label="Brush" disabled={noPixels} title={(noPixels ? "Brush needs raw image pixels. Open the raw package to paint grain edges." : "Grain brush (B): paint to add, Alt to erase.") + ' Switch to Select (V) to box-select.'} aria-pressed={app.tool === 'grain-brush'} onclick={() => (app.tool = 'grain-brush')} data-testid="tool-brush">Brush</button>
-        {#if app.tool === 'grain-outline' && !noPixels}
-          <label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
-        {:else if app.tool === 'grain-brush'}
-          <label class="diam" title="Brush diameter (µm)">⌀ <input type="number" min="2" step="2" bind:value={brushUm} aria-label="Brush µm" />µm</label>
-        {/if}
-      {/if}
-      {#if !ro}
-        <span class="sep"></span>
-        <button class="icon" title={`Undo (${modName}+Z)`} aria-label="Undo" disabled={!!app.busy || !app.canUndo} onclick={() => app.undo()}>↶</button>
-        <button class="icon" title={`Redo (Shift+${modName}+Z)`} aria-label="Redo" disabled={!!app.busy || !app.canRedo} onclick={() => app.redo()}>↷</button>
-      {/if}
-      {#if canPluck}<button class="icon" aria-label="Pluck" aria-pressed={app.tool === 'pluck'} title="Pluck grains for TIMS; Shift-click adds grains (P)" data-testid="tool-pluck" onclick={() => { app.tool = 'pluck'; }}>Pluck</button>{/if}
-      <span class="sep"></span>
-      <button class="icon" title="Zoom in (+)" aria-label="Zoom in" onclick={() => viewer?.zoomBy(1.5)}>+</button>
-      <button class="icon" title="Zoom out (−)" aria-label="Zoom out" onclick={() => viewer?.zoomBy(1 / 1.5)}>−</button>
-      <button class="icon" title="Fit (0)" aria-label="Fit" onclick={() => viewer?.fitAll()}>Fit</button>
+    {/if}
+    </div>
+    <div class="glass zoom-controls" data-ui data-mount-inset-bottom role="group" aria-label="Zoom">
+      <IconButton icon="minus" label="Zoom out" title="Zoom out (−)" onclick={() => viewer?.zoomBy(1 / 1.5)} />
+      <span class="num" data-testid="zoom-percentage">{view ? (view.zoom * 100).toFixed(view.zoom < 0.1 ? 1 : 0) : '—'}%</span>
+      <IconButton icon="plus" label="Zoom in" title="Zoom in (+)" onclick={() => viewer?.zoomBy(1.5)} />
+      <IconButton icon="fit" label="Fit" title="Fit (0)" onclick={() => viewer?.fitAll()} />
       <button class="icon" title="Pixels 1:1" aria-label="1:1" onclick={() => viewer?.oneToOne()}>1:1</button>
-      <button class="icon" title="Rotate left 15° ([)" aria-label="Rotate left 15°" onclick={() => viewer?.rotateBy(-Math.PI / 12)}>↺</button>
-      <button class="icon" title="Rotate right 15° (])" aria-label="Rotate right 15°" onclick={() => viewer?.rotateBy(Math.PI / 12)}>↻</button>
+      <IconButton icon="rotate-left" label="Rotate left 15°" title="Rotate left 15° ([)" onclick={() => viewer?.rotateBy(-Math.PI / 12)} />
+      <IconButton icon="rotate-right" label="Rotate right 15°" title="Rotate right 15° (])" onclick={() => viewer?.rotateBy(Math.PI / 12)} />
     </div>
 
     {/if}
@@ -2103,21 +2131,25 @@
         <span>Image panels</span>
         <button class="icon fold" onclick={() => { app.layout.sideCollapsed = true; app.saveLayout(); }} title="Fold the side panel away" aria-label="Fold the side panel" aria-expanded={true} data-testid="side-collapse">›</button>
       </div>
-      <div class="tabs" tabindex="-1" role="radiogroup" aria-label="Canvas panel" onkeydown={segmentedKeydown}>
-        <button role="radio" aria-checked={tab === 'spots'} tabindex={tab === 'spots' ? 0 : -1} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
-        <button role="radio" aria-checked={tab === 'checks'} tabindex={tab === 'checks' ? 0 : -1} onclick={() => (tab = 'checks')} data-testid="tab-checks">Checks</button>
-        <button role="radio" aria-checked={tab === 'grains'} tabindex={tab === 'grains' ? 0 : -1} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
-        <button role="radio" aria-checked={tab === 'refOverlay'} tabindex={tab === 'refOverlay' ? 0 : -1} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
-        <button role="radio" aria-checked={tab === 'laser'} tabindex={tab === 'laser' ? 0 : -1} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
-        <button role="radio" aria-checked={tab === 'link'} tabindex={tab === 'link' ? 0 : -1} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to UPbDB" data-testid="tab-link">UPbDB</button>
+      <div class="tabs" tabindex="-1" role="tablist" aria-label="Canvas panel" onkeydown={tabKeydown}>
+        <button role="tab" id="canvas-tab-spots" aria-controls="canvas-panel" aria-selected={tab === 'spots'} tabindex={tab === 'spots' ? 0 : -1} onclick={() => (tab = 'spots')}>Spots <span class="faint">{spots.length}</span></button>
+        <button role="tab" id="canvas-tab-checks" aria-controls="canvas-panel" aria-selected={tab === 'checks'} tabindex={tab === 'checks' ? 0 : -1} onclick={() => (tab = 'checks')} data-testid="tab-checks">Checks <span class="faint">{app.findings.length}</span></button>
+        <button role="tab" id="canvas-tab-grains" aria-controls="canvas-panel" aria-selected={tab === 'grains'} tabindex={tab === 'grains' ? 0 : -1} onclick={() => (tab = 'grains')}>Grains <span class="faint">{grains.length}</span></button>
+        <button role="tab" id="canvas-tab-refOverlay" aria-controls="canvas-panel" aria-selected={tab === 'refOverlay'} tabindex={tab === 'refOverlay' ? 0 : -1} onclick={() => (tab = 'refOverlay')} title="Reference image (printout photo, post-laser frame)">Overlay</button>
+        <button role="tab" id="canvas-tab-laser" aria-controls="canvas-panel" aria-selected={tab === 'laser'} tabindex={tab === 'laser' ? 0 : -1} onclick={() => (tab = 'laser')} title="Laser stage registration and spot list" data-testid="tab-laser">Laser</button>
+        <button role="tab" id="canvas-tab-link" aria-controls="canvas-panel" aria-selected={tab === 'link'} tabindex={tab === 'link' ? 0 : -1} onclick={() => (tab = 'link')} title="Mount, atlas bundle, publishing to UPbDB" data-testid="tab-link">UPbDB</button>
       </div>
       <input type="file" accept="image/*" hidden bind:this={overlayInput} onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f) loadOverlay(f); e.currentTarget.value = ''; }} />
       {#if !ro && app.tool === 'select'}
         <p class="faint small-text" data-testid="box-select-hint">Drag a box for grains. Shift adds, {modName} toggles. Delete removes. Spots take priority in the Spots tab.</p>
       {/if}
       {#if ro}<p class="faint small-text ro-note" data-testid="read-only">Published atlas · read-only</p>{/if}
-      <fieldset class="plain tabbody" disabled={(ro && tab !== 'link' && tab !== 'checks') || (tab === 'grains' && !!app.busy)}>
+      <div id="canvas-panel" role="tabpanel" tabindex="0" aria-labelledby={`canvas-tab-${tab}`} class="tabbody"><fieldset class="plain" disabled={(ro && tab !== 'link' && tab !== 'checks') || (tab === 'grains' && !!app.busy)}>
       {#if tab === 'spots'}
+        {#if !ro}
+          <div class="presets"><SegmentedControl label="Spot diameter" size="small" wrap value={String(sizeValue)} onchange={value => setDiameter(Number(value))}
+            options={app.settings.spot_presets_um.map((d, i) => ({ value: String(d), label: `${d} µm`, title: `Preset ${i + 1}` }))} /></div>
+        {/if}
         {#if missingSizes}<p class="faint small" data-testid="spots-no-size">{missingSizes} {missingSizes === 1 ? 'spot has' : 'spots have'} no size{#if !ro} <button onclick={fixSizes}>Fix sizes…</button>{/if}</p>{/if}
         {#if !ro && !noPixels && areaId && !grains.length}
           <p class="faint small-text" role="status" data-testid="spots-grain-status">{detections.length ? 'No grains found; only flagged outlines. Open Grains to review them.' : segmentationStatus.message}</p>
@@ -2140,12 +2172,7 @@
         <label class="field">Name pattern for this area
           <input type="text" value={app.settings.area_patterns?.[areaId!] ?? ''} placeholder={app.settings.naming_pattern} onchange={(e) => setAreaPattern(e.currentTarget.value)} data-testid="area-pattern" />
         </label>
-        <div class="row">
-          <button onclick={() => exportSpots('csv')} disabled={!app.spots.length} data-testid="export-csv">Spots CSV</button>
-          <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
-          <button onclick={() => renameFromPattern(app.selection.length ? app.selection : spots.map((s) => s.id))} disabled={!spots.length} title="Rename the selected spots (or all in this area) from the pattern">Rename</button>
 
-        </div>
         {/if}
         <div class="list">
           <table class="data">
@@ -2203,7 +2230,13 @@
           <button onclick={() => saveAtlas(true)} disabled={noPixels} title={noPixels ? 'Needs the stitched mosaic: open the raw package' : ''} data-testid="save-atlas-zip">Save zip</button>
 
         </div>
-        <details><summary>Advanced</summary><div class="row">
+        <Stepper label="Publishing steps" steps={[
+          { label: 'Check', fullName: 'Project checks', detail: app.checksRan ? `${app.findings.length} warnings` : 'Not checked', state: app.checksRan ? 'done' : publishStage === 0 ? 'current' : 'pending' },
+          { label: 'Names', fullName: 'Spot names', detail: `${namedSpotCount} of ${app.spots.length}`, state: app.spots.length && namedSpotCount === app.spots.length ? 'done' : publishStage === 1 ? 'current' : 'pending' },
+          { label: 'Upload', fullName: 'Publish to UPbDB', detail: app.sync.imageBusy ? app.sync.imageProgress ? `${app.sync.imageProgress.done} of ${app.sync.imageProgress.total}` : 'Working…' : `${app.project?.upbdb.published?.length ?? 0} versions`, state: publishStage === 2 ? 'current' : 'pending' },
+        ]} onselect={index => { if (index === 0) tab = 'checks'; else if (index === 1) tab = 'spots'; else publicationOpen = true; }} />
+        {#if app.sync.imageBusy}<ProgressBar value={app.sync.imageProgress?.done} total={app.sync.imageProgress?.total ?? 0} noun="Image files synced" />{/if}
+        <details bind:open={publicationOpen}><summary>Advanced</summary><div class="row">
           <button onclick={() => publish()} disabled={oversightSession.readOnly || noPixels || !app.server || !app.project?.upbdb.mount_id} data-testid="publish"
             title={noPixels ? 'New pixels need the raw package: open it to re-stitch and publish' : !app.server ? 'Set the UPbDB server in Settings' : !app.project?.upbdb.mount_id ? 'Link the project to a mount first' : 'POST the bundle to /v1/mounts/{mount}/atlas'}>Publish to UPbDB</button>
         </div></details>
@@ -2368,7 +2401,7 @@
           </details>
         {/if}
       {/if}
-      </fieldset>
+      </fieldset></div>
       <!-- Outside the fieldset: clearing a filter changes no data, so it works read-only too. -->
       {#if (tab === 'spots' && !tableSpots.length && areaSpots.length) || (tab === 'grains' && !tableGrains.length && (showOnlyNew || !app.showNeighbourGrains))}
         <div class="row"><button onclick={showAll} data-testid="show-all">Show all</button></div>
@@ -2379,16 +2412,11 @@
         <div class="entry-body">
           <div class="diam">⌀ <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeSummary.caption}`} testid="size-side" /></div>
           <span class="faint small">{sizeSummary.caption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
-          <div class="presets">
-            {#each app.settings.spot_presets_um as d, i (d)}
-              <button class="icon" aria-label={`${d} µm`} aria-pressed={sizeValue === d} title="Preset {i + 1}" onclick={() => setDiameter(d)}>{d} µm</button>
-            {/each}
-          </div>
           <div class="next-entry">
             <label class="field" title="Next n counts up across samples unless restart is on; clear it to continue above the highest existing number.">Next n
               <input type="number" min="1" placeholder="auto ({automaticN})" data-testid="next-n" value={app.nextN ?? ''} oninput={(e) => { const n = e.currentTarget.valueAsNumber; app.nextN = Number.isFinite(n) ? Math.max(1, Math.round(n)) : null; }} />
             </label>
-            <div class:clash={nextNameClash}><span class="mono" data-testid="next-name">{nextName}</span>{#if nextNameClash} <span data-testid="next-name-clash">already used</span>{/if}</div>
+            <div class:clash={nextNameClash}><span class="mono">{nextName}</span>{#if nextNameClash} <span>already used</span>{/if}</div>
           </div>
           <label class="check"><input type="checkbox" bind:checked={app.settings.snap} onchange={() => app.saveSettings()} /> snap (⌥ = free)</label>
           <label class="check"><input type="checkbox" bind:checked={app.settings.n_per_sample} onchange={() => { app.nextN = null; app.saveSettings(); app.persist(); }} /> restart at 1 for each sample</label>
@@ -2408,6 +2436,13 @@
           <label class="check"><input type="checkbox" bind:checked={panel.open} /> info panel</label>
         </div>
       </details>
+      {#if !ro}
+        <div class="row panel-footer">
+          <button onclick={() => exportSpots('csv')} disabled={!app.spots.length} data-testid="export-csv">Spots CSV</button>
+          <button onclick={() => exportSpots('geojson')} disabled={!app.spots.length && !grains.length}>GeoJSON</button>
+          <button onclick={() => renameFromPattern(app.selection.length ? app.selection : spots.map((s) => s.id))} disabled={!spots.length} title="Rename the selected spots (or all in this area) from the pattern">Rename</button>
+        </div>
+      {/if}
     </aside>
     {/if}
 
@@ -2479,30 +2514,42 @@
   tr.cropped {opacity:0.4}
   .side.image-editor {overflow:hidden;font-size:0.8rem}
   .canvas {
-    --side-width:clamp(12rem, 37%, 21rem);
+    --side-width:clamp(24rem, 32%, 26rem);
     position: absolute;
     inset: 0;
   }
   .toolbar {
-    position: absolute;
-    top: var(--space-2);
-    left: var(--space-2);
-    max-width: calc(100% - var(--side-width) - 2rem);
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1);
-    padding: var(--space-2);
-    align-items: center;
+    position: absolute; top: 0; left: 0; right: 0; min-width: 0;
+    display: flex; flex-wrap: nowrap; gap: var(--space-1); padding: var(--space-2);
+    height: 52px; align-items: center; border-radius: 0; z-index: 25;
   }
-  .folded .toolbar {
-    max-width: calc(100% - 5.5rem);
-  }
+  .toolbar :global(.segments button) { border: 0; border-radius: 0; }
+  .toolbar :global(.segments button + button) { border-left: 1px solid var(--hairline); }
+  .toolbar :global(.segments button:first-child) { border-radius: calc(var(--radius-sm) - 1px) 0 0 calc(var(--radius-sm) - 1px); }
+  .toolbar :global(.segments button:last-child) { border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0; }
+  .toolbar-space { flex: 1; }
+  .toolbar > .icon { padding: 3px 6px; white-space: nowrap; }
+  kbd { color: var(--text-faint); font: 11px var(--font-mono); margin-left: 2px; }
+  .canvas-entry { position: absolute; top: 60px; left: var(--space-2); max-width: calc(100% - var(--side-width) - 24px); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) var(--space-2); font-size: .75rem; }
+  .canvas-entry .mono { overflow-wrap: anywhere; min-width: 0; }
+  .area-picker { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+  .area-picker select { width: 5rem; min-width: 0; }
+  .canvas-entry .diam { font-size: .75rem; }
+  .tool-options { flex-basis: 100%; padding-block: var(--space-1); font-size: .8rem; }
+  .zoom-controls { position: absolute; right: calc(var(--side-width) + 24px); bottom: var(--space-2); display: flex; align-items: center; padding: var(--space-1); gap: 2px; }
+  .zoom-controls .num { min-width: 42px; text-align: center; font-size: .8rem; }
+  .zoom-controls .icon { padding: 2px 4px; }
+  .folded .zoom-controls { right: var(--space-2); }
+  .folded .canvas-entry { max-width: calc(100% - 6rem); }
+  .panel-footer { flex: none; border-top: 1px solid var(--hairline); padding-top: var(--space-2); }
+  .panel-footer button { font-size: .75rem; }
+  .panel-footer button:last-child { margin-left: auto; }
   .folded .legend {
     right: calc(3rem + 2 * var(--space-2));
   }
   .side-mini {
     position: absolute;
-    top: var(--space-2);
+    top: 60px;
     right: var(--space-2);
     padding: var(--space-1);
   }
@@ -2528,7 +2575,7 @@
   }
   .side {
     position: absolute;
-    top: var(--space-2);
+    top: 60px;
     right: var(--space-2);
     bottom: var(--space-2);
     width: var(--side-width);
@@ -2546,16 +2593,18 @@
   .next-entry .field { min-width: 0; }
   .next-entry .mono { overflow-wrap: anywhere; }
   .clash { color: var(--warning); }
-  .tabs,
   .row,
   .presets {
     display: flex;
     gap: var(--space-1);
     flex-wrap: wrap;
   }
-  .tabs button {
-    flex: 1;
-  }
+  .tabs { display: flex; flex-wrap: nowrap; gap: 0; background: transparent; outline: 0; border-radius: 0; border-bottom: 1px solid var(--hairline); }
+  .tabs button { flex: 1; min-width: 0; padding: 5px 3px; font-size: 12px; background: transparent; border: 0; border-radius: 0; border-bottom: 2px solid transparent; }
+  .tabs button[aria-selected=true] { color: var(--accent); border-bottom-color: var(--accent); }
+  .tabs .faint { display: inline; font-size: 11px; }
+  .tabs button:focus-visible { outline-offset: -2px; }
+
   .two {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2615,7 +2664,7 @@
   }
   /* The side panel's tab body scrolls on its own, so the tabs and Layers stay in reach on a
      laptop screen; lists inside keep at least a few rows. */
-  fieldset.tabbody {
+  .tabbody {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
@@ -2626,17 +2675,16 @@
     padding: var(--space-1);
     margin: calc(-1 * var(--space-1));
   }
-  fieldset.tabbody .list {
+  .tabbody .list {
     flex: 1 0 auto;
     max-height: 60vh;
   }
-  /* Beside the zoom and scale chip, on the bottom edge: the grain card opens on the left
-     above it and stays clear at 1280 x 800. */
+  /* Keep the neighbouring-area legend above the scale and zoom clusters. */
   .owner-legend {
     position: absolute;
-    left: 16rem;
-    bottom: var(--space-2);
-    max-width: calc(100% - var(--side-width) - 18rem);
+    left: var(--space-2);
+    bottom: 3.5rem;
+    max-width: calc(100% - var(--side-width) - 2rem);
     max-height: 30%;
     overflow: auto;
     overflow-wrap: anywhere;
@@ -2648,11 +2696,11 @@
   }
   .owner-row { display: flex; align-items: center; gap: var(--space-2); }
   .owner-swatch { width: 1.4rem; flex: none; border-top: 2px dashed currentColor; }
-  .folded .owner-legend { max-width: calc(100% - 21.5rem); }
+  .folded .owner-legend { max-width: calc(100% - 2rem); }
   .legend {
     position: absolute;
     right: calc(var(--side-width) + 2 * var(--space-2));
-    bottom: 3rem;
+    bottom: 6rem;
     padding: var(--space-2) var(--space-3);
     font-size: 0.8rem;
     display: grid;

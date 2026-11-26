@@ -31,7 +31,7 @@ test('grain export dialog fits 1280 x 800 and the browser zip holds the table, o
   await openEdit(page);
   await page.getByRole('combobox', { name: 'Area', exact: true }).selectOption('a01');
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
-  await page.locator('.side .tabs').getByRole('radio', { name: /^Grains / }).click();
+  await page.locator('.side .tabs').getByRole('tab', { name: /^Grains / }).click();
   await page.getByRole('button', { name: 'Export grains...' }).click();
   const dialog = page.getByTestId('grain-export-dialog');
   await expect(dialog).toBeVisible();

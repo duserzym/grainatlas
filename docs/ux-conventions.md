@@ -219,6 +219,15 @@ text-link breadcrumb. Pills (`btn` rounded buttons) are no longer the default
 for everything. The shared components live in `ui/src/lib/ui/`, ported from
 UPb Lab at `72e91bc`.
 
+Canvas uses one toolbar row: the Edit image / View mode switch, six segmented
+tools with shortcut hints, grain actions, history and More. Outline, Brush and
+Pluck are inline in Edit image and in More in View, subject to pixel and mount
+availability. The area, next name and diameter stepper float at the image's
+top-left; zoom, 1:1, fit and rotation float at bottom-right; scale stays bottom-left.
+The side panel has one six-tab row with available counts, segmented diameter
+presets in Spots, and exports and Rename in its footer. The database Edit / View
+action remains separate from the image mode switch.
+
 | Component | Purpose and props |
 | --- | --- |
 | `SegmentedControl` | Switch views inside one bordered group with dividers. `options: {value, label, title?, ariaLabel?, testid?}[]`, bindable `value: string`, `label: string`, optional `onchange(value)` and `size: 'small' \| 'normal'` (normal by default). The selected radio uses `--accent-soft` and `--accent`. |
@@ -227,14 +236,14 @@ UPb Lab at `72e91bc`.
 | `IconButton` | A rare action with a named icon. `icon: IconName`, `label: string`, optional `title`, `disabled`, and standard button attributes and handlers, including `aria-expanded`. The label is its accessible name; the title defaults to that label. |
 | `StatusChip` | A short state fact. `text: string`, optional `tone: 'neutral' \| 'warning' \| 'success'` (neutral by default). Warning and success tints mix the existing `--warning` and `--ok` tokens; the text also names the state. |
 | `ProgressBar` | A 5 px progress bar and an “n of m noun” caption. `value?: number \| null`, `total: number`, `noun: string`. Missing values show “— of m noun”, omit `aria-valuenow` and leave the bar empty. Zero totals have no fill. Values outside the range are clamped. `hideCaption` keeps existing visible progress wording while exposing accessible values. |
-| `Icon` | Decorative inline SVG. `kind: 'refresh' \| 'edit' \| 'history' \| 'person' \| 'flask' \| 'building' \| 'info' \| 'check' \| 'chevron-left' \| 'calendar' \| 'rows' \| 'lanes'`. Uses a 24 × 24 viewBox, currentColor stroke, 1.6 px stroke width and round caps and joins; the default display is 18 × 18 px. |
+| `Icon` | Decorative inline SVG. `kind: 'refresh' \| 'edit' \| 'history' \| 'person' \| 'flask' \| 'building' \| 'info' \| 'check' \| 'chevron-left' \| 'calendar' \| 'rows' \| 'lanes'`, plus local Canvas trash, undo, redo, more, minus, plus, fit and rotation icons. Uses a 24 × 24 viewBox, currentColor stroke, 1.6 px stroke width and round caps and joins; the default display is 18 × 18 px. |
 
 ### Where each shape is used
 
 | Shape | Where |
 | --- | --- |
-| Segmented control | Start screen order, mount tile size, theme, Canvas side-panel views. Canvas keeps its measured strip and wraps at the same places. Native print Style radios retain their labels and geometry with the outlined treatment. |
-| Stepper | Workflows with existing selectable steps. Inline import, registration and sync commands stay buttons: these screens have no step navigation. |
+| Segmented control | Start screen order, mount preview size, theme, Canvas modes, six main tools and spot diameter presets. Canvas panels use underlined tabs. Native print Style radios retain their labels and geometry with the outlined treatment. |
+| Stepper | Workflows with existing selectable steps, plus Canvas publishing links to Checks, Names and Advanced upload controls. Import and registration commands retain their existing flows. |
 | Metadata chip | Mount grain/spot counts and shared provenance. |
 | Status chip | Mount and draft states, stitched/published areas, rendering, result flags, TIMS fraction states and pick-list preview results. |
 | Icon button | Mount refresh; existing rare actions retain their names and tooltips. |
@@ -242,7 +251,8 @@ UPb Lab at `72e91bc`.
 | Button | Primary actions and confirmations; independent pressed options keep their existing names and states with compact rectangular outlines. |
 | Thin progress bar | Background tasks, mosaic export, print preparation and full-resolution loading, with existing live status text. |
 
-Canvas tools, zoom palettes, print editors, size presets and spatial handles
+Canvas retains every tool shortcut and eligibility rule. More supports arrow keys,
+Home/End and Escape with focus return. Print editors and spatial handles
 keep their measured geometry, position and interaction model. Crop and mask
 tools can be deselected; independent flips and layer selections are not
 exclusive view choices. Automatic/Arrange can ask before dropping edits, so

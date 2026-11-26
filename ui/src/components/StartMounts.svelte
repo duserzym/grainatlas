@@ -1,5 +1,6 @@
 <script lang="ts">
   import SegmentedControl from '../lib/ui/SegmentedControl.svelte';
+  import ProgressBar from '../lib/ui/ProgressBar.svelte';
   import MetaChip from '../lib/ui/MetaChip.svelte';
   import StatusChip from '../lib/ui/StatusChip.svelte';
   import IconButton from '../lib/ui/IconButton.svelte';
@@ -229,21 +230,28 @@
         {@const disabledReason = hasLocal ? '' : offline ? hasOffline ? '' : 'Not on this computer; needs a connection' : published ? '' : 'No published database version'}
         {@const revision = match?.draft ? revisions[match.draft.linked_uuid ?? match.draft.uuid] : undefined}
         <article class="glass panel tile" data-testid="mount-tile">
-          {#key mount.atlas?.thumbnail ?? mount.id}
+          <div class="preview">{#key mount.atlas?.thumbnail ?? mount.id}
           <MountThumbnail url={mount.atlas?.thumbnail ?? null} cached={mount.thumbnail_data} fallback={match?.recent?.thumbnail} {server} {token} {offline} onsave={data => { mount.thumbnail_data = data; for (const page of Object.values(cache.pages)) { const row = page.rows.find(r => r.id === mount.id); if (row) row.thumbnail_data = data; } save(); }} />
-          {/key}
+          {/key}</div>
+          <div class="mount-facts">
           <button class="title" disabled={!!disabledReason} title={disabledReason || undefined} onclick={() => openDatabase(mount, match)}>{mount.label}</button>
           <p class="faint small">{mount.creator?.name ?? 'Unknown owner'}{mount.lab ? ` · ${mount.lab.handle}` : ''}</p>
           <p class="small">{(mount.sample_names ?? []).slice(0, 3).join(', ')}{Math.max(0, (mount.sample_count ?? mount.sample_names?.length ?? 0) - 3) ? ` +${(mount.sample_count ?? mount.sample_names?.length ?? 0) - 3}` : ''}</p>
           <div><MetaChip text={`${mount.grain_count} grains · ${mount.spot_count} spots`} /></div>
           <p class="faint small">{mount.last_changed_at ? new Date(mount.last_changed_at).toLocaleString() : 'No changes yet'}</p>
+          </div>
+          <div class="mount-state">
           <div data-testid="tile-status">
             {#each entryStatus(mount, match, revision, { offline, hasOffline }) as part}
               <p class="small"><StatusChip text={part} /></p>
             {/each}
           </div>
           <div class="badges">{#each tileBadges(mount, match, account.id, revision).filter(b => b.startsWith('Shared ·')) as badge}<MetaChip text={badge} />{/each}</div>
-          <div class="row">
+          {#if app.project?.uuid === published && app.sync.imageBusy}
+            <ProgressBar value={app.sync.imageProgress?.done} total={app.sync.imageProgress?.total ?? 0} noun={`${mount.label} image files synced`} />
+          {/if}
+          </div>
+          <div class="row mount-actions">
             <button class:primary={!disabledReason} disabled={!!disabledReason} title={disabledReason || undefined} onclick={() => openDatabase(mount, match)}>{offline && !hasLocal ? hasOffline ? 'Open offline copy' : 'Needs a connection' : 'Open'}</button>
             {#if local && separateDraft}<button onclick={() => onopen(local)}>Open other local copy</button>{/if}
             {#if !match}<button disabled={offline || !mount.can_edit || oversightSession.readOnly} title={offline ? 'Needs a connection' : oversightSession.readOnly ? 'Viewing as another account is read-only' : !mount.can_edit ? 'No permission to edit this mount' : undefined} onclick={() => onlink(mount)}>Link a local project…</button>{/if}
@@ -267,8 +275,14 @@
   .filters input { min-width: 0; width: 150px; }
   .filters label { min-width: 110px; }
   .filters select { max-width: 160px; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--tile-size)), 1fr)); gap: var(--space-3); align-items: start; }
-  .tile { min-width: 0; padding: var(--space-3); display: grid; gap: var(--space-2); }
+  .tiles { display: grid; gap: var(--space-2); min-width: 0; }
+  .tile { min-width: 0; padding: var(--space-3); display: grid; grid-template-columns: clamp(64px, calc(var(--tile-size) * .4), 100px) minmax(0, 1fr) minmax(120px, .7fr); gap: var(--space-3); align-items: center; box-shadow: none; }
+  .preview { min-width: 0; }
+  .mount-facts, .mount-state { min-width: 0; display: grid; gap: var(--space-1); }
+  .title { border: 0; background: transparent; padding: 0; }
+  .mount-actions { grid-column: 2 / -1; }
+  @media (max-width: 1050px) { .tile { grid-template-columns: 64px minmax(0, 1fr); } .mount-state { grid-column: 2; } }
+
   .title { text-align: left; font-weight: 600; overflow-wrap: anywhere; }
   .tile p { overflow-wrap: anywhere; }
   .badges { display: flex; flex-wrap: wrap; gap: var(--space-1); }

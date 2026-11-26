@@ -4,6 +4,8 @@
   let lastNote: OpenNote | null = null;
 </script>
 <script lang="ts">
+  import StatusChip from '../lib/ui/StatusChip.svelte';
+  import MetaChip from '../lib/ui/MetaChip.svelte';
   import SegmentedControl from '../lib/ui/SegmentedControl.svelte';
   import { isHosted } from '@lab/bridge';
   import { startEntries } from '../lib/mount-browser';
@@ -289,7 +291,7 @@
 <section class="open">
   <div class="glass panel action-bar" class:over ondragover={e => { e.preventDefault(); over = true; }} ondragleave={() => over = false} ondrop={drop} role="region" aria-label="Open files">
     <button onclick={pick} data-testid="choose-folder">Open package…</button>
-    <button onclick={() => projectInput.click()}>Open project…</button>
+    <button class="primary" onclick={() => projectInput.click()}>Open project…</button>
     <button disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(undefined, undefined, true)}>New mount…</button>
     <button onclick={() => importingPickList = true} data-testid="import-pick-list">Import pick list…</button>
     <button onclick={pickImages} data-testid="choose-images">Choose images…</button>
@@ -325,9 +327,9 @@
         {@const c = shown(r)}
         <div class="recent-item" data-testid="recent-row">
           <button class="recent-title" disabled={!!busy} onclick={() => choose(r)} title={where(r) ?? 'Location not recorded'}>{r.name}{busy === r.name ? ' opening…' : ''}</button>
-          <p class="faint small">{c.areas} areas · {c.spots} spots{c.cached ? ' · cached' : ''}</p>
+          <div><MetaChip text={`${c.areas} areas · ${c.spots} spots${c.cached ? ' · cached' : ''}`} /></div>
           <p class="faint small">{new Date(r.when).toLocaleString()}</p>
-          <p class="small">{unlinked(r) ? 'On this computer' : 'Linked to a database mount'}</p>
+          <div><StatusChip text={unlinked(r) ? 'On this computer' : 'Linked to a database mount'} /></div>
           {#if unlinked(r)}<button class="small" disabled={!signedIn || mountOffline || oversightSession.readOnly} onclick={() => showLink(r)}>Link to a mount</button>{/if}
           {#if note?.name === r.name}
             <div class="note" role="status" data-testid="recent-note">
@@ -392,6 +394,7 @@
   .recent-list { min-width: 0; padding: var(--space-3); }
   h2 { margin: 0 0 var(--space-2); }
   .recent-item { padding: var(--space-2) 0; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
+  .recent-item > div { margin-block: var(--space-1); }
   .recent-item p { margin: var(--space-1) 0; }
   .recent-title { width: 100%; text-align: left; overflow-wrap: anywhere; font-weight: 600; }
   .note { font-size: .8rem; padding-top: var(--space-2); }

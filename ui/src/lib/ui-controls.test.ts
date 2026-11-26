@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { progressState, segmentedIndex, segmentedKeydown } from './ui-controls';
+import { progressState, segmentedIndex, segmentedKeydown, tabKeydown, menuIndex } from './ui-controls';
 
 describe('segmented control keyboard navigation', () => {
   it.each([
@@ -59,5 +59,23 @@ describe('progress accessibility values', () => {
   });
   it('exposes the full count and fraction for known progress', () => {
     expect(progressState(3, 12, 'tiles')).toEqual({ max: 12, now: 3, percent: 25, caption: '3 of 12 tiles' });
+  });
+});
+
+describe('canvas menu and panel navigation', () => {
+  it.each([
+    ['ArrowDown', 2, 3, 0], ['ArrowUp', 0, 3, 2], ['Home', 2, 3, 0], ['End', 0, 3, 2],
+    ['ArrowDown', 0, 0, null], ['Tab', 0, 3, null], ['ArrowRight', 0, 3, null],
+  ] as const)('%s from %s among %s menu items focuses %s', (key, index, length, next) => {
+    expect(menuIndex(key, index, length)).toBe(next);
+  });
+  it('activates the next panel tab without letting the canvas nudge selected spots', () => {
+    const buttons = Array.from({ length: 2 }, () => ({ click: vi.fn(), focus: vi.fn() }));
+    const querySelectorAll = vi.fn(() => buttons);
+    const event = { key: 'ArrowRight', currentTarget: { querySelectorAll }, target: buttons[0], preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    tabKeydown(event as unknown as KeyboardEvent);
+    expect(querySelectorAll).toHaveBeenCalledWith('button[role="tab"]:not(:disabled)');
+    expect(buttons[1].click).toHaveBeenCalledOnce(); expect(buttons[1].focus).toHaveBeenCalledOnce();
+    expect(event.preventDefault).toHaveBeenCalledOnce(); expect(event.stopPropagation).toHaveBeenCalledOnce();
   });
 });

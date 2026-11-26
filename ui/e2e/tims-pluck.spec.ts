@@ -17,7 +17,9 @@ async function prepare(page: Page) {
   await page.getByTestId('edit-copy').click();
   await expect(page.getByTestId('edit-copy')).toHaveText('View');
   await page.getByRole('button', { name: 'Canvas', exact: true }).click();
+  await page.getByRole('button', { name: 'More tools', exact: true }).click();
   await expect(page.getByTestId('tool-pluck')).toBeVisible();
+  await page.keyboard.press('Escape');
   const layers = page.locator('details.layers');
   await layers.evaluate((d: HTMLDetailsElement) => { d.open = true; });
   await page.getByLabel('info panel', { exact: true }).uncheck();
@@ -50,6 +52,7 @@ async function fits(page: Page) {
 
 test('Pluck tool adds a capsule badge, edits a pluck and retires it with history confirmation', async ({ page }) => {
   const mock = await prepare(page);
+  await page.getByRole('button', { name: 'More tools', exact: true }).click();
   await page.getByTestId('tool-pluck').click(); await grain(page);
   const panel = await chooseCapsule(page); await fits(page);
   await panel.getByLabel('Fraction name', { exact: true }).fill('z3');
@@ -84,6 +87,7 @@ test('right-click a spot, require a fragment note, and display a duplicate-name 
   await panel.getByLabel('Fraction name', { exact: true }).fill('z1'); await panel.getByRole('button', { name: 'Pluck', exact: true }).click();
   await expect(page.getByTestId('tims-badge')).toContainText('z1†'); await close(page);
   expect(mock.fractions[0].sources[0].atlas_spot_id).toBe(mock.ui.spots[0].id);
+  await page.getByRole('button', { name: 'More tools', exact: true }).click();
   await page.getByTestId('tool-pluck').click(); await grain(page, 240);
   await panel.getByLabel('Fraction name', { exact: true }).fill('z2'); await panel.getByRole('button', { name: 'Pluck', exact: true }).click(); await close(page);
   await grain(page, 240); await panel.getByLabel('Fraction name', { exact: true }).fill('z1'); await panel.getByRole('button', { name: 'Save', exact: true }).click();
@@ -96,6 +100,7 @@ test('right-click a spot, require a fragment note, and display a duplicate-name 
 
 test('offline pluck shows a dashed badge and retries the same key when online', async ({ page }) => {
   const mock = await prepare(page);
+  await page.getByRole('button', { name: 'More tools', exact: true }).click();
   await page.getByTestId('tool-pluck').click(); await grain(page);
   const panel = await chooseCapsule(page);
   mock.setOffline(true);

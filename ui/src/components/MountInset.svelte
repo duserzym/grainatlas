@@ -342,7 +342,7 @@
   }
 </script>
 
-<div class="glass inset" class:open={!collapsed} data-ui data-testid="mount-inset" bind:this={root}
+<div class="glass inset" class:open={!collapsed} class:editor={!isViewer} data-ui data-testid="mount-inset" bind:this={root}
   style:top="{room.top}px" style:right={room.right ? `${room.right}px` : undefined} style:visibility={inset ? 'visible' : 'hidden'}>
   {#if collapsed}
     <button class="opener" onclick={toggle} aria-expanded="false" disabled={!fits} data-testid="mount-inset-open"
@@ -425,6 +425,10 @@
 
 <style>
   .inset { position: absolute; right: var(--space-2); z-index: 20; padding: var(--space-1); border-radius: var(--radius-sm); font-size: 0.72rem; }
+  /* The editor's current-area picture only locates the image; it has no click action.
+     Let canvas gestures pass through it and the inset's unused background. */
+  .inset.editor { pointer-events: none; }
+  .editor button, .editor .grip, .editor .area.active:not(.on) { pointer-events: auto; }
   .opener { padding: 2px var(--space-2); font-size: 0.75rem; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
   .body { position: relative; display: grid; gap: 2px; transform-origin: top right; }
   .head { display: flex; align-items: center; gap: var(--space-1); height: 24px; min-width: 0; }

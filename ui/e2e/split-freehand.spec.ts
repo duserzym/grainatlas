@@ -46,7 +46,7 @@ async function prepare(page: Page) {
   await layers.evaluate((d: HTMLDetailsElement) => { d.open = false; });
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
   await page.getByRole('button', { name: 'Fit', exact: true }).click();
-  await page.locator('.side .tabs').getByRole('radio', { name: /^Grains / }).click();
+  await page.locator('.side .tabs').getByRole('tab', { name: /^Grains / }).click();
   // A larger view makes the curve clearly visible even on a 14-inch laptop.
   await page.getByTitle('Zoom in (+)', { exact: true }).click();
   await page.getByTestId('tool-split').click();

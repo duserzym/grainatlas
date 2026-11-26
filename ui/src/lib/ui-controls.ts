@@ -25,6 +25,7 @@ export function progressState(value: number | null | undefined, total: number, n
     caption: `${now ?? '—'} of ${max} ${noun}` };
 }
 
+// Local changes: tab navigation and vertical menu navigation for Canvas.
 /** Use radio keyboard navigation without changing a measured editor strip's geometry. */
 export function segmentedKeydown(event: KeyboardEvent) {
   if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -37,4 +38,20 @@ export function segmentedKeydown(event: KeyboardEvent) {
   event.preventDefault(); event.stopPropagation();
   buttons[next].click();
   buttons[next].focus();
+}
+
+/** Tabs share the radio group's wrapping focus and activation model. */
+export function tabKeydown(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  const group = event.currentTarget as HTMLElement;
+  const buttons = [...group.querySelectorAll<HTMLButtonElement>('button[role="tab"]:not(:disabled)')];
+  const index = buttons.indexOf(event.target as HTMLButtonElement);
+  if (index < 0) return;
+  const next = segmentedIndex(event.key, index, buttons.length);
+  if (next === null) return;
+  event.preventDefault(); event.stopPropagation(); buttons[next].click(); buttons[next].focus();
+}
+
+export function menuIndex(key: string, current: number, length: number): number | null {
+  return segmentedIndex(key === 'ArrowDown' ? 'ArrowRight' : key === 'ArrowUp' ? 'ArrowLeft' : key === 'ArrowLeft' || key === 'ArrowRight' ? '' : key, current, length);
 }

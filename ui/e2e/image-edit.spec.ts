@@ -114,7 +114,7 @@ test('rotation and flip inverse place a spot in mount µm, save and reopen retai
   const p=source.grainatlas_ui.grains.a[12].centroid_um;
   await page.getByRole('button',{name:'Done',exact:true}).click();await page.getByTestId('tool-spot').click();
   await expect(page.getByRole('complementary',{name:'Edit image controls'})).toHaveCount(0);
-  await expect(page.getByTestId('edit-image')).toHaveAttribute('aria-pressed','false');
+  await expect(page.getByTestId('edit-image')).toHaveAttribute('aria-checked','false');
   const [at]=await screen(page,[p]);await page.mouse.click(at.x,at.y);
   await page.getByTestId('edit-image').click();
   await screenshots(page,'rotated-spot');

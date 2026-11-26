@@ -105,6 +105,13 @@ for (const stalled of [false, true]) test(`dragging a spot edge moves it; only t
     const p = new DOMPoint(c.cx.baseVal.value, c.cy.baseVal.value).matrixTransform(c.getScreenCTM()!);
     return { x: p.x, y: p.y };
   });
+  // The mount locator can overlap this spot after the side panel grows. Its
+  // passive current-area picture must leave the underlying canvas clickable.
+  const hit = await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    return { canvas: !!target?.closest('[data-view]'), blocker: target?.closest('[data-ui]')?.getAttribute('data-testid') ?? null };
+  }, centre);
+  expect(hit, 'The spot centre must receive canvas gestures through passive overlays').toMatchObject({ canvas: true });
   await page.mouse.click(centre.x, centre.y);
   await expect(spot).toHaveClass(/\bsel\b/);
   await expect(page.getByTestId('spot').locator('.handle')).toHaveCount(0);
@@ -141,7 +148,7 @@ for (const stalled of [false, true]) test(`dragging a spot edge moves it; only t
 for (const width of [1280, 1440]) test(`selection sizes, area calibration and stale hosted edits at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: width === 1280 ? 800 : 900 });
   const mock = await openSynthetic(page, false, true);
-  await page.locator('.side .tabs').getByRole('radio', { name: /^Spots / }).click();
+  await page.locator('.side .tabs').getByRole('tab', { name: /^Spots / }).click();
   const entry = page.locator('details.spot-entry');
   if (!(await entry.evaluate(e => (e as HTMLDetailsElement).open))) await entry.locator('summary').click();
   const toolbar = page.getByTestId('size-toolbar'), side = page.getByTestId('size-side');
@@ -150,8 +157,8 @@ for (const width of [1280, 1440]) test(`selection sizes, area calibration and st
   const first = mock.ui.spots[0], second = mock.ui.spots[1];
   await page.locator(`tr[data-spot-id="${first.id}"]`).click();
   await expect(toolbar).toHaveValue('20'); await expect(side).toHaveValue('20');
-  await expect(page.locator('.presets button').filter({ hasText:/^20 µm$/ })).toHaveAttribute('aria-pressed','true');
-  await expect(page.locator('.presets button').filter({ hasText:/^25 µm$/ })).toHaveAttribute('aria-pressed','false');
+  await expect(page.locator('.presets button').filter({ hasText:/^20 µm$/ })).toHaveAttribute('aria-checked','true');
+  await expect(page.locator('.presets button').filter({ hasText:/^25 µm$/ })).toHaveAttribute('aria-checked','false');
   await expect(page.getByTestId('spot').filter({ hasText: first.name }).locator('circle:not(.dot):not(.contrast-halo)')).toHaveAttribute('r','10');
 
   const field = page.getByTestId('size-panel');
@@ -167,7 +174,7 @@ for (const width of [1280, 1440]) test(`selection sizes, area calibration and st
   await expect(page.locator(`tr[data-spot-id="${second.id}"] td.num`)).toHaveText('20');
   await expect(page.getByTestId('spot').filter({ hasText: second.name }).locator('circle:not(.dot):not(.contrast-halo)')).toHaveAttribute('r','10');
 
-  const area = page.locator('.toolbar select[aria-label="Area"]');
+  const area = page.getByRole('combobox', { name: 'Area', exact: true });
   await area.selectOption('b');
   await expect(toolbar).toHaveValue('40'); await expect(side).toHaveValue('40');
   await expect(page.getByTestId('canvas-um-space')).toHaveAttribute('transform','scale(2)');
