@@ -373,7 +373,36 @@ impl Session {
 
     pub fn load_project(&mut self, json: &str) -> Result<()> {
         let project = Project::from_json(json)?;
-        if self.project.as_ref().is_none_or(|old| old.uuid != project.uuid) {
+        let different_project = self.project.as_ref().is_none_or(|old| old.uuid != project.uuid);
+        // Loading another saved solution must not re-tone pixels rendered with the old
+        // placement. Annotation-only loads (print/export) can keep their resident pixels.
+        let invalidated: Vec<String> = self.outputs.keys().filter(|id| {
+            let old = self.project.as_ref()
+                .and_then(|p| p.areas.iter().find(|a| &a.id == *id));
+            let new = project.areas.iter().find(|a| &a.id == *id);
+            match (old, new) {
+                (Some(old), Some(new)) if !different_project => {
+                    // A published base has no raw pipeline to rebuild from these settings.
+                    if self.bundle_sources.contains_key(*id) { return false; }
+                    old.placement != new.placement || old.tiles != new.tiles
+                        || old.pixel_size_nm != new.pixel_size_nm || old.stage_sign != new.stage_sign
+                        || old.params.stitch != new.params.stitch
+                        || old.params.photometric != new.params.photometric
+                        || old.params.blend != new.params.blend || old.params.tone != new.params.tone
+                        || old.mosaic != new.mosaic
+                }
+                _ => true,
+            }
+        }).cloned().collect();
+        for id in &invalidated {
+            self.outputs.remove(id);
+            self.work.remove(id);
+            self.small.retain(|(area, _), _| area != id);
+            self.bundle_sources.remove(id);
+            self.mosaic_depths.remove(id);
+        }
+        if !invalidated.is_empty() { self.sheet_images.clear(); }
+        if different_project {
             self.project_path.clear();
         }
         if self.project.as_ref().is_some_and(|old| old.image_edits != project.image_edits) { self.sheet_images.clear(); }

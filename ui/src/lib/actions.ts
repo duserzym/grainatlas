@@ -14,8 +14,9 @@ import { current, shared, tabs, type AppState, type LiveState } from './store.sv
 import { isHosted, notify, type OpenedFiles } from '@lab/bridge';
 import { download, fromShell } from './files';
 import { packageNameFor, parseDeepLink, readRecent, sameId, savedProject } from './deeplink';
-import { clearStoredCopy, newerStoredCopy, storedCopyDate } from './stored-copy';
+import { clearStoredCopy, newerStoredCopy, recoverStitchResults, storedCopyDate } from './stored-copy';
 import { keepPrintEdits } from './strip-edit';
+import { stitchSourceChanged } from './stitch-state';
 
 /** Where something newly opened goes: the active tab when nothing is open there, else a new tab
  * (opening never replaces the project of a tab). */
@@ -174,7 +175,6 @@ export async function openPaths(paths: string[], app: AppState = current()): Pro
     app.clearHistory(); app.viewMode = false; app.draftHere = null;
     try {
       await adoptPackage(app, r.info, r.project, path, r.modified_ms);
-      await restoreAreas(app);
       if (app.storedCopy) app.storedCopy = { ...app.storedCopy, ready: true };
     } finally { app.loadingProject = false; }
     await app.sync.check();
@@ -261,10 +261,21 @@ function fits(saved: Project, info: PackageInfo) {
 }
 
 async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Project | null = null, path: AppState['projectPath'] = null, modifiedMs = NaN) {
+  const wasLoading = app.loadingProject;
+  app.loadingProject = true;
+  try {
+    await adoptPackageState(app, info, fromFolder, path, modifiedMs);
+  } finally { app.loadingProject = wasLoading; }
+  if (!isHosted() || !(await applyPendingProject(app, true))) await resolveDeepLink(app);
+  await app.sync.check();
+}
+
+async function adoptPackageState(app: AppState, info: PackageInfo, fromFolder: Project | null, path: AppState['projectPath'], modifiedMs: number) {
   const core = await app.core;
   const stored = savedProject(info.name);
   // Set the guard before changing any UI state: effects and rendering can call persist.
   app.storedCopy = fromFolder && path ? newerStoredCopy(fromFolder, path.path, modifiedMs) : null;
+  if (fromFolder && path) fromFolder = recoverStitchResults(fromFolder, path.path, modifiedMs);
   app.notice = null;
   app.projectPath = path;
   app.bundle = null;
@@ -274,6 +285,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.params = {};
   printCache.clearOwner(app.id);
   app.stitched = {};
+  app.stitchSources = {};
   app.grains = {};
   app.spots = [];
   app.findings = [];
@@ -309,8 +321,7 @@ async function adoptPackage(app: AppState, info: PackageInfo, fromFolder: Projec
   app.areaId = info.areas[0]?.id ?? null;
   app.screen = 'area';
   app.dirty = false;
-  if (!isHosted() || !(await applyPendingProject(app, true))) await resolveDeepLink(app);
-  await app.sync.check();
+  await restoreAreas(app);
 }
 
 /**
@@ -411,9 +422,10 @@ export async function loadProjectFile(file: File, app: AppState = current(), ini
   app.loadingProject = true;
     app.clearHistory(); app.viewMode = false; app.draftHere = null;
   app.storedCopy = newerStoredCopy(p, path, file.lastModified);
+  const restored = recoverStitchResults(p, path, file.lastModified);
   try {
     try {
-      await core.loadProject(JSON.stringify(stripUi(p)));
+      await core.loadProject(JSON.stringify(stripUi(restored)));
     } catch (e) {
       app.storedCopy = previous;
       throw e;
@@ -427,7 +439,7 @@ export async function loadProjectFile(file: File, app: AppState = current(), ini
     app.tone = {};
     printCache.clearOwner(app.id);
     app.stitched = {};
-    app.adopt(p);
+    app.adopt(restored);
     app.settings = { ...app.settings, ...(p.settings ?? {}), area_patterns: app.project!.settings.area_patterns ?? {}, spot_cursor_colour: app.project!.settings.spot_cursor_colour, outline_margin_um: app.project!.settings.outline_margin_um, outline_smooth: app.project!.settings.outline_smooth };
     fillParams(app);
     app.dirty = false;
@@ -480,9 +492,12 @@ export async function stitch(areaId: string, app: AppState = current()) {
   // The project first: it records the parameters this stitch used (App.svelte compares them).
   app.project = keepPrintEdits(JSON.parse(await core.projectJson()), app.project);
   app.stitched = { ...app.stitched, [areaId]: r };
+  const { [areaId]: _oldSource, ...sources } = app.stitchSources;
+  app.stitchSources = sources;
   app.preview = { ...app.preview, [areaId]: null };
   app.pixelsVersion++;
-  app.persist();
+  // A completed stitch is a recovery boundary, even if the app quits before the next paint.
+  if (!(await app.persistDurably())) return false;
   // The first stitch of an area that never had grains finds them (Re-stitch never re-finds).
   if (app.grains[areaId] === undefined) await findGrainsInArea(app, areaId);
   return true;
@@ -491,27 +506,46 @@ export async function stitch(areaId: string, app: AppState = current()) {
 /**
  * Renders every area the project has a solved placement for, from that placement (no
  * re-stitch): a reopened project comes back as it was saved, grains and spots on the mosaics.
- * Areas whose placement no longer fits (another stitch setting) are left for Stitch.
+ * Pending stitch settings stay editable; viewing always uses the applied settings.
  */
 export async function restoreAreas(app: AppState = current()) {
   const core = await app.core;
+  const project = app.project;
+  const errors: string[] = [];
   const todo = (app.project?.areas ?? []).filter((a) => a.placement && !app.stitched[a.id] && app.pkg?.areas.some((m) => m.id === a.id));
   for (const [k, a] of todo.entries()) {
     // The placement was solved with the recorded stitch settings: render with exactly those (the
     // UI's copy can differ in key order or in fields added since), so the core never re-stitches.
-    app.params = { ...app.params, [a.id]: { ...app.params[a.id], stitch: a.params.stitch } };
-    const params = $snapshotParams(app, a.id);
+    const params = JSON.parse(JSON.stringify(a.params)) as AreaParams;
+    // Reopening the same files clears the worker's grain cache, even in this same UI tab.
+    delete app.syncedGrains[a.id];
     await syncGrains(app, a.id);
+    if (app.project !== project) return;
     const r = await app.run(`Rendering ${a.id} (${k + 1} of ${todo.length})`, (p) => core.recompute(a.id, params, p));
-    if (!r) return;
+    if (app.project !== project) return;
+    if (!r) { if (app.error) errors.push(app.error); continue; }
     app.stitched = { ...app.stitched, [a.id]: r };
     app.preview = { ...app.preview, [a.id]: null };
     app.pixelsVersion++;
   }
   if (todo.length) {
-    app.project = keepPrintEdits(JSON.parse(await core.projectJson()), app.project);
+    const rendered = JSON.parse(await core.projectJson()) as Project;
+    if (app.project !== project) return;
+    const sources = { ...app.stitchSources };
+    for (const a of todo) {
+      const original = app.stitchSources[a.id] ?? a;
+      const fresh = rendered.areas.find(r => r.id === a.id);
+      const meta = app.pkg?.areas.find(r => r.id === a.id);
+      if (fresh && stitchSourceChanged(original, fresh, meta)) {
+        sources[a.id] = { tiles: original.tiles, pixel_size_nm: original.pixel_size_nm, stage_sign: original.stage_sign };
+      } else delete sources[a.id];
+    }
+    app.stitchSources = sources;
+    app.project = keepPrintEdits(rendered, app.project);
     if (app.screen === 'area' && Object.keys(app.stitched).length) app.screen = 'canvas';
+    if (!app.areaId || !app.stitched[app.areaId]) app.areaId = Object.keys(app.stitched)[0] ?? app.areaId;
   }
+  if (errors.length) app.error = errors.join('\n');
 }
 
 /** Stitches every area; with `missing`, only those not rendered yet (command-line `--stitch`). */
@@ -525,6 +559,14 @@ export async function stitchAll(app: AppState = current(), missing = false) {
 function $snapshotParams(app: AppState, areaId: string): AreaParams {
   const p = JSON.parse(JSON.stringify(app.params[areaId])) as AreaParams;
   p.tone = JSON.parse(JSON.stringify(app.tone[areaId] ?? p.tone));
+  return p;
+}
+
+/** Live pixel edits must never apply pending registration settings implicitly. */
+function renderParams(app: AppState, areaId: string): AreaParams {
+  const p = $snapshotParams(app, areaId);
+  const applied = app.project?.areas.find(a => a.id === areaId)?.params.stitch;
+  if (applied) p.stitch = JSON.parse(JSON.stringify(applied));
   return p;
 }
 
@@ -597,7 +639,7 @@ async function livePreview(app: AppState, areaId: string) {
       const seq = l.seq;
       const level = previewLevel(app, areaId);
       await syncGrains(app, areaId);
-      const params = $snapshotParams(app, areaId);
+      const params = renderParams(app, areaId);
       if (bundlePixels(app)) params.tone = curveTone(params.tone);
       const img = await core.preview(areaId, params, level);
       if (seq > l.settled && img) app.preview = { ...app.preview, [areaId]: { level, img, over: app.pixelsVersion } };
@@ -620,7 +662,7 @@ async function settle(app: AppState, areaId: string) {
     try {
       await syncGrains(app, areaId);
       if (app.readOnly || (app.remote && !bundlePixels(app))) { l.settled = Math.max(l.settled, seq); return; }
-      const params = $snapshotParams(app, areaId);
+      const params = renderParams(app, areaId);
       if (bundlePixels(app)) params.tone = JSON.parse(JSON.stringify(app.params[areaId].tone));
       const published = bundlePixels(app);
       const r = published ? { ...app.stitched[areaId], mosaic: await core.retone(areaId, params.tone) } : await core.recompute(areaId, params);

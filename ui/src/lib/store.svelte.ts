@@ -1,4 +1,5 @@
 import { nextSpotDiameter } from './spot-size';
+import { stitchSettingsChanged, type StitchSource } from './stitch-state';
 import { readLabelOptions, labelUI } from './print-labels';
 import { printCache } from './print-cache';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout, resetLayoutStorage, type LayoutPrefs } from './layout-prefs';
@@ -184,6 +185,7 @@ class AppState {
     this.diameter = nextSpotDiameter(this.spots, value, this.settings.default_diameter_um);
   }
   stitched = $state<Record<string, StitchSummary>>({});
+  stitchSources = $state<Record<string, StitchSource>>({});
   /** Bumps when pyramid pixels change (re-stitch, re-tone): the canvas drops its tile cache. */
   pixelsVersion = $state(0);
   /**
@@ -570,6 +572,10 @@ class AppState {
     p.settings = $state.snapshot(this.settings) as Settings;
     const overlays = Object.fromEntries(Object.entries($state.snapshot(this.overlays)).map(([k, o]) => [k, { ...o, url: null }]));
     p['grainatlas_ui'] = { grains: grainMapWithoutBlankArtifacts(this.grains), spots: this.spots, labels: this.labels, tone: $state.snapshot(this.tone), overlays, ...labelUI($state.snapshot(this.printLabels)) };
+    const pending = Object.fromEntries(p.areas.filter(a => a.placement && this.params[a.id]
+      && stitchSettingsChanged(a.params.stitch, this.params[a.id].stitch)).map(a => [a.id, $state.snapshot(this.params[a.id].stitch)]));
+    if (Object.keys(pending).length) (p.grainatlas_ui as Record<string, unknown>).stitch_settings = pending;
+    if (Object.keys(this.stitchSources).length) (p.grainatlas_ui as Record<string, unknown>).stitch_sources = $state.snapshot(this.stitchSources);
     const adopted = $state.snapshot({ grainatlas_ui: {
       tone: (this.project.grainatlas_ui as { tone?: unknown } | undefined)?.tone,
       bundle_tone: (this.project.grainatlas_ui as { bundle_tone?: unknown } | undefined)?.bundle_tone,
@@ -594,6 +600,21 @@ class AppState {
         this.sync.track();
       }
     });
+  }
+
+  /** Stitch completion must reach a committed file/IndexedDB write before returning. */
+  async persistDurably(): Promise<boolean> {
+    if (this.readOnly || this.loadingProject || this.storedCopy || !this.project) return false;
+    flushWrites();
+    this.sync.imagesEdited();
+    this.dirty = true;
+    const p = this.fullProject();
+    if (!p) return false;
+    const path = this.projectPath?.path ?? null;
+    const saved = await appStorage.trackDurable(this, 'project', () => persistProject(p, path));
+    if (this.project?.uuid !== p.uuid || (this.projectPath?.path ?? null) !== path) return false;
+    this.sync.track();
+    return saved;
   }
 
   /** Presentation-only changes never schedule sync work. Read-only views keep these in memory. */
@@ -625,7 +646,7 @@ class AppState {
     this.checkLabelsError = null;
     this.mountLabelsCount = null;
     this.checksRan = false;
-    const ui = $state.snapshot(p['grainatlas_ui']) as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay> } | undefined;
+    const ui = $state.snapshot(p['grainatlas_ui']) as { grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>; overlays?: Record<string, Overlay>; stitch_settings?: Record<string, AreaParams['stitch']>; stitch_sources?: Record<string, StitchSource> } | undefined;
     this.printLabels = readLabelOptions(ui);
     if (ui?.overlays) this.overlays = ui.overlays;
     if (ui?.grains) this.grains = grainMapWithoutBlankArtifacts(ui.grains);
@@ -633,7 +654,11 @@ class AppState {
     this.diameter = nextSpotDiameter(this.spots, this.areaId, this.settings.default_diameter_um);
     if (ui?.labels) this.labels = ui.labels;
     if (ui?.tone) this.tone = ui.tone;
-    for (const a of p.areas) this.params[a.id] = JSON.parse(JSON.stringify(a.params));
+    this.stitchSources = ui?.stitch_sources ?? {};
+    for (const a of p.areas) {
+      this.params[a.id] = JSON.parse(JSON.stringify(a.params));
+      if (ui?.stitch_settings?.[a.id]) this.params[a.id].stitch = { ...a.params.stitch, ...ui.stitch_settings[a.id] };
+    }
     this.sync.opened();
   }
 }

@@ -332,6 +332,61 @@ mod tests {
         s
     }
     #[test]
+    fn saved_placement_reopens_without_registration() {
+        let mut original = fixture();
+        original.stitch("a", "{}", &Ctl::NONE, &|| 0.).unwrap();
+        let mut project = original.project.clone().unwrap();
+        // A distinctive saved solution: registration would replace this with the stage prior.
+        let area = &mut project.areas[0];
+        let placement = area.placement.as_mut().unwrap();
+        placement.tiles[1].x += 3;
+        placement.width += 3;
+        let placement = placement.clone();
+        let params = serde_json::to_string(&area.params).unwrap();
+        project.extra.insert("grainatlas_ui".into(), serde_json::json!({
+            "spots": [{"id":"synthetic-registered", "x_um":12.125, "y_um":24.25, "acquisition_ids":["synthetic-link"]}]
+        }));
+        let mut reopened = fixture();
+        reopened.load_project(&project.to_json()).unwrap();
+        let result: serde_json::Value = serde_json::from_str(
+            &reopened.recompute("a", &params, &Ctl::NONE, &|| 0.).unwrap(),
+        ).unwrap();
+        assert_eq!(reopened.outputs["a"].placement, placement);
+        assert!(!result["timings"].as_array().unwrap().iter().any(|t| t[0] == "stitch"));
+        assert_eq!(reopened.project.as_ref().unwrap().extra["grainatlas_ui"], project.extra["grainatlas_ui"]);
+    }
+
+    #[test]
+    fn saved_placement_replaces_an_older_resident_output() {
+        let mut session = fixture();
+        session.stitch("a", "{}", &Ctl::NONE, &|| 0.).unwrap();
+        let mut project = session.project.clone().unwrap();
+        let resident = session.outputs["a"].base.clone();
+        project.extra.insert("grainatlas_ui".into(), serde_json::json!({"labels":[]}));
+        session.load_project(&project.to_json()).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&resident, &session.outputs["a"].base));
+        let area = &mut project.areas[0];
+        area.placement.as_mut().unwrap().tiles[1].x += 3;
+        area.placement.as_mut().unwrap().width += 3;
+        let placement = area.placement.clone().unwrap();
+        let params = serde_json::to_string(&area.params).unwrap();
+        session.load_project(&project.to_json()).unwrap();
+        session.recompute("a", &params, &Ctl::NONE, &|| 0.).unwrap();
+        assert_eq!(session.outputs["a"].placement, placement);
+    }
+
+    #[test]
+    fn saved_metadata_retains_published_pixel_source() {
+        let mut session = fixture();
+        session.load_bundle_area("a", 8, 8, (0..64).collect()).unwrap();
+        let mut project = session.project.clone().unwrap();
+        project.areas[0].params.tone.gamma = 1.5;
+        session.load_project(&project.to_json()).unwrap();
+        assert!(session.outputs.contains_key("a"));
+        assert!(session.bundle_sources.contains_key("a"));
+    }
+
+    #[test]
     fn evicted_and_never_built_exports_do_not_rehydrate_mosaics() {
         let mut s = fixture();
         s.stitch("a", "{}", &Ctl::NONE, &|| 0.).unwrap();

@@ -160,7 +160,7 @@
   // any screen, Auto and Reset included) re-renders its mosaic live.
   // (Per tab: two projects can have areas of the same id.)
   $effect(() => {
-    if (app.readOnly || (app.remote && !bundlePixels(app))) return;
+    if (app.loadingProject || app.readOnly || (app.remote && !bundlePixels(app))) return;
     const liveKeys = app.liveKeys;
     for (const id of Object.keys(liveKeys)) if (!app.stitched[id]) delete liveKeys[id];
     for (const id of Object.keys(app.stitched)) {

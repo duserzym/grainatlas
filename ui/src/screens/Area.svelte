@@ -1,5 +1,6 @@
 <script lang="ts">
   import StatusChip from '../lib/ui/StatusChip.svelte';
+  import { stitchSettingsChanged } from '../lib/stitch-state';
   import { areaImageEdits, levelsLut } from '../lib/image-edits';
   import { bundlePixels, neutralTone } from '../lib/bundle-tone';
   import { grainNumber } from '../lib/grain-lineage';
@@ -43,6 +44,9 @@
   const params = $derived(app.areaId ? app.params[app.areaId] : null);
   const tone = $derived(app.areaId ? (app.tone[app.areaId] ?? waitingTone) : null);
   const summary = $derived(app.areaId ? app.stitched[app.areaId] : null);
+  const applied = $derived(app.project?.areas.find(a => a.id === app.areaId));
+  const stitchChanged = $derived(!!summary && !!applied && !!params &&
+    (stitchSettingsChanged(applied.params.stitch, params.stitch) || !!app.stitchSources[applied.id]));
   const placement = $derived(summary?.placement ?? null);
   const compare = $derived(app.areaId ? (app.compare[app.areaId] ?? null) : null);
   const areaGrains = $derived(app.areaId ? (app.grains[app.areaId] ?? []) : []);
@@ -304,8 +308,8 @@
             <option value="feather">feather (fast preview)</option>
           </select>
         </label>
-        <h3>Stitching <span class="faint">(Re-stitch to apply)</span></h3>
-        <label class="field">Min. peak-to-sidelobe <input type="number" step="0.5" bind:value={params.stitch.min_psr} /></label>
+        <h3>Stitching {#if stitchChanged}<span class="faint" data-testid="stitch-pending">(Re-stitch to apply)</span>{/if}</h3>
+        <label class="field">Min. peak-to-sidelobe <input type="number" step="0.5" bind:value={params.stitch.min_psr} onchange={() => app.persist()} /></label>
       </section>
 
       <section>

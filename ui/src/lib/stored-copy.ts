@@ -19,6 +19,44 @@ export function storedCopyKey(uuid: string, path: string): string {
   return `grainatlas.copy.${uuid}|${path}`;
 }
 
+/** A stitch completed after the last explicit file save is kept at that exact location.
+ * Recover only its pixel recipe; registered elements still come from the opened file and
+ * the existing recovery choice. Never borrow a different package or a relocated file's copy. */
+export function recoverStitchResults(file: Project, path: string, modifiedMs: number, storage?: CopyStorage): Project {
+  try {
+    const raw = (storage ?? appStorage).getItem(storedCopyKey(file.uuid, path));
+    if (!raw || !Number.isFinite(modifiedMs)) return file;
+    const copy = JSON.parse(raw) as StoredCopy;
+    if (copy.path !== path || copy.project.uuid !== file.uuid || copy.project.package.name !== file.package.name
+      || (copy.project.package.kind ?? 'package') !== (file.package.kind ?? 'package')
+      || !Number.isFinite(Date.parse(copy.saved_at)) || Date.parse(copy.saved_at) <= modifiedMs) return file;
+    const recovered: string[] = [];
+    const areas = file.areas.map(area => {
+      const saved = copy.project.areas.find(a => a.id === area.id);
+      if (!saved?.placement || !saved.mosaic || area.pixel_size_nm !== saved.pixel_size_nm
+        || (area.uuid && saved.uuid && area.uuid !== saved.uuid)
+        || canonical(area.stage_sign) !== canonical(saved.stage_sign)
+        || canonical(area.tiles.map(t => [t.file, t.pos_um])) !== canonical(saved.tiles.map(t => [t.file, t.pos_um]))) return area;
+      recovered.push(area.id);
+      return { ...area, params: saved.params, tiles: saved.tiles, placement: saved.placement,
+        photometric: saved.photometric, mosaic: saved.mosaic, failed_tiles: saved.failed_tiles };
+    });
+    if (!recovered.length) return file;
+    const ui = { ...(file.grainatlas_ui as Record<string, unknown> | undefined) };
+    const copiedUI = copy.project.grainatlas_ui as Record<string, Record<string, unknown>> | undefined;
+    for (const field of ['stitch_settings', 'stitch_sources']) {
+      const values = { ...(ui[field] as Record<string, unknown> | undefined) };
+      for (const id of recovered) {
+        if (copiedUI?.[field]?.[id]) values[id] = copiedUI[field][id];
+        else delete values[id];
+      }
+      if (Object.keys(values).length) ui[field] = values;
+      else delete ui[field];
+    }
+    return { ...file, areas, ...(file.grainatlas_ui || Object.keys(ui).length ? { grainatlas_ui: ui } : {}) };
+  } catch { return file; }
+}
+
 export function projectChanges(project: Project) {
   const ui = project.grainatlas_ui as {
     grains?: Record<string, Grain[]>; spots?: Spot[]; labels?: Label[]; tone?: Record<string, ToneParams>;
