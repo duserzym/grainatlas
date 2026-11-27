@@ -1,4 +1,4 @@
-// PERF=1 PERF_LABEL=after pnpm exec playwright test e2e/perf-pointer.spec.ts
+// PERF_LABEL=after pnpm exec playwright test -c playwright.perf.config.ts e2e/perf-pointer.spec.ts
 // Uses only invented geometry over the generated synthetic bundle. No network timing claim.
 import { test, expect } from './mock-session';
 import { execFileSync } from 'node:child_process';
@@ -9,7 +9,6 @@ import { distribution, report } from './support/perf';
 import type { Grain, Spot } from '../src/lib/core/types';
 test.beforeAll(()=>{execFileSync('cargo',['run','-p','grainatlas-core','--example','print_edit_bundle'],{cwd:root,stdio:'pipe'});});
 for(const tool of ['spot','select'] as const) test(`${tool}: 120 pointer moves on 300 grains and 500 registered spots`,async({page})=>{
-  test.skip(!process.env.PERF,'Set PERF=1 to collect browser frame measurements');
   const project=JSON.parse(await readFile(path.join(generated,'project.json'),'utf8'));
   const template:Grain=project.grainatlas_ui.grains.a[0];
   // Reuse the invented area's extent, replacing all test geometry within that extent.

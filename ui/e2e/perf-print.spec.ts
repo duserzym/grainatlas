@@ -1,5 +1,5 @@
 // Generate: cargo run --release -p grainatlas-core --example large_bundle
-// Run: PERF=1 PERF_LABEL=after pnpm exec playwright test e2e/perf-print.spec.ts
+// Run: PERF_LABEL=after pnpm exec playwright test -c playwright.perf.config.ts e2e/perf-print.spec.ts
 import { test, expect, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { latencyMs, mockLargeServer, outputPath, projectURL } from './support/perf';
@@ -13,7 +13,6 @@ async function decodedPage(page: Page) {
 }
 
 test('measure print generation and cached return at 4x CPU', async ({ page }) => {
-  test.skip(!process.env.PERF, 'Set PERF=1 to collect performance measurements');
   test.setTimeout(20 * 60_000);
   const mock = await mockLargeServer(page);
   const cdp = await page.context().newCDPSession(page);

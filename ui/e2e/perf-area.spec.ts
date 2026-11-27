@@ -1,5 +1,5 @@
 // Generate first: cargo run -p grainatlas-core --example large_bundle
-// Run from ui/: PERF=1 PERF_LABEL=before PERF_LATENCY_MS=150 pnpm exec playwright test e2e/perf-area.spec.ts
+// Run from ui/: PERF_LABEL=before PERF_LATENCY_MS=150 pnpm exec playwright test -c playwright.perf.config.ts e2e/perf-area.spec.ts
 import { test, expect, type Page } from '@playwright/test';
 import { latencyMs, mockLargeServer, openEdit, report, tileTotals } from './support/perf';
 
@@ -104,7 +104,6 @@ async function measureArea(page: Page) {
 }
 
 test('measure first and second Area opens of a large published mount', async ({ page }) => {
-  test.skip(!process.env.PERF, 'Set PERF=1 to collect performance measurements');
   test.setTimeout(20 * 60_000);
   const mock = await mockLargeServer(page);
   const firstStart = mock.requests.length;

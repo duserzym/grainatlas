@@ -1,4 +1,4 @@
-// PERF=1 PERF_LABEL=after pnpm exec playwright test e2e/perf-sync-pointer.spec.ts
+// PERF_LABEL=after pnpm exec playwright test -c playwright.perf.config.ts e2e/perf-sync-pointer.spec.ts
 import { test, expect } from './mock-session';
 import type { Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
@@ -98,7 +98,6 @@ function expectCanonicalRecords(before: any[], after: any[], canonical: any[], a
 }
 
 test('Spot: idle, delayed sync and registration burst on 150 grains/500 registered spots',async({page})=>{
-  test.skip(!process.env.PERF,'Set PERF=1 to collect browser frame measurements');
   const template=JSON.parse(await readFile(path.join(generated,'project.json'),'utf8'));
   const source=syncFixture(template),bodies:string[]=[];
   const unexpected=await mockImageServer(page,{saved:JSON.stringify(source),syncOnSave:false,sync:{delayMs:2500,bodies}});

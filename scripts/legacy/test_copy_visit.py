@@ -260,8 +260,7 @@ class CopyVisitsTest(unittest.TestCase):
             date, note = COPIER.file_date(path, "", "")
             self.assertEqual(date, datetime.fromtimestamp(path.stat().st_mtime).date().isoformat())
             self.assertEqual(note, "date from file time")
-        if COPIER.Image is None:
-            return
+        self.assertIsNotNone(COPIER.Image, "EXIF coverage requires Pillow: python3 -m pip install Pillow")
         image_path = self.src / "photo.jpg"
         exif = COPIER.Image.Exif()
         exif[36867] = "2023:06:07 08:09:10"

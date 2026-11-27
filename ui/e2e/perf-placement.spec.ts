@@ -1,5 +1,5 @@
 // Generate first: cargo run -p grainatlas-core --example large_bundle
-// Run from ui/: PERF=1 PERF_LABEL=before pnpm exec playwright test e2e/perf-placement.spec.ts
+// Run from ui/: PERF_LABEL=before pnpm exec playwright test -c playwright.perf.config.ts e2e/perf-placement.spec.ts
 import { test, expect, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import type { Grain, Spot } from '../src/lib/core/types';
@@ -117,7 +117,6 @@ async function visibleCentroid(page: Page, grain: Grain) {
 }
 
 test('measure 60 grain placements and 10 undos on a large published mount', async ({ page }) => {
-  test.skip(!process.env.PERF, 'Set PERF=1 to collect performance measurements');
   test.setTimeout(15 * 60_000);
   const mock = await mockLargeServer(page);
   await openEdit(page);

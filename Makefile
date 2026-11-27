@@ -5,7 +5,7 @@ WASM_OUT := ui/src/lib/core/pkg
 
 .PHONY: setup bridge core-test wasm ui-dev ui-build icons desktop-dev desktop-build test release-web site
 .PHONY: updater-setup check-version windows-installer
-.PHONY: full check desktop-check screenshots
+.PHONY: full check desktop-check screenshots perf-browser perf-core
 
 # @lab/bridge (UPb Studio's module API) is a sibling-checkout dependency until it
 # is published: ui/package.json has "file:../../upblab/bridge".
@@ -44,6 +44,15 @@ bridge:
 
 core-test:
 	cargo test
+
+# Manual synthetic benchmarks; see docs/developing.md. Build the web UI first.
+perf-browser:
+	cargo run --release -p grainatlas-core --example large_bundle
+	cd ui && pnpm exec playwright test --config=playwright.perf.config.ts
+
+# Serial execution avoids contention in timing assertions and large allocations.
+perf-core:
+	cargo test -p grainatlas-core --release -- --ignored --nocapture --test-threads=1
 
 wasm:
 	CARGO_TARGET_DIR="$(WASM_TARGET_DIR)" cargo build -p grainatlas-wasm --target wasm32-unknown-unknown --release

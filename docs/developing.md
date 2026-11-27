@@ -420,6 +420,65 @@ same uuid opens in Edit and the chip says “Your draft here, based on r<n>”.
 Hosted and standalone storage are separate; drafts are not transferred by
 the launch arguments.
 
+## Test suites and manual measurements
+
+Run `make full` for Rust tests, wasm compilation, Svelte checks, desktop
+compilation and Node/Vitest tests. The six Rust tests marked `#[ignore]` are
+manual timing or large allocation benchmarks, not missing correctness fixtures.
+Run all six in release mode, serially to avoid timing and memory contention:
+
+```bash
+make perf-core
+# Equivalent:
+cargo test -p grainatlas-core --release -- --ignored --nocapture --test-threads=1
+```
+
+The default Chromium Playwright suite discovers 337 correctness cases and has
+no skip directives. The supervisor confirms zero runtime skips after `make full`
+and the UI build:
+
+```bash
+cd ui
+pnpm build
+pnpm exec playwright test --config=playwright.config.ts --reporter=list
+```
+
+The six browser measurements in `e2e/perf-*.spec.ts` deliberately use a
+separate `playwright.perf.config.ts`. They collect timings, frame distributions
+and request counts on large invented mounts; the print measurement uses 4x CPU
+throttling and may take 20 min. They run unconditionally when selected through
+that config. `PERF=1` is no longer required and does not select benchmarks in
+the default config. No tests or assertions were removed.
+
+After building the UI above, run from the repository root:
+
+```bash
+PERF_LABEL=after make perf-browser
+# Or generate the large fixture and select one measurement:
+cargo run --release -p grainatlas-core --example large_bundle
+cd ui
+PERF_LABEL=after PERF_LATENCY_MS=150 pnpm exec playwright test -c playwright.perf.config.ts e2e/perf-area.spec.ts
+```
+
+`make perf-browser` generates `target/large-bundle`; pointer specs generate
+`target/print-edit-bundle` in their existing setup hooks. All fixtures are
+synthetic. Measurements write reports to `target/perf`, and Playwright output
+goes to `target/perf-results`. Both browser commands use preview port 4173 and
+must be run by the supervisor. Discovery alone opens no port:
+
+```bash
+cd ui
+pnpm exec playwright test --list
+pnpm exec playwright test -c playwright.perf.config.ts --list
+```
+
+The legacy Python suite is separate from `make full`:
+`python3 scripts/legacy/test_copy_visit.py`. Its EXIF test requires Pillow
+(`python3 -m pip install Pillow`); an absent dependency now fails explicitly
+instead of silently returning before the EXIF assertions. Documentation image
+capture remains separate under `playwright.screenshots.config.ts`; see
+[screenshots.md](screenshots.md).
+
 ## Print performance checks
 
 `make windows` cross-builds the Windows x86-64 executable with cargo-xwin and
@@ -439,7 +498,7 @@ RAYON_NUM_THREADS=4 cargo run --release -p grainatlas-core --example print_bench
 make full
 cd ui && pnpm build
 pnpm exec playwright test e2e/print-sheets.spec.ts e2e/strip-editor.spec.ts
-PERF=1 PERF_LABEL=after pnpm exec playwright test e2e/perf-print.spec.ts
+PERF_LABEL=after pnpm exec playwright test -c playwright.perf.config.ts e2e/perf-print.spec.ts
 ```
 
 The native benchmark separates planning, crop/enhancement, PNG, base64 and

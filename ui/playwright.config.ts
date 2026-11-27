@@ -2,6 +2,8 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  // Manual measurements have their own config and command: make perf-browser.
+  testIgnore: '**/perf-*.spec.ts',
   outputDir: '../target/e2e-results',
   workers: 1,
   retries: 0,
