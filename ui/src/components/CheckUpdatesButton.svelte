@@ -99,7 +99,7 @@
       {#if view.badge}<span class="dot" aria-hidden="true"></span>{/if}
     </button>
     {#if updater.whatsNewOpen}
-      <div class="glass panel" id="whats-new" data-testid="whats-new"
+      <div class="glass panel opaque-popover" id="whats-new" data-testid="whats-new"
         role="dialog" aria-labelledby="whats-new-title" tabindex="-1" bind:this={popover} style:left={`${left}px`} style:top={`${top}px`}>
         <div class="card-heading">
           <strong id="whats-new-title">What's new in v{updater.version}</strong>
@@ -108,7 +108,7 @@
         <p class="small" style:white-space="pre-wrap">{updater.whatsNewNotes}</p>
       </div>
     {:else if open}
-      <div class="glass panel" id="check-updates-popover" data-testid="check-updates-popover"
+      <div class="glass panel opaque-popover" id="check-updates-popover" data-testid="check-updates-popover"
         role="dialog" aria-label="Updates" tabindex="-1" bind:this={popover} style:left={`${left}px`} style:top={`${top}px`}>
         <p role="status">{view.text}</p>
         {#if view.secondary}<p class="faint small">{view.secondary}</p>{/if}
@@ -131,7 +131,7 @@
   .panel {
     position: absolute; z-index: 10; display: grid; justify-items: start; gap: var(--space-2);
     width: min(320px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto;
-    padding: var(--space-3); background: var(--glass-strong); white-space: normal;
+    padding: var(--space-3); white-space: normal;
   }
   .card-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%; }
   p { margin: 0; overflow-wrap: anywhere; }

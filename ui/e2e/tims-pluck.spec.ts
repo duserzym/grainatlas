@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { opaqueAndUnclipped } from './support/opaque-surface';
 import { test, expect } from './mock-session';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -11,9 +12,9 @@ test.use({ viewport: { width: 1280, height: 800 } });
 test.beforeAll(() => {
   execFileSync('cargo', ['run', '-p', 'grainatlas-core', '--example', 'synthetic_bundle'], { cwd: root, stdio: 'pipe' });
 });
-async function prepare(page: Page) {
+async function prepare(page: Page, preview = '') {
   const mock = await mockTimsServer(page, generated);
-  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}`);
+  await page.goto(`/?server=${encodeURIComponent(server)}&project=${projectId}&mount=${mountId}${preview ? `&update-preview=${preview}` : ''}`);
   await page.getByTestId('edit-copy').click();
   await expect(page.getByTestId('edit-copy')).toHaveText('View');
   await page.getByRole('button', { name: 'Canvas', exact: true }).click();
@@ -115,3 +116,24 @@ test('offline pluck shows a dashed badge and retries the same key when online', 
   expect(mock.writes.filter(w => w.path === '/v1/fractions').every(w => w.key === key)).toBe(true);
   expect(mock.unexpected).toEqual([]);
 });
+
+for (const theme of ['light', 'dark']) {
+  test(`update and spot menus cover the synthetic canvas in ${theme}`, async ({ page }) => {
+    await page.addInitScript(theme => {
+      localStorage.setItem('grainatlas.theme', theme);
+      localStorage.setItem('grainatlas.updates', JSON.stringify({ autoDownload: false }));
+    }, theme);
+    const mock = await prepare(page, 'available');
+    const background = theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(22, 29, 43)';
+    const p = await point(page, 75, 120);
+    await page.mouse.click(p.x, p.y, { button: 'right' });
+    await opaqueAndUnclipped(page.getByTestId('spot-action-menu'), background);
+    await page.getByTestId('check-updates').click();
+    const menu = page.getByTestId('check-updates-popover');
+    await expect(menu).toContainText('Update available');
+    await opaqueAndUnclipped(menu, background);
+    await menu.getByRole('link', { name: "What's new", exact: true }).click();
+    await opaqueAndUnclipped(page.getByTestId('whats-new'), background);
+    expect(mock.unexpected).toEqual([]);
+  });
+}

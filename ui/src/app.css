@@ -37,6 +37,7 @@
   --danger: #c2413b;
   --warning: #a96800;
   --ok: #1d8a5b;
+  --panel-opaque: #ffffff;
   --glass: rgba(255, 255, 255, 0.55);
   --glass-strong: rgba(255, 255, 255, 0.72);
   /* chrome floating over the (dark) image surface: denser so text stays readable */
@@ -97,6 +98,7 @@
   --danger: #ff7b72;
   --warning: #e3b341;
   --ok: #56d364;
+  --panel-opaque: #161d2b;
   --glass: rgba(255, 255, 255, 0.08);
   --glass-strong: rgba(22, 29, 43, 0.78);
   --glass-on-image: rgba(20, 27, 40, 0.72);
@@ -137,6 +139,12 @@
 .ga-root .glass[data-ui] { background: var(--glass-on-image); }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .ga-root .glass { background: var(--glass-strong); }
+}
+/* Floating menus must cover content even when their chrome uses glass. */
+.ga-root .panel.opaque-popover {
+  background: var(--panel-opaque);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .ga-root .panel { padding: var(--space-4) var(--space-6); }
 .ga-root .surface-opaque { background: var(--plot-bg); border: 1px solid var(--hairline); border-radius: var(--radius-sm); }

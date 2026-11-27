@@ -1939,7 +1939,7 @@
 <svelte:window onkeydown={key} onkeyup={splitModifier} oncontextmenu={contextSpot} onpointerdown={closeSpotMenu} />
 
 {#if spotMenu}
-  <div class="panel spot-menu" role="menu" data-ui data-testid="spot-action-menu" style:left="{spotMenu.x}px" style:top="{spotMenu.y}px">
+  <div class="panel opaque-popover spot-menu" role="menu" data-ui data-testid="spot-action-menu" style:left="{spotMenu.x}px" style:top="{spotMenu.y}px">
     {#if isViewer}
     <button role="menuitem" onclick={() => actionSpot('edit')}>Edit in grainatlas</button>
     <button role="menuitem" onclick={() => actionSpot('studio')}>Open in Studio</button>

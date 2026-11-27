@@ -675,6 +675,8 @@
   }
   .app.viewer { grid-template-rows: 0 0 minmax(0, 1fr); }
   .header-region { grid-row:2; min-width:0; margin:0 var(--space-2) var(--space-2); z-index:5; }
+  /* Keep update menus above canvas tools (25) and notices (30), below modals (80). */
+  .header-region:has(:global(#check-updates-popover), :global(#whats-new)) { z-index:65; }
   .header-overflow { display:flex; align-items:center; justify-content:flex-end; gap:var(--space-3); border-top:1px solid var(--hairline); }
   .header-overflow > span { min-width:0; overflow-wrap:anywhere; font-size:0.8rem; }
   .topbar {

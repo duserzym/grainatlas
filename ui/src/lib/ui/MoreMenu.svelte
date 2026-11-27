@@ -34,7 +34,7 @@
     onkeydown={e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); void show(e.key === 'ArrowUp'); } }} />
   {/if}
   {#if open}
-    <div id={uid} class="glass panel menu" role="menu" tabindex="-1" aria-label={label} bind:this={menu} onkeydown={keyboard}
+    <div id={uid} class="glass panel opaque-popover menu" role="menu" tabindex="-1" aria-label={label} bind:this={menu} onkeydown={keyboard}
       onclick={e => { if ((e.target as Element).closest('[role="menuitemradio"], [role="menuitem"]:not(:disabled)')) close(); }}>
       {@render children()}
     </div>
