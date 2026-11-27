@@ -46,9 +46,18 @@ export async function syncForClose(tab: AppState): Promise<boolean> {
   await keepLocalForClose(tab);
   const pending = tab.sync.unsynced || syncReminder(tab).outbox > 0;
   if (pending) {
-    tab.notice = tab.sync.error || tab.sync.imageError || tab.tims.store?.error
-      || (tab.sync.reachable === false ? 'Offline. Your work is saved locally in the outbox. Sync next time you are online.'
-        : 'Sync needs your attention. Resolve it, then try closing again. Your work is saved locally.');
+    const error = tab.sync.error || tab.sync.imageError || tab.tims.store?.error;
+    if (error) {
+      // Close failures must stay visible after the transient notice expires. The
+      // normal sync headline can omit the server's reason; include a short reply.
+      const details = tab.sync.error ? tab.sync.errorDetails.replace(/\s+/g, ' ').trim() : '';
+      const excerpt = details.length > 300 ? `${details.slice(0, 300)}…` : details;
+      tab.notice = null;
+      tab.error = `Could not sync and close. ${error}${excerpt ? ` (${excerpt})` : ''}`;
+    } else {
+      tab.notice = tab.sync.reachable === false ? 'Offline. Your work is saved locally in the outbox. Sync next time you are online.'
+        : 'Sync needs your attention. Resolve it, then try closing again. Your work is saved locally.';
+    }
   }
   return !pending;
 }

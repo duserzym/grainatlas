@@ -508,7 +508,16 @@ export class SyncSession {
       (!!d.base || [d.mine, d.theirs].some(s => s && 'acquisition_ids' in s && s.acquisition_ids?.length))) ?? false;
   }
   get unsynced(): boolean {
-    return !!this.app.project && !this.app.readOnly && (!!this.intentFailure || KINDS.some(k => this.databaseMore[k].length) || !this.draft?.synced || !this.draft?.base || !!this.draft?.pending_request || !!this.cachedSyncStatus?.pending || !!this.draft?.publish_job && this.draft.publish_job.decision !== 'keep');
+    // A clean copy read from the database has no upload to do, even before its
+    // first POST. Keep that historical acknowledgement flag intact: lookup must
+    // never acknowledge a pending request, edits, or a first snapshot.
+    const checkedClean = !isHosted() && !this.app.hosted && !this.app.link.syncAutomatically
+      && !!this.lastServerRead && this.registered === true && this.reachable === true
+      && !!this.draft?.mount && this.draft.mount === this.status?.mount_id
+      && this.draft.base_revision != null && this.draft.base_revision === this.elementsRevision
+      && (this.pixelKey === null || this.draft.pixels_base != null)
+      && this.state === 'in-sync';
+    return !!this.app.project && !this.app.readOnly && (!!this.intentFailure || KINDS.some(k => this.databaseMore[k].length) || (!this.draft?.synced && !checkedClean) || !this.draft?.base || !!this.draft?.pending_request || !!this.cachedSyncStatus?.pending || !!this.draft?.publish_job && this.draft.publish_job.decision !== 'keep');
   }
   private get identity(): string { return JSON.stringify([this.app.project?.uuid, this.app.projectPath?.path ?? null, this.app.remote?.projectId ?? null]); }
   private async api() {

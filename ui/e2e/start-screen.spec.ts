@@ -486,10 +486,13 @@ test('screen switches and refresh reuse the signed-in server identity', async ({
   expect(mock.calls.filter(c => c.path === '/v1/server')).toHaveLength(1);
 });
 
-test('revision badges reuse a fresh answer across screens and reloads, then revalidate with ETag', async ({ page }) => {
+test('revision badges reuse fresh answers across screens and reloads; explicit Refresh revalidates with ETag', async ({ page }) => {
   await page.clock.install();
   const mock = await setup(page, { count: 1, local: true });
+  const firstRevision = page.waitForResponse(r => new URL(r.url()).pathname === '/v1/atlas/projects/revisions');
   await page.goto('/');
+  const etag = (await firstRevision).headers().etag;
+  expect(etag).toBeTruthy();
   const badge = page.getByTestId('mount-tile').getByText(/Newer in database/);
   await expect(badge).toBeVisible();
   const revisions = () => mock.calls.filter(c => c.path === '/v1/atlas/projects/revisions');
@@ -498,10 +501,15 @@ test('revision badges reuse a fresh answer across screens and reloads, then reva
     await nav.getByRole('button', { name: 'Settings', exact: true }).click();
     await nav.getByRole('button', { name: 'Open', exact: true }).click();
     await expect(badge).toBeVisible();
+    expect(revisions()).toHaveLength(i + 1);
+    const refreshed = page.waitForResponse(r => new URL(r.url()).pathname === '/v1/atlas/projects/revisions');
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    expect((await refreshed).status()).toBe(304);
+    await expect(badge).toBeVisible();
+    expect(revisions()[i + 1].headers['if-none-match']).toBe(etag);
     await expect(page.getByRole('status').filter({ hasText: 'Loading mounts' })).toHaveCount(0);
   }
-  expect(revisions()).toHaveLength(1);
+  expect(revisions()).toHaveLength(3);
   // Observe the durable write before deliberately replacing the document.
   await page.waitForFunction(() => new Promise<boolean>(resolve => {
     const open = indexedDB.open('grainatlas-mirror');
@@ -518,16 +526,16 @@ test('revision badges reuse a fresh answer across screens and reloads, then reva
   }));
   await page.reload();
   await expect(badge).toBeVisible();
-  expect(revisions()).toHaveLength(1);
+  expect(revisions()).toHaveLength(3);
   await nav.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.clock.fastForward(61_000);
-  expect(revisions()).toHaveLength(1);
+  expect(revisions()).toHaveLength(3);
   const revalidated = page.waitForResponse(r => new URL(r.url()).pathname === '/v1/atlas/projects/revisions');
   await nav.getByRole('button', { name: 'Open', exact: true }).click();
   expect((await revalidated).status()).toBe(304);
   await expect(badge).toBeVisible();
-  expect(revisions()).toHaveLength(2);
-  expect(revisions()[1].headers['if-none-match']).toBeTruthy();
+  expect(revisions()).toHaveLength(4);
+  expect(revisions()[3].headers['if-none-match']).toBe(etag);
 });
 
 for (const options of [{ count: 1 }, { count: 1, unlinked: true }, { count: 1, local: true, signedOut: true }]) {

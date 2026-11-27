@@ -221,12 +221,16 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900
 
 test('existing automatic preferences migrate once and a later explicit opt-in survives reload', async ({ page }) => {
   const mock = await setup(page, { automatic: true, legacy: true });
-  await page.goto('/#/settings');
+  await page.goto('/');
+  const settings = page.getByRole('navigation', { name: 'Screens' }).getByRole('button', { name: 'Settings', exact: true });
+  await settings.click();
   const automatic = page.getByTestId('sync-automatically');
   await expect(automatic).not.toBeChecked();
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('grainatlas.upbdb')!).syncModeVersion)).toBe(1);
   await automatic.check();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('grainatlas.upbdb')!).syncAutomatically)).toBe(true);
   await page.reload();
+  await settings.click();
   await expect(page.getByTestId('sync-automatically')).toBeChecked();
   expect(mock.unexpected).toEqual([]);
 });
@@ -315,7 +319,7 @@ for (const failure of ['offline', 'refused'] as const) {
     const dialog = await closeTab(page);
     await dialog.getByRole('button', { name: 'Sync and close', exact: true }).click();
     await expect(page.getByTestId('sync-chip')).toBeVisible();
-    await expect(page.getByText(failure === 'refused' ? /Synthetic database maintenance/ : /could not|offline|failed|reach/i).first()).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: failure === 'refused' ? /503.*Synthetic database maintenance/ : /could not|offline|failed|reach/i })).toBeVisible();
     await expect.poll(async () => !!(await storedDraft(page))?.pending).toBe(true);
     const reminder = await closeTab(page);
     if (failure === 'offline') await expect(reminder).toContainText('Sync next time you are online');
@@ -325,14 +329,29 @@ for (const failure of ['offline', 'refused'] as const) {
 
 test('browser tab close uses the native beforeunload warning and dismiss retains edits', async ({ page }) => {
   const mock = await openEdit(page); await edit(page, mock.project);
+  const originalUrl = page.url();
+  const originalSpots = await page.getByTestId('spot').count();
+  await expect.poll(async () => (await storedDraft(page))?.pending?.spots.length).toBe(mock.project.grainatlas_ui.spots.length + 1);
+  const originalDraft = await storedDraft(page);
   const warning = page.waitForEvent('dialog');
-  const navigation = page.goto('/?leaving=1');
+  // Handle rejection immediately: dismissal can reject goto before dismiss resolves.
+  const navigation = page.goto('/?leaving=1').then(
+    () => ({ cancelled: false as const }),
+    error => ({ cancelled: true as const, error }),
+  );
   const dialog = await warning;
   expect(dialog.type()).toBe('beforeunload');
   await dialog.dismiss();
-  await navigation.catch(() => {});
+  const result = await navigation;
+  expect(result.cancelled).toBe(true);
+  if (!result.cancelled) throw new Error('Navigation unexpectedly completed after dismissing beforeunload');
+  expect(result.error.message).toMatch(/net::ERR_ABORTED/);
+  await expect(page).toHaveURL(originalUrl);
+  await expect(page.getByTestId('spot')).toHaveCount(originalSpots);
   await expect(page.getByTestId('sync-chip')).toHaveText('1 change not synced');
+  expect((await storedDraft(page)).pending).toEqual(originalDraft.pending);
   expect(mock.syncs).toHaveLength(0);
+  expect(mock.unexpected).toEqual([]);
 });
 
 for (const choice of ['Cancel', 'Close without syncing', 'Sync and close']) {
@@ -364,7 +383,7 @@ test('desktop Sync and close keeps the app open when sync fails', async ({ page 
   const mock = await openEdit(page, { desktop: true }); await edit(page, mock.project); mock.refuse();
   const dialog = await quit(page);
   await dialog.getByRole('button', { name: 'Sync and close', exact: true }).click();
-  await expect(page.getByText(/Synthetic database maintenance/).first()).toBeVisible();
+  await expect(page.getByRole('alert').filter({ hasText: /503.*Synthetic database maintenance/ })).toBeVisible();
   expect(await page.evaluate(() => (window as any).__finishedQuit)).toBe(0);
   await expect(page.getByTestId('sync-chip')).toBeVisible();
   expect((await storedDraft(page, true)).pending).not.toBeNull();

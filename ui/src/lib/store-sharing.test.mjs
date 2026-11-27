@@ -1387,6 +1387,59 @@ for (const hosted of [false, true]) {
 }
 
 
+test('manual opening checks recognise a clean linked copy without acknowledging an upload', async t => {
+  const { session, base, hashes } = quietSession('manual-clean-open-synthetic');
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null);
+  t.after(() => { session.dispose(); app.link.syncAutomatically = true; app.hosted = false; oversightSession.set(scope); });
+  app.link.syncAutomatically = false;
+  // Package reopen now restores its stitched mosaic before the opening check.
+  app.pkg = { name: 'Synthetic' };
+  app.stitched = { area: { mosaic: structuredClone(source.areas[0].mosaic) } };
+  const pixels = pixelSignature(app.fullProject());
+  session.save({ synced: false, pixels_base: pixels }); flushWrites();
+  const status = structuredClone(session.status);
+  const reads = [];
+  session.api = async () => ({
+    lookup: async () => { reads.push('lookup'); return structuredClone(status); },
+    elements: async () => { reads.push('elements'); return { ...structuredClone(base), revision: 1, hashes }; },
+    sync: async () => { assert.fail('An opening check must never upload'); },
+  });
+  assert.equal(session.text, 'Not synced', 'a historical flag alone cannot establish freshness');
+  session.opened(); await session.check();
+  assert.deepEqual(reads, ['lookup', 'elements']);
+  assert.equal(session.text, 'Up to date');
+  assert.equal(session.unsynced, false);
+  assert.equal(session.draft.synced, false, 'a read is not a successful sync acknowledgement');
+  assert.equal(session.draft.pending, null);
+  flushWrites();
+  assert.equal(JSON.parse(storage.get('grainatlas.draft.manual-clean-open-synthetic')).synced, false);
+
+  const clean = session.draft;
+  for (const patch of [
+    { pending_request: { id: 'synthetic-unacknowledged-request' } },
+    { publish_job: { result: { version: 2 } } },
+    { mount: null }, { base: null }, { pixels_base: null },
+  ]) {
+    session.draft = { ...clean, ...patch };
+    assert.equal(session.unsynced, true, JSON.stringify(patch));
+    assert.equal(session.text, 'Not synced', JSON.stringify(patch));
+  }
+  session.draft = clean;
+  app.stitched.area.mosaic.sha256 = 'synthetic-local-correction';
+  assert.equal(session.pixelsChanged, true);
+  assert.equal(session.unsynced, true);
+  assert.equal(session.text, 'Not synced', 'restored but different pixels still need upload');
+  app.stitched.area.mosaic.sha256 = source.areas[0].mosaic.sha256;
+  addQuietSpot(); session.track(); flushWrites();
+  assert.equal(session.text, '1 change not synced');
+  assert.equal(JSON.parse(storage.get('grainatlas.draft.manual-clean-open-synthetic')).pending.spots.length, 1);
+  app.spots = []; session.track();
+  assert.equal(session.text, 'Up to date', 'undo restores the checked clean state');
+  app.hosted = true;
+  assert.equal(session.unsynced, true, 'hosted acknowledgement semantics are unchanged');
+});
+
 test('manual sessions persist edits and recovered outbox without scheduling elements, images or polls', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { session } = quietSession('manual-scheduling-synthetic');
@@ -1426,14 +1479,14 @@ test('close reminders include images and outbox counts, retain failed work and a
   addQuietSpot(); session.track();
   session.save({ pixels_base: '[]', pixels_key: pixelSignature(source) });
   app.tims.store = { data: { outbox: [{ id: 'pluck' }] }, persist: async () => {},
-    mountSynced() {}, flush: async () => {} };
+    setAutomatic() {}, mountSynced() {}, flush: async () => {} };
   const reminder = syncReminder(app);
   assert.equal(reminder.changes, 1); assert.equal(reminder.images, 1); assert.equal(reminder.outbox, 1);
   assert.match(reminderCounts(reminder), /1 change not synced.*1 image set pending.*1 outbox entry/);
   assert.equal(needsCloseReminder(app), true);
   session.sync = async () => { session.error = 'Database 503: synthetic outage'; };
   assert.equal(await syncForClose(app), false);
-  assert.match(app.notice, /Database 503/);
+  assert.match(app.error, /Could not sync and close.*Database 503/);
   assert.equal(session.unsynced, true);
   app.storageWarning = 'Synthetic storage full';
   await assert.rejects(keepLocalForClose(app), /Synthetic storage full/);
@@ -1447,6 +1500,49 @@ test('close reminders include images and outbox counts, retain failed work and a
   assert.equal(needsCloseReminder(app), false);
 });
 
+
+test('close failures expose HTTP status and a bounded reply while retaining the exact durable edit', async t => {
+  const { syncForClose, needsCloseReminder } = await import('./close-sync.ts');
+  const { SyncApi } = await import('./sync-api.ts');
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null);
+  t.after(() => { app.link.syncAutomatically = true; oversightSession.set(scope); });
+  t.mock.method(console, 'warn', () => {});
+  for (const reply of [
+    { status: 503, body: JSON.stringify({ detail: 'Synthetic database maintenance' }) },
+    { status: 403, body: 'Synthetic permission refusal' },
+    { status: 503, body: `Synthetic database maintenance\n${'x'.repeat(1000)} END OF REPLY` },
+  ]) {
+    const { session, base, hashes } = quietSession(`close-http-${reply.status}-${reply.body.length}-synthetic`);
+    app.link.syncAutomatically = false; app.dirty = false; app.storageWarning = null;
+    addQuietSpot(); session.track(); flushWrites();
+    const pending = structuredClone(session.draft.pending);
+    const fetch = t.mock.method(globalThis, 'fetch', async (url, init) => {
+      if (String(url).endsWith('/elements')) return Response.json({ ...base, revision: 1, hashes });
+      assert.equal(init.method, 'POST');
+      assert.ok(String(url).endsWith('/sync'));
+      return new Response(reply.body, { status: reply.status });
+    });
+    session.api = async () => new SyncApi('https://quiet.test', null);
+    try {
+      assert.equal(await syncForClose(app), false);
+      assert.match(app.error, new RegExp(`${reply.status}.*Synthetic`));
+      assert.equal(app.notice, null, 'failure uses the persistent alert, not the six-second notice');
+      assert.equal(session.errorDetails, `${reply.status} ${reply.body}`, 'full details remain available');
+      if (reply.body.length > 300) {
+        assert.ok(app.error.endsWith('…)'));
+        assert.ok(!app.error.includes('END OF REPLY'));
+        assert.ok(app.error.length < 450);
+      }
+      assert.equal(needsCloseReminder(app), true);
+      assert.deepEqual(session.draft.pending, pending);
+      assert.deepEqual(JSON.parse(storage.get(`grainatlas.draft.${session.draft.uuid}`)).pending, pending);
+      assert.equal(fetch.mock.callCount(), 2, 'one elements read and one refused POST, with no extra request');
+    } finally {
+      session.dispose(); fetch.mock.restore();
+    }
+  }
+});
 
 test('pixel-only work still warns after dirty clears and failed image publication cannot close it', async t => {
   const { needsCloseReminder, syncReminder, syncForClose } = await import('./close-sync.ts');
@@ -1466,7 +1562,7 @@ test('pixel-only work still warns after dirty clears and failed image publicatio
   session.publishImages = async () => { publishes++; session.imageError = 'Synthetic image upload refused'; };
   assert.equal(await syncForClose(app), false);
   assert.equal(publishes, 1);
-  assert.match(app.notice, /Synthetic image upload refused/);
+  assert.match(app.error, /Could not sync and close.*Synthetic image upload refused/);
   assert.equal(needsCloseReminder(app), true);
   session.publishImages = async () => { publishes++; session.imageError = ''; session.save({ pixels_base: pixels }); };
   assert.equal(await syncForClose(app), true);
