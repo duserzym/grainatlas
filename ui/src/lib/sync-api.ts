@@ -5,7 +5,7 @@ import { oversightSession, serverFetch, ServerReadOnlyError } from './oversight.
 import { canWrite, requireWrite } from './presentation.ts';
 /** UPbDB B1 wire contract (docs/atlas-sync.md). */
 import type { Project } from './core/types';
-import { nameList, storedElement, type Changes, type Counts, type Element, type HeldItem, type ReadElements, type ReadGrain, type Kind } from './sync.ts';
+import { nameList, type Changes, type Counts, type Element, type HeldItem, type ReadElements, type ReadGrain, type Kind } from './sync.ts';
 export interface ProjectStatus {
   project_uuid: string; mount_id: string; mount_label: string; name: string; package_name: string;
   atlas_version: number | null; atlas_bundle_id: string | null; revision: number;
@@ -112,36 +112,8 @@ export function changesFromEvents(events: ChangeEvent[], uuid: string): Changes 
   }
   return changes;
 }
-/** UUIDs stay stable: ids in the 200 reply map them to database server_id values. */
-export function syncWireBody(body: SyncBody) {
-  const narrow = <K extends Kind>(kind: K) => body[kind].upsert.map(e => {
-    const row = { ...storedElement(kind, e) } as unknown as Record<string, unknown>;
-    // Sample names are hints resolved by the database, sent only in snapshots.
-    if (body.mode !== 'snapshot') delete row.sample;
-    else if ('sample' in e) row.sample = e.sample;
-    if (kind === 'grains') {
-      // The database keeps an omitted artifact; '' is how it stores "no artifact", so send it to clear a mark.
-      row.artifact ??= '';
-      if (!row.split_from) delete row.split_from;
-      if (!(row.merged_from as string[]).length) delete row.merged_from;
-    }
-    if (kind === 'spots') {
-      if ('comment' in row) row.comment ??= '';
-      if ('kind' in row) row.kind ||= 'spot';
-    }
-    if (kind === 'spots' && (('detach_grain' in e && e.detach_grain === true) || ('grain_id' in e && e.grain_id === null))) { row.detach_grain = true; delete row.grain_id; }
-    const keep = kind === 'spots' ? ['x_um', 'y_um', 'x2_um', 'y2_um', 'diameter_um'] : kind === 'grains' ? ['polygon_um', 'centroid_um', 'area_um2', 'number'] : [];
-    for (const key of keep) if (row[key] == null) delete row[key];
-    return row;
-  });
-  return {
-    project_uuid: body.project_uuid, base_revision: body.base_revision, mode: body.mode, partial: true,
-    ...(body.dry_run ? { dry_run: true } : {}), ...(body.confirm_bulk ? { confirm_bulk: true } : {}),
-    spots: { upsert: narrow('spots'), delete: body.spots.delete },
-    grains: { upsert: narrow('grains'), delete: [...new Set([...body.grains.delete, ...body.grains.retire])] },
-    labels: { upsert: narrow('labels'), delete: body.labels.delete },
-  };
-}
+export { syncWireBody } from './sync-wire.ts';
+import { syncCompute } from './sync-compute.ts';
 export class SyncApi {
   private server: string;
   private token: string | null;
@@ -233,7 +205,7 @@ export class SyncApi {
   async elements(uuid: string): Promise<ElementsReply> {
     const r = await this.call(`/v1/atlas/projects/${encodeURIComponent(uuid)}/elements`);
     if (!r.ok) throw new Error(`Project elements: ${r.status}`);
-    return r.json();
+    return syncCompute({ op: 'parse', text: await r.text() });
   }
   async changes(mount: string, since: number): Promise<HistoryReply> {
     const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/changes?since=${since}`);
@@ -243,7 +215,7 @@ export class SyncApi {
   /** `requestId` (never for a dry run) lets the server answer a retried request with its stored reply. */
   async sync(mount: string, body: SyncBody, requestId?: string, keyChanged?: WriteIdentity['keyChanged'], wireRequestId = requestId): Promise<SyncReply> {
     requireWrite();
-    const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...syncWireBody(body), ...(wireRequestId && !body.dry_run ? { request_id: wireRequestId } : {}) }) }, { key: requestId, keyChanged }, body.project_uuid);
+    const r = await this.call(`/v1/mounts/${encodeURIComponent(mount)}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: await syncCompute({ op: 'wire', body, requestId: wireRequestId }) }, { key: requestId, keyChanged }, body.project_uuid);
     if (r.status !== 200 && r.status !== 409) throw new SyncApiError(r.status, [errorSentence(r.status, null)]);
     const reply = await r.json();
     if (r.status === 409 && !Array.isArray(reply?.changes)) {
@@ -257,6 +229,6 @@ export class SyncApi {
   /** Existing bundle route, only to compare published pixels with a raw package. */
   async publishedProject(uuid: string): Promise<Project | null> {
     const r = await this.call(`/atlas/projects/${encodeURIComponent(uuid)}/project.json`);
-    return r.status === 404 ? null : r.json();
+    return r.status === 404 ? null : syncCompute({ op: 'parse', text: await r.text() });
   }
 }

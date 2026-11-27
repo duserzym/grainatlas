@@ -4,7 +4,7 @@
   // when the window gets smaller (a place saved on a large monitor, opened on a laptop).
   import { onMount, type Snippet } from 'svelte';
 
-  let { title, children, x = $bindable(24), y = $bindable(120), onclose, onmoved, minimized = false, onminimize, passive = false }: { title: string; children: Snippet; x?: number; y?: number; onclose?: () => void; onmoved?: () => void; minimized?: boolean; onminimize?: () => void; passive?: boolean } = $props();
+  let { title, children, headerActions, x = $bindable(24), y = $bindable(120), onclose, onmoved, minimized = false, onminimize, passive = false }: { title: string; children: Snippet; headerActions?: Snippet; x?: number; y?: number; onclose?: () => void; onmoved?: () => void; minimized?: boolean; onminimize?: () => void; passive?: boolean } = $props();
   let el: HTMLDivElement;
 
   /** Keep the whole panel inside the parent; its body scrolls when constrained. */
@@ -49,6 +49,7 @@
   <header role="toolbar" tabindex="-1" onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onlostpointercapture={up}>
     <span class="grip" aria-hidden="true">⠿</span>
     <strong {title}>{title}</strong>
+    {@render headerActions?.()}
     {#if onminimize && !passive}
       <button class="icon minimize" aria-expanded={!minimized} onclick={onminimize}
         aria-label={minimized ? 'Expand spot and grain info' : 'Minimize spot and grain info'}

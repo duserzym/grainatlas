@@ -1,3 +1,4 @@
+import { timed } from './sync-perf';
 import { observeServerToken } from './mount-browser';
 import { oversightSession } from './oversight';
 import { neutralTone, storedBundleTones } from './bundle-tone';
@@ -133,12 +134,12 @@ export async function backgroundBundle(app: AppState, projectUuid: string | unde
   if (!p) return null;
   const b = await bundleZip(app, projectUuid, { ...bundleOptions(p, app), exported }, true);
   if (!b) return null;
-  const entries = unzipStored(b.zip);
+  const entries = timed('publish.zip-directory', () => unzipStored(b.zip));
   const manifest = entries.find(f => f.name.endsWith('/atlas.json') || f.name === 'atlas.json');
   if (!manifest) throw new Error('The bundle has no atlas.json.');
   const prefix = manifest.name.slice(0, -'atlas.json'.length);
   const files = entries.map(f => ({ path: f.name.slice(prefix.length), bytes: f.data }));
-  const atlas = JSON.parse(new TextDecoder().decode(manifest.data)) as AtlasJson;
+  const atlas = timed('publish.manifest-parse', () => JSON.parse(new TextDecoder().decode(manifest.data)) as AtlasJson);
   const byPath = new Map(files.map(f => [f.path, f.bytes]));
   for (const file of atlas.files) {
     const bytes = byPath.get(file.path);
@@ -179,7 +180,7 @@ export async function performPublish(app: AppState, projectUuid: string | undefi
   const res = await uploadImages({ server, mount, token, bundle: b, job, gate,
     checkpoint: () => app.sync.persistPublishJob(),
     save: value => { if (sameProject()) app.sync.savePublishJob(value); },
-    progress: (done, total) => { if (sameProject()) app.sync.imageProgress = { done, total }; },
+    progress: (done, total) => { if (sameProject()) app.sync.reportImageProgress(done, total, sameProject); },
   });
   if (!sameProject()) return;
   const completed = { ...app.sync.draft!.publish_job!, result: res, zip_sha256: await sha256Hex(b.zip), completed_at: new Date().toISOString() };

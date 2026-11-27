@@ -71,7 +71,7 @@ trackpad two-finger scroll pan in every tool.
 | Select (V) | Plain drag replaces; Shift adds; Cmd/Ctrl toggles; enclosed spots take priority in the Spots tab, otherwise grains |
 | Spot (S) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; grains in the Grains tab, spots otherwise |
 | Delete (D) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; enclosed spots take priority in the Spots tab, otherwise grains |
-| Add grain (G) | Plain drag on empty space pans; Shift adds; Cmd/Ctrl toggles; always grains |
+| Add grain (G) | Click previews detection with sensitivity; Draw clicks corners or drags a lasso; Box drags and refines one outline. Enter/Accept saves; Escape cancels. Preview corners can be edited. Use Select (V) for selection boxes. |
 | Outline (O), Brush (B), Split (K) | Not available; keep stroke modifiers; switch to Select (V) to box-select |
 
 Artifacts are included only while the artifacts layer is visible. Grain

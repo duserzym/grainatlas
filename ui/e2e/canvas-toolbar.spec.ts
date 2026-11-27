@@ -17,8 +17,8 @@ async function open(page: Page) {
   await expect(page.getByTestId('pixels-loading')).toHaveCount(0);
   await nav.getByRole('button', { name: 'Canvas', exact: true }).click();
   await expect(page.getByTestId('busy')).toHaveCount(0);
-  // Published pixels load progressively; Brush and +Grain retain that eligibility rule.
-  await expect(page.getByRole('button', { name: '+Grain', exact: true })).toBeEnabled();
+  // Add grain stays available; Click detection uses progressively loaded pixels.
+  await expect(page.getByRole('button', { name: 'Add grain', exact: true })).toBeEnabled();
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
   return unexpected;
 }
@@ -28,12 +28,12 @@ async function active(control: Locator) {
 }
 const tools = [
   ['tool-select', 'v'], ['tool-spot', 's'], ['tool-line', 'l'], ['tool-raster', 'r'], ['tool-measure', 'm'], ['tool-label', 't'],
-  ['tool-delete', 'd'], ['+Grain', 'g'], ['tool-split', 'k'], ['tool-outline', 'o'], ['tool-brush', 'b'], ['tool-pluck', 'p'],
+  ['tool-delete', 'd'], ['Add grain', 'g'], ['tool-split', 'k'], ['tool-outline', 'o'], ['tool-brush', 'b'], ['tool-pluck', 'p'],
 ] as const;
 const extra = new Set(['tool-outline', 'tool-brush', 'tool-pluck']);
 async function reach(page: Page, id: string, image: boolean) {
   if (!image && extra.has(id)) await page.getByRole('button', { name: 'More tools', exact: true }).click();
-  return id === '+Grain' ? page.getByRole('button', { name: id, exact: true }) : page.getByTestId(id);
+  return id === 'Add grain' ? page.getByRole('button', { name: id, exact: true }) : page.getByTestId(id);
 }
 async function fits(page: Page) {
   const toolbar = page.getByTestId('canvas-toolbar');
@@ -128,12 +128,16 @@ test('read-only and missing-pixel tool eligibility survives the regrouping', asy
   await expect(page.getByTestId('tool-pluck')).toHaveCount(0);
   await page.getByTestId('edit-copy').click();
   // Canvas can edit geometry over published tiles before Area loads full-resolution pixels.
-  await expect(page.getByRole('button', { name: '+Grain', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Add grain', exact: true })).toBeEnabled();
+  await page.keyboard.press('g');
+  await active(page.getByTestId('tool-add-grain'));
+  await expect(page.getByTestId('add-mode-draw')).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByTestId('add-grain-pixels-hint')).toBeVisible();
   const more = page.getByRole('button', { name: 'More tools', exact: true });
   await more.click(); await expect(page.getByTestId('tool-brush')).toBeDisabled();
   await expect(page.getByTestId('tool-outline')).toBeEnabled(); await expect(page.getByTestId('tool-pluck')).toBeEnabled();
   await page.keyboard.press('Escape');
-  for (const key of ['b', 'g']) {
+  for (const key of ['b']) {
     await page.getByTestId('tool-select').click(); await page.keyboard.press(key); await active(page.getByTestId('tool-select'));
   }
   await page.keyboard.press('o'); await more.click(); await active(page.getByTestId('tool-outline'));

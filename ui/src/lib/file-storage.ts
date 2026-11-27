@@ -1,3 +1,4 @@
+import { timed } from './sync-perf.ts';
 import { canWrite } from './presentation.ts';
 import { isDesktop } from './core/core.ts';
 
@@ -14,7 +15,7 @@ export async function desktopFileCommands(): Promise<FileCommands | null> {
   return {
     list: () => invoke('store_list'),
     read: key => invoke('store_read', { key }),
-    write: (key, contents) => invoke('store_write', { key, contents }),
+    write: (key, contents) => timed('storage.invoke-write.handoff', () => invoke('store_write', { key, contents })),
     remove: key => invoke('store_remove', { key }),
   };
 }

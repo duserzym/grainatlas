@@ -1,6 +1,6 @@
 import { elementsOf, storedElements, diffElements, changeCounts } from '../src/lib/sync';
 import { elementHash } from '../src/lib/sync-hash';
-import type { Page } from '@playwright/test';
+import type { Page, Locator } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { test, expect, mockSessionRead, mockRevisionRead } from './mock-session';
 import { execFileSync } from 'node:child_process';
@@ -18,12 +18,13 @@ test.beforeAll(() => {
   execFileSync('cargo', ['run', '-p', 'grainatlas-core', '--example', 'synthetic_bundle'], { cwd: root, stdio: 'pipe' });
 });
 
-async function openSynthetic(page: Page, stalled = false, sizeCases = false) {
+async function openSynthetic(page: Page, stalled = false, sizeCases = false, mixed = false) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
   if (sizeCases) {
     for (const spot of ui.spots) { spot.diameter_um = 20; spot.created = '2026-01-01T00:00:00Z'; spot.kind ??= 'spot'; }
+    if (mixed) ui.spots[1].diameter_um = 40;
     const b = structuredClone(project.areas[0]);
     Object.assign(b, { id: 'b', uuid: '30000000-0000-4000-8000-000000000002', name: 'Synthetic second area', sample: 'Synthetic second', pixel_size_nm: 500 });
     b.mosaic.um_per_px = .5;
@@ -207,5 +208,165 @@ for (const width of [1280, 1440]) test(`selection sizes, area calibration and st
   expect(await elementHash(after.spots)).toBe(await elementHash(before.spots));
   expect(changeCounts(diffElements(before,after))).toEqual({ spots:0, grains:0, labels:0 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(mock.unexpected).toEqual([]);
+});
+
+
+// Screen-space radius assertions use the mosaic-pixel transform for zoom and the
+// fixture's calibration independently of the µm overlay's transform.
+async function expectScreenRadius(circle: Locator, diameter: number, calibration: number) {
+  await expect(circle).toHaveCount(1);
+  await expect.poll(async () => circle.evaluate((node, { diameter, calibration }) => {
+    const c = node as SVGCircleElement;
+    const m = c.getScreenCTM()!;
+    const pixel = c.closest('svg')!.querySelector('g')!.getScreenCTM()!;
+    const zoom = Math.hypot(pixel.a, pixel.b);
+    return Math.abs(c.r.baseVal.value * Math.hypot(m.a, m.b) - diameter / calibration * zoom / 2);
+  }, { diameter, calibration })).toBeLessThanOrEqual(1);
+}
+const ringOf = (page: Page, name: string) => page.getByTestId('spot').filter({ has: page.locator('text').filter({ hasText: new RegExp(`^${name}$`) }) }).locator('circle:not(.dot):not(.contrast-halo)');
+type SizeControl = 'toolbar' | 'presets' | 'entry stepper' | 'floating panel';
+async function changeSize(page: Page, control: SizeControl, initial: number) {
+  if (control === 'presets') {
+    await page.getByRole('radiogroup', { name: 'Spot diameter', exact: true }).getByRole('radio', { name: '35 µm', exact: true }).click();
+    return 35;
+  }
+  const field = page.getByTestId(control === 'toolbar' ? 'size-toolbar' : control === 'floating panel' ? 'size-panel' : 'size-side');
+  if (control === 'entry stepper') {
+    // Exercise real +/- button events, including grouping a repeat as one edit.
+    const box = field.locator('..');
+    await box.getByRole('button', { name: '1 µm larger (Shift: 5 µm)', exact: true }).click();
+    await expect(field).toHaveValue(String(initial + 1));
+    await box.getByRole('button', { name: '1 µm larger (Shift: 5 µm)', exact: true }).click();
+    return initial + 2;
+  }
+  await field.fill('30'); await field.press('Enter'); await field.blur();
+  if (control === 'floating panel') {
+    const plus = field.locator('..').getByRole('button', { name: '1 µm larger (Shift: 5 µm)', exact: true });
+    await plus.click(); await expect(field).toHaveValue('31'); await plus.click();
+    return 32;
+  }
+  return 30;
+}
+async function sizeSetup(page: Page, area: string, mixed = false) {
+  const mock = await openSynthetic(page, false, true, mixed);
+  await page.getByRole('combobox', { name: 'Area', exact: true }).selectOption(area);
+  await page.locator('.side .tabs').getByRole('tab', { name: /^Spots / }).click();
+  const entry = page.locator('details.spot-entry');
+  if (!(await entry.evaluate(e => (e as HTMLDetailsElement).open))) await entry.locator('summary').click();
+  return mock;
+}
+async function draftElements(page: Page) {
+  return page.evaluate(async projectId => {
+    // Flush via the existing boundary. Read the write-ahead journal while an
+    // IndexedDB commit is queued; otherwise read the committed outbox itself.
+    window.dispatchEvent(new Event('pagehide'));
+    const key = `grainatlas.draft.${projectId}`;
+    const journal = JSON.parse(localStorage.getItem(`grainatlas.journal.${key}`) || 'null');
+    const value = journal ? journal.value : await new Promise<string | null>((resolve, reject) => {
+      const open = indexedDB.open('grainatlas', 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const read = db.transaction('items', 'readonly').objectStore('items').get(key);
+        read.onsuccess = () => { db.close(); resolve(read.result ?? localStorage.getItem(key)); };
+        read.onerror = () => { db.close(); reject(read.error); };
+      };
+    });
+    const draft = JSON.parse(value || 'null');
+    return draft?.pending ?? draft?.base ?? null;
+  }, projectId);
+}
+async function ensureExpandedPanel(page: Page) {
+  const expand = page.getByRole('button', { name: 'Expand spot and grain info', exact: true });
+  if (await expand.isVisible()) await expand.click();
+}
+
+for (const width of [1280, 1440]) for (const area of ['a', 'b']) {
+  for (const control of ['toolbar', 'presets', 'entry stepper'] as const) test(`${control}: next size, preview, placement and undo in area ${area} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 1280 ? 800 : 900 });
+    const mock = await sizeSetup(page, area);
+    const calibration = mock.project.areas.find((a: any) => a.id === area).mosaic.um_per_px;
+    const before = await draftElements(page);
+    const count = await page.getByTestId('spot').count();
+    await page.getByTestId('tool-spot').click();
+    const diameter = await changeSize(page, control, area === 'a' ? 20 : 40);
+    await expect(page.getByTestId('size-toolbar')).toHaveValue(String(diameter));
+    expect(await draftElements(page)).toEqual(before);
+    // A snapped preview must show the chosen size as well as its fixed snap cue.
+    const grain = mock.ui.grains[area][0];
+    const snapPoint = await page.getByTestId('canvas-um-space').evaluate((g, point) => {
+      const p = new DOMPoint(point[0], point[1]).matrixTransform((g as SVGGraphicsElement).getScreenCTM()!);
+      return { x: p.x, y: p.y };
+    }, grain.centroid_um);
+    await page.mouse.move(snapPoint.x, snapPoint.y);
+    await expect(page.locator('[data-testid=spot-preview-layer] path')).toHaveCount(1);
+    await expectScreenRadius(page.getByTestId('spot-ghost'), diameter, calibration);
+    // Pick an unobscured empty canvas location, away from registered spots and labels.
+    const point = await page.getByTestId('canvas-um-space').evaluate((g, spots) => {
+      const m = (g as SVGGraphicsElement).getScreenCTM()!;
+      const host = g.closest('[data-view]')!.getBoundingClientRect();
+      const centres = spots.map((s: any) => new DOMPoint(s.x_um, s.y_um).matrixTransform(m));
+      for (const fy of [.65, .55, .75, .4]) for (const fx of [.4, .5, .3, .6]) {
+        const x = host.left + host.width * fx, y = host.top + host.height * fy;
+        if (document.elementFromPoint(x, y)?.closest('[data-view]') && centres.every(p => Math.hypot(p.x-x, p.y-y) > 90)) return { x, y };
+      }
+      throw new Error('No uncovered empty synthetic canvas position');
+    }, mock.ui.spots.filter((s: any) => s.area_id === area));
+    await page.keyboard.down('Alt'); await page.mouse.move(point.x, point.y);
+    await expectScreenRadius(page.getByTestId('spot-ghost'), diameter, calibration);
+    await page.mouse.click(point.x, point.y); await page.keyboard.up('Alt');
+    await expect(page.getByTestId('spot')).toHaveCount(count + 1);
+    const added = page.getByTestId('spot').filter({ has: page.locator('circle') }).last().locator('circle:not(.dot):not(.contrast-halo)');
+    await expectScreenRadius(added, diameter, calibration);
+    const after = await draftElements(page);
+    const created = after.spots.filter((s: any) => !mock.elements.spots.some((b: any) => b.id === s.id));
+    expect(created).toHaveLength(1); expect(created[0].diameter_um).toBe(diameter);
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.getByTestId('spot')).toHaveCount(count);
+    const restored = await draftElements(page);
+    expect(storedElements(restored)).toEqual(storedElements(before ?? mock.elements));
+    expect(mock.unexpected).toEqual([]);
+  });
+  for (const control of ['toolbar', 'presets', 'entry stepper', 'floating panel'] as const) test(`${control}: selected size redraw, outbox and exact undo in area ${area} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 1280 ? 800 : 900 });
+    const mock = await sizeSetup(page, area);
+    const selected = mock.ui.spots.find((s: any) => s.area_id === area && s.name !== 'Synthetic_unset');
+    const calibration = mock.project.areas.find((a: any) => a.id === area).mosaic.um_per_px;
+    await page.locator(`tr[data-spot-id="${selected.id}"]`).click(); await ensureExpandedPanel(page);
+    const baseline = storedElements(await draftElements(page) ?? mock.elements);
+    const diameter = await changeSize(page, control, selected.diameter_um);
+    await expectScreenRadius(ringOf(page, selected.name), diameter, calibration);
+    await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+    await expectScreenRadius(ringOf(page, selected.name), diameter, calibration);
+    const after = storedElements(await draftElements(page));
+    expect(changeCounts(diffElements(baseline, after))).toEqual({ spots: 1, grains: 0, labels: 0 });
+    expect(after.spots).toEqual(baseline.spots.map(s => s.id === selected.id ? { ...s, diameter_um: diameter } : s));
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expectScreenRadius(ringOf(page, selected.name), selected.diameter_um, calibration);
+    expect(storedElements(await draftElements(page))).toEqual(baseline);
+    expect(mock.unexpected).toEqual([]);
+  });
+}
+for (const control of ['toolbar', 'presets', 'entry stepper', 'floating panel'] as const) test(`${control}: mixed selected sizes restore exactly with one undo`, async ({ page }) => {
+  const mock = await sizeSetup(page, 'a', true);
+  const [first, second] = mock.ui.spots;
+  await page.locator(`tr[data-spot-id="${first.id}"]`).click();
+  await page.locator(`tr[data-spot-id="${second.id}"]`).click({ modifiers: ['Shift'] });
+  await ensureExpandedPanel(page);
+  const baseline = storedElements(await draftElements(page) ?? mock.elements);
+  // A mixed stepper needs an explicit base typed first; that commit is the same size run.
+  if (control === 'entry stepper') {
+    const field = page.getByTestId('size-side'); await field.fill('25'); await field.press('Enter'); await field.blur();
+  }
+  const diameter = await changeSize(page, control, 25);
+  const calibration = mock.project.areas[0].mosaic.um_per_px;
+  for (const spot of [first, second]) await expectScreenRadius(ringOf(page, spot.name), diameter, calibration);
+  const after = storedElements(await draftElements(page));
+  expect(changeCounts(diffElements(baseline, after))).toEqual({ spots: 2, grains: 0, labels: 0 });
+  expect(after.spots).toEqual(baseline.spots.map(s => [first.id, second.id].includes(s.id) ? { ...s, diameter_um: diameter } : s));
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  for (const spot of [first, second]) await expectScreenRadius(ringOf(page, spot.name), spot.diameter_um, calibration);
+  expect(storedElements(await draftElements(page))).toEqual(baseline);
   expect(mock.unexpected).toEqual([]);
 });

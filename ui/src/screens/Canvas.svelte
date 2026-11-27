@@ -23,7 +23,7 @@
   import { app, current, type Overlay, type Tool } from '../lib/store.svelte';
   import Viewer, { type CanvasPoint } from '../lib/canvas/Viewer.svelte';
   import { toMosaic, toScreen, matrix, type View } from '../lib/canvas/view';
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { pick, selectAll, addMany, toggleMany, clickHow, type PickHow, type Sel } from '../lib/selection';
   import { canvasBox, grainGrid } from '../lib/grain-selection';
   import { CLICK_SLOP } from '../lib/canvas/gestures';
@@ -36,9 +36,14 @@
   import type { Core } from '../lib/core/core';
   import { ARTIFACT_LABELS, type ArtifactReason, type EditOp, type Grain, type GrainOwner, type Label, type SegmentParams, type Spot, type SpotKind } from '../lib/core/types';
   import { download } from '../lib/files';
-  import { formatName, grainAt, relinkSpots, newId, nextNumber, snap, snapTargets, spotDistance, stageOf, type SnapTarget } from '../lib/spots';
+  import { formatName, grainAt, relinkSpots, newId, nextNumber, stageOf, type SnapTarget } from '../lib/spots';
   import { findGrainsInArea } from '../lib/grain-finding';
   import FloatingPanel from '../components/FloatingPanel.svelte';
+  import SpotPreview from '../lib/canvas/SpotPreview.svelte';
+  import { BoundsGrid, SnapIndex, SpotIndex, latestFrame } from '../lib/canvas-pointer';
+  import { editedOutline, outlineHandle } from '../lib/outline-vertices';
+  import { emptyAddPreview, previewTransition, nextGrainName, namedNewGrain, overlappingGrains, detectGrainPreview, commitGrainPreview, type AddMode, type AddPreview, type AddSource } from '../lib/add-grain';
+  import { appStorage } from '../lib/app-storage';
   import PluckPanel, { type PluckGrain } from '../components/PluckPanel.svelte';
   import TimsSection from '../components/TimsSection.svelte';
   import type { FractionOut } from '../lib/tims';
@@ -46,6 +51,7 @@
   import { spotDiameter, selectionSize, planSizeRepairs, applySizeRepairs, canvasArea, focusSpot, type SizeRepair } from '../lib/spot-size';
   import FixSizesDialog from '../components/FixSizesDialog.svelte';
   import SizeBox from '../components/SizeBox.svelte';
+  import { SpotSizeEdit } from '../lib/spot-size-edit';
   import { isHosted, open as openLink } from '@lab/bridge';
   import { spotLink } from '../lib/upbdb';
   import MountPicker from '../components/MountPicker.svelte';
@@ -162,8 +168,13 @@
   let publicationOpen = $state(false);
   const namedSpotCount = $derived(app.spots.filter(s => s.name.trim()).length);
   const publishStage = $derived(publicationOpen || app.sync.imageBusy ? 2 : !app.checksRan ? 0 : namedSpotCount !== app.spots.length ? 1 : 2);
-  function activateTool(tool: Tool) { imageTool = null; app.tool = tool; }
-  function imageMode(value: string) { editImage = value === 'image'; imageTool = null; polygonPoints = []; }
+  function activateTool(tool: Tool) { if (tool !== app.tool) { cancelAddPreview(); spotAfterGrain = null; } hoverFrame.clear(); dragFrame.clear(); vertexDrag = null; cursorScreen = null; snapHint = null; lastHover = null; imageTool = null; app.tool = tool; }
+  function editOutline() {
+    if (ro || app.busy) return;
+    if (app.tool === 'grain-add' && addPreview.grain) return; // Its corners are already editable.
+    if (editableGrain) activateTool('grain-edit');
+  }
+  function imageMode(value: string) { cancelAddPreview(); spotAfterGrain = null; editImage = value === 'image'; imageTool = null; polygonPoints = []; }
   let imageTool = $state<ImageTool>(null);
   let brushRadius = $state(12);
   let imageDraft = $state<AreaImageEdits | null>(null);
@@ -391,6 +402,8 @@
   $effect(() => {
     areaId;
     hoverId = null;
+    cursorScreen = null;
+    snapHint = null;
     infoId = null;
     spotAnchor = null;
     grainAnchor = null;
@@ -401,6 +414,35 @@
     infoTimer = null;
   });
   let snapHint = $state<SnapTarget | null>(null);
+  // Grains are raw store records. Deep state would proxy base and fail saveVertices' identity guard.
+  let vertexDrag = $state.raw<{ base: Grain; points: Point[]; index: number; changed: boolean } | null>(null);
+  function saveVertices(base: Grain, points: Point[]) {
+    if (app.tool === 'grain-add') {
+      if (ro || addPreview.grain !== base) return;
+      try { addPreview = previewTransition(addPreview, { type: 'adjust', grain: editedOutline(base, points) }); }
+      catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
+      return;
+    }
+    if (ro || app.busy || !areaId || !detections.includes(base)) return;
+    try {
+      const edited = editedOutline($state.snapshot(base) as Grain, $state.snapshot(points) as Point[]);
+      // Same edit history/persistence route as all other outline edits. Spot records stay exact:
+      // moving a boundary is not permission to rename, move or relink registered acquisitions.
+      app.checkpoint();
+      app.grains = { ...app.grains, [areaId]: detections.map(g => g.id === base.id ? edited : g) };
+      app.persist();
+    } catch(e) { app.notice = e instanceof Error ? e.message : String(e); }
+  }
+  let lastHover: CanvasPoint | null = null;
+  let dragCrossedSlop = false;
+  // The previous target can itself be dragged. Simulate its ordered snap positions without
+  // reactive writes so coalescing cannot change that path-dependent target between events.
+  let livePrevious: Spot | null = null;
+  let pendingMoveSnap: { p: CanvasPoint; point: Point; hint: SnapTarget | null } | null = null;
+  const hoverFrame = latestFrame<CanvasPoint | null>(updateHover);
+  const dragFrame = latestFrame<CanvasPoint>(dragNow);
+  onDestroy(() => { hoverFrame.clear(); dragFrame.clear(); });
+  $effect(() => { areaId; app.id; app.tool; ro; hoverFrame.clear(); dragFrame.clear(); vertexDrag = null; snapHint = null; lastHover = null; livePrevious = null; pendingMoveSnap = null; });
   // In-progress gestures.
   let splitStroke = $state<{ points: Point[]; end: Point; straight: boolean } | null>(null);
   const splitPreview = $derived(splitStroke
@@ -418,7 +460,7 @@
   let brushUm = $state(20);
   $effect(() => {
     if (app.tool !== 'grain-split') splitStroke = null;
-    if (app.tool !== 'grain-outline') lasso = null;
+    if (app.tool !== 'grain-outline' && app.tool !== 'grain-add') lasso = null;
     if (app.tool !== 'grain-brush') stroke = null;
   });
 
@@ -433,6 +475,8 @@
   /** Every detection of the area: grains and flagged artifacts. */
   const detections = $derived(areaId ? (app.grains[areaId] ?? []) : []);
   const grains = $derived(detections.filter((g) => !g.artifact));
+  const editableGrain = $derived(selGrains.length === 1 ? grains.find(g => g.id === selGrains[0]) ?? null : null);
+  const vertexPoints = $derived(vertexDrag?.points ?? editableGrain?.polygon_um ?? []);
   const addedCount = $derived(detections.filter((g) => g.added).length);
   const addedGrainCount = $derived(grains.filter((g) => g.added).length);
   let showOnlyNew = $state(false);
@@ -458,6 +502,18 @@
   });
   const areaSpots = $derived(app.spots.filter((s) => s.area_id === areaId));
   const spots = $derived(areaSpots.filter((s) => !reviewVisible || reviewVisible.has(s.id)));
+  const spotIndex = $derived(new SpotIndex(spots));
+  const grainIndex = $derived(new BoundsGrid(detections, g => g.bbox_um));
+  const snapIndex = $derived(new SnapIndex(grains, app.diameter));
+  const previousSpot = $derived(areaSpots.at(-1) ?? null);
+  function indexedGrainAt(x: number, y: number, artifacts = false) {
+    return grainAt(grainIndex.query([x, y, x, y]), x, y, artifacts);
+  }
+  $effect(() => {
+    // Geometry edits, undo, diameter/previous-spot changes and zoom invalidate hover queries.
+    spotIndex; grainIndex; snapIndex; previousSpot; k; app.settings.snap;
+    if (lastHover) hoverFrame.push(lastHover);
+  });
   const imageHist=$derived.by(()=>{
     if(!rawImageHist)return null;
     const h=new Uint32Array(256);for(let i=0;i<256;i++)h[lut[i]]+=rawImageHist[i];return h;
@@ -559,11 +615,102 @@
     return `${note}${o.outside_drawn ? '; outside every drawn area' : ''}`;
   }
   const sample = $derived(area?.sample || area?.name || '');
+  let addMode = $state<AddMode>('click');
+  let addPreview = $state.raw<AddPreview>(emptyAddPreview());
+  let addSensitivity = $state(50);
+  let sensitivityTimer: ReturnType<typeof setTimeout> | null = null;
+  let addBox = $state<{ start: Point; end: Point } | null>(null);
+  let spotAfterGrain = $state<{ area: string; id: string } | null>(null);
+  let thenSpot = $state(appStorage.getItem('grainatlas.add-grain-spot') === 'true');
+  const addNeedsPixels = $derived(noPixels || !!app.remote && !app.bundle?.[areaId ?? ''] || !mosaic || !Number.isFinite(umPerPx));
+  const effectiveAddMode = $derived(addNeedsPixels ? 'draw' : addMode);
+  const addModeOptions = $derived([
+    { value: 'click', label: 'Click', testid: 'add-mode-click', disabled: addNeedsPixels, title: addNeedsPixels ? 'Click needs image pixels. Use Draw.' : 'Click' },
+    { value: 'draw', label: 'Draw', testid: 'add-mode-draw' },
+    { value: 'box', label: 'Box', testid: 'add-mode-box', disabled: addNeedsPixels, title: addNeedsPixels ? 'Box needs image pixels. Use Draw.' : 'Box' },
+  ]);
+  const addName = $derived(nextGrainName(detections, sample, patternFor(areaId ?? '')));
+  const addOverlaps = $derived(addPreview.grain ? overlappingGrains(addPreview.grain, detections) : []);
+  const addPoints = $derived(app.tool === 'grain-add' && vertexDrag ? vertexDrag.points : addPreview.grain?.polygon_um ?? []);
+  const addHint = $derived(spotAfterGrain ? 'Click inside the new grain to place one spot; Esc returns to Add grain.'
+    : addPreview.status === 'working' ? 'Finding an outline; Esc cancels.'
+    : addPreview.grain ? 'Drag corners or click an edge to adjust. Enter accepts; Esc cancels.'
+    : addBox ? 'Release to refine this box; Esc cancels.'
+    : lasso?.clicks === 1 && lasso.dragged ? 'Release to preview this lasso; Esc cancels.'
+    : lasso ? 'Click corners, then the first corner or Enter to preview; Esc cancels.'
+    : effectiveAddMode === 'draw' ? `${addNeedsPixels ? 'No image pixels. ' : ''}Click corners or drag a lasso to preview; Esc cancels.`
+    : effectiveAddMode === 'box' ? 'Drag a box around one grain to preview; Esc cancels.'
+    : 'Click inside a grain to preview; adjust sensitivity if needed.');
+  function cancelAddPreview() {
+    if (sensitivityTimer) clearTimeout(sensitivityTimer);
+    sensitivityTimer = null;
+    addPreview = previewTransition(addPreview, { type: 'cancel' });
+    addBox = null; lasso = null; lassoHover = null; vertexDrag = null; dragFrame.clear();
+  }
+  function changeAddMode(value: string) {
+    if (addNeedsPixels && value !== 'draw') return;
+    cancelAddPreview(); addMode = value as AddMode;
+  }
+  function rememberThenSpot(value: boolean) { thenSpot = value; appStorage.setItem('grainatlas.add-grain-spot', String(value)); }
+  $effect(() => {
+    // Preview work never survives a tab/area/project/tool/permission change or Undo.
+    areaId; app.id; app.project?.uuid; ro; isViewer;
+    untrack(() => { cancelAddPreview(); spotAfterGrain = null; });
+  });
+  $effect(() => { app.tool; app.grains; untrack(() => { cancelAddPreview(); if (app.tool !== 'spot') spotAfterGrain = null; }); });
+  $effect(() => { if (addNeedsPixels) untrack(cancelAddPreview); });
+  $effect(() => {
+    if (spotAfterGrain && !(app.grains[spotAfterGrain.area] ?? []).some(g => g.id === spotAfterGrain?.id)) {
+      spotAfterGrain = null;
+      if (app.tool === 'spot') app.tool = 'grain-add';
+    }
+  });
+  async function makeAddPreview(source: AddSource) {
+    if (ro || isViewer || !areaId || app.tool !== 'grain-add') return;
+    const state = current(), id = areaId, project = app.project?.uuid;
+    addPreview = previewTransition(addPreview, { type: 'begin', source });
+    const revision = addPreview.revision;
+    try {
+      const geometry = await detectGrainPreview(core, id, source, segParams ? $state.snapshot(segParams) as SegmentParams : null,
+        addSensitivity, !addNeedsPixels, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth }, Math.max(3, 10 * k));
+      if (current() !== state || areaId !== id || app.project?.uuid !== project || ro || isViewer || app.tool !== 'grain-add') return;
+      const grain = geometry ? namedNewGrain(geometry, detections, sample, patternFor(id)) : null;
+      addPreview = previewTransition(addPreview, { type: 'result', revision, grain,
+        error: grain ? '' : 'No grain found there. Try another point, adjust sensitivity or use Draw.' });
+    } catch (e) {
+      addPreview = previewTransition(addPreview, { type: 'result', revision, grain: null, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  onDestroy(cancelAddPreview);
+  function sensitivityChange(value: number) {
+    addSensitivity = value;
+    if (addPreview.source?.kind === 'click') {
+      const source = addPreview.source;
+      cancelAddPreview();
+      addPreview = previewTransition(addPreview, { type: 'begin', source });
+      sensitivityTimer = setTimeout(() => { sensitivityTimer = null; void makeAddPreview(source); }, 120);
+    }
+  }
+  function acceptGrainPreview() {
+    dragFrame.flush();
+    if (vertexDrag && addPreview.grain) { saveVertices(vertexDrag.base, vertexDrag.points); vertexDrag = null; }
+    if (app.tool !== 'grain-add' || addPreview.status !== 'ready' || !addPreview.grain || !areaId) return;
+    // Re-read naming defaults at acceptance, in case another edit consumed the number.
+    const grain = { ...addPreview.grain, ...addName }, id = areaId;
+    try {
+      if (!commitGrainPreview(current(), id, grain)) return;
+      cancelAddPreview(); selGrains = [grain.id]; app.selection = [];
+      app.notice = `Added ${grain.label}. ${modName}+Z undoes.`;
+      if (thenSpot) { app.tool = 'spot'; spotAfterGrain = { area: id, id: grain.id }; }
+    } catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
+  }
+
   const automaticN = $derived(nextNumber(app.spots, sample, app.settings.n_per_sample));
   const nextRun = $derived(app.nextN ?? automaticN);
   const nextPosition = $derived(drawing ? [drawing.x, drawing.y] as [number, number] : snapHint ? [snapHint.x, snapHint.y] as [number, number] : cursorUm);
-  const nextName = $derived(formatName(patternFor(areaId ?? ''), sample, nextPosition ? grainAt(grains, ...nextPosition)?.number ?? null : null, nextRun));
-  const nextNameClash = $derived(app.spots.some((s) => s.name === nextName));
+  const nextName = $derived(formatName(patternFor(areaId ?? ''), sample, nextPosition ? indexedGrainAt(...nextPosition)?.number ?? null : null, nextRun));
+  const usedSpotNames = $derived(new Set(app.spots.map(s => s.name)));
+  const nextNameClash = $derived(usedSpotNames.has(nextName));
   const refOverlay = $derived(areaId ? (app.overlays[areaId] ?? null) : null);
   /** screen px → um at the current zoom */
   const k = $derived(view ? umPerPx / view.zoom : 1);
@@ -661,9 +808,10 @@
   let contrastScene = 0;
   let contrastFrame = 0;
   // Store the latest geometry; rapid pointer events collapse into one frame.
+  const movingContrastRings = $derived(spots.filter((s) => activeIds.includes(s.id)).map((s) => ({ id: s.id, x: s.x_um, y: s.y_um, r: spotRadius(s) })));
   const contrastRings = $derived([
-    ...(!isViewer && app.tool === 'spot' && cursorUm && !snapHint ? [{ id: 'ghost', x: cursorUm[0], y: cursorUm[1], r: app.diameter / 2 }] : []),
-    ...spots.filter((s) => activeIds.includes(s.id)).map((s) => ({ id: s.id, x: s.x_um, y: s.y_um, r: spotRadius(s) })),
+    ...(!isViewer && app.tool === 'spot' && nextPosition ? [{ id: 'ghost', x: nextPosition[0], y: nextPosition[1], r: app.diameter / 2 }] : []),
+    ...movingContrastRings,
   ]);
   function scheduleContrast(newPixels = false) {
     if (newPixels) contrastScene++;
@@ -887,8 +1035,8 @@
   function now() {
     return new Date().toISOString();
   }
-  function makeSpot(x: number, y: number, kind: SpotKind = 'spot', x2: number | null = null, y2: number | null = null): Spot {
-    const g = grainAt(grains, x, y);
+  function makeSpot(x: number, y: number, kind: SpotKind = 'spot', x2: number | null = null, y2: number | null = null, target?: Grain): Spot {
+    const g = target ?? grainAt(grains, x, y);
     const own = g && owners.get(g.id);
     const state = current();
     const ownerGrain = own?.duplicate_of ? state.grains[own.owner_area]?.find((q) => q.id === own.duplicate_of) : undefined;
@@ -1068,25 +1216,7 @@
 
   // ---- hit testing (screen pixels) -------------------------------------------------
   function hitSpot(xUm: number, yUm: number): Spot | null {
-    // Inside a shape scores by distance to its centre (0..1), outside by 1 + edge distance in
-    // screen px (within 8 px of slack): overlapping spots resolve to the nearest centre.
-    let best: Spot | null = null;
-    let bs = Infinity;
-    for (const s of spots) {
-      const d = spotDistance(s, xUm, yUm, 5 * k);
-      let score: number;
-      if (d <= 0) {
-        const cx = s.kind === 'spot' ? s.x_um : (s.x_um + (s.x2_um ?? s.x_um)) / 2;
-        const cy = s.kind === 'spot' ? s.y_um : (s.y_um + (s.y2_um ?? s.y_um)) / 2;
-        score = Math.hypot(xUm - cx, yUm - cy) / Math.max(spotRadius(s), 1e-6) / 1e3;
-      } else if (d <= 8 * k) score = 1 + d / k;
-      else continue;
-      if (score < bs) {
-        bs = score;
-        best = s;
-      }
-    }
-    return best;
+    return spotIndex.hit(xUm, yUm, k);
   }
   function hitLabel(xUm: number, yUm: number): Label | null {
     return labels.find((l) => Math.abs(xUm - l.x_um) < 60 * k && yUm < l.y_um + 4 * k && yUm > l.y_um - 16 * k) ?? null;
@@ -1094,8 +1224,7 @@
   function snapped(x: number, y: number, ev: MouseEvent | PointerEvent): [number, number] {
     snapHint = null;
     if (!app.settings.snap || ev.altKey) return [x, y];
-    const prev = app.spots.filter((s) => s.area_id === areaId).at(-1) ?? null;
-    const t = snap(x, y, snapTargets(grains, prev, app.diameter), 12 * k);
+    const t = snapIndex.nearest(x, y, 12 * k, previousSpot);
     if (!t) return [x, y];
     snapHint = t;
     return [t.x, t.y];
@@ -1103,11 +1232,15 @@
 
   // ---- pointer --------------------------------------------------------------------
   function press(p: CanvasPoint, allowBox = true): boolean {
+    hoverFrame.flush();
+    dragFrame.flush();
+    lastHover = null;
     if (app.busy) return false;
     if (imagePress(p)) return true;
     const x = p.x * umPerPx, y = p.y * umPerPx;
     const ev = p.ev as PointerEvent;
     collapseSpot = null;
+    dragCrossedSlop = false; livePrevious = null; pendingMoveSnap = null;
     pressScreen = [p.sx, p.sy];
     if (isViewer || (ro && app.tool !== 'measure')) {
       // Read-only: a press selects a spot, nothing moves.
@@ -1116,15 +1249,37 @@
       pickSpot(s.id, clickHow(ev, false), true);
       return true;
     }
+    if (app.tool === 'grain-edit' || app.tool === 'grain-add' && addPreview.grain) {
+      const target = app.tool === 'grain-edit' ? editableGrain : addPreview.grain;
+      if (!target) return true;
+      const handle = outlineHandle(target.polygon_um, [x, y], 8 * k);
+      if (!handle) return true;
+      const points = target.polygon_um.map(p => [...p] as Point);
+      if (ev.altKey && handle.kind === 'vertex') {
+        if (points.length <= 3) app.notice = 'An outline needs at least three corners.';
+        else { points.splice(handle.index, 1); saveVertices(target, points); }
+      } else {
+        const index = handle.kind === 'edge' ? handle.index + 1 : handle.index;
+        if (handle.kind === 'edge') points.splice(index, 0, handle.point);
+        vertexDrag = { base: target, points, index, changed: handle.kind === 'edge' };
+      }
+      return true;
+    }
+    if (app.tool === 'spot' && spotAfterGrain) return false;
+    if (app.tool === 'grain-add') {
+      if (addPreview.status === 'working') return true;
+      if (effectiveAddMode === 'box') { addBox = { start: [x, y], end: [x, y] }; return true; }
+      if (effectiveAddMode === 'click') return false;
+    }
     if (app.tool === 'pluck') return false;
     // Delay click actions until release: a modified drag must never move, place
     // or delete a spot, even when it starts on one. Stroke tools keep their modifiers.
-    const boxTool = app.tool === 'select' || app.tool === 'spot' || app.tool === 'delete' || app.tool === 'grain-add';
+    const boxTool = app.tool === 'select' || app.tool === 'spot' || app.tool === 'delete';
     const grainBoxTool = app.tool === 'select' || app.tool === 'delete';
     const mod = ev.metaKey || ev.ctrlKey;
     if (allowBox && boxTool && (ev.shiftKey || mod || (app.tool === 'select' && !hitSpot(x, y) && !hitLabel(x, y)))) {
       rectangle = { x: p.sx, y: p.sy, x2: p.sx, y2: p.sy, moved: false, start: p, how: mod ? 'toggle' : ev.shiftKey ? 'add' : 'only',
-        grains: tab === 'grains' || app.tool === 'grain-add' || (grainBoxTool && tab !== 'spots'),
+        grains: tab === 'grains' || (grainBoxTool && tab !== 'spots'),
         fallbackGrains: grainBoxTool };
       return true;
     }
@@ -1132,9 +1287,10 @@
       splitStroke = { points: [[x, y]], end: [x, y], straight: ev.shiftKey };
       return true;
     }
-    if (app.tool === 'grain-outline') {
+    if (app.tool === 'grain-outline' || app.tool === 'grain-add' && effectiveAddMode === 'draw') {
+      if (app.tool === 'grain-add') addMode = 'draw'; // Keep this drawn gesture when pixels arrive.
       if (!lasso) {
-        lasso = { pts: [[x, y]], op: ev.altKey ? 'cut' : ev.shiftKey ? 'add' : 'new', free: ev.metaKey || ev.ctrlKey, clicks: 1, dragged: false };
+        lasso = { pts: [[x, y]], op: app.tool === 'grain-add' ? 'new' : ev.altKey ? 'cut' : ev.shiftKey ? 'add' : 'new', free: ev.metaKey || ev.ctrlKey, clicks: 1, dragged: false };
       } else {
         // Click by click: a click on the first point closes the outline.
         const [fx, fy] = lasso.pts[0];
@@ -1190,10 +1346,33 @@
   }
 
   function drag(p: CanvasPoint) {
+    if (pressScreen && Math.hypot(p.sx - pressScreen[0], p.sy - pressScreen[1]) > CLICK_SLOP) dragCrossedSlop = true;
+    if (gesture?.ids.length === 1 && previousSpot?.id === gesture.ids[0] && (gesture.dirty || dragCrossedSlop)) {
+      const original = gesture.orig.get(gesture.ids[0])!;
+      const x = original.x + (p.x * umPerPx - gesture.startX), y = original.y + (p.y * umPerPx - gesture.startY);
+      const previous = livePrevious ?? previousSpot;
+      const hint = app.settings.snap && !p.ev.altKey ? snapIndex.nearest(x, y, 12 * k, previous) : null;
+      const point: Point = hint ? [hint.x, hint.y] : [x, y];
+      pendingMoveSnap = { p, point, hint };
+      livePrevious = { ...previous, x_um: original.x + (point[0] - original.x), y_um: original.y + (point[1] - original.y) };
+    }
+    // Freehand tools retain every path sample. Live point/selection updates need only the last.
+    if (splitStroke || lasso || stroke || imageDrag) dragNow(p);
+    else dragFrame.push(p);
+  }
+  function dragNow(p: CanvasPoint) {
+    if (app.tool === 'grain-add' && addBox) { addBox = { ...addBox, end: [p.x * umPerPx, p.y * umPerPx] }; return; }
+    if (vertexDrag) {
+      const point: Point = [p.x * umPerPx, p.y * umPerPx];
+      if (vertexDrag.points[vertexDrag.index][0] !== point[0] || vertexDrag.points[vertexDrag.index][1] !== point[1]) {
+        vertexDrag = { ...vertexDrag, points: vertexDrag.points.map((p, i) => i === vertexDrag!.index ? point : p), changed: true };
+      }
+      return;
+    }
     if (imageDrag) { imageMove(p); return; }
     if (isViewer) return;
     if (rectangle) {
-      rectangle = { ...rectangle, x2: p.sx, y2: p.sy, moved: rectangle.moved || Math.hypot(p.sx - rectangle.x, p.sy - rectangle.y) > CLICK_SLOP };
+      rectangle = { ...rectangle, x2: p.sx, y2: p.sy, moved: rectangle.moved || dragCrossedSlop || Math.hypot(p.sx - rectangle.x, p.sy - rectangle.y) > CLICK_SLOP };
       return;
     }
     const x = p.x * umPerPx, y = p.y * umPerPx;
@@ -1225,14 +1404,16 @@
     }
     if (!gesture) return;
     if (!gesture.dirty) {
-      if (pressScreen && Math.hypot(p.sx - pressScreen[0], p.sy - pressScreen[1]) <= CLICK_SLOP) return;
+      if (!dragCrossedSlop && pressScreen && Math.hypot(p.sx - pressScreen[0], p.sy - pressScreen[1]) <= CLICK_SLOP) return;
       app.checkpoint();
       gesture.dirty = true;
     }
     let dx = x - gesture.startX, dy = y - gesture.startY;
     if (gesture.ids.length === 1) {
       const o = gesture.orig.get(gesture.ids[0])!;
-      const [sx, sy] = snapped(o.x + dx, o.y + dy, p.ev);
+      const pending = pendingMoveSnap?.p === p ? pendingMoveSnap : null;
+      const [sx, sy] = pending ? pending.point : snapped(o.x + dx, o.y + dy, p.ev);
+      if (pending) { snapHint = pending.hint; pendingMoveSnap = null; }
       dx = sx - o.x;
       dy = sy - o.y;
     }
@@ -1250,6 +1431,19 @@
   }
 
   async function release(p: CanvasPoint) {
+    dragFrame.flush();
+    if (vertexDrag) {
+      const edit = vertexDrag;
+      vertexDrag = null;
+      if (edit.changed) saveVertices(edit.base, edit.points);
+      return;
+    }
+    if (app.tool === 'grain-add' && addBox) {
+      const { start } = addBox, end: Point = [p.x * umPerPx, p.y * umPerPx]; addBox = null;
+      const [x0, x1] = [start[0], end[0]].sort((a,b) => a-b), [y0, y1] = [start[1], end[1]].sort((a,b) => a-b);
+      if (x1-x0 > 3*k && y1-y0 > 3*k) await makeAddPreview({kind:'box', points:[[x0,y0],[x1,y0],[x1,y1],[x0,y1]]});
+      return;
+    }
     if (imageDrag) {
       const next=imageDraft; imageDrag=null;
       if(next) { const b=next.crop?pointBounds(next.crop.points_um):null; if(!b || b[2]-b[0]>0.01 && b[3]-b[1]>0.01) changeImage($state.snapshot(next)); else imageDraft=null; }
@@ -1330,7 +1524,9 @@
   }
 
   function cancelGesture() {
+    dragFrame.clear(); hoverFrame.clear(); vertexDrag = null; livePrevious = null; pendingMoveSnap = null; dragCrossedSlop = false;
     imageDrag=null; imageDraft=null;
+    if (app.tool === 'grain-add') addBox = null;
     // A native drag, lost capture, window blur or second finger is not a release.
     // Restore live spot/label moves without changing their names or grain links.
     if (gesture?.dirty) {
@@ -1376,10 +1572,14 @@
     const ev = p.ev as MouseEvent;
     const x = p.x * umPerPx, y = p.y * umPerPx;
     if (ro && app.tool !== 'select' && app.tool !== 'measure') return;
+    if (app.tool === 'grain-add') {
+      if (effectiveAddMode === 'click' && !addPreview.grain && addPreview.status !== 'working') await makeAddPreview({kind:'click', point:[x,y]});
+      return;
+    }
     if (app.tool === 'grain-outline' || app.tool === 'grain-brush') return;
     if (app.tool === 'pluck') {
       const spot = hitSpot(x, y);
-      const grain = spot?.grain_id ?? grainAt(detections, x, y, app.layers.artifacts)?.id;
+      const grain = spot?.grain_id ?? indexedGrainAt(x, y, app.layers.artifacts)?.id;
       if (grain) openPluck(grain, spot ?? undefined, ev.shiftKey);
       return;
     }
@@ -1388,9 +1588,13 @@
       return;
     }
     if (app.tool === 'spot') {
-      const [sx, sy] = snapped(x, y, ev);
+      const target = spotAfterGrain ? grains.find(g => g.id === spotAfterGrain?.id) : undefined;
+      if (spotAfterGrain && (!target || !inside(target.polygon_um, x, y))) { app.notice = 'Click inside the new grain to place its spot.'; return; }
+      let [sx, sy] = snapped(x, y, ev);
+      if (target && !inside(target.polygon_um, sx, sy)) [sx, sy] = [x, y];
       snapHint = null;
-      addSpot(makeSpot(sx, sy));
+      addSpot(makeSpot(sx, sy, 'spot', null, null, target));
+      if (spotAfterGrain) { spotAfterGrain = null; app.tool = 'grain-add'; }
       return;
     }
     if (app.tool === 'label') {
@@ -1403,7 +1607,7 @@
     }
     if (app.tool === 'delete') {
       // Spots and labels went in press(); here the click is on a grain (or nothing).
-      const g = grainAt(detections, x, y, app.layers.artifacts);
+      const g = indexedGrainAt(x, y, app.layers.artifacts);
       if (g) {
         if (!selGrains.includes(g.id)) selGrains = [g.id];
         const count = selGrains.length;
@@ -1412,21 +1616,9 @@
       }
       return;
     }
-    if (app.tool === 'grain-add' && core && areaId && segParams) {
-      const id = areaId;
-      const g = await app.run('Growing grain', () => core!.grainAt(id, x, y, $state.snapshot(segParams) as SegmentParams, { margin_um: app.settings.outline_margin_um, smooth: app.settings.outline_smooth }));
-      if (!g) {
-        if (g === null) app.error = 'No grain at that point (background).';
-        return;
-      }
-      const added = { ...g, number: Math.max(0, ...grains.map((q) => q.number)) + 1 };
-      setGrains([...grains.filter((q) => !(q.centroid_um && added.polygon_um.length && inside(added.polygon_um, q.centroid_um[0], q.centroid_um[1]))), added]);
-      selGrains = [added.id];
-      return;
-    }
     // Select / other tools on empty space: select a grain or clear.
     measure = null;
-    const g = grainAt(detections, x, y, app.layers.artifacts);
+    const g = indexedGrainAt(x, y, app.layers.artifacts);
     const how = clickHow(ev, false);
     if (!g) {
       if (how === 'only') { app.selection = []; selGrains = []; spotAnchor = null; grainAnchor = null; }
@@ -1440,7 +1632,9 @@
     const l = lasso;
     lasso = null;
     lassoHover = null;
-    if (!l || !core || !areaId || l.pts.length < 3) return;
+    if (!l || !areaId || l.pts.length < 3) return;
+    if (app.tool === 'grain-add') { await makeAddPreview({ kind:'draw', points:$state.snapshot(l.pts) as Point[], free:l.free || !snapEdges }); return; }
+    if (!core) return;
     const id = areaId;
     let poly = $state.snapshot(l.pts) as [number, number][];
     if (!noPixels && snapEdges && !l.free) {
@@ -1505,6 +1699,7 @@
   /** Double-click a spot or label to rename it; elsewhere the view fits (gestures.ts). */
   function dblclick(p: CanvasPoint): boolean {
     if (editImage && imageTool==='polygon') { finishImagePolygon(); return true; }
+    if (app.tool === 'grain-add' && !lasso) return true;
     if (lasso) {
       void finishLasso();
       return true;
@@ -1530,19 +1725,25 @@
   }
 
   function hover(p: CanvasPoint | null) {
+    lastHover = p;
+    if (!p) { hoverFrame.clear(); updateHover(null); }
+    else hoverFrame.push(p);
+  }
+  function updateHover(p: CanvasPoint | null) {
     cursorScreen = p ? [p.sx, p.sy] : null;
     if (!p) {
+      snapHint = null;
       hoverId = null;
       updateInfo(null);
       return;
     }
-    const x = p.x * umPerPx, y = p.y * umPerPx;
+    const point = view ? toMosaic(view, p.sx, p.sy) : [p.x, p.y];
+    const x = point[0] * umPerPx, y = point[1] * umPerPx;
     lassoHover = lasso ? [x, y] : null;
-    hoverId = hitSpot(x, y)?.id ?? grainAt(detections, x, y, app.layers.artifacts)?.id ?? null;
+    hoverId = hitSpot(x, y)?.id ?? indexedGrainAt(x, y, app.layers.artifacts)?.id ?? null;
     updateInfo(hoverId);
     if (!isViewer && app.tool === 'spot' && app.settings.snap && !(p.ev as MouseEvent).altKey) {
-      const prev = app.spots.filter((s) => s.area_id === areaId).at(-1) ?? null;
-      snapHint = snap(x, y, snapTargets(grains, prev, app.diameter), 12 * k);
+      snapHint = snapIndex.nearest(x, y, 12 * k, previousSpot);
     } else snapHint = null;
   }
 
@@ -1575,19 +1776,25 @@
 
   // ---- keyboard --------------------------------------------------------------------------
   function splitModifier(e: KeyboardEvent) {
+    if (e.key === 'Alt' && lastHover) {
+      lastHover = { ...lastHover, ev: e as unknown as MouseEvent };
+      hoverFrame.push(lastHover);
+    }
     if (splitStroke && e.key === 'Shift') splitStroke.straight = e.type === 'keydown';
   }
   function toolShortcut(key: string): boolean {
     const tools: Record<string, Tool> = { v: 'select', s: 'spot', l: 'line', r: 'raster', m: 'measure', t: 'label', d: 'delete', g: 'grain-add', k: 'grain-split', o: 'grain-outline', b: 'grain-brush' };
+    if (key === 'e') { editOutline(); return true; }
     if (key === 'p' && canPluck) { activateTool('pluck'); return true; }
-    if (!tools[key] || noPixels && (key === 'g' || key === 'b')) return false;
+    if (!tools[key] || noPixels && key === 'b') return false;
     activateTool(tools[key]); return true;
   }
   function key(e: KeyboardEvent) {
     splitModifier(e);
-    if (splitStroke && e.key === 'Escape') {
+    if ((splitStroke || vertexDrag) && e.key === 'Escape') {
       e.preventDefault();
       cancelGesture();
+      if (app.tool === 'grain-add') cancelAddPreview();
       return;
     }
     if (isViewer) {
@@ -1603,7 +1810,8 @@
     if (app.busy || app.mosaicExportPrompt || app.grainExportPrompt || app.checkPrompt || app.renamePrompt || batch || sizeRepairs || e.defaultPrevented) return;
     if (e.key.startsWith('Arrow')) app.flash = null;
     const t = e.target as HTMLElement;
-    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
+    const addControlKey = (app.tool === 'grain-add' || spotAfterGrain) && ['Enter','Escape'].includes(e.key) && t.tagName === 'INPUT' && ['range','checkbox'].includes((t as HTMLInputElement).type);
+    if (!addControlKey && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     const mod = e.metaKey || e.ctrlKey;
     if (ro) {
       // Read-only: view keys only (the viewer handles zoom and pan), Escape, measure and select.
@@ -1616,6 +1824,14 @@
       else if (e.key.toLowerCase() === 'v') app.tool = 'select';
       return;
     }
+    if (app.tool === 'grain-add' && (e.key === 'Escape' || e.key === 'Enter' && !mod && !e.altKey)) {
+      e.preventDefault();
+      if (e.key === 'Escape') { cancelGesture(); cancelAddPreview(); }
+      else if (lasso) void finishLasso();
+      else acceptGrainPreview();
+      return;
+    }
+    if (spotAfterGrain && e.key === 'Escape') { e.preventDefault(); spotAfterGrain = null; app.tool = 'grain-add'; return; }
     if (mod && e.key.toLowerCase() === 'a') {
       e.preventDefault();
       if (tab === 'grains') setGrainSelection(selectAll([...tableGrains, ...(app.layers.artifacts ? tableArtifacts : [])].map((g) => g.id)), true);
@@ -1649,6 +1865,11 @@
     }
     if (mod || e.altKey) return;
     if (toolShortcut(e.key.toLowerCase())) return;
+    // Creation gestures never edit an old selection through movement/deletion shortcuts.
+    if (app.tool === 'grain-add' || spotAfterGrain) {
+      if (e.key === 'Delete' || e.key === 'Backspace') e.preventDefault();
+      return;
+    }
     if (/^[1-9]$/.test(e.key) && app.settings.spot_presets_um[Number(e.key) - 1]) setDiameter(app.settings.spot_presets_um[Number(e.key) - 1]);
     else if (e.key === '[') viewer?.rotateBy(-Math.PI / 12);
     else if (e.key === ']') viewer?.rotateBy(Math.PI / 12);
@@ -1681,25 +1902,14 @@
     const state = current(), project = state.project?.uuid, area = state.areaId;
     return (d: number) => {
       if (current() !== state || state.project?.uuid !== project || state.areaId !== area || state.readOnly || focus?.id !== id) return;
-      updateSpot(id, { diameter_um: d });
+      diameterEdit.change(state, JSON.stringify([state.id, project, area]), area, [id], d);
     };
   }
 
   /** A run of size steps on the same spots (arrow keys, −/+) is one undo step. */
-  let lastDiameter: { ids: string; d: number; at: number } | null = null;
+  const diameterEdit = new SpotSizeEdit<Spot>();
   function setDiameter(d: number) {
-    if (ro) return;
-    if (!selSpots.length) app.diameter = d;
-    if (selSpots.length) {
-      const ids = selSpots.map((s) => s.id).join(' ');
-      const now = performance.now();
-      // Only while nothing changed them since the last step (an undo in between starts a new step).
-      const run = lastDiameter && lastDiameter.ids === ids && now - lastDiameter.at < 2000 && selSpots.every((s) => spotDiameter(s) === lastDiameter!.d);
-      if (run) app.persist();
-      else app.checkpoint();
-      lastDiameter = { ids, d, at: now };
-      app.spots = app.spots.map((s) => (s.area_id === areaId && app.selection.includes(s.id) ? { ...s, diameter_um: d } : s));
-    }
+    diameterEdit.change(app, JSON.stringify([app.id, app.project?.uuid, areaId]), areaId, selSpots.map(s => s.id), d);
   }
 
   const cursor = $derived(isViewer ? 'default' : app.tool === 'select' ? 'default' : app.tool === 'delete' ? 'not-allowed' : 'crosshair');
@@ -1884,13 +2094,26 @@
                 {/if}
               {/each}
             {/if}
-            {#if snapHint}
+            {#if snapHint && app.tool !== 'spot'}
               <g class="snap"><circle cx={snapHint.x} cy={snapHint.y} r={7 * k} /><line x1={snapHint.x - 10 * k} x2={snapHint.x + 10 * k} y1={snapHint.y} y2={snapHint.y} /><line y1={snapHint.y - 10 * k} y2={snapHint.y + 10 * k} x1={snapHint.x} x2={snapHint.x} /></g>
             {/if}
-            {#if !isViewer && app.tool === 'spot' && cursorUm && !snapHint}
-              <circle class="ghost contrast-halo" cx={cursorUm[0]} cy={cursorUm[1]} r={app.diameter / 2} style:stroke={activeHalo('ghost')} />
-              <circle class="ghost" cx={cursorUm[0]} cy={cursorUm[1]} r={app.diameter / 2}
-                data-testid="spot-ghost" data-contrast={autoColour ? (contrasts.ghost ?? 'light') : 'fixed'} style:stroke={activeColour('ghost')} />
+            {#if !isViewer && app.tool === 'spot'}
+              <SpotPreview position={cursorUm} snap={snapHint} diameter={app.diameter} {k} colour={activeColour('ghost')} halo={activeHalo('ghost')} contrast={autoColour ? (contrasts.ghost ?? 'light') : 'fixed'} />
+            {/if}
+            {#if !ro && app.tool === 'grain-add' && addPreview.grain}
+              <polygon class="add-preview" points={addPoints.map(p => p.join(',')).join(' ')} stroke-width="2" data-testid="add-grain-preview" data-revision={addPreview.revision} />
+              {#each addPoints as point, i (i)}
+                <circle cx={point[0]} cy={point[1]} r={4*k} fill="var(--bg)" stroke="var(--accent)" stroke-width="1.5" data-testid="add-grain-vertex" />
+              {/each}
+            {/if}
+            {#if addBox}
+              <rect class="add-preview" x={Math.min(addBox.start[0],addBox.end[0])} y={Math.min(addBox.start[1],addBox.end[1])} width={Math.abs(addBox.end[0]-addBox.start[0])} height={Math.abs(addBox.end[1]-addBox.start[1])} stroke-width="2" />
+            {/if}
+            {#if !ro && app.tool === 'grain-edit' && editableGrain}
+              <polygon points={vertexPoints.map(p => p.join(',')).join(' ')} fill="none" stroke="var(--accent)" stroke-width="2" data-testid="outline-edit-preview" />
+              {#each vertexPoints as point, i (i)}
+                <circle cx={point[0]} cy={point[1]} r={4 * k} fill="var(--bg)" stroke="var(--accent)" stroke-width="1.5" data-testid="outline-vertex" />
+              {/each}
             {/if}
             {#if drawing}
               {#if drawing.kind === 'raster'}
@@ -1955,7 +2178,8 @@
       </SegmentedControl>
       {#if !ro}
         <span class="sep"></span>
-        <button class="icon" aria-label="+Grain" title={`Add grain: click inside it; Shift-drag adds grains in a box; ${modName}-drag toggles grains in a box (G)`} aria-pressed={app.tool === 'grain-add'} disabled={noPixels} onclick={() => activateTool('grain-add')}>+Grain</button>
+        <button class="icon" aria-label="Add grain" data-testid="tool-add-grain" title="Add grain (G): preview with Click, Draw or Box; Enter accepts; Esc cancels" aria-pressed={app.tool === 'grain-add'} onclick={() => activateTool('grain-add')}>Add grain <kbd>G</kbd></button>
+        <button class="icon" data-testid="tool-edit-outline" aria-label="Edit outline" title="Edit selected grain outline (E): drag corners; click an edge to add; Alt-click a corner to remove" disabled={(!editableGrain && !(app.tool === 'grain-add' && addPreview.grain)) || !!app.busy} aria-pressed={app.tool === 'grain-edit'} onclick={editOutline}>Edit outline</button>
         <button class="icon" aria-label="Split" data-testid="tool-split" title="Split grain: draw across it freehand; hold Shift for a straight cut (K)" aria-pressed={app.tool === 'grain-split'} onclick={() => activateTool('grain-split')}>Split</button>
         <IconButton icon="trash" label="Delete" title={`${toolList[6].title} (D); Delete/Backspace removes selection`} aria-pressed={app.tool === 'delete'} data-testid="tool-delete" onclick={() => activateTool('delete')} />
         <span class="toolbar-space"></span>
@@ -1984,6 +2208,34 @@
       {/if}
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" title={app.remote?.offlineAt && app.sync.reachable !== true ? 'Offline copy: read-only until the database is reachable' : undefined} disabled={!!app.busy || app.sync.busy || !!app.remote?.offlineAt && app.sync.reachable !== true} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
       {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
+    {#if !ro && (app.tool === 'grain-add' || spotAfterGrain)}
+      <div class="tool-options add-options" data-testid="add-grain-options">
+        {#if app.tool === 'grain-add'}
+          <SegmentedControl label="Ways to add" size="small" value={effectiveAddMode} onchange={changeAddMode}
+            options={addModeOptions} />
+          <StatusChip text={`#${addName.number} ${addName.label}`} />
+          <span class="faint small" data-testid="add-grain-name">{addName.sample || 'No sample'} · {addName.label}</span>
+          {#if effectiveAddMode === 'click'}
+            <label class="check">Sensitivity <input type="range" min="1" max="99" step="1" value={addSensitivity} aria-label="Grain sensitivity" oninput={e => sensitivityChange(Number(e.currentTarget.value))} /> {addSensitivity}</label>
+          {/if}
+          <label class="check"><input type="checkbox" checked={thenSpot} onchange={e => rememberThenSpot(e.currentTarget.checked)} data-testid="add-then-spot" /> then place a spot</label>
+          <button class="primary" disabled={addPreview.status !== 'ready'} onclick={acceptGrainPreview} data-testid="add-grain-accept">Accept</button>
+          <button onclick={cancelAddPreview} data-testid="add-grain-cancel">Cancel</button>
+          {#if addNeedsPixels}<span class="faint small" data-testid="add-grain-pixels-hint">Image pixels are unavailable. Use Draw; Click and Box need pixels.</span>{/if}
+          {#if addPreview.error}<span class="clash" role="status">{addPreview.error}</span>{/if}
+          {#if addOverlaps.length}<span class="clash" role="status" data-testid="add-grain-overlap">Overlaps {addOverlaps.map(g => g.label || `Grain ${g.number}`).join(', ')}. Existing grains stay unchanged.</span>{/if}
+        {/if}
+        <span class="faint small add-hint" role="status" data-testid="add-grain-hint">{addHint}</span>
+      </div>
+    {/if}
+    {#if !ro && app.tool === 'grain-edit'}
+      <div class="tool-options" data-testid="outline-edit-options">
+        <span>Drag corners. Click an edge to add. Alt-click a corner to remove.</span>
+        <button onclick={() => activateTool('grain-outline')} title="Redraw (O); Shift adds a region, Alt removes a region">Redraw</button>
+        <button onclick={() => activateTool('grain-brush')} disabled={noPixels} title="Brush (B); Alt erases">Brush</button>
+        <button onclick={() => activateTool('select')}>Done</button>
+      </div>
+    {/if}
     {#if !ro && (app.tool === 'grain-outline' && !noPixels || app.tool === 'grain-brush')}
       <div class="tool-options">
         {#if app.tool === 'grain-outline'}<label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
@@ -2007,10 +2259,15 @@
       {#key pluck.serial}<PluckPanel bind:grains={pluck.grains} fraction={pluck.fraction} failed={pluck.failed} onclose={() => pluck = null} />{/key}
     {/if}
 
-    {#if !isViewer && panel.open && (focus || focusGrain)}
+    {#if !isViewer && app.tool !== 'grain-add' && !spotAfterGrain && panel.open && (focus || focusGrain)}
       <FloatingPanel title={selSpots.length > 1 ? `${selSpots.length} spots` : selGrains.length > 1 ? `${selGrains.length} grains` : focus ? `Spot ${focus.name}` : focusGrain?.artifact ? 'Not a grain' : 'Grain'} bind:x={app.layout.panel.x} bind:y={app.layout.panel.y} onmoved={() => app.saveLayout()} onclose={() => (panel.open = false)}
         passive={passiveInfo}
         minimized={app.layout.infoCollapsed} onminimize={() => { app.layout.infoCollapsed = !app.layout.infoCollapsed; app.saveLayout(); }}>
+          {#snippet headerActions()}
+            {#if !ro && editableGrain}
+              <button class="icon" onclick={editOutline} disabled={!!app.busy} title="Edit selected grain outline (E)" data-testid="card-edit-outline-header">Edit outline</button>
+            {/if}
+          {/snippet}
           {#if selSpots.length < 2 && focus && resultsBy[focus.id]}
           {@const r = resultsBy[focus.id]}
           {@const d = dateOf(r, app.dateChoice)}
@@ -2101,6 +2358,10 @@
           </table>
           {#if selGrains.includes(focusGrain.id)}
             <div class="row">
+              {#if !focusGrain.artifact}
+                <button onclick={editOutline} disabled={!editableGrain || !!app.busy} title="Edit outline (E)" data-testid="card-edit-outline">Edit outline</button>
+                <button onclick={() => activateTool('grain-outline')} title="Redraw (O); Shift adds a region, Alt removes a region">Redraw</button>
+              {/if}
               {#if focusGrain.added}
                 <button onclick={() => acceptAdded([focusGrain!.id])} data-testid="accept-grain">Accept</button>
               {/if}
@@ -2529,12 +2790,24 @@
   .toolbar :global(.segments button:last-child) { border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0; }
   .toolbar-space { flex: 1; }
   .toolbar > .icon { padding: 3px 6px; white-space: nowrap; }
+  @media (max-width: 1300px) {
+    .toolbar { gap: 2px; padding-inline: var(--space-1); }
+    .toolbar > .icon { padding-inline: 4px; font-size: .75rem; }
+    .toolbar :global(.segments button) { padding-inline: 5px; font-size: .75rem; }
+    .toolbar kbd { font-size: 10px; margin-left: 0; }
+    .toolbar .sep { margin-inline: 2px; }
+  }
   kbd { color: var(--text-faint); font: 11px var(--font-mono); margin-left: 2px; }
   .canvas-entry { position: absolute; top: 60px; left: var(--space-2); max-width: calc(100% - var(--side-width) - 24px); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) var(--space-2); font-size: .75rem; }
   .canvas-entry .mono { overflow-wrap: anywhere; min-width: 0; }
   .area-picker { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
   .area-picker select { width: 5rem; min-width: 0; }
   .canvas-entry .diam { font-size: .75rem; }
+  .add-options { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); min-width: 0; }
+  .add-options input[type=range] { width: 90px; padding: 0; }
+  .add-options > span { max-width: 100%; overflow-wrap: anywhere; }
+  .add-hint { flex-basis: 100%; }
+  .add-preview { fill: color-mix(in srgb, var(--accent) 18%, transparent); stroke: var(--accent); stroke-dasharray: 6 4; }
   .tool-options { flex-basis: 100%; padding-block: var(--space-1); font-size: .8rem; }
   .zoom-controls { position: absolute; right: calc(var(--side-width) + 24px); bottom: var(--space-2); display: flex; align-items: center; padding: var(--space-1); gap: 2px; }
   .zoom-controls .num { min-width: 42px; text-align: center; font-size: .8rem; }
@@ -2970,16 +3243,6 @@
     fill: none;
     stroke: var(--accent);
     stroke-width: 1.5;
-  }
-  :global(.ga-root) .ghost {
-    fill: none;
-    stroke: var(--ov-spot);
-    stroke-dasharray: 4 3;
-    stroke-width: 1.2;
-    pointer-events: none;
-  }
-  :global(.ga-root) .ghost.contrast-halo {
-    stroke-width: 3.6;
   }
   :global(.ga-root) .drawing,
   :global(.ga-root) .measure {

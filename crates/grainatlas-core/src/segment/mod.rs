@@ -89,6 +89,9 @@ pub struct SegmentParams {
     pub contrast_frac: f32,
     /// Threshold on the 0..1 mosaic; `None` = Otsu.
     pub threshold: Option<f32>,
+    /// Click-grow only; larger values include more of the seed/background contrast range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub click_sensitivity: Option<f32>,
     /// Gaussian smoothing before the threshold (work pixels).
     pub smooth_px: f32,
     pub open_px: usize,
@@ -145,6 +148,7 @@ impl Default for SegmentParams {
             noise_k: 6.0,
             contrast_frac: 0.12,
             threshold: None,
+            click_sensitivity: None,
             smooth_px: 1.0,
             open_px: 2,
             close_px: 3,
@@ -621,13 +625,14 @@ pub fn grain_at(w: &WorkImage, p: &SegmentParams, x_um: f64, y_um: f64) -> Optio
     let bright = p.polarity != Polarity::Dark;
     let inside = |v: f32, t: f32| if bright { v > t } else { v < t };
     // Threshold half way between the seed and the background level; the seed must be a grain.
-    let t = p.threshold.unwrap_or_else(|| {
+    let t = p.threshold.filter(|_| p.click_sensitivity.is_none()).unwrap_or_else(|| {
         let bgl = {
             let mut v: Vec<f32> = sub.px.iter().copied().filter(|&v| !inside(v, bg)).collect();
             v.sort_by(f32::total_cmp);
             v.get(v.len() / 2).copied().unwrap_or(0.0)
         };
-        0.5 * (seed_v + bgl)
+        let sensitivity = p.click_sensitivity.filter(|s| s.is_finite()).unwrap_or(0.5).clamp(0.01, 0.99);
+        bgl + (1.0 - sensitivity) * (seed_v - bgl)
     });
     if !inside(seed_v, t) {
         return None;

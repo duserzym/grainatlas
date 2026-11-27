@@ -1,5 +1,5 @@
 // Ported from upblab ui/src/lib/ui-controls.ts at 72e91bc; keep in step.
-export interface SegmentedOption { value: string; label: string; title?: string; ariaLabel?: string; testid?: string }
+export interface SegmentedOption { value: string; label: string; title?: string; ariaLabel?: string; testid?: string; disabled?: boolean }
 export interface WorkflowStep {
   label: string; fullName: string; detail: string;
   state: 'done' | 'current' | 'pending'; hint?: string;

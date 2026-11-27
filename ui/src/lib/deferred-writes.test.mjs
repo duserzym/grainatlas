@@ -80,3 +80,12 @@ test('browser lifecycle boundaries synchronously drain the latest edits', async 
     }
   }
 });
+
+test('background work yields between project and draft; a forced flush still drains both', () => {
+  const h=harness(),saved=[];
+  h.writes.enqueue({},()=>{saved.push('project');h.writes.enqueue({},()=>saved.push('draft'));});
+  h.paint();assert.deepEqual(saved,['project']);
+  h.paint();assert.deepEqual(saved,['project','draft']);
+  h.writes.enqueue({},()=>{saved.push('project2');h.writes.enqueue({},()=>saved.push('draft2'));});
+  h.paint();h.writes.flush();h.paint();assert.deepEqual(saved,['project','draft','project2','draft2']);
+});

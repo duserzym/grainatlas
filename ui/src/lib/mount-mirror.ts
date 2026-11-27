@@ -1,3 +1,4 @@
+import { timed, timedAsync } from './sync-perf.ts';
 import { isDesktop } from './core/core.ts';
 
 /** Keyed reads only: never enumerate accounts or fall back to a last-used mirror.
@@ -53,7 +54,7 @@ class MountMirror implements MirrorStorage {
     const write = this.queue.then(async () => {
       if (isDesktop() && !bundleStorageKey(key)) {
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('mirror_write', { key, contents: value });
+        await timedAsync('mirror.write.wall', () => timed('mirror.invoke-write.handoff', () => invoke('mirror_write', { key, contents: value })));
       } else {
         const db = await this.db();
         await new Promise<void>((resolve, reject) => {

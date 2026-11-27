@@ -1,3 +1,4 @@
+import { FrameUpdate } from './frame-update.ts';
 // Bridge v4 adapter: pure snapshots and command completion, injectable for unit tests.
 import { ATLAS_EVENTS, atlasStatus, atlasDrafts, atlasSynced, commandResult, isBridgeCommand, isHosted, notify,
   type AtlasStatusEvent, type AtlasSyncedEvent, type BridgeCommand, type BridgeEvent, type CommandResult } from '@lab/bridge';
@@ -7,6 +8,7 @@ import { draftSyncStatus } from './sync-status.ts';
 export type AtlasCommand = Exclude<BridgeCommand, { type: 'focus-spot' | 'focus-grain' | 'review-spots' | 'set-presentation' }>;
 export class HostedSync {
   private lastStatus = '';
+  private statusFrame = new FrameUpdate();
   private lastDrafts = '';
   private queue: Promise<void> = Promise.resolve();
   private send: (event: BridgeEvent) => unknown;
@@ -15,7 +17,8 @@ export class HostedSync {
     const event = atlasStatus(value);
     if (!event) throw new Error('Invalid atlas status');
     const key = JSON.stringify(event);
-    if (force || key !== this.lastStatus) { this.lastStatus = key; this.send(event); }
+    const send = () => { if (force || key !== this.lastStatus) { this.lastStatus = key; this.send(event); } };
+    if (force) { this.statusFrame.cancel(); send(); } else this.statusFrame.enqueue(send);
   }
   drafts(drafts: Draft[], force = false) {
     const event = atlasDrafts({ type: ATLAS_EVENTS.drafts, drafts: drafts.flatMap(d => {

@@ -28,7 +28,7 @@ import { loadLink, resolveServer, saveLink, type LinkSettings } from './upbdb';
 import type { AreaParams, AreaRecord, Grain, ImageEntry, Label, LooseSpec, Ownership, PackageInfo, Progress, Project, Settings, Spot, StitchSummary, ToneParams } from './core/types';
 
 export type Screen = 'open' | 'area' | 'canvas' | 'layout' | 'settings';
-export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'grain-outline' | 'grain-brush' | 'pair' | 'pluck';
+export type Tool = 'select' | 'spot' | 'line' | 'raster' | 'measure' | 'label' | 'delete' | 'grain-add' | 'grain-split' | 'grain-edit' | 'grain-outline' | 'grain-brush' | 'pair' | 'pluck';
 
 /** A reference image (printout photo, post-laser frame) registered to an area's mosaic. */
 export interface Overlay {
@@ -487,8 +487,11 @@ class AppState {
   private snap(): Snapshot {
     return { spots: this.spots, labels: this.labels, grains: this.grains, tone: $state.snapshot(this.tone) as Record<string, ToneParams>, image_edits: $state.snapshot(this.project?.image_edits), print_sheets: $state.snapshot(this.project?.print_sheets) };
   }
+  /** Transient transaction generation; never saved in a project. */
+  historyRevision = 0;
   /** Call before every edit. */
   checkpoint() {
+    this.historyRevision++;
     this.undoStack.push(this.snap());
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
@@ -496,7 +499,7 @@ class AppState {
     this.canRedo = false;
     this.persist();
   }
-  clearHistory() { flushWrites(); this.undoStack = []; this.redoStack = []; this.canUndo = false; this.canRedo = false; this.discardUndo = null; }
+  clearHistory() { this.historyRevision++; flushWrites(); this.undoStack = []; this.redoStack = []; this.canUndo = false; this.canRedo = false; this.discardUndo = null; }
   private restore(s: Snapshot) {
     this.spots = s.spots;
     this.labels = s.labels;
@@ -513,6 +516,7 @@ class AppState {
   undo() {
     const s = this.undoStack.pop();
     if (!s) return;
+    this.historyRevision++;
     this.redoStack.push(this.snap());
     this.restore(s);
     this.canUndo = this.undoStack.length > 0;
@@ -522,6 +526,7 @@ class AppState {
   redo() {
     const s = this.redoStack.pop();
     if (!s) return;
+    this.historyRevision++;
     this.undoStack.push(this.snap());
     this.restore(s);
     this.canUndo = true;

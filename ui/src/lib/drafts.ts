@@ -1,3 +1,4 @@
+import { timed } from './sync-perf.ts';
 import { canWrite } from './presentation.ts';
 import { appStorage } from './app-storage.ts';
 import type { Project } from './core/types.ts';
@@ -7,7 +8,7 @@ export const DRAFT_PREFIX = 'grainatlas.draft.';
 export const DRAFT_INDEX = 'grainatlas.drafts';
 const DISCARDED = 'grainatlas.discarded-drafts';
 export const DRAFTS_CHANGED = 'grainatlas:drafts-changed';
-function changed() { if (typeof window !== 'undefined') window.dispatchEvent(new Event(DRAFTS_CHANGED)); }
+function changed(draft?: Draft) { if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(DRAFTS_CHANGED, { detail: draft })); }
 export interface Draft {
   uuid: string; name: string; server: string | null; mount: string | null;
   base_revision: number | null; base: ReadElements | null; updated_at: string; changes: Counts | null;
@@ -41,7 +42,7 @@ function arrayAt<T>(storage: DraftStorage, key: string): T[] {
 }
 export function readDraft(uuid: string, storage?: DraftStorage): Draft | null {
   try {
-    const draft = JSON.parse(target(storage).getItem(DRAFT_PREFIX + uuid) || 'null') as Draft | null;
+    const draft = timed('draft.read-parse', () => JSON.parse(target(storage).getItem(DRAFT_PREFIX + uuid) || 'null') as Draft | null);
     // Older drafts can hold the database's '' for "no artifact"; clean it in memory only.
     return draft?.pending ? { ...draft, pending: withoutBlankArtifacts(draft.pending) } : draft;
   } catch { return null; }
@@ -50,13 +51,13 @@ export function writeDraft(draft: Draft, storage?: DraftStorage): boolean {
   if (!canWrite()) return true;
   try {
     const s = target(storage);
-    const bytes = JSON.stringify(draft);
+    const bytes = timed('draft.stringify', () => JSON.stringify(draft));
     const different = s.getItem(DRAFT_PREFIX + draft.uuid) !== bytes;
     s.setItem(DRAFT_PREFIX + draft.uuid, bytes);
     s.setItem(DISCARDED, JSON.stringify(arrayAt<string>(s, DISCARDED).filter(id => id !== draft.uuid)));
     const index = arrayAt<string>(s, DRAFT_INDEX);
     if (!index.includes(draft.uuid)) s.setItem(DRAFT_INDEX, JSON.stringify([...index, draft.uuid]));
-    if (different) changed();
+    if (different) changed(draft);
     return true;
   } catch { return false; /* the open project's edits remain in memory */ }
 }
@@ -85,8 +86,8 @@ export function ensureDraft(project: Project, server: string | null, storage?: D
 export function listDrafts(server: string | null = null, storage?: DraftStorage): Draft[] {
   try {
     const s = target(storage);
-    const keys: string[] = [];
-    for (let i = 0; i < (s.length ?? 0); i++) { const key = s.key?.(i); if (key) keys.push(key); }
+    const keys: string[] = s === appStorage ? appStorage.keys() : [];
+    if (s !== appStorage) for (let i = 0; i < (s.length ?? 0); i++) { const key = s.key?.(i); if (key) keys.push(key); }
     const found = new Map<string, Draft>();
     const ids = new Set([...arrayAt<string>(s, DRAFT_INDEX), ...keys.filter(k => k.startsWith(DRAFT_PREFIX)).map(k => k.slice(DRAFT_PREFIX.length))]);
     for (const id of ids) { const draft = readDraft(id, s); if (draft) found.set(id, draft); }

@@ -7,19 +7,25 @@
     options: SegmentedOption[]; value: string; label: string; onchange?: (value: string) => void; size?: 'small' | 'normal'; disabled?: boolean; wrap?: boolean; testid?: string; content?: Snippet<[SegmentedOption]>;
   } = $props();
   let buttons: HTMLButtonElement[] = [];
-  const active = $derived(Math.max(0, options.findIndex(option => option.value === value)));
-  function select(index: number) { value = options[index].value; onchange?.(value); }
+  const enabled = $derived(options.map((option, index) => option.disabled ? -1 : index).filter(index => index >= 0));
+  const active = $derived(enabled.find(index => options[index].value === value) ?? enabled[0]);
+  function select(index: number) {
+    if (disabled || options[index].disabled) return;
+    // A controlled value belongs to the parent, which may reject the request.
+    if (onchange) onchange(options[index].value);
+    else value = options[index].value;
+  }
   function keyboard(event: KeyboardEvent, index: number) {
-    const next = segmentedIndex(event.key, index, options.length);
+    const next = segmentedIndex(event.key, enabled.indexOf(index), enabled.length);
     if (disabled || next === null || event.altKey || event.ctrlKey || event.metaKey) return;
-    event.preventDefault(); event.stopPropagation(); select(next); buttons[next]?.focus();
+    event.preventDefault(); event.stopPropagation(); select(enabled[next]); buttons[enabled[next]]?.focus();
   }
 </script>
 <div class="segments" class:small={size === 'small'} class:wrap data-testid={testid} role="radiogroup" aria-label={label}>
   {#each options as option, index (option.value)}
     <button type="button" value={option.value} role="radio" aria-checked={value === option.value} aria-label={option.ariaLabel ?? option.label}
       title={option.title ?? option.ariaLabel ?? option.label} tabindex={index === active ? 0 : -1}
-      {disabled} data-testid={option.testid} bind:this={buttons[index]} onclick={() => select(index)} onkeydown={event => keyboard(event, index)}>{#if content}{@render content(option)}{:else}{option.label}{/if}</button>
+      disabled={disabled || option.disabled} data-testid={option.testid} bind:this={buttons[index]} onclick={() => select(index)} onkeydown={event => keyboard(event, index)}>{#if content}{@render content(option)}{:else}{option.label}{/if}</button>
   {/each}
 </div>
 <style>

@@ -1,3 +1,4 @@
+import { timed } from './sync-perf.ts';
 /** Coalesce edits until after a paint. Storage readers and lifecycle boundaries
  * drain this queue synchronously; writers must read the latest state when run. */
 export class DeferredWrites {
@@ -5,10 +6,25 @@ export class DeferredWrites {
   private cancel: (() => void) | null = null;
   private flushing = false;
   private schedule: (run: () => void) => () => void;
-  constructor(schedule: (run: () => void) => () => void) { this.schedule = schedule; }
+  private nextTask: (run: () => void) => () => void;
+  constructor(schedule: (run: () => void) => () => void, nextTask = schedule) { this.schedule = schedule; this.nextTask = nextTask; }
   enqueue(key: object, write: () => void): void {
     this.pending.set(key, write);
-    if (!this.cancel && !this.flushing) this.cancel = this.schedule(() => this.flush());
+    if (!this.cancel && !this.flushing) this.cancel = this.schedule(() => this.step());
+  }
+  /** Background persistence drains one callback per task. Explicit readers and
+   * lifecycle boundaries still synchronously drain everything via flush(). */
+  private step(): void {
+    this.cancel?.(); this.cancel = null;
+    if (this.flushing) return;
+    this.flushing = true;
+    try {
+      const next = this.pending.entries().next().value;
+      if (next) { this.pending.delete(next[0]); timed('persistence.batch', next[1]); }
+    } finally {
+      this.flushing = false;
+      if (this.pending.size && !this.cancel) this.cancel = this.nextTask(() => this.step());
+    }
   }
   flush(): void {
     if (this.flushing) return;
@@ -35,8 +51,11 @@ function afterPaint(run: () => void): () => void {
     if (frame !== undefined) cancelAnimationFrame(frame);
   };
 }
-export const deferredWrites = new DeferredWrites(afterPaint);
-export const flushWrites = () => deferredWrites.flush();
+export const deferredWrites = new DeferredWrites(afterPaint, run => {
+  const timer = setTimeout(run, 0);
+  return () => clearTimeout(timer);
+});
+export const flushWrites = () => timed('persistence.flush', () => deferredWrites.flush());
 
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', flushWrites, { capture: true });

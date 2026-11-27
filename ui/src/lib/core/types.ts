@@ -118,6 +118,8 @@ export interface SegmentParams {
   noise_k: number;
   contrast_frac: number;
   threshold: number | null;
+  /** Click-grow only: 0..1, larger accepts more of the local contrast range. */
+  click_sensitivity?: number;
   smooth_px: number;
   open_px: number;
   close_px: number;

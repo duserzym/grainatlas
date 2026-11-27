@@ -1,3 +1,4 @@
+import { timed, timedAsync } from './sync-perf.ts';
 import { flushWrites } from './deferred-writes.ts';
 import { desktopFileCommands, FileStorage, type FileCommands } from './file-storage.ts';
 import { canWrite, presentation } from './presentation.ts';
@@ -184,8 +185,8 @@ export class AppStorage {
   }
   private journal(key: string, value: string | null): string | null {
     if (!canWrite()) return null;
-    const entry = JSON.stringify({ value });
-    try { this.legacy().setItem(JOURNAL_PREFIX + key, entry); return entry; } catch { return null; }
+    const entry = timed('storage.journal-stringify', () => JSON.stringify({ value }));
+    try { timed('storage.localStorage-journal', () => this.legacy().setItem(JOURNAL_PREFIX + key, entry)); return entry; } catch { return null; }
   }
   private clearJournal(key: string, entry: string | null): void {
     if (entry === null) return;
@@ -254,7 +255,7 @@ export class AppStorage {
     const job = this.queue.then(async () => {
       try {
         if (this.files) {
-          await this.files.write(key, value);
+          await timedAsync('storage.file-write.wall', () => this.files!.write(key, value));
           this.fallback.delete(key);
           this.clearJournal(key, journal);
           return true;

@@ -38,7 +38,8 @@
   import { handleShellCommand } from './lib/shellcmd';
   import { hostedSync } from './lib/hosted-sync';
   import { reportHostedStatus } from './lib/hosted-actions';
-  import { DRAFTS_CHANGED, listDrafts } from './lib/drafts';
+  import { DRAFTS_CHANGED, listDrafts, type Draft } from './lib/drafts';
+  import { HostedDraftReports } from './lib/hosted-draft-reports';
   import { commandDeduper, type CommandSource } from './lib/menu-command';
   import { InterfaceZoom } from './lib/interface-zoom';
   import { dispatchZoom, matchZoomKey, zoomMenuCommand, zoomViews, type ZoomCommand } from './lib/zoom';
@@ -437,10 +438,11 @@
     // bridge takes them at once (before the shell's 3 s fallback) and hands them
     // over as {path, file}; they open like a drop on the Open screen.
     const stopFiles = isHosted() ? onOpenFiles((set) => openOffered(set)) : () => {};
-    const reportDrafts = () => { if (isHosted()) hostedSync.drafts(listDrafts(app.server)); };
+    const draftReports = new HostedDraftReports(() => listDrafts(app.server), drafts => hostedSync.drafts(drafts));
+    const reportDrafts = (event?: Event) => { if (isHosted()) draftReports.changed((event as CustomEvent<Draft> | undefined)?.detail); };
     reportDrafts();
     window.addEventListener(DRAFTS_CHANGED, reportDrafts);
-    undo.push(() => window.removeEventListener(DRAFTS_CHANGED, reportDrafts));
+    undo.push(() => { draftReports.dispose(); window.removeEventListener(DRAFTS_CHANGED, reportDrafts); });
     const stopCommands = isHosted() ? onCommand(handleShellCommand) : () => {};
     fromHash();
     void startDeepLink();

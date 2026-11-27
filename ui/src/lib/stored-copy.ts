@@ -1,3 +1,4 @@
+import { timed } from './sync-perf.ts';
 import { canWrite } from './presentation.ts';
 import { appStorage } from './app-storage.ts';
 import { grainMapWithoutBlankArtifacts } from './sync.ts';
@@ -63,8 +64,8 @@ export function persistProject(project: Project, path: string | null, when = new
   if (!canWrite()) return true;
   try {
     const target = storage ?? appStorage;
-    if (path) target.setItem(storedCopyKey(project.uuid, path), JSON.stringify({ saved_at: when, path, project }));
-    else target.setItem(PROJECT_PREFIX + project.package.name, JSON.stringify(project));
+    if (path) target.setItem(storedCopyKey(project.uuid, path), timed('project.stringify', () => JSON.stringify({ saved_at: when, path, project })));
+    else target.setItem(PROJECT_PREFIX + project.package.name, timed('project.stringify', () => JSON.stringify(project)));
     const recent = JSON.parse(target.getItem(RECENT_KEY) || '[]') as ReturnType<typeof readRecent>;
     const thumbnail = recent.find(r => r.id === project.uuid)?.thumbnail;
     const entries = recent.filter((r) => r.name !== project.package.name);
