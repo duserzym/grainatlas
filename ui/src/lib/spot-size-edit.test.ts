@@ -23,7 +23,7 @@ describe('explicit spot size transactions', () => {
     edit.change(state, 'project/a', 'a', ['two', 'one', 'away'], 31, 1);
     expect(state.spots.map(s => s.diameter_um)).toEqual([31, 31, 20]);
     expect(state.spots[2]).toBe(before[2]); expect(before.map(s => s.diameter_um)).toEqual([15, 40, 20]);
-    expect(state.checkpoints).toBe(1); expect(state.writes).toBe(2); expect(state.diameter).toBe(25);
+    expect(state.checkpoints).toBe(1); expect(state.writes).toBe(2); expect(state.diameter).toBe(31);
   });
   it('starts a fresh undo transaction after unrelated edits, undo/redo, replacement, scope or time changes', () => {
     for (const interrupt of [
@@ -42,12 +42,17 @@ describe('explicit spot size transactions', () => {
     edit.change(state, 'other/a', 'a', ['one'], 32, 2002);
     expect(state.checkpoints).toBe(3);
   });
-  it('rejects invalid sizes, read-only edits and no-op selected edits', () => {
+  it('rejects invalid sizes and read-only edits', () => {
     const state = fixture(), edit = new SpotSizeEdit(), spots = state.spots;
     for (const diameter of [NaN, Infinity, 0, -1]) edit.change(state, 'p', 'a', ['one'], diameter);
-    edit.change(state, 'p', 'a', ['one'], 15);
     state.readOnly = true; edit.change(state, 'p', 'a', ['one'], 30); edit.change(state, 'p', 'a', [], 30);
     expect(state.spots).toBe(spots); expect(state.diameter).toBe(25);
+    expect(state.checkpoints).toBe(0); expect(state.writes).toBe(0);
+  });
+  it('an already matching selection still sets the next size without a registered edit', () => {
+    const state = fixture(), spots = state.spots;
+    new SpotSizeEdit().change(state, 'p', 'a', ['one'], 15);
+    expect(state.diameter).toBe(15); expect(state.spots).toBe(spots);
     expect(state.checkpoints).toBe(0); expect(state.writes).toBe(0);
   });
 });

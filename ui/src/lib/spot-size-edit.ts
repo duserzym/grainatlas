@@ -16,8 +16,11 @@ export class SpotSizeEdit<T extends Sized> {
 
   change(state: SizeEditState<T>, scope: string, area: string | null, ids: readonly string[], diameter: number, at = performance.now()) {
     if (state.readOnly || spotDiameter({ diameter_um: diameter }) === null) return;
+    // An explicit size choice also sizes future placements. Placement selects its
+    // new spot, so leaving this behind would keep every following spot at the
+    // previous next size even while all controls display the chosen size.
+    state.diameter = diameter;
     if (!ids.length) {
-      state.diameter = diameter;
       this.last = null;
       return;
     }

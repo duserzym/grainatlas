@@ -18,12 +18,12 @@ test.beforeAll(() => {
   execFileSync('cargo', ['run', '-p', 'grainatlas-core', '--example', 'synthetic_bundle'], { cwd: root, stdio: 'pipe' });
 });
 
-async function openSynthetic(page: Page, stalled = false, sizeCases = false, mixed = false) {
+async function openSynthetic(page: Page, stalled = false, sizeCases = false, mixed = false, initialSize = 20) {
   const project = JSON.parse(await readFile(path.join(generated, 'project.json'), 'utf8'));
   const atlas = JSON.parse(await readFile(path.join(generated, 'atlas.json'), 'utf8'));
   const ui = project.grainatlas_ui;
   if (sizeCases) {
-    for (const spot of ui.spots) { spot.diameter_um = 20; spot.created = '2026-01-01T00:00:00Z'; spot.kind ??= 'spot'; }
+    for (const spot of ui.spots) { spot.diameter_um = initialSize; spot.created = '2026-01-01T00:00:00Z'; spot.kind ??= 'spot'; }
     if (mixed) ui.spots[1].diameter_um = 40;
     const b = structuredClone(project.areas[0]);
     Object.assign(b, { id: 'b', uuid: '30000000-0000-4000-8000-000000000002', name: 'Synthetic second area', sample: 'Synthetic second', pixel_size_nm: 500 });
@@ -248,8 +248,8 @@ async function changeSize(page: Page, control: SizeControl, initial: number) {
   }
   return 30;
 }
-async function sizeSetup(page: Page, area: string, mixed = false) {
-  const mock = await openSynthetic(page, false, true, mixed);
+async function sizeSetup(page: Page, area: string, mixed = false, initialSize = 20) {
+  const mock = await openSynthetic(page, false, true, mixed, initialSize);
   await page.getByRole('combobox', { name: 'Area', exact: true }).selectOption(area);
   await page.locator('.side .tabs').getByRole('tab', { name: /^Spots / }).click();
   const entry = page.locator('details.spot-entry');
@@ -370,3 +370,104 @@ for (const control of ['toolbar', 'presets', 'entry stepper', 'floating panel'] 
   expect(storedElements(await draftElements(page))).toEqual(baseline);
   expect(mock.unexpected).toEqual([]);
 });
+
+async function chooseExactSize(page: Page, control: SizeControl, diameter: number, initial: number) {
+  if (control === 'presets') {
+    await page.getByRole('radiogroup', { name: 'Spot diameter', exact: true })
+      .getByRole('radio', { name: `${diameter} µm`, exact: true }).click();
+    return;
+  }
+  const field = page.getByTestId(control === 'toolbar' ? 'size-toolbar' : control === 'floating panel' ? 'size-panel' : 'size-side');
+  if (control === 'entry stepper') {
+    const direction = diameter < initial ? 'smaller' : 'larger';
+    const button = field.locator('..').getByRole('button', { name: `1 µm ${direction} (Shift: 5 µm)`, exact: true });
+    for (let d = initial; d !== diameter; d += Math.sign(diameter - initial) * 5) await button.click({ modifiers: ['Shift'] });
+  } else {
+    await field.fill(String(diameter)); await field.press('Enter'); await field.blur();
+  }
+}
+
+async function emptySizePoint(page: Page, spots: any[]) {
+  return page.getByTestId('canvas-um-space').evaluate((g, spots) => {
+    const matrix = (g as SVGGraphicsElement).getScreenCTM()!;
+    const host = g.closest('[data-view]')!.getBoundingClientRect();
+    const centres = spots.filter(s => s.area_id === 'a').map(s => new DOMPoint(s.x_um, s.y_um).matrixTransform(matrix));
+    for (const fy of [.65, .55, .75, .4, .85, .3]) for (const fx of [.4, .5, .3, .6, .7, .2]) {
+      const x = host.left + host.width * fx, y = host.top + host.height * fy;
+      if (document.elementFromPoint(x, y)?.closest('[data-view]') && centres.every(p => Math.hypot(p.x - x, p.y - y) > 90)) return { x, y };
+    }
+    throw new Error('No uncovered empty synthetic canvas position');
+  }, spots);
+}
+
+for (const groupControl of ['toolbar', 'presets', 'entry stepper', 'floating panel'] as const)
+  for (const nextControl of ['toolbar', 'presets', 'entry stepper'] as const)
+    for (const clearing of ['keep selected', 'Escape', 'empty canvas'] as const)
+      test(`size-stuck regression: ${groupControl} group → ${nextControl} next, ${clearing}, 1280x800`, async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height: 800 });
+        const mock = await sizeSetup(page, 'a', false, 25);
+        const [first, second] = mock.ui.spots;
+        const baseline = storedElements(await draftElements(page) ?? mock.elements);
+        await page.locator(`tr[data-spot-id="${first.id}"]`).click();
+        await page.locator(`tr[data-spot-id="${second.id}"]`).click({ modifiers: ['Shift'] });
+        await ensureExpandedPanel(page);
+        await chooseExactSize(page, groupControl, 20, 25);
+        const grouped = storedElements(await draftElements(page));
+        expect(grouped.spots).toEqual(baseline.spots.map(s => [first.id, second.id].includes(s.id) ? { ...s, diameter_um: 20 } : s));
+        const calibration = mock.project.areas[0].mosaic.um_per_px;
+        for (const spot of [first, second]) await expectScreenRadius(ringOf(page, spot.name), 20, calibration);
+        await expect(page.getByTestId('size-toolbar')).toHaveAccessibleName(/2 selected · sets next spot/);
+
+        if (clearing === 'Escape') await page.keyboard.press('Escape');
+        if (clearing === 'empty canvas') {
+          await page.getByTestId('tool-select').click();
+          const point = await emptySizePoint(page, grouped.spots);
+          await page.mouse.click(point.x, point.y);
+        }
+        if (clearing !== 'keep selected') await expect(page.getByTestId('size-toolbar')).toHaveAccessibleName(/next spot;/);
+        // With no selection, start the next controls at 25 so their actual
+        // field, chip or stepper event must take the next size back to 20.
+        if (clearing !== 'keep selected') await chooseExactSize(page, 'toolbar', 25, 20);
+        // Reaffirm 20 through the next control. An unchanged text commit need
+        // not emit a write, so the earlier choice must already size placement.
+        await chooseExactSize(page, nextControl, 20, clearing === 'keep selected' ? 20 : 25);
+        expect(storedElements(await draftElements(page))).toEqual(grouped);
+        await page.getByTestId('tool-spot').click();
+        const placements = [];
+        for (let n = 0; n < 2; n++) {
+          const before = storedElements(await draftElements(page));
+          const point = await emptySizePoint(page, before.spots);
+          await page.keyboard.down('Alt'); await page.mouse.move(point.x, point.y);
+          await expectScreenRadius(page.getByTestId('spot-ghost'), 20, calibration);
+          await page.mouse.click(point.x, point.y); await page.keyboard.up('Alt');
+          await expect.poll(async () => (await draftElements(page))?.spots.length).toBe(before.spots.length + 1);
+          const after = storedElements(await draftElements(page));
+          const added = after.spots.filter(s => !before.spots.some(b => b.id === s.id));
+          expect(added).toHaveLength(1); expect(added[0].diameter_um).toBe(20);
+          await expect(page.locator(`tr[data-spot-id="${added[0].id}"]`)).toHaveClass(/selected/);
+          await expectScreenRadius(ringOf(page, added[0].name), 20, calibration);
+          placements.push(after);
+        }
+        const newest = placements[1].spots.find(s => !placements[0].spots.some(b => b.id === s.id))!;
+        // The last placement is auto-selected. Its size edit must address that
+        // new ID rather than the earlier two-spot transaction.
+        await ensureExpandedPanel(page);
+        await chooseExactSize(page, groupControl === 'floating panel' ? groupControl : nextControl, 15, 20);
+        const resized = storedElements(await draftElements(page));
+        expect(resized.spots).toEqual(placements[1].spots.map(s => s.id === newest.id ? { ...s, diameter_um: 15 } : s));
+        await expectScreenRadius(ringOf(page, newest.name), 15, calibration);
+        for (const expected of [placements[1], placements[0], grouped, baseline]) {
+          await page.getByRole('button', { name: 'Undo', exact: true }).click();
+          expect(storedElements(await draftElements(page))).toEqual(expected);
+          for (const spot of expected.spots.filter(s => s.area_id === 'a' && s.diameter_um))
+            await expectScreenRadius(ringOf(page, spot.name), spot.diameter_um!, calibration);
+        }
+        for (const expected of [grouped, placements[0], placements[1], resized]) {
+          await page.getByRole('button', { name: 'Redo', exact: true }).click();
+          expect(storedElements(await draftElements(page))).toEqual(expected);
+          for (const spot of expected.spots.filter(s => s.area_id === 'a' && s.diameter_um))
+            await expectScreenRadius(ringOf(page, spot.name), spot.diameter_um!, calibration);
+        }
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect(mock.unexpected).toEqual([]);
+      });

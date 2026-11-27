@@ -727,6 +727,7 @@
   const selSpots = $derived(areaSpots.filter((s) => app.selection.includes(s.id)));
   const selectedHere = $derived(selSpots.length);
   const sizeSummary = $derived(selectionSize(selSpots, app.diameter));
+  const sizeCaption = $derived(selSpots.length ? `${sizeSummary.caption} · sets next spot` : sizeSummary.caption);
   const sizeValue = $derived(sizeSummary.value);
   const sizeTarget = $derived(JSON.stringify([app.id, app.project?.uuid, areaId, selSpots.length ? selSpots.map(s => s.id).sort() : 'next']));
   const diameterRange = $derived(sizeSummary.range);
@@ -2203,8 +2204,8 @@
         <span class="sep"></span><span class="faint small">Next spot</span>
         <span class="mono" class:clash={nextNameClash} data-testid="next-name">{nextName}</span>
         {#if nextNameClash}<span class="clash" data-testid="next-name-clash">already used</span>{/if}
-        <div class="diam">⌀ <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeSummary.caption}; keys 1–6 pick a preset`} testid="size-toolbar" /></div>
-        <span class="faint small">{sizeSummary.caption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
+        <div class="diam">⌀ <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeCaption}; keys 1–6 pick a preset`} testid="size-toolbar" /></div>
+        <span class="faint small">{sizeCaption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
       {/if}
       <button class:primary={ro} aria-pressed={!ro} data-testid="edit-copy" title={app.remote?.offlineAt && app.sync.reachable !== true ? 'Offline copy: read-only until the database is reachable' : undefined} disabled={!!app.busy || app.sync.busy || !!app.remote?.offlineAt && app.sync.reachable !== true} onclick={() => setMode(current(), ro ? 'edit' : 'view', true).catch(e => { app.error = e instanceof Error ? e.message : String(e); })}>{ro ? 'Edit' : 'View'}</button>
       {#if app.discardUndo}<button onclick={() => undoDiscard(current())}>Undo discard</button>{/if}
@@ -2293,6 +2294,7 @@
           <p class="faint small">Samples: {[...new Set(selSpots.map((s) => s.sample))].join(', ') || '–'}</p>
           <p>{diameterRange}</p>
           <div class="field">Diameter µm <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label="Selected spots diameter µm" testid="size-panel" disabled={ro} /></div>
+          <p class="faint small">{sizeCaption}</p>
           {@render spotBatchButtons()}
         {:else if selGrains.length > 1}
           <p>{selectedGrains.length} grains selected</p>
@@ -2304,6 +2306,7 @@
             <label class="field" title="The spot's number; the name follows the pattern">n <input type="number" min="1" value={focus.n} onchange={(e) => setSpotN(focus.id, Math.max(1, Math.round(+e.currentTarget.value)))} data-testid="panel-n" /></label>
           </div>
           <div class="field">Diameter µm <SizeBox value={spotDiameter(focus)} target={JSON.stringify([app.id, app.project?.uuid, areaId, focus.id])} placeholder="not set" onchange={singleDiameterChange(focus.id)} label="Diameter µm" testid="size-panel" disabled={ro} /></div>
+          <p class="faint small">This spot · sets next spot</p>
           <div class="two">
             <label class="field">Kind
               <select value={focus.kind} onchange={(e) => updateSpot(focus.id, { kind: e.currentTarget.value as SpotKind })}><option value="spot">spot</option><option value="line" disabled={focus.x2_um == null}>line</option><option value="raster" disabled={focus.x2_um == null}>raster</option></select>
@@ -2671,8 +2674,8 @@
       <details class="spot-entry" open={app.layout.spotEntryOpen} ontoggle={(e) => { if (app.layout.spotEntryOpen === e.currentTarget.open) return; app.layout.spotEntryOpen = e.currentTarget.open; app.saveLayout(); }}>
         <summary>Spot entry</summary>
         <div class="entry-body">
-          <div class="diam">⌀ <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeSummary.caption}`} testid="size-side" /></div>
-          <span class="faint small">{sizeSummary.caption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
+          <div class="diam">⌀ <SizeBox value={sizeValue} target={sizeTarget} placeholder={sizeSummary.placeholder} onchange={selectionDiameterChange(sizeTarget)} label={`Spot diameter µm: ${sizeCaption}`} testid="size-side" /></div>
+          <span class="faint small">{sizeCaption}{sizeSummary.placeholder === 'mixed' ? ` · ${diameterRange}` : ''}</span>
           <div class="next-entry">
             <label class="field" title="Next n counts up across samples unless restart is on; clear it to continue above the highest existing number.">Next n
               <input type="number" min="1" placeholder="auto ({automaticN})" data-testid="next-n" value={app.nextN ?? ''} oninput={(e) => { const n = e.currentTarget.valueAsNumber; app.nextN = Number.isFinite(n) ? Math.max(1, Math.round(n)) : null; }} />
