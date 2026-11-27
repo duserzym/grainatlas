@@ -104,7 +104,7 @@ async function mockServer(page: Page, onLevelZero = () => {}, unregistered = fal
       if (cmd === 'bridge_token') return 'synthetic-token';
       return null;
     } };
-    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: true, quality: 100, nasRoot: '' }));
+    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: true, syncAutomatically: true, syncModeVersion: 1, quality: 100, nasRoot: '' }));
     sessionStorage.setItem('grainatlas.upbdb.token', 'synthetic-token');
   }, { server, standalone: quiet.standalone ?? false });
   const uploads: Map<string, Buffer>[] = [];

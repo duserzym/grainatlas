@@ -1,4 +1,5 @@
 import { untrack } from 'svelte';
+import { isHosted } from '@lab/bridge';
 import { authToken } from './atlas';
 import { browserAccount, cacheKey, readCache, serverMirrorId, SERVER_SESSION_CHANGED, type BrowserLab } from './mount-browser';
 import { mountMirror } from './mount-mirror';
@@ -31,7 +32,7 @@ export class TimsSession {
       this.hidden = true; this.generation++; this.detach?.(); this.detach = undefined; this.store = null; this.error = ''; this.labs = [];
       this.epoch++;
     };
-    const wake = () => { this.store?.wake(); void this.store?.refresh(); };
+    const wake = () => { if (isHosted() || this.app.hosted || this.app.link.syncAutomatically) { this.store?.wake(); void this.store?.refresh(); } };
     if (typeof window !== 'undefined') {
       window.addEventListener(SERVER_SESSION_CHANGED, hide);
       window.addEventListener('online', wake); window.addEventListener('focus', wake);
@@ -52,6 +53,11 @@ export class TimsSession {
       void this.connect(server, mount, project, access, viewAs, readOnly, generation);
       return () => { if (generation === this.generation) { this.generation++; this.detach?.(); this.detach = undefined; this.store = null; } };
     });
+    $effect(() => {
+      const automatic = isHosted() || this.app.hosted || this.app.link.syncAutomatically;
+      const store = this.store;
+      untrack(() => store?.setAutomatic(automatic));
+    });
     let lastSync: string | null = null, lastRevision: number | undefined, lastChange: string | null | undefined;
     $effect(() => {
       const synced = this.app.sync.syncedAt ?? this.app.sync.draft?.synced_at ?? null;
@@ -59,7 +65,7 @@ export class TimsSession {
       const serverChange = this.app.sync.status?.changed_at;
       const store = this.store;
       if (store && synced && synced !== lastSync) untrack(() => store.mountSynced());
-      if (store && (revision !== lastRevision || serverChange !== lastChange)) untrack(() => { void store.refresh(); });
+      if (store && (isHosted() || this.app.hosted || this.app.link.syncAutomatically) && (revision !== lastRevision || serverChange !== lastChange)) untrack(() => { void store.refresh(); });
       lastSync = synced; lastRevision = revision; lastChange = serverChange;
     });
     return () => {
@@ -112,6 +118,7 @@ export class TimsSession {
       if (!current()) return;
       selected.store.api = new TimsApi(server, token, access, project);
       selected.store.enabled = true;
+      selected.store.setAutomatic(isHosted() || this.app.hosted || this.app.link.syncAutomatically);
       this.store = selected.store; this.version++;
       void selected.store.refresh(); selected.store.wake();
     } catch (e) { if (current()) { this.detach?.(); this.detach = undefined; this.error = e instanceof Error ? e.message : String(e); } }

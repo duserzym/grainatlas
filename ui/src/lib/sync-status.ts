@@ -51,3 +51,13 @@ export function plainSyncStatus(draft: Draft | null, work: { pending: boolean },
   const checked = flags.checked ?? (!!draft?.checked_at && Date.now() - Date.parse(draft.checked_at) < 600_000);
   return checked && revision != null && revision === draft?.base_revision ? 'Up to date' : 'Saved';
 }
+
+/** Manual mode describes queued work without promising an automatic retry. */
+export function manualSyncText(status: PlainSyncStatus, counts: Counts, pending: boolean): string {
+  if (status === 'Needs your attention' || status === 'Syncing…') return status;
+  if (pending) {
+    const count = counts.spots + counts.grains + counts.labels;
+    return count ? `${count} ${count === 1 ? 'change' : 'changes'} not synced` : 'Not synced';
+  }
+  return status === 'Offline, will sync later' ? 'Offline' : status;
+}

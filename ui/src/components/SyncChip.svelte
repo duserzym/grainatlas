@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { isHosted } from '@lab/bridge';
   import { oversightSession } from '../lib/oversight';
   import { app } from '../lib/store.svelte';
+  import { syncReminder } from '../lib/close-sync';
   import SyncAttention from './SyncAttention.svelte';
   import MountPicker from './MountPicker.svelte';
   import SyncLinkOffer from './SyncLinkOffer.svelte';
@@ -10,10 +12,13 @@
   let mount = $state('');
   let choices = $state<Record<string, Resolution>>({});
   let publishImages = $state(true);
+  const hosted = $derived(isHosted() || app.hosted);
   const session = $derived(app.sync);
-  const action = $derived(session.staleOpen ? 'Review…' : session.imageDecision ? 'Review images' : session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Get latest changes' : session.state === 'both-changed' ? session.detailText === 'Database has more' ? 'Sync now' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : 'Sync now');
+  const action = $derived(session.staleOpen ? 'Review…' : session.imageDecision ? 'Review images' : session.confirmation ? 'Confirm…' : session.state === 'unregistered' ? 'Register…' : session.state === 'server-newer' ? 'Get latest changes' : session.state === 'both-changed' ? session.detailText === 'Database has more' ? 'Sync now' : 'Review differences' : session.state === 'offline' ? 'Retry' : session.state === 'checking' ? 'Check' : !hosted && !app.link.syncAutomatically ? 'Sync' : 'Sync now');
   const pillState = $derived(session.text === 'Needs your attention' ? 'needs-confirmation' : session.text.startsWith('Syncing') ? 'checking' : session.text === 'Up to date' ? 'in-sync' : session.text === 'Offline, will sync later' ? 'offline' : 'local-changes');
-  const text = $derived(session.text);
+  const outbox = $derived(hosted ? 0 : syncReminder(app).outbox);
+  const text = $derived(!hosted && !app.link.syncAutomatically && outbox && !session.busy && !session.imageBusy && session.text !== 'Needs your attention'
+    ? `${outbox + session.counts.spots + session.counts.grains + session.counts.labels} ${outbox + session.counts.spots + session.counts.grains + session.counts.labels === 1 ? 'change' : 'changes'} not synced` : session.text);
   const revisionTitle = $derived(session.status ? `v${session.status.atlas_version ?? '—'} r${session.status.revision}` : '');
   const title = $derived([session.detailText, session.detailText.includes(revisionTitle) ? '' : revisionTitle, app.draftHere === 'unknown' ? 'Your draft here, base not checked' : app.draftHere !== null ? `Your draft here, based on r${app.draftHere}` : '', session.syncedAt ? `Last synced ${new Date(session.syncedAt).toLocaleString()}` : '', session.syncDisabledReason || session.error].filter(Boolean).join(' · '));
   const kindName = (d: Difference) => d.kind === 'labels' ? 'Annotation' : d.kind === 'grains' ? 'Grain' : 'Spot';
@@ -42,7 +47,7 @@
       </svg>
       <span aria-live="polite">{text}</span>
     </button>
-    {#if session.staleOpen || session.imageDecision || session.state !== 'in-sync' || session.confirmation || session.pixelsChanged}
+    {#if session.staleOpen || session.imageDecision || session.state !== 'in-sync' || session.confirmation || session.pixelsChanged || outbox}
       <button class:primary={pillState !== 'checking' && pillState !== 'offline'} data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || session.imageBusy || app.loadingProject || (app.readOnly && session.state === 'local-changes')} onclick={() => { detailsOpen = false; void session.action(); }}>{action}</button>
     {/if}
   </div>

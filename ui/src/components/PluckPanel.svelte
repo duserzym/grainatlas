@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isHosted } from '@lab/bridge';
   import { onDestroy, untrack } from 'svelte';
   import FloatingPanel from './FloatingPanel.svelte';
   import { app } from '../lib/store.svelte';
@@ -155,7 +156,7 @@
       rememberCapsuleSet(setId); await store.remember(setId, batch);
       saved = true;
       // Keep the panel open so a refusal stays next to the editable fields.
-      await store.flush();
+      if (isHosted() || app.hosted || app.link.syncAutomatically) await store.flush();
     } catch (e) { error = e instanceof Error ? e.message : String(e); }
     finally { busy = false; }
   }
@@ -200,7 +201,7 @@
     {#if reason}<p class="faint small" data-testid="pluck-reason">{reason}</p>{/if}
     {#if error}<p class="danger" role="alert">{error}</p>{/if}
     {#each liveErrors as entry (entry.id)}<p class="danger" role="alert">{entry.error}</p><div class="row"><button onclick={() => { void save(); }}>Edit</button><button onclick={() => { if (store) void store.discard(entry.id).then(() => { saved = false; }); }}>Discard</button></div>{/each}
-    {#if saved && !liveErrors.length}<p class="faint small" role="status">{store?.offline || data?.outbox.length ? 'Saved on this computer; sends when online' : 'Pluck saved'}</p>{/if}
+    {#if saved && !liveErrors.length}<p class="faint small" role="status">{store?.offline || data?.outbox.length ? isHosted() || app.hosted || app.link.syncAutomatically ? 'Saved on this computer; sends when online' : 'Saved on this computer; not synced' : 'Pluck saved'}</p>{/if}
     {#if app.tims.error || syncError}<p class="faint small">{app.tims.error || syncError}</p>{/if}
     <div class="row"><button class="primary" disabled={!!reason || busy || !store || app.readOnly || (saved && !liveErrors.length)} onclick={() => { void save(); }}>{busy ? 'Saving…' : edit ? 'Save' : 'Pluck'}</button><button onclick={onclose}>Cancel</button></div>
   </div>

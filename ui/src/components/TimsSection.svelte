@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isHosted } from '@lab/bridge';
   import StatusChip from '../lib/ui/StatusChip.svelte';
   import { untrack } from 'svelte';
   import { app } from '../lib/store.svelte';
@@ -37,7 +38,7 @@
       {#each f.sources.filter(s => s.atlas_grain_id === grain && s.is_fragment) as s (s.id)}<p>Fragment: {s.fragment_note}</p>{/each}
       {#if f.notes}<p>{f.notes}</p>{/if}
       {#if f.sources.some(s => s.atlas_grain_id !== grain)}<p>Other grains: {f.sources.filter(s => s.atlas_grain_id !== grain).map(s => label(s.atlas_grain_id)).join(', ')}</p>{/if}
-      <p class="faint small">{badge?.state === 'waiting' ? 'Waits for the mount to sync' : badge?.state === 'pending' ? 'Saved on this computer; sends when online' : badge?.state === 'failed' ? 'Pluck needs attention' : 'Sent to the database'}</p>
+      <p class="faint small">{badge?.state === 'waiting' ? 'Waits for the mount to sync' : badge?.state === 'pending' ? isHosted() || app.hosted || app.link.syncAutomatically ? 'Saved on this computer; sends when online' : 'Saved on this computer; not synced' : badge?.state === 'failed' ? 'Pluck needs attention' : 'Sent to the database'}</p>
       {#if !app.readOnly}<div class="row"><button onclick={() => onedit(f)}>Edit</button><button class="danger" onclick={() => { void remove(f); }}>Remove pluck</button></div>{/if}
     {/each}
     {#each entries as entry (entry.id)}

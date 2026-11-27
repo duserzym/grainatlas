@@ -32,7 +32,7 @@ export async function mockTimsServer(page: Page, generated: string) {
   const active = () => fractions.filter(f => !f.retired_at);
   const occupied = (b: BatchDetail) => Object.fromEntries(Array.from({ length: set.positions }, (_, i) => [String(i + 1), active().find(f => f.batch_id === b.id && f.capsule_number === i + 1)?.id ?? null]));
   await page.addInitScript(({ server }) => {
-    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: false, syncAutomatically: false, quality: 100, nasRoot: '' }));
+    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: false, syncAutomatically: true, syncModeVersion: 1, quality: 100, nasRoot: '' }));
     sessionStorage.setItem('grainatlas.upbdb.token', 'synthetic-token');
   }, { server });
   await page.route(`${server}/**`, async route => {

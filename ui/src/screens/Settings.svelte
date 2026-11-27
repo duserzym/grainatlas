@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isHosted } from '@lab/bridge';
   import { clearPublishStatusCache } from '../lib/publish-engine';
   import { clearPublishedFiles } from '../lib/published-files';
   import { clearSyncCache } from '../lib/sync-cache';
@@ -31,7 +32,7 @@
   onMount(() => { void cacheSize(); });
   onMount(() => { void appStorage.usageText().then(text => { storageText = text; }); });
 
-  const hosted = app.hosted;
+  const hosted = $derived(isHosted() || app.hosted);
   let serverText = $state(app.link.server);
   const serverBad = $derived(serverText.trim() !== '' && !normalizeServer(serverText));
   function saveServer() {
@@ -49,7 +50,7 @@
     input.value = String(app.link.syncPollSeconds);
   }
 
-  const browserSignIn = canSignInWithBrowser(hosted);
+  const browserSignIn = $derived(canSignInWithBrowser(hosted));
   let signingIn = $state(false);
   let signInText = $state('');
   let signInError = $state('');
@@ -127,14 +128,20 @@
     <label class="check"><input type="checkbox" bind:checked={app.settings.outline_smooth} onchange={save} data-testid="outline-smooth" /> Smooth new outlines</label>
     <p class="faint small">Applies to outlines found or drawn from now on; grains already outlined keep theirs.</p>
   </div>
+  {#if !hosted}
   <div class="glass panel">
-    <h2>UPbDB</h2>
+    <h2>Sync</h2>
     <label class="check"><input type="checkbox" bind:checked={app.link.syncAutomatically} onchange={() => app.saveLink()} data-testid="sync-automatically" /> Sync automatically</label>
     <label class="check"><input type="checkbox" bind:checked={app.link.syncOnSave} onchange={() => app.saveLink()} data-testid="sync-on-save" /> Sync to the database when saving</label>
     <label class="field">Background check interval (seconds)
-      <input type="number" min={MIN_SYNC_POLL_SECONDS} max={MAX_SYNC_POLL_SECONDS} value={app.link.syncPollSeconds}
+      <input type="number" min={MIN_SYNC_POLL_SECONDS} max={MAX_SYNC_POLL_SECONDS} disabled={!app.link.syncAutomatically} value={app.link.syncPollSeconds}
         onchange={e => saveSyncPollInterval(e.currentTarget)} />
     </label>
+    <p class="faint small">Changes stay saved locally. Sync manually, or turn on automatic sync and background checks.</p>
+  </div>
+  {/if}
+  <div class="glass panel">
+    <h2>UPbDB</h2>
     <label class="field">Server
       <input type="url" placeholder="http://localhost:8000" bind:value={serverText} onchange={saveServer} aria-invalid={serverBad} data-testid="server" />
     </label>

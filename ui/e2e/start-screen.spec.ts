@@ -21,7 +21,7 @@ async function setup(page: Page, options: Options = {}) {
   await page.addInitScript(({ server, options, projectId, mountId }) => {
     if (sessionStorage.getItem('grainatlas.e2e.initialized')) return;
     sessionStorage.setItem('grainatlas.e2e.initialized', '1');
-    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: false }));
+    localStorage.setItem('grainatlas.upbdb', JSON.stringify({ server, syncOnSave: false, syncAutomatically: true, syncModeVersion: 1 }));
     if (!options.signedOut) sessionStorage.setItem('grainatlas.upbdb.token', 'invented-token');
     if (options.hosted) {
       const w = window as any;

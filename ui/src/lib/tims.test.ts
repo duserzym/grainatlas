@@ -33,6 +33,25 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => { for (const s of instances.splice(0)) s.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('durable ordered TIMS outbox', () => {
+  it('manual mode persists and retries only on explicit flush, and opt-in restores scheduled sends', async () => {
+    const { store, api, writes, storage } = setup();
+    store.setAutomatic(false);
+    await store.createFraction(input(), sample);
+    expect(JSON.parse(storage.map.get(store.key)!).outbox).toHaveLength(1);
+    store.wake();
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(writes).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.mocked(api.write).mockRejectedValueOnce(new Error('Synthetic offline'));
+    await store.flush();
+    expect(store.data.outbox).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    store.setAutomatic(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writes).toHaveLength(1);
+    expect(store.data.outbox).toHaveLength(0);
+  });
+
   it('writes batches before fractions, rewrites temporary references and remembers real ids', async () => {
     const { store, writes } = setup();
     const b = await store.createBatch({ capsule_set_id: set.id, started_on: batch.started_on });

@@ -140,7 +140,9 @@ test('pixel bookkeeping matches fullProject with and without bundle tone, ignori
   app.flushPersistence();
 });
 
-test('Open list, unloaded session and tracked draft agree on the same status fixtures', () => {
+test('automatic mode keeps Open list, unloaded session and tracked draft status fixtures consistent', () => {
+  const previousAutomatic = app.link.syncAutomatically;
+  app.link.syncAutomatically = true;
   const p = structuredClone(source);
   p.upbdb.mount_id = 'mount';
   p.grainatlas_ui = { grains: {}, spots: [], labels: [], tone: {} };
@@ -212,6 +214,7 @@ test('Open list, unloaded session and tracked draft agree on the same status fix
     assert.equal(JSON.parse(storage.get('grainatlas.draft.synthetic')).pixels_changed, f.pixels, f.name);
     if (f.copy) assert.equal(storage.get(copyKey), JSON.stringify(f.copy), 'healing retains the project copy');
   }
+  app.link.syncAutomatically = previousAutomatic;
 });
 
 test('live pixels override recorded keys and copies, and track the current key after paint', async () => {
@@ -493,7 +496,7 @@ test('actual session persists exact request before sending, replays after restar
   assert.equal(calls[before][0].endsWith('/sync'), true, 'recovery replays before fetching any new snapshot');
   t.diagnostic(`Recovery: ${calls.length - before} requests, ${(performance.now() - start).toFixed(1)} ms; old rebuilt path requires 4 requests`);
 });
-test('sync on save retries after a successful check when automatic sync is off', async t => {
+test('manual sync retains a failed Save and sync request until an explicit retry', async t => {
   const { SyncNetworkError } = await import('./sync-api.ts');
   const { session, base, hashes } = quietSession('save-check-synthetic');
   t.after(() => { session.dispose(); app.link.syncAutomatically = true; });
@@ -512,6 +515,8 @@ test('sync on save retries after a successful check when automatic sync is off',
   await session.afterSave();
   assert.equal(writes, 1); assert.equal(session.pendingSync, true);
   await session.check();
+  assert.equal(writes, 1, 'opening or checking never uploads a failed request in manual mode');
+  await session.sync();
   assert.equal(writes, 2); assert.equal(session.pendingSync, false);
   assert.equal(session.text, 'Up to date', session.error);
 });
@@ -1380,3 +1385,91 @@ for (const hosted of [false, true]) {
     console.info(JSON.stringify({ bundleCache: hosted ? 'hosted tab' : 'no binding', bundleRequests: paths.length, identityRequests: 0, ms: performance.now() - started }));
   });
 }
+
+
+test('manual sessions persist edits and recovered outbox without scheduling elements, images or polls', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { session } = quietSession('manual-scheduling-synthetic');
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null); t.after(() => oversightSession.set(scope));
+  app.link.syncAutomatically = false;
+  t.after(() => { session.dispose(); app.link.syncAutomatically = true; });
+  let syncs = 0, images = 0, checks = 0;
+  session.sync = async () => { syncs++; };
+  session.publishImages = async () => { images++; };
+  session.check = async () => { checks++; };
+  addQuietSpot(); session.track(); flushWrites();
+  session.draft = { ...session.draft, pending_request: { id: 'durable-request' },
+    publish_job: { result: { version: 2 } } };
+  for (let i = 0; i < 10; i++) {
+    session.refreshAutomatic(); session.wakeAutomatic(); await session.poll();
+    t.mock.timers.tick(30_000);
+  }
+  assert.deepEqual({ syncs, images, checks }, { syncs: 0, images: 0, checks: 0 });
+  const stored = JSON.parse(storage.get('grainatlas.draft.manual-scheduling-synthetic'));
+  assert.equal(stored.pending.spots[0].name, 'Synthetic spot', 'manual mode still persists the exact edit');
+  assert.equal(session.unsynced, true);
+  assert.equal(session.text, '1 change not synced');
+  app.link.syncAutomatically = true;
+  session.refreshAutomatic();
+  t.mock.timers.tick(3000);
+  assert.equal(syncs, 1, 'opting in wakes the existing durable work');
+});
+
+test('close reminders include images and outbox counts, retain failed work and await local durability', async t => {
+  const { syncReminder, reminderCounts, needsCloseReminder, syncForClose, keepLocalForClose } = await import('./close-sync.ts');
+  const { session } = quietSession('manual-close-synthetic');
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null); t.after(() => oversightSession.set(scope));
+  app.link.syncAutomatically = false; app.dirty = false; app.storageWarning = null;
+  t.after(() => { session.dispose(); app.link.syncAutomatically = true; app.tims.store = null; });
+  addQuietSpot(); session.track();
+  session.save({ pixels_base: '[]', pixels_key: pixelSignature(source) });
+  app.tims.store = { data: { outbox: [{ id: 'pluck' }] }, persist: async () => {},
+    mountSynced() {}, flush: async () => {} };
+  const reminder = syncReminder(app);
+  assert.equal(reminder.changes, 1); assert.equal(reminder.images, 1); assert.equal(reminder.outbox, 1);
+  assert.match(reminderCounts(reminder), /1 change not synced.*1 image set pending.*1 outbox entry/);
+  assert.equal(needsCloseReminder(app), true);
+  session.sync = async () => { session.error = 'Database 503: synthetic outage'; };
+  assert.equal(await syncForClose(app), false);
+  assert.match(app.notice, /Database 503/);
+  assert.equal(session.unsynced, true);
+  app.storageWarning = 'Synthetic storage full';
+  await assert.rejects(keepLocalForClose(app), /Synthetic storage full/);
+  app.storageWarning = null;
+  session.sync = async () => {
+    session.error = ''; session.save({ base: structuredClone(session.elements),
+      pixels_base: null, pending: null, changes: { spots: 0, grains: 0, labels: 0 } });
+  };
+  app.tims.store.flush = async () => { app.tims.store.data.outbox = []; };
+  assert.equal(await syncForClose(app), true);
+  assert.equal(needsCloseReminder(app), false);
+});
+
+
+test('pixel-only work still warns after dirty clears and failed image publication cannot close it', async t => {
+  const { needsCloseReminder, syncReminder, syncForClose } = await import('./close-sync.ts');
+  const { session } = quietSession('pixel-close-synthetic');
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null);
+  app.link.syncAutomatically = false; app.dirty = false; app.storageWarning = null;
+  t.after(() => { session.dispose(); app.link.syncAutomatically = true; oversightSession.set(scope); });
+  const pixels = pixelSignature(source);
+  session.save({ pixels_base: '[]', pixels_key: pixels });
+  assert.deepEqual(session.counts, { spots: 0, grains: 0, labels: 0 });
+  assert.equal(syncReminder(app).images, 1);
+  assert.equal(session.unsynced, true);
+  assert.equal(needsCloseReminder(app), true, 'saved files do not clear pending image work');
+  session.sync = async () => {};
+  let publishes = 0;
+  session.publishImages = async () => { publishes++; session.imageError = 'Synthetic image upload refused'; };
+  assert.equal(await syncForClose(app), false);
+  assert.equal(publishes, 1);
+  assert.match(app.notice, /Synthetic image upload refused/);
+  assert.equal(needsCloseReminder(app), true);
+  session.publishImages = async () => { publishes++; session.imageError = ''; session.save({ pixels_base: pixels }); };
+  assert.equal(await syncForClose(app), true);
+  assert.equal(publishes, 2);
+  assert.equal(needsCloseReminder(app), false);
+});

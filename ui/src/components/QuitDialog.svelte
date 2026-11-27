@@ -2,9 +2,11 @@
   import { onMount } from 'svelte';
   import { appStorage } from '../lib/app-storage';
   import { flushWrites } from '../lib/deferred-writes';
+  import { reminderCounts, type syncReminder } from '../lib/close-sync';
 
-  let { titles, answer: onanswer }: {
-    titles: string[];
+  let { projects, offline = false, answer: onanswer }: {
+    projects: ReturnType<typeof syncReminder>[];
+    offline?: boolean;
     answer: (choice: 'save' | 'discard' | 'cancel') => void;
   } = $props();
   let dialog: HTMLDialogElement;
@@ -53,18 +55,19 @@
 >
   <h2 id="quit-title">Quit GrainAtlas?</h2>
   <p id="quit-description">
-    {titles.length === 1 ? 'This project has unsaved changes or changes not yet in the database:' : 'These projects have unsaved changes or changes not yet in the database:'}
+    {projects.length === 1 ? 'This project has work not yet synced:' : 'These projects have work not yet synced:'}
   </p>
-  <p class="faint small">Local drafts stay here if you quit without syncing.</p>
+  <p class="faint small">Your work stays saved locally in the outbox if you close without syncing.</p>
+  {#if offline}<p class="faint small">Offline. Sync next time you are online.</p>{/if}
   <ul>
-    {#each titles as title}
-      <li>{title}</li>
+    {#each projects as project}
+      <li>{project.title}: {reminderCounts(project)}</li>
     {/each}
   </ul>
   <div class="actions">
     <button bind:this={cancel} onclick={() => answer('cancel')}>Cancel</button>
-    <button onclick={() => answer('discard')}>Quit without saving</button>
-    <button class="primary" onclick={() => answer('save')}>Save and quit</button>
+    <button onclick={() => answer('discard')}>Close without syncing</button>
+    <button class="primary" onclick={() => answer('save')}>Sync and close</button>
   </div>
 </dialog>
 

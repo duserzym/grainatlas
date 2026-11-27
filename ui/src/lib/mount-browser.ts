@@ -289,7 +289,7 @@ export function recentRevisionIds(recent: RecentEntry[], drafts: Draft[], server
 }
 /** Called in the background by the visible start screen only. Each response has
  * its own ETag and freshness time; no UUIDs are silently dropped at the bound. */
-export async function recentRevisions(server: string, token: string, account: string, projects: string[], cached: RevisionCache | undefined, visible: () => boolean): Promise<RevisionCache> {
+export async function recentRevisions(server: string, token: string, account: string, projects: string[], cached: RevisionCache | undefined, visible: () => boolean, force = false): Promise<RevisionCache> {
   const epoch = sessionEpoch;
   const current = () => visible() && epoch === sessionEpoch;
   const batches: RevisionBatch[] = [];
@@ -311,7 +311,7 @@ export async function recentRevisions(server: string, token: string, account: st
     state.viewers.add(current);
     try {
       const saved = state.value;
-      if (saved && Date.now() >= saved.at && Date.now() - saved.at < 60_000) {
+      if (!force && saved && Date.now() >= saved.at && Date.now() - saved.at < 60_000) {
         batches.push(saved);
         continue;
       }

@@ -29,9 +29,15 @@ export class TimsOutbox {
   offline = false;
   busy = false;
   enabled = true;
+  private automatic = true;
+  setAutomatic(enabled: boolean) {
+    this.automatic = enabled;
+    if (!enabled) this.scheduler.cancel();
+    else this.wake();
+  }
   private refreshing?: Promise<void>;
   private saving: Promise<void> = Promise.resolve();
-  private scheduler = new BackgroundSync(() => { void this.flush().catch(() => {}); }, Math.random, 250);
+  private scheduler = new BackgroundSync(() => { if (this.automatic) void this.flush().catch(() => {}); }, Math.random, 250);
   readonly key: string;
   readonly mount: string;
   private storage: MirrorStorage;
@@ -69,7 +75,7 @@ export class TimsOutbox {
     try { await save; }
     catch (e) { this.error = 'TIMS changes could not be saved on this computer. Free some space and try again.'; this.notify(); throw e; }
   }
-  private async edited() { this.notify(); await this.persist(); this.scheduler.wake(); }
+  private async edited() { this.notify(); await this.persist(); this.wake(); }
   resolve(id: string) { return this.data.ids[id] ?? id; }
   private get applicable() {
     const blocked = new Set(this.data.outbox.filter(e => e.state === 'failed').flatMap(e => e.op.endsWith('.create') ? [e.target] : e.op === 'source.add' && e.source ? [e.source] : []));
@@ -214,7 +220,7 @@ export class TimsOutbox {
     } catch { /* Cached sample and pending fractions support working offline. */ }
     return { name: localSuggestion(this.fractions, sample, mineral), sample, checked };
   }
-  wake() { if (this.enabled && this.data.outbox.some(e => e.state === 'pending')) this.scheduler.wake(); }
+  wake() { if (this.automatic && this.enabled && this.data.outbox.some(e => e.state === 'pending')) this.scheduler.wake(); }
   mountSynced() {
     for (const e of this.data.outbox) if (e.state === 'waiting') { e.state = 'pending'; delete e.error; }
     this.notify(); void this.persist().then(() => this.wake()).catch(() => {});
@@ -341,7 +347,7 @@ export class TimsOutbox {
           } else if (error instanceof SyncApiError && error.status >= 400 && error.status < 500 && !error.transient) {
             e.state = 'failed'; e.error = error.status === 403 ? 'Only lab members can pluck grains for this sample' : error.message;
           } else {
-            this.offline = true; this.error = error instanceof Error ? error.message : String(error); this.scheduler.retry();
+            this.offline = true; this.error = error instanceof Error ? error.message : String(error); if (this.automatic) this.scheduler.retry();
             await this.persist(); this.notify(); return;
           }
           await this.persist(); this.notify();

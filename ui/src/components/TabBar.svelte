@@ -2,6 +2,8 @@
   // The window's open projects, as browser-style tabs: click to switch, × or middle-click to
   // close (asks first when the tab has unsaved changes), drag to reorder, + for a new tab.
   import { tabs, type AppState } from '../lib/store.svelte';
+  import { keepLocalForClose, needsCloseReminder, syncForClose, syncReminder, reminderCounts } from '../lib/close-sync';
+  import { isHosted } from '@lab/bridge';
   import { saveProject } from '../lib/actions';
   import { flushWrites } from '../lib/deferred-writes';
   import { primaryModifier } from '../lib/platform';
@@ -16,7 +18,7 @@
   /** Closes a tab; with unsaved changes the dialog asks first. */
   export function requestClose(t: AppState) {
     flushWrites();
-    if ((t.dirty || t.sync.unsynced) && !t.readOnly) {
+    if ((isHosted() || t.hosted) ? (t.dirty || t.sync.unsynced) && !t.readOnly : needsCloseReminder(t)) {
       tabs.select(t.id);
       asking = t;
       return;
@@ -28,14 +30,26 @@
     const t = asking;
     asking = null;
     if (!t || a === 'cancel') return;
-    if (a === 'save') {
-      await saveProject(t);
-      if (t.dirty || t.sync.unsynced) {
-        if (!t.dirty) t.notice = 'Saved here. Changes are still not in the database; sync or close with the local draft kept.';
-        return;
+    if (isHosted() || t.hosted) {
+      if (a === 'save') {
+        await saveProject(t);
+        if (t.dirty || t.sync.unsynced) {
+          if (!t.dirty) t.notice = 'Saved here. Changes are still not in the database; sync or close with the local draft kept.';
+          return;
+        }
       }
+      tabs.remove(t.id);
+      return;
     }
-    tabs.remove(t.id);
+    try {
+      await keepLocalForClose(t);
+      if (a === 'save') {
+        if (!await syncForClose(t)) return;
+      }
+      tabs.remove(t.id);
+    } catch (error) {
+      t.error = `Could not close: ${error instanceof Error ? error.message : error}`;
+    }
   }
 
   function down(e: PointerEvent, t: AppState) {
@@ -101,7 +115,7 @@
       aria-selected={t.id === tabs.activeId}
       data-tab={t.id}
       data-testid="tab"
-      title="{t.title}{t.dirty ? ' (unsaved changes)' : ''}{shortcuts && i < 9 ? ` · ${mod}${i + 1}` : ''}"
+      title="{t.title}{t.sync.unsynced ? ' (not synced)' : t.dirty ? ' (unsaved changes)' : ''}{shortcuts && i < 9 ? ` · ${mod}${i + 1}` : ''}"
       onpointerdown={(e) => down(e, t)}
       onpointermove={move}
       onpointerup={up}
@@ -113,7 +127,7 @@
         <span class="spinner" aria-label="working"></span>
       {/if}
       <span class="name">{t.title}</span>
-      {#if t.dirty && !t.readOnly}<span class="dot" aria-label="unsaved changes" data-testid="tab-dirty">●</span>{/if}
+      {#if (isHosted() || t.hosted) ? t.dirty && !t.readOnly : needsCloseReminder(t)}<span class="dot" aria-label={t.sync.unsynced || syncReminder(t).outbox ? 'not synced' : 'unsaved changes'} data-testid="tab-dirty">●</span>{/if}
       <button class="close icon" aria-label="Close {t.title}" title="Close tab{shortcuts ? ` (${mod}W)` : ''}" onclick={() => requestClose(t)}>✕</button>
     </div>
   {/each}
@@ -124,10 +138,16 @@
   <div class="scrim" role="presentation"></div>
   <div class="glass dialog" role="alertdialog" aria-modal="true" aria-labelledby="close-tab-title" data-testid="close-tab-dialog">
     <h2 id="close-tab-title">Close {asking.title}?</h2>
+    {#if isHosted() || asking.hosted}
     <p>This tab has unsaved changes or changes not yet in the database. Closing keeps its local draft.</p>
+    {:else}
+    <p>{asking.title}: {reminderCounts(syncReminder(asking))}</p>
+    <p>Your work stays saved locally in the outbox if you close without syncing.</p>
+    {/if}
+    {#if asking.sync.reachable === false}<p class="faint small">Offline. Sync next time you are online.</p>{/if}
     <div class="row">
-      <button class="primary" onclick={() => answer('save')}>Save project</button>
-      <button onclick={() => answer('discard')} data-testid="close-tab-discard">Close without saving</button>
+      <button class="primary" onclick={() => answer('save')}>{isHosted() || asking.hosted ? 'Save project' : 'Sync and close'}</button>
+      <button onclick={() => answer('discard')} data-testid="close-tab-discard">{isHosted() || asking.hosted ? 'Close without saving' : 'Close without syncing'}</button>
       <button onclick={() => answer('cancel')}>Cancel</button>
     </div>
   </div>

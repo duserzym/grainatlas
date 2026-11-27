@@ -64,6 +64,8 @@ export function mountSpots(projectId: string, sample: string, spots: Spot[], gra
 
 /** The user's UPbDB settings on this computer (never in the project). */
 export interface LinkSettings {
+  /** Migration marker: older preferences switch to manual once. */
+  syncModeVersion?: number;
   syncOnSave: boolean;
   syncAutomatically: boolean;
   syncPollSeconds: number;
@@ -86,7 +88,7 @@ export const MIN_SYNC_POLL_SECONDS = 30;
 export const MAX_SYNC_POLL_SECONDS = 3600;
 export const DEFAULT_LINK: LinkSettings = {
   server: '', token: '', rememberToken: false, quality: 100, nasRoot: '',
-  syncOnSave: true, syncAutomatically: true, syncPollSeconds: 120,
+  syncOnSave: true, syncAutomatically: false, syncPollSeconds: 120, syncModeVersion: 1,
 };
 
 export function normalizeSyncPollSeconds(value: unknown): number {
@@ -98,19 +100,28 @@ export function normalizeSyncPollSeconds(value: unknown): number {
 export function loadLink(): LinkSettings {
   const out = { ...DEFAULT_LINK };
   try {
-    Object.assign(out, JSON.parse(localStorage.getItem(LINK_KEY) || '{}'));
+    const parsed = JSON.parse(localStorage.getItem(LINK_KEY) || '{}');
+    const stored = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    Object.assign(out, stored);
+    if (stored.syncModeVersion !== 1) {
+      out.syncAutomatically = false;
+      out.syncModeVersion = 1;
+      // Preserve all unrelated preferences and never persist a legacy inline token.
+      const { token: _token, ...rest } = out;
+      try { if (canWrite()) localStorage.setItem(LINK_KEY, JSON.stringify(rest)); } catch { /* still load the session token */ }
+    }
     out.token = (out.rememberToken ? localStorage.getItem(TOKEN_KEY) : sessionStorage.getItem(TOKEN_KEY)) || '';
   } catch {
     /* storage may be unavailable */
   }
-  return { ...out, syncPollSeconds: normalizeSyncPollSeconds(out.syncPollSeconds) };
+  return { ...out, syncAutomatically: out.syncAutomatically === true, syncPollSeconds: normalizeSyncPollSeconds(out.syncPollSeconds) };
 }
 
 export function saveLink(l: LinkSettings) {
   if (!canWrite()) return;
   try {
     const { token, ...rest } = l;
-    localStorage.setItem(LINK_KEY, JSON.stringify({ ...rest, syncPollSeconds: normalizeSyncPollSeconds(rest.syncPollSeconds) }));
+    localStorage.setItem(LINK_KEY, JSON.stringify({ ...rest, syncModeVersion: 1, syncPollSeconds: normalizeSyncPollSeconds(rest.syncPollSeconds) }));
     localStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(TOKEN_KEY);
     if (token) (l.rememberToken ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);

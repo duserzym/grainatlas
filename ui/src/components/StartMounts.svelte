@@ -8,6 +8,8 @@
   import StatusChip from '../lib/ui/StatusChip.svelte';
   import IconButton from '../lib/ui/IconButton.svelte';
   import { onMount, untrack } from 'svelte';
+  import { isHosted } from '@lab/bridge';
+  import { startSyncPolling } from '../lib/sync-scheduling';
   import { app } from '../lib/store.svelte';
   import { mountMirror } from '../lib/mount-mirror';
   import { authToken } from '../lib/atlas';
@@ -43,6 +45,12 @@
   let identity = '';
   let debounce: ReturnType<typeof setTimeout>;
   let alive = true;
+  let revisionRefresh = $state(0);
+  let revisionRefreshSeen: string | null = null;
+  function refreshDatabase() {
+    revisionRefresh++;
+    if (account) void load(); else void connect(true);
+  }
   const selected = $derived(Object.entries(filters).filter(([k, v]) => v && k !== 'sort'));
   const scopeOptions = $derived(account ? [
     { value: 'mine', label: 'Mine' },
@@ -137,17 +145,30 @@
     update(); void connect();
     const clear = () => { ++version; rows = []; account = null; cache = { pages: {} }; revisions = {}; offline = false; asOf = ''; error = ''; loading = false; identity = ''; onauth(false); oncontent(0); };
     window.addEventListener(SERVER_SESSION_CHANGED, clear);
-    const timer = setInterval(() => void connect(), 5000);
+
     window.addEventListener(DRAFTS_CHANGED, update);
-    const online = () => void connect(true);
+    const online = () => { if (isHosted() || app.link.syncAutomatically) void connect(true); };
     const disconnected = () => { offline = true; };
     window.addEventListener('offline', disconnected);
     window.addEventListener('online', online);
-    return () => { alive = false; ++version; clearInterval(timer); clearTimeout(debounce); window.removeEventListener(SERVER_SESSION_CHANGED, clear); window.removeEventListener(DRAFTS_CHANGED, update); window.removeEventListener('online', online); window.removeEventListener('offline', disconnected); };
+    return () => { alive = false; ++version; clearTimeout(debounce); window.removeEventListener(SERVER_SESSION_CHANGED, clear); window.removeEventListener(DRAFTS_CHANGED, update); window.removeEventListener('online', online); window.removeEventListener('offline', disconnected); };
   });
+  $effect(() => startSyncPolling(isHosted() || app.link.syncAutomatically, 5000, () => void connect()));
+  // Credential changes are explicit in standalone Settings; polling is unnecessary.
+  $effect(() => {
+    const configured = app.link.server, credential = app.link.token;
+    void configured; void credential;
+    if (!isHosted()) untrack(() => { void connect(); });
+  });
+  const revisionIds = $derived(JSON.stringify(server ? recentRevisionIds(recent, drafts, server) : []));
   $effect(() => {
     const me = account, atServer = server, atToken = token;
-    const ids = atServer ? recentRevisionIds(recent, drafts, atServer) : [];
+    const ids: string[] = isHosted() || app.link.syncAutomatically
+      ? atServer ? recentRevisionIds(recent, drafts, atServer) : []
+      : JSON.parse(revisionIds);
+    const refreshRequested = `${refresh}/${revisionRefresh}`;
+    const force = revisionRefreshSeen !== null && revisionRefreshSeen !== refreshRequested;
+    revisionRefreshSeen = refreshRequested;
     const as = oversightSession.state?.viewAs?.username;
     void as;
     let active = true;
@@ -155,7 +176,7 @@
     if (me && atToken && ids.length) {
       const atIdentity = identity;
       const visible = () => active && alive && app.screen === 'open' && !!app.server && mirrorServer(app.server) === mirrorServer(atServer) && oversightSession.state?.viewAs?.username === as && identity === atIdentity;
-      void recentRevisions(atServer, atToken, me.id, ids, cache.revisions, visible).then(result => {
+      void recentRevisions(atServer, atToken, me.id, ids, cache.revisions, visible, !isHosted() && force).then(result => {
         if (!visible()) return;
         revisions = Object.fromEntries(result.batches.flatMap(b => b.rows.map(r => [r.project_uuid, r.revision])));
         cache.revisions = result; save();
@@ -189,10 +210,13 @@
     } catch (e) { app.error = e instanceof Error ? e.message : String(e); }
   }
   $effect(() => onoffline(offline));
+  let refreshSeen = -1;
   $effect(() => {
     const changed = refresh; const as = oversightSession.state?.viewAs?.username;
-    void changed; void as;
-    untrack(() => { if (account) void load(); });
+    void as;
+    if ((refreshSeen === -1 || changed === refreshSeen) && !isHosted()) { refreshSeen = changed; return; }
+    refreshSeen = changed;
+    untrack(() => { if (account) void load(); else void connect(true); });
   });
 </script>
 <div class="start-mounts">
@@ -220,7 +244,7 @@
     {@render orderControl()}
     {#if account}
       <IconButton icon="filter" label="Filters…" aria-expanded={advanced} onclick={() => advanced = !advanced} />
-      <IconButton icon="refresh" label="Refresh" disabled={loading} onclick={() => load()} />
+      <IconButton icon="refresh" label="Refresh" disabled={loading} onclick={refreshDatabase} />
     {/if}
     <div class="sizes"><SegmentedControl label="Tile size" size="small" options={['S', 'M', 'L'].map(value => ({ value, label: value }))} value={app.layout.tileSize}
       onchange={value => { app.layout.tileSize = value as 'S' | 'M' | 'L'; app.saveLayout(); }} /></div>

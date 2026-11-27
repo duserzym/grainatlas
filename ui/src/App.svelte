@@ -29,6 +29,9 @@
   import SyncDetails from './components/SyncDetails.svelte';
   import LeaveEditDialog from './components/LeaveEditDialog.svelte';
   import QuitDialog from './components/QuitDialog.svelte';
+  import { keepLocalForClose, needsCloseReminder, syncForClose, syncReminder } from './lib/close-sync';
+  import { startSyncPolling } from './lib/sync-scheduling';
+  import { flushWrites } from './lib/deferred-writes';
   import CheckDialog from './components/CheckDialog.svelte';
   import RenameDialog from './components/RenameDialog.svelte';
   import ReplaceDialog from './components/ReplaceDialog.svelte';
@@ -302,7 +305,7 @@
   }
 
   let quitState = $state<'idle' | 'prompt' | 'saving' | 'exiting'>('idle');
-  const unsavedTabs = $derived(tabs.list.filter((tab) => (tab.dirty || tab.sync.unsynced) && !tab.readOnly));
+  const unsavedTabs = $derived(tabs.list.filter(needsCloseReminder));
 
   async function finishQuit() {
     quitState = 'exiting';
@@ -316,6 +319,7 @@
   }
 
   function requestQuit() {
+    flushWrites();
     if (quitState !== 'idle') return;
     if (unsavedTabs.length) quitState = 'prompt';
     else void finishQuit();
@@ -327,34 +331,28 @@
       quitState = 'idle';
       return;
     }
-    if (answer === 'discard') {
-      await finishQuit();
-      return;
-    }
-
     quitState = 'saving';
-    const previous = tabs.activeId;
     try {
       for (const tab of [...unsavedTabs]) {
-        if (!tab.dirty && !tab.sync.unsynced) continue;
-        // Save can show the project's checks dialog before writing.
-        tabs.select(tab.id);
-        await saveProject(tab);
-        if (tab.dirty || tab.sync.unsynced) {
-          if (!tab.error) tab.notice = tab.dirty ? 'Project was not saved. GrainAtlas is still open.' : 'Changes are still not in the database. GrainAtlas is still open.';
-          return;
+        await keepLocalForClose(tab);
+        if (answer === 'save') {
+          tabs.select(tab.id);
+          if (!await syncForClose(tab)) return;
         }
       }
-      if (unsavedTabs.length) {
-        quitState = 'prompt';
+      // Other tabs can be edited while a request is in flight. Recheck before quitting.
+      for (const tab of tabs.list) if (!tab.readOnly) await keepLocalForClose(tab);
+      const remaining = tabs.list.find(tab => !tab.readOnly && (tab.sync.unsynced || syncReminder(tab).outbox));
+      if (answer === 'save' && remaining) {
+        tabs.select(remaining.id);
+        remaining.notice = 'More changes remain. Sync them before closing. Your work is saved locally.';
         return;
       }
       await finishQuit();
     } catch (e) {
-      app.error = `Could not save: ${e instanceof Error ? e.message : e}`;
+      app.error = `Could not close: ${e instanceof Error ? e.message : e}`;
     } finally {
       if (quitState === 'saving') quitState = 'idle';
-      else if (quitState === 'prompt') tabs.select(previous);
     }
   }
 
@@ -370,8 +368,6 @@
     window.addEventListener('keydown', zoomKey, true);
     undo.push(() => window.removeEventListener('keydown', zoomKey, true));
     undo.push(startScheduler());
-    const authWatch = setInterval(() => void authToken().catch(() => {}), 5000);
-    undo.push(() => clearInterval(authWatch));
     if (isHosted()) {
       let received = false;
       undo.push(onOversight(value => { received = true; oversightSession.set(value); }));
@@ -502,9 +498,11 @@
     };
   });
 
+  $effect(() => startSyncPolling(isHosted() || shared.link.syncAutomatically, 5000, () => { void authToken().catch(() => {}); }));
+
   let polling = false;
   async function pollProjects() {
-    if (polling || document.hidden) return;
+    if ((!isHosted() && !shared.link.syncAutomatically) || polling || document.hidden) return;
     polling = true;
     try {
       const active = current();
@@ -516,8 +514,7 @@
   }
 
   $effect(() => {
-    const timer = window.setInterval(() => void pollProjects(), shared.link.syncPollSeconds * 1000);
-    return () => window.clearInterval(timer);
+    return startSyncPolling(isHosted() || shared.link.syncAutomatically, shared.link.syncPollSeconds * 1000, () => void pollProjects());
   });
 
   onMount(() => {
@@ -526,14 +523,19 @@
     const focused = () => { if (!isHosted()) wakePending(); };
     const pollPreferenceChanged = (event: StorageEvent) => {
       if (event.storageArea === localStorage && (event.key === LINK_KEY || event.key === null)) {
-        app.link.syncPollSeconds = loadLink().syncPollSeconds;
+        const loaded = loadLink();
+        app.link.syncPollSeconds = loaded.syncPollSeconds;
+        app.link.syncAutomatically = loaded.syncAutomatically;
+        app.link.syncOnSave = loaded.syncOnSave;
       }
     };
     window.addEventListener('online', retry);
     window.addEventListener('focus', focused);
     window.addEventListener('storage', pollPreferenceChanged);
     const closing = (event: BeforeUnloadEvent) => {
-      if (tabs.list.some(tab => !tab.readOnly && (tab.dirty || tab.sync.unsynced))) { event.preventDefault(); event.returnValue = ''; }
+      flushWrites();
+      if (quitState === 'exiting') return; // The desktop quit dialog already obtained the close choice.
+      if (isHosted() ? tabs.list.some(tab => !tab.readOnly && (tab.dirty || tab.sync.unsynced)) : tabs.list.some(needsCloseReminder)) { event.preventDefault(); event.returnValue = ''; }
     };
     window.addEventListener('beforeunload', closing);
     return () => {
@@ -649,7 +651,7 @@
 
   {#if !isViewer}
   {#if quitState === 'prompt'}
-    <QuitDialog titles={unsavedTabs.map((tab) => tab.title)} answer={answerQuit} />
+    <QuitDialog projects={unsavedTabs.map(syncReminder)} offline={unsavedTabs.some(tab => tab.sync.reachable === false)} answer={answerQuit} />
   {/if}
   {#if app.checkPrompt}<CheckDialog />{/if}
   {#if app.renamePrompt}<RenameDialog />{/if}

@@ -20,7 +20,7 @@ import { SyncApi, SyncApiError, SyncNetworkError, lineageFailureMessage, changes
 import { notifyUpbLab } from './upblab-notice';
 import { draftElements, draftPrintRecipe, ensureDraft, listDrafts, pendingElements, readDraft, writeDraft, type Draft } from './drafts';
 import { pixelSignature } from './sync-pixels';
-import { draftSyncStatus, plainSyncStatus } from './sync-status';
+import { draftSyncStatus, plainSyncStatus, manualSyncText } from './sync-status';
 import { appStorage } from './app-storage';
 import { appliedCounts, describeChanges, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
@@ -216,7 +216,7 @@ export class SyncSession {
   private disposed = false;
   private automatic = new BackgroundSync(() => { void this.runAutomatic(); });
   private get automaticEnabled() {
-    return !this.disposed && canWrite() && !oversightSession.readOnly && !isHosted() && !this.app.hosted && this.app.link.syncAutomatically !== false
+    return !this.disposed && canWrite() && !oversightSession.readOnly && !isHosted() && !this.app.hosted && this.app.link.syncAutomatically === true
       && this.ready && !this.app.readOnly && !!this.draft?.mount
       && (this.registered === true && this.status?.can_edit === true || !!this.draft?.server_can_edit && !!this.draft?.pending_request)
       && !this.staleOpen && !this.imageDecision && !this.confirmation && !this.review && !this.dialog && !this.held.length && !this.intentFailure
@@ -347,7 +347,7 @@ export class SyncSession {
       for (;;) {
         if (!sameProject() || !canWrite() || oversightSession.readOnly || this.app.readOnly) throw new DOMException('Image publishing stopped', 'AbortError');
         // Recheck between every request and retry, including a resumed job.
-        if (this.staleOpen || background && (this.reachable !== true || this.knownUnreachable)) throw new DOMException('Image publishing paused', 'AbortError');
+        if (this.staleOpen || background && (!this.automaticEnabled || this.reachable !== true || this.knownUnreachable)) throw new DOMException('Image publishing paused', 'AbortError');
         if (!idle || imagesMayRun(background || this.imageEdits !== startedEdits ? this.lastImageEdit : -Infinity, Date.now(), this.imageGates(!background))) return;
         await waitFor(500);
       }
@@ -497,6 +497,9 @@ export class SyncSession {
     });
     if (this.imageDecision || text === 'Needs your attention') return 'Needs your attention';
     if (this.imageBusy && !this.busy) return 'Syncing images…';
+    if (!isHosted() && !this.app.hosted && !this.app.link.syncAutomatically) {
+      return manualSyncText(text, this.counts, this.unsynced);
+    }
     if (this.imageOffline && !this.busy) return 'Offline, will sync later';
     return text;
   }
@@ -505,7 +508,7 @@ export class SyncSession {
       (!!d.base || [d.mine, d.theirs].some(s => s && 'acquisition_ids' in s && s.acquisition_ids?.length))) ?? false;
   }
   get unsynced(): boolean {
-    return !!this.app.project && !this.app.readOnly && (!!this.intentFailure || KINDS.some(k => this.databaseMore[k].length) || !this.draft?.synced || !this.draft?.base || !!this.cachedSyncStatus?.pending);
+    return !!this.app.project && !this.app.readOnly && (!!this.intentFailure || KINDS.some(k => this.databaseMore[k].length) || !this.draft?.synced || !this.draft?.base || !!this.draft?.pending_request || !!this.cachedSyncStatus?.pending || !!this.draft?.publish_job && this.draft.publish_job.decision !== 'keep');
   }
   private get identity(): string { return JSON.stringify([this.app.project?.uuid, this.app.projectPath?.path ?? null, this.app.remote?.projectId ?? null]); }
   private async api() {
@@ -560,7 +563,7 @@ export class SyncSession {
   }
   /** A scheduled check can wait for its next turn if the project is occupied. */
   async poll() {
-    if (this.disposed || !this.ready || this.app.busy || this.busy || this.imageBusy || this.backgroundPending) return;
+    if ((!isHosted() && !this.app.hosted && !this.app.link.syncAutomatically) || this.disposed || !this.ready || this.app.busy || this.busy || this.imageBusy || this.backgroundPending) return;
     if (this.app.remote?.server ?? this.draft?.server ?? this.app.server) await this.check();
   }
   /** Every opening path calls this before returning. Later polling never replaces the base. */
@@ -651,7 +654,8 @@ export class SyncSession {
       this.errorDetails = e instanceof SyncApiError ? e.raw : '';
     } finally { this.finished(); this.checking = false; if (this.identity !== identity) void this.check(); }
     this.refreshAutomatic();
-    if (!this.staleOpen && !this.automaticEnabled && this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.runQuietSync(); }
+    // Standalone manual checks only read. The hosted shell retains its existing retry behavior.
+    if ((isHosted() || this.app.hosted) && !this.staleOpen && !this.automaticEnabled && this.pendingSync && this.reachable && this.state === 'local-changes') { this.pendingSync = false; await this.runQuietSync(); }
   }
   dismissLink() { this.candidates = []; this.save({ link_offered: true, link_candidates: [] }); }
   showLink(): string {
@@ -722,7 +726,11 @@ export class SyncSession {
     if (this.staleOpen) { this.showStaleOpen(); return; }
     if (this.imageDecision) { this.showImageDecision(); return; }
     if (this.confirmation) { this.showConfirmation(); return; }
-    if (this.state === 'offline' || this.state === 'checking') { await this.check(); return; }
+    if (this.state === 'offline' || this.state === 'checking') {
+      await this.check();
+      if (!isHosted() && !this.app.hosted && !this.app.link.syncAutomatically && this.reachable && this.state !== 'offline' && this.state !== 'checking') await this.action();
+      return;
+    }
     if (this.state === 'unregistered') { this.dialog = 'register'; return; }
     if (this.state === 'server-newer') { await this.update(); return; }
     if (this.state === 'both-changed' && !KINDS.some(k => this.databaseMore[k].length)) { await this.prepareReview(); return; }
@@ -877,7 +885,16 @@ export class SyncSession {
   }
   /** Capture the submitted snapshot: edits made while the request is in flight stay dirty. */
   async sync(publishPixels = false, shellCommand = false, approved?: HeldSync, reviewedBase?: ReadElements) {
-    return timedAsync('sync.wall', () => this.syncNow(publishPixels, shellCommand, approved, reviewedBase));
+    return timedAsync('sync.wall', async () => {
+      await this.syncNow(publishPixels, shellCommand, approved, reviewedBase);
+      // A foreground sync also sends its independent durable pluck outbox. Opening or
+      // checking a project never reaches this path in standalone manual mode.
+      if (!isHosted() && !this.app.hosted && !this.app.link.syncAutomatically && canWrite() && !oversightSession.readOnly
+        && !this.app.readOnly && !this.unsynced && !this.error && !this.dialog && this.app.tims.store?.data.outbox.length) {
+        this.app.tims.store.mountSynced();
+        await this.app.tims.store.flush();
+      }
+    });
   }
   private async syncNow(publishPixels: boolean, shellCommand: boolean, approved?: HeldSync, reviewedBase?: ReadElements) {
     flushWrites();

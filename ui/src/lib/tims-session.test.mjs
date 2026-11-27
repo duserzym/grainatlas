@@ -31,7 +31,7 @@ const hooks = registerHooks({
       export function harness() {
         let app = $state({ server: 'https://tims.example.test', remote: null,
           project: { uuid: 'project-1', upbdb: { mount_id: 'mount-1' } },
-          link: { token: 'token-a' }, readOnly: false,
+          link: { token: 'token-a', syncAutomatically: true }, readOnly: false,
           sync: { syncedAt: null, draft: null, status: null } });
         const session = new TimsSession(app);
         const stop = $effect.root(() => session.start());
