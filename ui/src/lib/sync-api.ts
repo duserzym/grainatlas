@@ -40,6 +40,7 @@ export class SyncApiError extends Error {
   /** Raw status and body, for the details view and the console only. */
   raw = '';
   missing: Record<Kind, string[]> | null = null;
+  problems: HeldItem[] = [];
   bulkConfirmation = false;
   confirmation?: import('@lab/bridge').AtlasSyncConfirmation;
   constructor(status: number, messages: string[]) {
@@ -159,11 +160,16 @@ export class SyncApi {
         const detail = payload.detail as unknown;
         const message = (v: unknown) => typeof v === 'string' ? v : v && typeof v === 'object' && 'msg' in v ? String(v.msg) : JSON.stringify(v ?? 'Invalid sync request');
         const listed = Array.isArray(detail) ? detail.map(message) : detail == null ? [] : [message(detail)];
-        const messages = Array.isArray(payload.problems) && payload.problems.length ? (payload.problems as unknown[]).map(p => p && typeof p === 'object' && 'message' in p ? String((p as { message: unknown }).message) : message(p)) : listed;
+        const messages = Array.isArray(payload.problems) && payload.problems.length ? (payload.problems as unknown[]).map(p =>
+          p && typeof p === 'object' && 'reason' in p ? String(p.reason) : p && typeof p === 'object' && 'message' in p ? String(p.message) : message(p)) : listed;
         const error = new SyncApiError(422, typeof payload.code === 'string' && typeof payload.message === 'string' && !messages.length ? [payload.message] : messages.length ? messages : [errorSentence(422, payload)]);
         error.code = typeof payload.code === 'string' ? payload.code : null;
         error.raw = `${r.status} ${raw}`;
         error.missing = (payload.missing as Record<Kind, string[]> | undefined) ?? null;
+        if (Array.isArray(payload.problems)) error.problems = payload.problems.filter((p): p is HeldItem =>
+          !!p && typeof p === 'object' && typeof p.kind === 'string' && typeof p.id === 'string').map(p => ({
+            ...p, reason: p.reason || ('message' in p ? String(p.message) : error.messages[0]),
+          }));
         error.bulkConfirmation = error.code === 'bulk_change' || (error.code !== 'snapshot_incomplete' && !/not_in_snapshot|incomplete.snapshot/i.test(raw) && /confirm_bulk|bulk|needs.confirmation/i.test(raw));
         const counts = (payload.confirm ?? (detail as { confirm?: unknown } | undefined)?.confirm) as Record<string, number> | undefined;
         if (counts && ['retireGrains', 'grainsTotal', 'deleteSpots', 'spotsTotal'].every(k => Number.isInteger(counts[k]) && counts[k] >= 0) && counts.retireGrains <= counts.grainsTotal && counts.deleteSpots <= counts.spotsTotal) error.confirmation = counts as unknown as import('@lab/bridge').AtlasSyncConfirmation;

@@ -139,10 +139,11 @@ export function keepDraftPrintRecipe(project: Project, draft: Draft | null, stor
   }
   return project;
 }
-/** Keep exactly the upsert fields, including new-grain lineage, without UI metadata. */
+/** Keep upsert fields and durable local link review intent; omit display-only metadata. */
 export function pendingElements(elements: ReadElements): Elements {
   const changes = diffElements(emptyElements(), elements);
-  return { spots: changes.spots.upsert, grains: changes.grains.upsert, labels: changes.labels.upsert };
+  const reviews = new Map(elements.spots.filter(s => s.grain_link_review).map(s => [s.id, s.grain_link_review]));
+  return { spots: changes.spots.upsert.map(s => reviews.has(s.id) ? { ...s, grain_link_review: reviews.get(s.id) } : s), grains: changes.grains.upsert, labels: changes.labels.upsert };
 }
 /** A cleared pending snapshot must never resurrect an older stored copy. */
 export function draftElements(draft: Draft, storage?: DraftStorage): Elements | null {

@@ -2,6 +2,8 @@ import type { AppState } from './store.svelte';
 import { appStorage } from './app-storage';
 import { flushWrites } from './deferred-writes';
 
+export const SYNC_CLOSE_ERROR = 'Could not sync and close.';
+
 export function syncReminder(tab: AppState) {
   tab.tims.version;
   const counts = tab.sync.counts;
@@ -53,7 +55,7 @@ export async function syncForClose(tab: AppState): Promise<boolean> {
       const details = tab.sync.error ? tab.sync.errorDetails.replace(/\s+/g, ' ').trim() : '';
       const excerpt = details.length > 300 ? `${details.slice(0, 300)}…` : details;
       tab.notice = null;
-      tab.error = `Could not sync and close. ${error}${excerpt ? ` (${excerpt})` : ''}`;
+      tab.error = `${SYNC_CLOSE_ERROR} ${error}${excerpt ? ` (${excerpt})` : ''}`;
     } else {
       tab.notice = tab.sync.reachable === false ? 'Offline. Your work is saved locally in the outbox. Sync next time you are online.'
         : 'Sync needs your attention. Resolve it, then try closing again. Your work is saved locally.';

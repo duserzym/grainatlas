@@ -327,6 +327,7 @@
   style:cursor
   role="application"
   aria-label="Mosaic canvas"
+  tabindex="-1"
   data-view
 >
   <canvas bind:this={canvas} style:width="{size.w}px" style:height="{size.h}px"></canvas>

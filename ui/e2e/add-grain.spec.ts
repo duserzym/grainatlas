@@ -70,6 +70,36 @@ async function adjust(page:Page) {
   expect(after).toEqual([p[0]-3,p[1]-3]);
 }
 for(const viewport of [{width:1280,height:800},{width:1440,height:900}]) {
+  test(`Add grain short-path recovery and keyboard review retain the draft at ${viewport.width}`,async({page})=>{
+    await page.setViewportSize(viewport);const {grain,before,unexpected}=await prepare(page,false);
+    const points=polygon(grain);
+    await clickAt(page,points[0]);await clickAt(page,points[1]);await page.keyboard.press('Enter');
+    await expect(page.getByRole('status').filter({hasText:'Click another corner, then Enter to finish.'})).toBeVisible();
+    const lasso=page.getByTestId('lasso');await expect(lasso).toHaveCount(1);
+    const corners=await lasso.getAttribute('points');
+    expect(new Set(corners?.split(' ')).size).toBe(2);
+    await page.getByTestId('review-issues').focus();await page.keyboard.press('Enter');
+    await expect(page.getByTestId('sync-details')).toBeFocused();
+    await page.keyboard.press('Escape');await expect(page.getByTestId('review-issues')).toBeFocused();
+    await expect(page.getByTestId('tool-add-grain')).toHaveAttribute('aria-pressed','true');
+    // Enter/Escape in Review must never accept or cancel the active creation path.
+    expect((await saved(page)).grainatlas_ui).toEqual(before.grainatlas_ui);
+    await expect(lasso).toHaveAttribute('points',corners!);
+    await page.getByTestId('review-issues').click();
+    await page.getByTestId('sync-details').getByRole('button',{name:'Back to canvas',exact:true}).click();
+    await expect(page.getByRole('application',{name:'Mosaic canvas'})).toBeFocused();
+    await clickAt(page,points[2]);await clickAt(page,points[3]);await page.keyboard.press('Enter');
+    await expect(page.getByTestId('add-grain-preview')).toBeVisible();
+    // A ready preview also survives keyboard review without an implicit Accept.
+    await page.getByTestId('review-issues').focus();await page.keyboard.press('Enter');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('add-grain-preview')).toBeVisible();
+    expect((await saved(page)).grainatlas_ui).toEqual(before.grainatlas_ui);
+    await page.getByTestId('add-grain-cancel').click();
+    await expect(page.getByTestId('add-grain-preview')).toHaveCount(0);
+    await expect(page.getByTestId('canvas-toolbar').getByRole('button',{name:'Undo',exact:true})).toBeDisabled();
+    expect(unexpected).toEqual([]);
+  });
   for(const mode of ['click','polygon','freehand','box']) {
     test(`Add grain ${mode}: preview, adjust, accept and exact Undo at ${viewport.width} x ${viewport.height}`,async({page})=>{
       await page.setViewportSize(viewport);const {grain,before,number,name,unexpected}=await prepare(page);

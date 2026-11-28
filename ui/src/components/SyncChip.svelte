@@ -8,7 +8,7 @@
   import SyncLinkOffer from './SyncLinkOffer.svelte';
   import { describeChange, elementLabel, type Difference, type Resolution } from '../lib/sync';
   let dialogElement = $state<HTMLDialogElement>();
-  let { detailsOpen = $bindable(false) }: { detailsOpen?: boolean } = $props();
+  let { detailsOpen = $bindable(false), onreview }: { detailsOpen?: boolean; onreview?: () => void } = $props();
   let mount = $state('');
   let choices = $state<Record<string, Resolution>>({});
   let publishImages = $state(true);
@@ -47,7 +47,8 @@
       </svg>
       <span aria-live="polite">{text}</span>
     </button>
-    {#if session.staleOpen || session.imageDecision || session.state !== 'in-sync' || session.confirmation || session.pixelsChanged || outbox}
+    <button data-testid="review-issues" data-review-issues aria-expanded={detailsOpen} aria-controls={detailsOpen ? 'sync-details' : undefined} onclick={() => onreview ? onreview() : detailsOpen = !detailsOpen}>Review issues ({session.editingIssueCount})</button>
+    {#if session.staleOpen || session.imageDecision || session.state !== 'in-sync' || session.confirmation || session.pixelsChanged || outbox || session.editingIssueCount || session.linkAudits.length}
       <button class:primary={pillState !== 'checking' && pillState !== 'offline'} data-testid="sync-action" title={session.syncDisabledReason} disabled={!!session.syncDisabledReason || session.busy || session.imageBusy || app.loadingProject || (app.readOnly && session.state === 'local-changes')} onclick={() => { detailsOpen = false; void session.action(); }}>{action}</button>
     {/if}
   </div>

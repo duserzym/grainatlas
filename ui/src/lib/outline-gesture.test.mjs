@@ -18,6 +18,7 @@ const source = `
 import { editedOutline, outlineHandle } from '${new URL('./outline-vertices.ts',import.meta.url).href}';
 import { latestFrame } from '${new URL('./canvas-pointer.ts',import.meta.url).href}';
 import { CLICK_SLOP } from '${new URL('./canvas/gestures.ts',import.meta.url).href}';
+import { tick } from '${import.meta.resolve('svelte')}';
 export function create(app) {
   const ro=false, areaId='a', umPerPx=.5, k=.25, isViewer=false;
   const detections=$derived(app.grains.a), editableGrain=$derived(detections[0]);
@@ -28,6 +29,7 @@ export function create(app) {
   const imagePress=()=>false, hoverFrame={flush(){},clear(){}};
   const dragFrame=latestFrame(dragNow,fn=>{queued=fn;return 1;},()=>{queued=null;});
   ${canvas.match(/let vertexDrag = [^\n]+/)[0]}
+  ${section('async function focusEditingCanvas()', 'function imageMode(')}
   ${section('function saveVertices(', 'let lastHover:')}
   ${section('function press(', 'function drag(p:')}
   ${section('function drag(p:', 'async function release(')}
@@ -69,6 +71,15 @@ test('Canvas vertex and edge gestures commit once, preserve all registered field
   assert.deepEqual(app.grains.a[0].polygon_um,before.grains.a[0].polygon_um);
   assert.deepEqual(copy(app.spots),before.spots);
   app.undo();app.undo();app.flushPersistence();assert.deepEqual(copy(app.fullProject().grainatlas_ui),before);assert.equal(app.canUndo,false);
+
+  // A self-intersecting retry leaves geometry, measured records and history intact.
+  gesture=create(app);gesture.press(point([0,0]));gesture.drag(point([100,40]));await gesture.release(point([100,40]));app.flushPersistence();
+  assert.deepEqual(copy(app.fullProject().grainatlas_ui),before);assert.equal(app.canUndo,false);
+  assert.match(app.notice,/previous outline is kept.*Drag the corner again/);
+  assert.equal(app.noticeAction.label,'Try on canvas');
+  gesture.press(point([0,0]));gesture.drag(point([-5,-5]));await gesture.release(point([-5,-5]));
+  assert.equal(app.noticeAction,null);app.undo();app.flushPersistence();
+  assert.deepEqual(copy(app.fullProject().grainatlas_ui),before);
 
   gesture=create(app);gesture.press(point([0,0]));gesture.drag(point([-5,-5]));gesture.frame();
   assert.deepEqual(gesture.points[0],[-5,-5]);assert.deepEqual(app.grains.a[0].polygon_um,before.grains.a[0].polygon_um);

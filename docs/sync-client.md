@@ -278,8 +278,55 @@ sync details show a Held items panel: one item at a time with Previous and
 Next, its label, reason and related labels, and Show, which selects and
 centres the grain or spot on the canvas. Ids are under Details. After fixing,
 Sync again sends the held items with any new edits. The held list is saved in
-the draft (`held_back`) and an item drops out of it once it is no longer a
-local change.
+the draft (`held_back`) before readback verification starts. A failed readback,
+failed intent check or reopening the tab retains the concrete reason and related
+items. A verified retry clears resolved rows. Local edits alone do not dismiss
+the warning. Structured 422 problem rows use the same panel and recovery actions.
+
+Readback checks only the specific sent operations that were not held. Another
+grain's pending outline or a database-only row cannot fail verification of an
+accepted spot transfer. Held operations remain above the acknowledged base;
+lost sent writes, retained own omissions and non-advancing writes still fail.
+Only applied operations advance the provisional base. Edits made during a
+request remain local changes.
+
+Each row offers **Keep database version** when this copy has the owning
+project's canonical state. It reverts that operation and restores required spot
+links or parent grains, while retaining other draft edits. Keeping a new grain
+out of the database preserves its dependent spots, restoring their original
+links or leaving new spots unassigned. Restoring a parent cancels local lineage
+instructions that would retire it again. This is one ordinary undo step. The
+warning remains until Sync verifies the result. Foreign identities must be
+reviewed in their owning project; Show and related-item buttons provide canvas
+context for locally available elements. A kept delete absent from the canvas
+can be restored without inventing a replacement identity.
+
+### Repairing spot links after replacing outlines
+
+Explicit Sync preparation checks available outlines in each spot's original
+database area at its original centre. It links a unique strict interior match
+using the same spot ID. It preserves the position, name, dimensions, acquisition
+links and other metadata. A still-valid link stays unchanged. It does not use
+grain numbering or nearest distance, fetch geometry per spot, infer a link for
+removed spots, or repair spots owned by another project. This preparation does
+not run from background sync or alter a durable retry or an approved bulk body.
+If edits arrived during the initial fetch, repair waits for a later explicit
+Sync rather than applying the captured draft over them.
+
+Sync details includes **Spot links to review**, and held grains show the
+affected spots directly. Overlap, boundary contact, artifacts, no match and
+incompatible lineage require review. The analyst can Show the spot and a
+candidate grain, select a containing outline, restore the original database spot
+and grain, or explicitly detach the grain while retaining the spot and its
+measurements. Clearing an existing confirmed link is treated as possible detach
+intent and is never automatically reversed. The database still validates every
+operation, with the existing conflict, revision, lineage and bulk protections.
+
+Prepared and selected links have a local audit cue in **Reviewed spot links**.
+The cue and explicit keep/detach intent survive project and draft reopen and are
+excluded from the wire body and sync equality. Each choice is undoable. Local
+segmentation also avoids first-match and boundary guesses; registered measured
+spot repair waits for explicit Sync and original database geometry.
 
 Each sync request carries a `request_id` (a UUID). It is kept in the draft
 (`pending_request`, with a key of the request body) until a reply arrives. A
@@ -676,3 +723,31 @@ temporary `vitePreprocess({style: {configLoader: "runner"}})` config outside the
 repository, avoiding Vite’s cache write through shared node_modules. Both changed
 browser specs passed strict standalone TypeScript checking. `git diff --check`
 is clean. Playwright and the real scratch server were not run in this pass.
+
+
+### Editing issue review
+
+The persistent project header offers Review issues with a count of held
+operations and additional spatial link issues. A Sync failure alert opens the
+same Sync details panel. Show spot/grain closes the panel, frames the item,
+scrolls its table row when visible, and focuses Canvas. The header remains the
+return path. Escape returns focus to Review issues; Back to canvas focuses the
+canvas. The panel keeps its candidate choice while hidden. After a correction,
+review remaining issues and use the original header Sync/Retry action.
+
+Unchanged intentionally unassigned points with no ambiguous candidates stay
+quiet. A changed containing outline, invalid existing link, candidate ambiguity
+or held operation offers review. Explicit Sync retains unresolved edit evidence
+using local `grain_link_review.action = 'review'`, even when another edit saves
+and advances the baseline. This marker changes no registered field, is excluded
+from the wire, and survives local project/draft recovery. It is not a completed
+review audit. Explicit assign, restore and detach use the existing undo route.
+Drawing previews and pointer movement do not invalidate the committed outline
+collections; label-only edits do not invalidate the spatial review cache.
+Manual mode adds no polling, uploads or recovery requests.
+
+Common Add grain, vertex, redraw, cut, split and merge errors give a concrete
+retry gesture through the existing notice/action and tool guidance. Invalid
+geometry retains the last valid project or preview without adding an undo step.
+Short open paths keep their corners for completion. Review controls do not also
+handle Canvas creation, deletion or movement shortcuts.

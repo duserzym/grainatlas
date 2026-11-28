@@ -18,6 +18,7 @@ import { latestFrame } from '${new URL('./canvas-pointer.ts',import.meta.url).hr
 import { CLICK_SLOP } from '${new URL('./canvas/gestures.ts',import.meta.url).href}';
 import { formatName, newId, grainAt } from '${new URL('./spots.ts',import.meta.url).href}';
 import { spotSample } from '${new URL('./grain-owners.ts',import.meta.url).href}';
+import { tick } from '${import.meta.resolve('svelte')}';
 export function create(app) {
   const ro=false, areaId='a', umPerPx=1, k=1, isViewer=false;
   const current=()=>app, sample='synthetic', patternFor=()=>'{sample}_{n:03}', segParams={}, owners=new Map(), modName='Ctrl';
@@ -48,6 +49,7 @@ export function create(app) {
   ${section('function activateTool(', 'function editOutline(')}
   ${section('function cancelAddPreview()', '$effect(() => {\n    // Preview work')}
   ${section('async function makeAddPreview(', 'const automaticN =').replace('onDestroy(cancelAddPreview);','')}
+  ${section('async function focusEditingCanvas()', 'function imageMode(')}
   ${section('function saveVertices(', 'let lastHover:')}
   ${section('function press(', 'function drag(p:')}
   ${section('function drag(p:', 'async function release(')}
@@ -135,6 +137,16 @@ test('Canvas Add grain modes preview, adjust, append one outbox grain and undo e
   app.undo();app.flushPersistence();assert.deepEqual(copy(app.fullProject().grainatlas_ui),withGrain);
   app.undo();app.flushPersistence();assert.deepEqual(copy(app.fullProject().grainatlas_ui),before);assert.equal(app.canUndo,false);
   // Escape can invalidate an in-flight pixel job before it returns.
+  // Invalid adjustment retains the last valid preview and adds a concrete retry.
+  app.tool='grain-add';
+  const invalid=create(app);await invalid.detect({kind:'click',point:[40,40]});
+  const validPreview=copy(invalid.preview.grain);
+  invalid.press(point([0,0]));invalid.drag(point([100,40]));await invalid.release(point([100,40]));
+  assert.deepEqual(copy(invalid.preview.grain),validPreview);
+  assert.match(app.notice,/valid preview is kept.*Drag a corner/);
+  assert.equal(app.noticeAction.label,'Try on canvas');
+  assert.deepEqual(copy(app.fullProject().grainatlas_ui),before);assert.equal(app.canUndo,false);
+  invalid.cancel();assert.equal(app.noticeAction,null);
   const h=create(app);h.defer();const work=h.detect({kind:'click',point:[40,40]});h.cancel();h.resolve();await work;
   assert.equal(h.preview.grain,null);h.accept();assert.deepEqual(copy(app.fullProject().grainatlas_ui),before);
 });

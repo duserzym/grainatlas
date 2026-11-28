@@ -65,22 +65,31 @@ export function grainAt(gs: Grain[], x: number, y: number, artifacts = false): G
   return null;
 }
 
-/** Spots follow the grain under them; artifacts never link, and names stay unchanged. */
+/** Automatic local links require one strict interior match. Registered repairs use
+ * Sync's original-position/ownership review instead of guessing from replacement order. */
+function uniqueGrain(grains: Grain[], s: Spot): Grain | null {
+  const hits = grains.filter(g => contains(g.polygon_um, [s.x_um, s.y_um]));
+  return hits.length === 1 && !hits[0].artifact && !hits[0].split_from && !hits[0].merged_from?.length
+    && contains(hits[0].polygon_um, [s.x_um, s.y_um], false) ? hits[0] : null;
+}
+const reviewedLink = (s: Spot) => s.grain_link_review && s.grain_link_review.grain_id === s.grain_id;
+const registeredSpot = (s: Spot) => !!s.acquisition_id || ('acquisition_ids' in s && Array.isArray(s.acquisition_ids) && s.acquisition_ids.length > 0);
 export function relinkSpots(spots: Spot[], areaId: string, grains: Grain[]): Spot[] {
   return spots.map((s) => {
     if (s.area_id !== areaId) return s;
     const linked = grains.find(g => g.id === s.grain_id && (!g.artifact || g.split_from || g.merged_from) && contains(g.polygon_um, [s.x_um, s.y_um]));
-    const g = linked ?? grainAt(grains, s.x_um, s.y_um);
-    return { ...s, grain_id: g?.id ?? null, grain_number: g?.number ?? null };
+    if (linked || reviewedLink(s) || registeredSpot(s)) return s;
+    const g = uniqueGrain(grains, s);
+    return g ? { ...s, grain_id: g.id, grain_number: g.number } : s;
   });
 }
 
-/** Link only unlinked spots inside new real grains, preserving every other spot exactly. */
-export function linkUnlinkedSpots(spots: Spot[], areaId: string, newGrains: Grain[]): Spot[] {
+/** Link only unlinked spots inside new real grains, checking all available outlines for overlap. */
+export function linkUnlinkedSpots(spots: Spot[], areaId: string, newGrains: Grain[], allGrains = newGrains): Spot[] {
   return spots.map((s) => {
-    if (s.area_id !== areaId || s.grain_id != null) return s;
-    const g = grainAt(newGrains, s.x_um, s.y_um);
-    return g ? { ...s, grain_id: g.id, grain_number: g.number } : s;
+    if (s.area_id !== areaId || s.grain_id != null || reviewedLink(s) || registeredSpot(s)) return s;
+    const g = uniqueGrain(allGrains, s);
+    return g && newGrains.some(n => n.id === g.id) ? { ...s, grain_id: g.id, grain_number: g.number } : s;
   });
 }
 

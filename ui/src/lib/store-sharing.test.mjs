@@ -317,6 +317,250 @@ function quietReply(body, revision = 2) {
     spots: { created: 1, updated: 0, deleted: 0 }, grains: { created: 0, adopted: 0, updated: 0, retired: 0 }, labels: { created: 0, updated: 0, retired: 0 } },
     not_in_snapshot: { spots: [], grains: [], labels: [] }, complete: true, warnings: [], rebased_over: 0 };
 }
+
+test('explicit manual Sync transfers a measured spot to a replacement by the same ID and preserves in-flight edits', async t => {
+  const { session, base, hashes } = quietSession('synthetic-link-transfer');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  addQuietSpot(); app.spots = app.spots.map(s => ({ ...s, acquisition_id: 'synthetic-acquisition', acquisition_ids: ['synthetic-acquisition'], comment: 'Keep metadata' }));
+  base.spots = JSON.parse(JSON.stringify(app.spots)).map(s => ({ ...s, project_uuid: app.project.uuid }));
+  session.draft = { ...session.draft, base };
+  const original = JSON.parse(JSON.stringify(app.spots[0]));
+  app.grains = { area: [{ ...app.grains.area[0], id: 'replacement', number: 2 }] };
+  const { applyChanges } = await import('./sync.ts');
+  let server = { ...structuredClone(base), revision: 1, hashes }, writes = 0, reads = 0;
+  session.api = async () => ({ elements: async () => { reads++; return structuredClone(server); }, lookup: async () => ({ ...session.status, revision: server.revision }),
+    sync: async (_mount, body) => {
+      writes++; assert.equal(body.spots.upsert.length, 1); assert.equal(body.spots.upsert[0].id, original.id);
+      assert.equal(body.spots.upsert[0].grain_id, 'replacement'); assert.deepEqual(body.spots.delete, []);
+      assert.equal(body.spots.upsert[0].x_um, original.x_um); assert.equal(body.spots.upsert[0].name, original.name);
+      server = { ...applyChanges(server, body), revision: 2, hashes };
+      for (const rows of Object.values(server).filter(Array.isArray)) for (const row of rows) row.project_uuid = app.project.uuid;
+      app.spots = app.spots.map(s => ({ ...s, comment: 'Edit made during request' }));
+      app.labels = [{ id: 'new-note', area_id: 'area', x_um: 1, y_um: 1, text: 'Keep in-flight work' }];
+      return quietReply(body);
+    } });
+  await session.sync();
+  assert.equal(session.error, ''); assert.equal(writes, 1); assert.equal(reads, 2);
+  assert.equal(app.spots[0].grain_id, 'replacement'); assert.equal(app.spots[0].acquisition_id, original.acquisition_id);
+  assert.equal(app.spots[0].comment, 'Edit made during request'); assert.equal(app.spots[0].x_um, original.x_um);
+  assert.equal(app.labels[0].id, 'new-note'); assert.equal(session.draft.base.spots[0].comment, original.comment);
+  assert.equal(session.localChanges.spots.upsert[0].comment, 'Edit made during request');
+  assert.ok(app.spots[0].grain_link_review); assert.equal(session.backgroundPending, false);
+});
+
+test('partial rows survive failed readback, repeated Sync and reopen while accepted work and remaining delta are preserved', async t => {
+  const { session, base, hashes } = quietSession('synthetic-held-reopen');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  app.grains = { area: app.grains.area.map(g => ({ ...g, number: 9 })) };
+  app.labels = [{ id: 'accepted-note', area_id: 'area', x_um: 1, y_um: 1, text: 'Accepted note' }];
+  const held = [{ kind: 'grain', id: 'grain', op: 'upsert', code: 'grain_keeps_spots', reason: 'Synthetic grain still has a registered spot.', related: [{ kind: 'spot', id: 'synthetic-related', label: 'Synthetic measured spot' }] }];
+  const status = structuredClone(session.status);
+  let writes = 0, failReadback = true, sent = false;
+  let server = { ...structuredClone(base), revision: 1, hashes };
+  session.api = async () => ({ elements: async () => {
+    if (sent && failReadback) { failReadback = false; throw Error('Synthetic interrupted verification'); }
+    return structuredClone(server);
+  }, lookup: async () => ({ ...status, revision: server.revision }), sync: async (_mount, body) => {
+    writes++; sent = true;
+    server.labels = [{ ...app.labels[0], project_uuid: app.project.uuid }]; server.revision = 2;
+    return { ...quietReply(body), held_back: held, complete: false, not_in_snapshot: { spots: [], grains: ['grain'], labels: [] } };
+  } });
+  await session.sync(); app.flushPersistence();
+  assert.match(session.error, /interrupted verification/); assert.deepEqual(session.held, held);
+  assert.deepEqual(JSON.parse(storage.get('grainatlas.draft.synthetic-held-reopen')).held_back, held);
+  assert.equal(session.draft.base_revision, 1); assert.equal(session.draft.base.grains[0].number, 1);
+  await session.sync();
+  assert.equal(session.error, ''); assert.equal(session.draft.base_revision, 2);
+  assert.equal(session.draft.base.grains[0].number, 1); assert.equal(app.grains.area[0].number, 9);
+  assert.deepEqual(session.localChanges.labels.upsert, []); assert.equal(session.localChanges.grains.upsert[0].number, 9);
+  app.flushPersistence(); session.opened(); await session.check();
+  assert.deepEqual(session.held, held); assert.equal(session.held[0].related[0].label, 'Synthetic measured spot');
+  await session.sync();
+  assert.equal(session.error, ''); assert.equal(writes, 3); assert.equal(session.held.length, 1);
+  assert.equal(session.draft.pending.grains[0].number, 9);
+});
+
+test('verification failure preserves partial reasons and structured 422 problems use the same recovery with undo', async t => {
+  const { session, base, hashes } = quietSession('synthetic-held-verification');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  app.clearHistory();
+  app.grains = { area: app.grains.area.map(g => ({ ...g, number: 9 })) };
+  app.labels = [{ id: 'lost-note', area_id: 'area', x_um: 1, y_um: 1, text: 'Unacknowledged note' }];
+  const held = [{ kind: 'grain', id: 'grain', op: 'upsert', code: 'polygon_invalid', reason: 'Synthetic invalid outline.' }];
+  const server = { ...structuredClone(base), revision: 2, hashes };
+  session.api = async () => ({ elements: async () => server, lookup: async () => session.status,
+    sync: async (_mount, body) => ({ ...quietReply(body), held_back: held }) });
+  await session.sync(); app.flushPersistence();
+  assert.match(session.error, /did not save all labels/); assert.deepEqual(session.held, held);
+  assert.equal(session.draft.base_revision, 1); assert.match(session.draft.incomplete.reason, /did not save all labels/);
+  assert.equal(session.canKeepHeld(held[0]), true);
+  session.keepHeld(held[0]);
+  assert.equal(app.grains.area[0].number, 1); assert.equal(app.labels[0].id, 'lost-note');
+  assert.equal(session.held.length, 1, 'warning remains until verified');
+  app.undo(); assert.equal(app.grains.area[0].number, 9); assert.equal(app.labels[0].id, 'lost-note');
+  const { SyncApi, SyncApiError } = await import('./sync-api.ts');
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ code: 'invalid_sync', problems: held }, { status: 422 }));
+  try { await new SyncApi('https://synthetic.test', null).sync('mount', { project_uuid: app.project.uuid, mode: 'delta', base_revision: 1, ...session.localChanges }); assert.fail('Expected 422'); }
+  catch (e) { assert.ok(e instanceof SyncApiError); assert.deepEqual(e.problems, held); session.failed(e); }
+  assert.deepEqual(session.held, held);
+});
+
+test('spot review choices, Show and Keep original preserve identity and use exact undo history', async t => {
+  const { session, base, hashes } = quietSession('synthetic-spot-review');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  addQuietSpot(); base.spots = JSON.parse(JSON.stringify(app.spots)).map(s => ({ ...s, acquisition_ids: ['synthetic-acquisition'], project_uuid: app.project.uuid }));
+  session.draft = { ...session.draft, base };
+  session.serverElements = { ...structuredClone(base), revision: 1, hashes };
+  app.grains = { area: ['one', 'two'].map(id => ({ ...app.grains.area[0], id })) }; app.clearHistory();
+  assert.equal(session.linkRepairs[0].candidates.length, 2);
+  const before = JSON.stringify(session.elements);
+  session.repairSpot('quiet-spot', 'two');
+  assert.equal(app.spots[0].grain_id, 'two'); app.undo(); assert.equal(JSON.stringify(session.elements), before);
+  session.repairSpot('quiet-spot', 'detach'); assert.equal(app.spots[0].grain_id, null); assert.equal(session.linkRepairs.length, 0);
+  app.undo(); assert.equal(JSON.stringify(session.elements), before);
+  session.repairSpot('quiet-spot', 'keep-original');
+  assert.equal(app.spots[0].id, 'quiet-spot'); assert.equal(app.spots[0].grain_id, 'grain'); assert.ok(app.grains.area.some(g => g.id === 'grain'));
+  assert.equal(app.grains.area.filter(g => ['one', 'two'].includes(g.id)).length, 2, 'unrelated replacement outlines stay');
+  app.undo(); assert.equal(JSON.stringify(session.elements), before);
+  const { showElement } = await import('./held-items.ts');
+  assert.equal(await showElement(app, 'spots', 'quiet-spot'), true); assert.equal(app.focusSpot, 'quiet-spot'); assert.equal(app.areaId, 'area');
+  assert.equal(await showElement(app, 'grains', 'two'), true); assert.equal(app.focusGrain.id, 'two');
+});
+
+test('successful unrelated Sync keeps unresolved spatial edits actionable after acknowledgement and reopen', async t => {
+  const { session, base, hashes } = quietSession('synthetic-unresolved-after-save');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  addQuietSpot();
+  base.spots = JSON.parse(JSON.stringify(app.spots)).map(s => ({ ...s, project_uuid: app.project.uuid }));
+  session.draft = { ...session.draft, base };
+  app.spots = app.spots.map(s => ({ ...s, grain_id: null, comment: 'Keep the local edit' }));
+  app.grains = { area: [] };
+  app.labels = [{ id: 'unrelated-note', area_id: 'area', x_um: 1, y_um: 1, text: 'Save this edit' }];
+  const { applyChanges } = await import('./sync.ts');
+  const status = structuredClone(session.status);
+  let server = { ...structuredClone(base), revision: 1, hashes }, reads = 0, writes = 0, statuses = 0;
+  session.api = async () => ({
+    elements: async () => { reads++; return structuredClone(server); },
+    lookup: async () => { statuses++; return { ...status, revision: server.revision }; },
+    sync: async (_mount, body) => {
+      writes++;
+      assert.ok(body.labels.upsert.some(l => l.id === 'unrelated-note'));
+      server = { ...applyChanges(server, body), revision: 2, hashes };
+      for (const kind of ['spots', 'grains', 'labels']) server[kind] = server[kind].map(row => ({ ...row, project_uuid: app.project.uuid }));
+      return quietReply(body);
+    },
+  });
+  const start = performance.now();
+  await session.sync(); app.flushPersistence();
+  assert.equal(session.error, ''); assert.equal(session.localChanges.labels.upsert.length, 0);
+  assert.equal(session.editingIssueCount, 1); assert.equal(session.linkAudits.length, 0);
+  assert.equal(app.spots[0].grain_id, null); assert.equal(app.spots[0].comment, 'Keep the local edit');
+  assert.equal(app.spots[0].grain_link_review.action, 'review');
+  const savedProject = app.fullProject();
+  session.opened(); app.adopt(savedProject); await session.check();
+  assert.equal(session.editingIssueCount, 1); assert.match(session.linkRepairs[0].reason, /No real outline/);
+  const requests = { reads, writes, statuses };
+  session.repairSpot('quiet-spot', 'detach');
+  assert.equal(session.editingIssueCount, 0); assert.equal(session.linkAudits.length, 1);
+  assert.deepEqual({ reads, writes, statuses }, requests, 'local recovery does not change manual networking');
+  app.undo(); assert.equal(session.editingIssueCount, 1);
+  assert.equal(writes, 1);
+  console.info(`Synthetic unresolved edit audit: ${requests.reads} element reads, ${writes} write, ${requests.statuses} status reads including reopen, ${(performance.now() - start).toFixed(1)} ms`);
+});
+
+test('spatial issue review is cached across local label edits and notice changes', t => {
+  const { session, base, hashes } = quietSession('synthetic-review-cache');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  addQuietSpot();
+  base.spots = JSON.parse(JSON.stringify(app.spots)).map(s => ({ ...s, project_uuid: app.project.uuid }));
+  session.serverElements = { ...base, revision: 1, hashes };
+  app.grains = { area: [] };
+  const issues = session.linkRepairs;
+  assert.equal(issues.length, 1);
+  app.notice = 'Synthetic gesture guidance';
+  app.labels = [{ id: 'note', area_id: 'area', x_um: 1, y_um: 1, text: 'Local label edit' }];
+  session.track();
+  assert.equal(session.linkRepairs, issues, 'unrelated edits do not repeat the spatial scan');
+  app.grains = { area: [structuredClone(source.grainatlas_ui.grains.area[0])] };
+  assert.equal(session.linkRepairs.length, 0, 'committed geometry updates the review');
+});
+
+test('new repair actions preserve the existing viewing-as read-only safeguard', async t => {
+  const { session, base, hashes } = quietSession('synthetic-readonly-repair');
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state;
+  t.after(() => { oversightSession.set(scope); session.dispose(); });
+  addQuietSpot(); base.spots = JSON.parse(JSON.stringify(app.spots)).map(s => ({ ...s, project_uuid: app.project.uuid }));
+  session.serverElements = { ...base, revision: 1, hashes };
+  app.grains = { area: ['one', 'two'].map(id => ({ ...app.grains.area[0], id })) };
+  app.clearHistory();
+  const before = JSON.stringify(session.elements);
+  oversightSession.set({ viewAs: { username: 'synthetic', name: 'Synthetic observer' } });
+  const held = { kind: 'spot', id: 'quiet-spot' };
+  assert.match(session.keepHeldReason(held), /read-only.*editable session/);
+  for (const choice of ['one', 'detach', 'keep-original']) session.repairSpot('quiet-spot', choice);
+  session.keepHeld(held);
+  assert.equal(JSON.stringify(session.elements), before);
+  assert.equal(app.canUndo, false);
+});
+
+test('manual Sync links a previously unassigned registered spot when its first outline is added', async t => {
+  const { session, base, hashes } = quietSession('synthetic-previously-unassigned');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  addQuietSpot(); app.spots = app.spots.map(s => ({ ...s, grain_id: null, acquisition_id: 'synthetic-measurement' }));
+  base.spots = JSON.parse(JSON.stringify(app.spots)).map(s => ({ ...s, project_uuid: app.project.uuid }));
+  base.grains = []; session.draft = { ...session.draft, base };
+  let server = { ...structuredClone(base), revision: 1, hashes };
+  session.api = async () => ({ elements: async () => server, lookup: async () => ({ ...session.status, revision: server.revision }),
+    sync: async (_m, body) => {
+      assert.equal(body.spots.upsert[0].id, 'quiet-spot'); assert.equal(body.spots.upsert[0].grain_id, 'grain');
+      server = { ...server, revision: 2, grains: body.grains.upsert.map(g => ({ ...g, project_uuid: app.project.uuid })),
+        spots: body.spots.upsert.map(s => ({ ...s, project_uuid: app.project.uuid })) };
+      return quietReply(body);
+    } });
+  await session.sync();
+  assert.equal(session.error, ''); assert.equal(app.spots[0].id, 'quiet-spot'); assert.equal(app.spots[0].grain_id, 'grain');
+  assert.equal(app.spots[0].acquisition_id, 'synthetic-measurement'); assert.equal(session.localChanges.spots.upsert.length, 0);
+});
+
+test('Sync preparation does not overwrite an edit made while original geometry is fetched', async t => {
+  const { session, base, hashes } = quietSession('synthetic-preparation-race');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  addQuietSpot(); base.spots = JSON.parse(JSON.stringify(app.spots)).map(s => ({ ...s, project_uuid: app.project.uuid }));
+  session.draft = { ...session.draft, base };
+  app.grains = { area: [{ ...app.grains.area[0], id: 'replacement' }] };
+  let reads = 0;
+  const held = [{ kind: 'grain', id: 'grain', op: 'delete', reason: 'Synthetic original still linked.' },
+    { kind: 'grain', id: 'replacement', op: 'upsert', reason: 'Synthetic operation held.' }];
+  session.api = async () => ({ elements: async () => {
+    if (++reads === 1) app.spots = app.spots.map(s => ({ ...s, comment: 'Edit during initial fetch' }));
+    return { ...base, revision: 1, hashes };
+  }, lookup: async () => session.status, sync: async (_m, body) => {
+    assert.deepEqual(body.spots.upsert, []);
+    return { ...quietReply(body, 1), previous_revision: 1, held_back: held };
+  } });
+  await session.sync();
+  assert.equal(session.error, ''); assert.equal(app.spots[0].comment, 'Edit during initial fetch');
+  assert.equal(app.spots[0].grain_id, 'grain'); assert.equal(app.spots[0].grain_link_review, undefined);
+  assert.equal(session.held.length, 2);
+});
+
+test('genuine non-advance, stale verification and own snapshot omissions still retain unacknowledged drafts', async () => {
+  for (const failure of ['no-advance', 'stale', 'own-omission']) {
+    const { session, base, hashes } = quietSession(`synthetic-safety-${failure}`);
+    app.link.syncAutomatically = false; addQuietSpot();
+    let sent = false;
+    session.api = async () => ({ lookup: async () => session.status,
+      elements: async () => ({ ...base, revision: sent && failure !== 'stale' ? 2 : 1, hashes,
+        spots: sent ? app.spots.map(s => ({ ...s, project_uuid: app.project.uuid })) : [] }),
+      sync: async (_m, body) => { sent = true; return { ...quietReply(body, failure === 'no-advance' ? 1 : 2),
+        ...(failure === 'own-omission' ? { complete: false, not_in_snapshot: { grains: ['grain'], spots: [], labels: [] } } : {}) }; } });
+    await session.sync();
+    assert.match(session.error, failure === 'no-advance' ? /did not advance/ : failure === 'stale' ? /older than this sync/ : /left out/);
+    assert.equal(session.draft.base_revision, 1); assert.equal(session.draft.base.spots.length, 0);
+    assert.equal(session.draft.pending.spots[0].id, 'quiet-spot'); session.dispose();
+  }
+});
 test('an older copy pauses all sends, restores base elements and drops a queued deletion', async t => {
   const { session, base, hashes } = quietSession('older-copy-synthetic');
   t.after(() => session.dispose());
@@ -1568,4 +1812,122 @@ test('pixel-only work still warns after dirty clears and failed image publicatio
   assert.equal(await syncForClose(app), true);
   assert.equal(publishes, 2);
   assert.equal(needsCloseReminder(app), false);
+});
+
+test('reopened registered draft keeps retired parent versions and verifies legitimate edits without phantom lineage operations', async t => {
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null);
+  t.after(() => oversightSession.set(scope));
+  const { session, base, hashes } = quietSession('synthetic-retired-held-reopen');
+  t.after(() => session.dispose()); app.link.syncAutomatically = false;
+  const template = base.grains[0];
+  const parents = ['parent-one', 'parent-two'].map((id, i) => ({ ...template, id, number: i + 2, retired: true }));
+  const child = { ...template, split_from: parents[0].id };
+  base.grains = [child, ...parents];
+  app.grains = { area: [child, ...parents.map(({ retired, ...g }) => g), { ...template, id: 'new-grain', number: 8 }] };
+  app.labels = [{ id: 'new-note', area_id: 'area', x_um: 1, y_um: 1, text: 'Keep independent edit' }];
+  const held = parents.map(g => ({ kind: 'grain', id: g.id, op: 'upsert', code: 'grain_retired', reason: 'Synthetic retired parent.' }));
+  session.draft = { ...session.draft, base, held_back: held };
+  session.track(false); app.flushPersistence(); session.opened();
+  const status = structuredClone(session.status);
+  let server = { ...structuredClone(base), revision: 1, hashes }, writes = 0;
+  const { applyChanges } = await import('./sync.ts');
+  session.api = async () => ({ elements: async () => structuredClone(server), lookup: async () => ({ ...status, revision: server.revision }),
+    sync: async (_mount, body) => {
+      writes++;
+      assert.equal(body.mode, 'delta');
+      assert.deepEqual(body.grains.upsert.map(g => g.id), ['new-grain']);
+      assert.deepEqual(body.grains.retire, []);
+      server = { ...applyChanges(server, body), revision: 2, hashes };
+      for (const kind of ['spots', 'grains', 'labels']) server[kind] = server[kind].map(e => ({ ...e, project_uuid: app.project.uuid }));
+      return quietReply(body);
+    } });
+  await session.check();
+  assert.equal(session.firstSync, false); assert.equal(session.held.length, 2);
+  for (const h of held) { assert.equal(session.canKeepHeld(h), true, session.keepHeldReason(h)); session.keepHeld(h); }
+  assert.equal(app.grains.area.find(g => g.id === child.id).split_from, parents[0].id);
+  assert.equal(app.labels[0].id, 'new-note'); assert.equal(session.held.length, 2, 'keep evidence until verification');
+  await session.sync();
+  assert.equal(writes, 1); assert.equal(session.error, '');
+  assert.equal(session.held.length, 0); assert.equal(session.draft.pending_request, null);
+  assert.deepEqual(session.counts, { spots: 0, grains: 0, labels: 0 });
+  assert.equal(app.grains.area.find(g => g.id === child.id).split_from, parents[0].id);
+});
+
+test('saved bad lineage requests replay exactly in delta and snapshot modes and preserve newer unspecified edits', async t => {
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null);
+  t.after(() => oversightSession.set(scope));
+  const { syncChanges } = await import('./sync.ts');
+  for (const mode of ['delta', 'snapshot']) {
+    const { session, base, hashes } = quietSession(`synthetic-bad-lineage-${mode}`);
+    t.after(() => session.dispose()); app.link.syncAutomatically = false;
+    const parent = { ...base.grains[0], id: 'historical-parent', retired: true };
+    base.grains[0] = { ...base.grains[0], split_from: parent.id };
+    base.grains.push(parent);
+    const mine = { ...JSON.parse(JSON.stringify(session.elements)), grains: [{ ...JSON.parse(JSON.stringify(session.elements.grains[0])), number: 7 }] };
+    const body = { project_uuid: app.project.uuid, base_revision: 1, mode, ...syncChanges(mode, base, mine, base, app.project.uuid) };
+    const request = { id: 'synthetic-durable-id', key: canonicalJson((await import('./sync-wire.ts')).syncWireBody(body)), body, mine, current: { ...structuredClone(base), revision: 1, hashes } };
+    app.grains = { area: mine.grains.map(g => ({ ...g, number: 8 })) };
+    app.labels = [{ id: 'later-note', area_id: 'area', x_um: 1, y_um: 1, text: 'Unspecified edit after interrupted upload' }];
+    session.draft = { ...session.draft, base, pending_request: request, held_back: [{ kind: 'grain', id: parent.id, op: 'upsert' }] };
+    session.track(false); app.flushPersistence(); session.opened();
+    const status = structuredClone(session.status);
+    let server = { ...structuredClone(base), revision: 1, hashes }, calls = [];
+    session.api = async () => ({ elements: async () => { calls.push('GET'); return structuredClone(server); }, lookup: async () => ({ ...status, revision: server.revision }),
+      sync: async (_mount, sent, id) => {
+        calls.push('POST'); assert.equal(id, request.id); assert.deepEqual(sent, body);
+        const persisted = JSON.parse(storage.get(`grainatlas.draft.${app.project.uuid}`)).pending_request;
+        assert.deepEqual(persisted.mine, mine); assert.deepEqual(persisted.body, body);
+        server.grains[0] = { ...server.grains[0], number: 7 }; server.revision = 2;
+        return quietReply(sent);
+      } });
+    await session.check(); calls = [];
+    await session.sync();
+    assert.equal(calls[0], 'POST', 'durable upload is replayed before refetching');
+    assert.equal(session.error, ''); assert.equal(session.draft.pending_request, null);
+    assert.equal(app.grains.area[0].split_from, parent.id); assert.equal(app.grains.area[0].number, 8);
+    assert.equal(session.draft.base.grains.find(g => g.id === 'grain').number, 7);
+    assert.equal(app.labels[0].id, 'later-note'); assert.equal(session.held.length, 0);
+    assert.equal(session.localChanges.grains.upsert[0].number, 8); assert.equal(session.localChanges.labels.upsert[0].id, 'later-note');
+  }
+});
+
+test('reopening 3,000 registered grains with pending additions chooses a bounded delta without additional requests', async t => {
+  const { oversightSession } = await import('./oversight.ts');
+  const scope = oversightSession.state; oversightSession.set(null);
+  t.after(() => oversightSession.set(scope));
+  const { applyChanges } = await import('./sync.ts');
+  const results = [], n = 3000;
+  for (const mode of ['snapshot', 'delta']) {
+    const { session, base, hashes } = quietSession(`synthetic-reopen-scale-${mode}`);
+    t.after(() => session.dispose()); app.link.syncAutomatically = false;
+    const template = base.grains[0];
+    base.grains = Array.from({ length: n }, (_, i) => ({ ...template, id: `registered-${i}`, number: i + 1 }));
+    app.grains = { area: [...base.grains, { ...template, id: 'pending-addition', number: n + 1 }] };
+    session.draft = { ...session.draft, base };
+    session.track(false); app.flushPersistence(); session.opened();
+    const status = { ...structuredClone(session.status), counts: { grains: n, spots: 0, labels: 0 } };
+    let server = { ...structuredClone(base), revision: 1, hashes }, reads = 0, writes = 0, lookups = 0, upserts = 0;
+    session.api = async () => ({ elements: async () => { reads++; return structuredClone(server); }, lookup: async () => { lookups++; return { ...status, revision: server.revision }; },
+      sync: async (_mount, body) => {
+        writes++; assert.equal(body.mode, mode); upserts = body.grains.upsert.length;
+        if (mode === 'delta') assert.deepEqual(body.grains.upsert.map(g => g.id), ['pending-addition']);
+        server = { ...applyChanges(server, body), revision: 2, hashes };
+        server.grains = server.grains.map(g => ({ ...g, project_uuid: app.project.uuid }));
+        return quietReply(body);
+      } });
+    const start = performance.now();
+    await session.check();
+    assert.equal(session.firstSync, false); assert.equal(session.counts.grains, 1);
+    // Reproduce the previous opening decision to compare the same mock workflow.
+    if (mode === 'snapshot') session.snapshotNeeded = true;
+    await session.sync();
+    assert.equal(session.error, ''); assert.equal(writes, 1); assert.ok(reads <= 3); assert.equal(lookups, 2);
+    assert.equal(upserts, mode === 'snapshot' ? n + 1 : 1);
+    results.push({ mode, upserts, reads, writes, lookups, ms: Number((performance.now() - start).toFixed(1)) });
+    session.dispose();
+  }
+  assert.equal(results[1].reads, results[0].reads);
+  t.diagnostic(`Synthetic reopen ${n} rows, previous snapshot decision versus fixed delta: ${JSON.stringify(results)}`);
 });

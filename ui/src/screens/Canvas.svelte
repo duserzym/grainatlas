@@ -168,11 +168,31 @@
   let publicationOpen = $state(false);
   const namedSpotCount = $derived(app.spots.filter(s => s.name.trim()).length);
   const publishStage = $derived(publicationOpen || app.sync.imageBusy ? 2 : !app.checksRan ? 0 : namedSpotCount !== app.spots.length ? 1 : 2);
-  function activateTool(tool: Tool) { if (tool !== app.tool) { cancelAddPreview(); spotAfterGrain = null; } hoverFrame.clear(); dragFrame.clear(); vertexDrag = null; cursorScreen = null; snapHint = null; lastHover = null; imageTool = null; app.tool = tool; }
+  function activateTool(tool: Tool) { clearOutlineProblem(); if (tool !== app.tool) { cancelAddPreview(); spotAfterGrain = null; } hoverFrame.clear(); dragFrame.clear(); vertexDrag = null; cursorScreen = null; snapHint = null; lastHover = null; imageTool = null; app.tool = tool; }
   function editOutline() {
     if (ro || app.busy) return;
     if (app.tool === 'grain-add' && addPreview.grain) return; // Its corners are already editable.
     if (editableGrain) activateTool('grain-edit');
+    else outlineProblem('Select one grain to edit its outline.', 'Choose Select, click a grain or its row in Grains, then press E.');
+  }
+  async function focusEditingCanvas() {
+    await tick();
+    const grain = app.tool === 'grain-add' ? addPreview.grain : editableGrain;
+    if (grain) {
+      const [x0, y0, x1, y1] = grain.bbox_um;
+      centerOnUm((x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0, 1));
+    }
+    document.querySelector<HTMLElement>('[data-view]')?.focus({ preventScroll: true });
+  }
+  function outlineProblem(error: unknown, gesture: string) {
+    app.notice = `${error instanceof Error ? error.message : String(error)} ${gesture}`;
+    app.noticeAction = { label: 'Try on canvas', run: focusEditingCanvas };
+  }
+  function clearOutlineProblem() {
+    if (app.noticeAction?.run === focusEditingCanvas) { app.noticeAction = null; app.notice = null; }
+  }
+  function cancelOutlineTool() {
+    cancelGesture(); clearOutlineProblem(); activateTool('select'); void focusEditingCanvas();
   }
   function imageMode(value: string) { cancelAddPreview(); spotAfterGrain = null; editImage = value === 'image'; imageTool = null; polygonPoints = []; }
   let imageTool = $state<ImageTool>(null);
@@ -419,8 +439,8 @@
   function saveVertices(base: Grain, points: Point[]) {
     if (app.tool === 'grain-add') {
       if (ro || addPreview.grain !== base) return;
-      try { addPreview = previewTransition(addPreview, { type: 'adjust', grain: editedOutline(base, points) }); }
-      catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
+      try { addPreview = previewTransition(addPreview, { type: 'adjust', grain: editedOutline(base, points) }); clearOutlineProblem(); }
+      catch (e) { outlineProblem(e, 'The valid preview is kept. Drag a corner without crossing edges, or Cancel the preview.'); }
       return;
     }
     if (ro || app.busy || !areaId || !detections.includes(base)) return;
@@ -431,7 +451,8 @@
       app.checkpoint();
       app.grains = { ...app.grains, [areaId]: detections.map(g => g.id === base.id ? edited : g) };
       app.persist();
-    } catch(e) { app.notice = e instanceof Error ? e.message : String(e); }
+      clearOutlineProblem();
+    } catch(e) { outlineProblem(e, 'The previous outline is kept. Drag the corner again without crossing edges, or use Redraw. Done leaves outline editing.'); }
   }
   let lastHover: CanvasPoint | null = null;
   let dragCrossedSlop = false;
@@ -646,6 +667,7 @@
     sensitivityTimer = null;
     addPreview = previewTransition(addPreview, { type: 'cancel' });
     addBox = null; lasso = null; lassoHover = null; vertexDrag = null; dragFrame.clear();
+    clearOutlineProblem();
   }
   function changeAddMode(value: string) {
     if (addNeedsPixels && value !== 'draw') return;
@@ -667,6 +689,7 @@
   });
   async function makeAddPreview(source: AddSource) {
     if (ro || isViewer || !areaId || app.tool !== 'grain-add') return;
+    clearOutlineProblem();
     const state = current(), id = areaId, project = app.project?.uuid;
     addPreview = previewTransition(addPreview, { type: 'begin', source });
     const revision = addPreview.revision;
@@ -678,7 +701,9 @@
       addPreview = previewTransition(addPreview, { type: 'result', revision, grain,
         error: grain ? '' : 'No grain found there. Try another point, adjust sensitivity or use Draw.' });
     } catch (e) {
+      if (current() !== state || areaId !== id || app.project?.uuid !== project || ro || isViewer || app.tool !== 'grain-add' || addPreview.revision !== revision) return;
       addPreview = previewTransition(addPreview, { type: 'result', revision, grain: null, error: e instanceof Error ? e.message : String(e) });
+      outlineProblem(e, source.kind === 'draw' ? 'Click three or more distinct corners without crossing edges, then Enter to preview. Esc cancels.' : source.kind === 'box' ? 'Drag a box around one grain again, or choose Draw. Esc cancels.' : 'Click another point, adjust sensitivity, or choose Draw. Esc cancels.');
     }
   }
   onDestroy(cancelAddPreview);
@@ -702,7 +727,7 @@
       cancelAddPreview(); selGrains = [grain.id]; app.selection = [];
       app.notice = `Added ${grain.label}. ${modName}+Z undoes.`;
       if (thenSpot) { app.tool = 'spot'; spotAfterGrain = { area: id, id: grain.id }; }
-    } catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
+    } catch (e) { outlineProblem(e, 'The preview is kept. Adjust its corners and Accept again, or Cancel.'); }
   }
 
   const automaticN = $derived(nextNumber(app.spots, sample, app.settings.n_per_sample));
@@ -745,6 +770,10 @@
     sizeRepairs = null;
   }
   const selectedGrains = $derived(detections.filter((g) => selGrains.includes(g.id)));
+  const outlineHint = $derived(app.tool === 'grain-outline' ? 'Click three or more corners, then Enter to finish; or drag an outline. Shift extends, Alt cuts. Esc cancels the path.'
+    : app.tool === 'grain-split' ? 'Draw all the way across one grain. Hold Shift for a straight cut. Esc cancels; Select leaves Split.'
+    : app.tool === 'grain-brush' ? 'Paint along a grain edge; Alt erases. Esc cancels the stroke; Select leaves Brush.'
+    : app.tool === 'select' ? 'Select one grain for Edit outline (E). Shift-click touching grains for Merge.' : '');
 
   async function scrollAnchor(kind: 'spot' | 'grain', id: string | null) {
     if (!id || (kind === 'spot' ? tab !== 'spots' : tab !== 'grains')) return;
@@ -950,14 +979,15 @@
       // Check topology in either mode; pixel merge still supplies pixel measurements.
       const polygon = mergePolygons(targets.map(g => g.polygon_um));
       const geometry = noPixels ? polygonGrain(polygon) : await app.run('Merging grains', () => core!.mergeGrains(id, targets));
-      if (!geometry) return;
+      if (!geometry) { outlineProblem('No merged outline was produced.', 'Select touching grains, then Merge again. Select leaves this operation.'); return; }
       const child = mergedChild(targets, geometry, id);
       const spots = reassignLineage(app.spots, targets, [child]);
       app.checkpoint();
       app.grains = { ...app.grains, [id]: [...detections.filter(g => !targets.some(t => t.id === g.id)), child] };
       app.spots = spots; app.persist();
       selGrains = [child.id];
-    } catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
+      clearOutlineProblem();
+    } catch (e) { outlineProblem(e, 'The selected grains are kept. Shift-click to choose touching grains, then Merge again; Select changes the selection.'); }
   }
 
   function deleteGrains() {
@@ -994,10 +1024,11 @@
     const s = app.spots.find((x) => x.id === id);
     if (!s || s.area_id !== areaId) return;
     app.focusSpot = null;
-    if (app.shellSelection?.spot === id) tab = 'spots';
+    tab = 'spots';
     selGrains = [];
     panel.open = true;
     centerOnUm(s.x_um, s.y_um);
+    void scrollAnchor('spot', id);
   });
 
   // Shell grain commands use the same selection and framing as a grain-table click.
@@ -1013,6 +1044,7 @@
     const [x0, y0, x1, y1] = g.bbox_um;
     centerOnUm((x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0, 1));
     if (target.flash) app.flash = { kind: 'grain', id: g.id, area: areaId! };
+    void scrollAnchor('grain', g.id);
   });
   const viewReady = $derived(!!view && !!viewer);
   $effect(() => {
@@ -1257,7 +1289,7 @@
       if (!handle) return true;
       const points = target.polygon_um.map(p => [...p] as Point);
       if (ev.altKey && handle.kind === 'vertex') {
-        if (points.length <= 3) app.notice = 'An outline needs at least three corners.';
+        if (points.length <= 3) outlineProblem('An outline needs at least three corners.', 'Drag a corner instead, or click an edge to add one. Esc cancels a drag.');
         else { points.splice(handle.index, 1); saveVertices(target, points); }
       } else {
         const index = handle.kind === 'edge' ? handle.index + 1 : handle.index;
@@ -1551,19 +1583,20 @@
     const id = areaId;
     try {
       const g = grainForCut(grains, path, selGrains);
-      if (!g) { app.notice = 'Draw the cut all the way across the grain.'; return; }
+      if (!g) { outlineProblem('Draw the cut all the way across the grain.', 'Start outside one edge and finish outside the opposite edge. Hold Shift for a straight cut; Esc cancels.'); return; }
       const parts = noPixels
         ? splitPolygon(g.polygon_um, path).map(p => polygonGrain(p, $state.snapshot(g) as Grain))
         : await app.run('Splitting grain', () => core!.splitGrain(id, $state.snapshot(g) as Grain, path));
-      if (!parts || parts.length < 2) { app.notice = 'Draw the cut all the way across the grain.'; return; }
+      if (!parts || parts.length < 2) { outlineProblem('Draw the cut all the way across the grain.', 'Start outside one edge and finish outside the opposite edge. Hold Shift for a straight cut; Esc cancels.'); return; }
       const children = splitChildren(g, parts, id);
       const spots = reassignLineage(app.spots, [g], children);
       app.checkpoint();
       app.grains = { ...app.grains, [id]: [...detections.filter(q => q.id !== g.id), ...children] };
       app.spots = spots; app.persist();
       selGrains = children.map(g => g.id);
+      clearOutlineProblem();
       if (children.some(g => g.artifact)) app.notice = 'Split off a bubble: flagged as not a grain. Undo restores the parent and its spots.';
-    } catch (e) { app.notice = e instanceof Error ? e.message : String(e); }
+    } catch (e) { outlineProblem(e, 'The original grain is kept. Draw a new cut without crossing itself, from outside one edge to outside the other. Esc cancels.'); }
   }
 
   async function click(p: CanvasPoint) {
@@ -1631,6 +1664,10 @@
   // ---- hand-edited outlines -------------------------------------------------------------
   async function finishLasso() {
     const l = lasso;
+    if (l && l.pts.length < 3) {
+      outlineProblem('An outline needs at least three corners.', 'Click another corner, then Enter to finish. Esc cancels the path.');
+      return;
+    }
     lasso = null;
     lassoHover = null;
     if (!l || !areaId || l.pts.length < 3) return;
@@ -1662,14 +1699,14 @@
     const sel = selGrains.length === 1 ? (detections.find((g) => g.id === selGrains[0]) ?? null) : null;
     const base = op === 'new' ? null : (grainAt(detections, at[0], at[1], true) ?? sel ?? null);
     if (op === 'cut' && !base) {
-      app.error = 'Select the grain to cut from, or start the cut on it.';
+      outlineProblem('Select the grain to cut from, or start the cut on it.', 'Choose Select and click one grain, then Outline and Alt-draw the cut. Esc cancels the path.');
       return;
     }
     const eff: EditOp = op === 'add' && !base ? 'new' : op;
     const r = await app.run(label, () => run(base ? ($state.snapshot(base) as Grain) : null, eff));
-    if (r === undefined) return;
+    if (r === undefined) { outlineProblem(app.error || 'The outline could not be applied.', 'The previous outline is kept. Draw a simple outline without crossing edges and try again. Esc cancels the path.'); return; }
     if (!r) {
-      app.notice = eff === 'cut' ? 'That cut would remove the whole grain: use Delete for that.' : 'Nothing to outline there.';
+      outlineProblem(eff === 'cut' ? 'That cut would remove the whole grain: use Delete for that.' : 'Nothing to outline there.', 'Draw a smaller cut or a new outline with an area, then Enter. Esc cancels the path.');
       return;
     }
     const g: Grain = { ...base, ...r };
@@ -1685,6 +1722,7 @@
     setGrains([...detections.filter((q) => q.id !== g.id && !gone.has(q.id)), g].sort((a, b) => a.number - b.number), true);
     selGrains = [g.id];
     const what = eff === 'new' ? (covered.length ? 'Redrew the grain' : 'New grain') : eff === 'add' ? 'Grew the grain' : 'Cut the grain';
+    clearOutlineProblem();
     app.notice = `${what}${covered.length > 1 ? ` (took in ${covered.length} pieces)` : ''}. ⌘Z undoes.`;
   }
 
@@ -1791,6 +1829,10 @@
     activateTool(tools[key]); return true;
   }
   function key(e: KeyboardEvent) {
+    // Reviewing or activating recovery controls must not also accept a canvas
+    // preview, change tools, or move a selected registered spot.
+    if (typeof Element !== 'undefined' && e.target instanceof Element
+      && (e.target.closest('#sync-details, [data-review-issues]') || e.key === 'Enter' && e.target.closest('.header-region, .notices'))) return;
     splitModifier(e);
     if ((splitStroke || vertexDrag) && e.key === 'Escape') {
       e.preventDefault();
@@ -2234,13 +2276,19 @@
         <span>Drag corners. Click an edge to add. Alt-click a corner to remove.</span>
         <button onclick={() => activateTool('grain-outline')} title="Redraw (O); Shift adds a region, Alt removes a region">Redraw</button>
         <button onclick={() => activateTool('grain-brush')} disabled={noPixels} title="Brush (B); Alt erases">Brush</button>
-        <button onclick={() => activateTool('select')}>Done</button>
+        <button onclick={cancelOutlineTool}>Done</button>
       </div>
     {/if}
     {#if !ro && (app.tool === 'grain-outline' && !noPixels || app.tool === 'grain-brush')}
       <div class="tool-options">
         {#if app.tool === 'grain-outline'}<label class="check" title="Pull the outline onto the grain edges near the path"><input type="checkbox" bind:checked={snapEdges} data-testid="snap-edges" /> snap to edges</label>
         {:else}<label class="diam" title="Brush diameter (µm)">⌀ <input type="number" min="2" step="2" bind:value={brushUm} aria-label="Brush µm" />µm</label>{/if}
+      </div>
+    {/if}
+    {#if !ro && !editImage && outlineHint}
+      <div class="tool-options" data-testid="outline-tool-guidance">
+        <span class="faint small" role="status">{outlineHint}</span>
+        {#if app.tool !== 'select'}<button onclick={cancelOutlineTool}>Cancel tool</button>{/if}
       </div>
     {/if}
     </div>

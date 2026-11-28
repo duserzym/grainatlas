@@ -214,6 +214,8 @@ export interface Spot {
   grain_number: number | null;
   /** Transient export display text, resolved by grain_id. Never a sync field. */
   grain_label?: string;
+  /** Local review/audit only; never sent as database identity or measurement data. */
+  grain_link_review?: { action: 'review' | 'assign' | 'keep' | 'detach'; grain_id: string | null; from?: string | null; reason: string };
   n: number;
   x_um: number;
   y_um: number;

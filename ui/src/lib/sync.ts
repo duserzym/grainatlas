@@ -35,9 +35,13 @@ export function mapLegacyGrains(elements: ReadElements, local: ReadElements): Re
     return match ? { ...g, id: match.id } : g;
   }) };
 }
-export function needsFirstSnapshot(server: ReadElements, local: ReadElements): boolean {
+export function needsFirstSnapshot(server: ReadElements, local: ReadElements, confirmedBase?: ReadElements): boolean {
   if (server.grains.some(g => g.id === null && local.grains.some(l => l.id !== null && storedElement('grains', l as SyncGrain).label === g.label))) return true;
-  return KINDS.some(k => local[k].some(e => e.id !== null && !server[k].some(s => s.id === e.id)));
+  // Saved additions above an acknowledged base are ordinary delta upserts.
+  return KINDS.some(k => {
+    const ids = new Set(server[k].map(e => e.id));
+    return (confirmedBase ?? local)[k].some(e => e.id !== null && !ids.has(e.id));
+  });
 }
 const FIELDS = {
   spots: ['id', 'name', 'area_id', 'grain_id', 'x_um', 'y_um', 'x2_um', 'y2_um', 'diameter_um', 'kind', 'comment'],
@@ -74,6 +78,19 @@ export function withKnownLineage(elements: Elements, known: Set<string>): Elemen
       if (!out.merged_from.length) delete out.merged_from;
     }
     return out;
+  }) };
+}
+/** Lineage is additive on the server. Missing local links cannot erase stored
+ * history, but newly proposed links still have to be submitted and verified. */
+export function withStoredLineage(elements: Elements, database: ReadElements): Elements {
+  const stored = new Map(database.grains.filter(g => g.id !== null).map(g => [g.id, g]));
+  return { ...elements, grains: elements.grains.map(g => {
+    const previous = stored.get(g.id);
+    if (!previous) return g;
+    const parent = splitParent(previous.split_from);
+    const merged = previous.merged_from ?? [];
+    return { ...g, ...(!g.split_from && parent ? { split_from: parent } : {}),
+      ...(merged.length ? { merged_from: [...new Set([...merged, ...(g.merged_from ?? [])])] } : {}) };
   }) };
 }
 export type Kind = keyof Elements;
@@ -245,6 +262,7 @@ export function keepAdditions(mine: Elements, additions: Elements): Elements {
 export function syncIntentFailure(changes: Changes, mine: Elements, server: ReadElements, uuid: string,
   reply: { revision: number; previous_revision: number; not_in_snapshot: Record<Kind, string[]> }, accepted?: ReadElements): string | null {
   const current = projectElements(server, uuid);
+  mine = withStoredLineage(mine, current);
   const intended = diffElements(current, mine);
   const sent = (k: Kind) => new Set([...changes[k].upsert.map(e => e.id), ...changes[k].delete, ...(k === 'grains' ? changes.grains.retire : [])]);
   const intendedIds = (k: Kind) => [...intended[k].upsert.map(e => e.id), ...intended[k].delete, ...(k === 'grains' ? intended.grains.retire : [])];
@@ -257,8 +275,28 @@ export function syncIntentFailure(changes: Changes, mine: Elements, server: Read
   const changed = KINDS.some(k => intendedIds(k).some(id => sent(k).has(id)));
   if (changed && reply.revision <= reply.previous_revision) return 'The database revision did not advance; changes kept here';
   if (accepted) {
-    const remaining = changeCounts(diffElements(projectElements(accepted, uuid), mine));
-    for (const k of KINDS) if (sent(k).size && remaining[k]) return `The database did not save all ${k}; changes kept here`;
+    const canonical = storedElements(projectElements(accepted, uuid));
+    const intended = storedElements(mine);
+    for (const k of KINDS) {
+      const rows = new Map<string, Element>(canonical[k].map(e => [e.id, e]));
+      const expected = new Map<string, Element>(intended[k].map(e => [e.id, e]));
+      const failures: string[] = [];
+      for (const e of changes[k].upsert) {
+        const row = rows.get(e.id), wanted = expected.get(e.id);
+        if (equalElement(k, row, wanted)) continue;
+        const reason = !row ? 'missing from database' : k === 'grains'
+          && (!equal((row as SyncGrain).split_from, (wanted as SyncGrain | undefined)?.split_from)
+            || !equal((row as SyncGrain).merged_from, (wanted as SyncGrain | undefined)?.merged_from))
+          ? 'lineage differs' : 'stored fields differ';
+        failures.push(`${e.id.slice(0, 8)}: ${reason}`);
+      }
+      // Verify explicit deletes too: diff's measured-spot deletion guard belongs to
+      // request preparation, and must never conceal an ignored sent operation.
+      for (const id of [...changes[k].delete, ...(k === 'grains' ? changes.grains.retire : [])]) {
+        if (rows.has(id)) failures.push(`${id.slice(0, 8)}: ${k === 'grains' ? 'retirement' : 'deletion'} not applied`);
+      }
+      if (failures.length) return `The database did not save all ${k}; changes kept here (${nameList(failures)})`;
+    }
   }
   return null;
 }
@@ -383,23 +421,35 @@ export function heldKind(kind: string): Kind | null {
   const k = kind.replace(/s$/, '');
   return k === 'spot' ? 'spots' : k === 'grain' ? 'grains' : k === 'label' || k === 'annotation' ? 'labels' : null;
 }
-/** What a partial reply applied. Held upserts keep the database version (new ones stay out),
- * held deletes keep the element: the next base is exactly what the database now has, so the
- * held items stay local changes and the next sync sends them again with any new edits. */
-export function appliedPart(changes: Changes, mine: Elements, current: ReadElements, held: HeldItem[], uuid: string): { changes: Changes; mine: Elements } {
-  const out = { changes: structuredClone(changes), mine: { ...mine } as Elements };
-  const owned = storedElements(projectElements(current, uuid));
+/** The operations a partial reply applied. Held operations stay in the local draft. */
+export function appliedPart(changes: Changes, held: HeldItem[]): Changes {
+  const applied = structuredClone(changes);
   for (const item of held) {
     const kind = heldKind(item.kind);
     if (!kind) continue;
     const op = item.op ?? (changes[kind].upsert.some(e => e.id === item.id) ? 'upsert' : 'delete');
-    const c = out.changes[kind] as { upsert: Element[]; delete: string[]; retire?: string[] };
-    if (op === 'upsert') c.upsert = c.upsert.filter(e => e.id !== item.id);
-    else { c.delete = c.delete.filter(id => id !== item.id); if (c.retire) c.retire = c.retire.filter(id => id !== item.id); }
-    const stored = (owned[kind] as Element[]).find(e => e.id === item.id);
-    (out.mine[kind] as Element[]) = [...(out.mine[kind] as Element[]).filter(e => e.id !== item.id), ...(stored ? [stored] : [])];
+    const operations: { upsert: Element[]; delete: string[]; retire?: string[] } = applied[kind];
+    if (op === 'upsert') operations.upsert = operations.upsert.filter(e => e.id !== item.id);
+    else {
+      operations.delete = operations.delete.filter(id => id !== item.id);
+      if (operations.retire) operations.retire = operations.retire.filter(id => id !== item.id);
+    }
   }
-  return out;
+  return applied;
+}
+/** Acknowledge only the applied operations on canonical state, never unrelated
+ * unsent draft values. Preserve the submitted display order through the merge. */
+export function acknowledgedBase(current: ReadElements, applied: Changes, mine: Elements): Elements {
+  const base = storedElements(applyChanges(current, applied));
+  return Object.fromEntries(KINDS.map(kind => {
+    const rows = new Map(base[kind].map(e => [e.id, e]));
+    const ordered: Element[] = [];
+    for (const local of mine[kind]) {
+      const row = rows.get(local.id);
+      if (row) { ordered.push(row); rows.delete(local.id); }
+    }
+    return [kind, [...ordered, ...rows.values()]];
+  })) as unknown as Elements;
 }
 /** A person-readable name: spot name, grain label, annotation text; 8 id characters only as a last resort. */
 export function elementLabel(kind: Kind, id: string, ...sources: (Partial<Record<Kind, readonly (Element | ReadGrain)[]>> | null | undefined)[]): string {

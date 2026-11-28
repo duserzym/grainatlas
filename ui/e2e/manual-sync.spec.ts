@@ -199,6 +199,83 @@ async function quit(page: Page) {
 }
 
 for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }]) {
+  test(`held outline repair remains reachable after reopen with Show and undo at ${viewport.width}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const mock = await setup(page);
+    await page.addInitScript(({ project, server, mountId }) => {
+      if (sessionStorage.getItem('synthetic-held-repair-seeded')) return;
+      sessionStorage.setItem('synthetic-held-repair-seeded', '1');
+      const copy = structuredClone(project), ui = copy.grainatlas_ui;
+      const original = structuredClone(ui.grains.a[0]);
+      const replacement = { ...original, id: '30000000-0000-4000-8000-000000000099', number: 99, label: 'a/99' };
+      ui.grains.a[0] = { ...original, polygon_um: original.polygon_um.map(([x, y]: number[]) => [x + 10000, y]), centroid_um: [original.centroid_um[0] + 10000, original.centroid_um[1]] };
+      ui.grains.a.push(replacement);
+      const base = {
+        grains: project.grainatlas_ui.grains.a.map((g: any) => ({ ...g, area_id: 'a', project_uuid: project.uuid })),
+        spots: project.grainatlas_ui.spots.map((s: any) => ({ ...s, project_uuid: project.uuid })),
+        labels: project.grainatlas_ui.labels.map((l: any) => ({ ...l, project_uuid: project.uuid })),
+      };
+      const key = `grainatlas.project.${project.package.name}`;
+      localStorage.setItem(key, JSON.stringify(copy));
+      localStorage.setItem('grainatlas.drafts', JSON.stringify([project.uuid]));
+      localStorage.setItem(`grainatlas.draft.${project.uuid}`, JSON.stringify({
+        uuid: project.uuid, name: project.name, server, mount: mountId, base_revision: 1, base,
+        synced: true, server_can_edit: true, pixels_base: null, pixels_changed: false, source_keys: [key],
+        updated_at: new Date().toISOString(), changes: { spots: 0, grains: 2, labels: 0 },
+        pending: { grains: ui.grains.a.map((g: any) => ({ ...g, area_id: 'a' })), spots: ui.spots, labels: ui.labels },
+        held_back: [{ kind: 'grain', id: original.id, op: 'upsert', code: 'spot_outside_grain',
+          reason: 'Synthetic registered spot lies outside the edited outline.',
+          related: ui.spots.filter((s: any) => s.grain_id === original.id).map((s: any) => ({ kind: 'spot', id: s.id, label: s.name })) }],
+      }));
+    }, { project: mock.project, server, mountId });
+    await page.goto(link); await page.getByTestId('edit-copy').click();
+    await expect(page.getByTestId('sync-chip')).toHaveText('Needs your attention');
+    await page.getByTestId('review-issues').focus(); await page.keyboard.press('Enter');
+    await expect(page.getByTestId('sync-details')).toBeFocused();
+    await expect(page.getByTestId('editing-issue-count')).toContainText(/\d+ issues? to review/);
+    const held = page.getByTestId('held-items');
+    await expect(held.getByTestId('held-reason')).toContainText('Synthetic registered spot');
+    await held.getByRole('button', { name: 'Show spot', exact: true }).first().click();
+    await expect(page.getByTestId('canvas-um-space')).toBeVisible();
+    await expect(page.getByRole('application', { name: 'Mosaic canvas' })).toBeFocused();
+    await expect(page.getByTestId('sync-details')).toBeHidden();
+    await expect(page.getByTestId('review-issues')).toBeVisible();
+    await expect(page.getByTestId('sync-action')).toBeVisible();
+    await page.getByTestId('review-issues').click();
+    await held.getByTestId('held-keep').click();
+    await expect.poll(async () => (await storedDraft(page))?.pending?.grains.find((g: any) => g.id === mock.project.grainatlas_ui.grains.a[0].id)?.polygon_um[0][0]).toBe(mock.project.grainatlas_ui.grains.a[0].polygon_um[0][0]);
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    // Canvas actions leave the review panel. Return from the persistent header.
+    await page.getByTestId('review-issues').click();
+    const repair = held.getByTestId('spot-link-repair').first();
+    await expect(repair).toBeVisible();
+    await repair.getByRole('combobox').selectOption('30000000-0000-4000-8000-000000000099');
+    await repair.getByRole('button', { name: 'Show grain', exact: true }).click();
+    await expect(page.getByRole('application', { name: 'Mosaic canvas' })).toBeFocused();
+    await page.getByTestId('review-issues').focus(); await page.keyboard.press('Enter');
+    await expect(repair.getByRole('combobox')).toHaveValue('30000000-0000-4000-8000-000000000099');
+    await repair.getByRole('button', { name: 'Assign same spot', exact: true }).click();
+    await expect.poll(async () => (await storedDraft(page))?.pending?.spots.some((s: any) => s.grain_id === '30000000-0000-4000-8000-000000000099')).toBe(true);
+    expect(mock.syncs).toHaveLength(0);
+    // Reopen the same project in a new document to exercise persisted recovery.
+    await page.goto(link);
+    await page.getByTestId('edit-copy').click({ timeout: 20000 }); await page.getByTestId('sync-chip').click();
+    await expect(page.getByTestId('held-reason')).toContainText('Synthetic registered spot');
+    await expect(page.getByTestId('spot-link-audit')).toBeVisible();
+    expect(mock.syncs).toHaveLength(0); expect(mock.unexpected).toEqual([]);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('review-issues')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await page.getByTestId('sync-details').getByRole('button', { name: 'Back to canvas', exact: true }).click();
+    await expect(page.getByRole('application', { name: 'Mosaic canvas' })).toBeFocused();
+    mock.refuse(); await page.getByTestId('sync-action').click();
+    const failure = page.getByRole('alert').filter({ hasText: 'The database had a problem. Try again later.' });
+    await failure.getByRole('button', { name: 'Review issues', exact: true }).click({ timeout: 20000 });
+    await expect(page.getByTestId('sync-details')).toBeFocused();
+    await expect(page.getByTestId('sync-action')).toBeEnabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
   test(`manual edits persist without upload, polling or wake requests for five minutes at ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const mock = await openEdit(page);
@@ -383,7 +460,11 @@ test('desktop Sync and close keeps the app open when sync fails', async ({ page 
   const mock = await openEdit(page, { desktop: true }); await edit(page, mock.project); mock.refuse();
   const dialog = await quit(page);
   await dialog.getByRole('button', { name: 'Sync and close', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: /503.*Synthetic database maintenance/ })).toBeVisible();
+  const alert = page.getByRole('alert').filter({ hasText: /503.*Synthetic database maintenance/ });
+  await expect(alert).toBeVisible();
+  await alert.getByRole('button', { name: 'Review issues', exact: true }).click();
+  await expect(page.getByTestId('sync-details')).toBeFocused();
+  await expect(page.getByTestId('sync-action')).toBeEnabled();
   expect(await page.evaluate(() => (window as any).__finishedQuit)).toBe(0);
   await expect(page.getByTestId('sync-chip')).toBeVisible();
   expect((await storedDraft(page, true)).pending).not.toBeNull();

@@ -21,7 +21,7 @@ export async function findGrainsInArea(app: AppState, id: string, missing = fals
     app.checkpoint();
     app.grains = { ...app.grains, [id]: grains };
     const added = grains.slice(previous.length);
-    app.spots = missing ? linkUnlinkedSpots(app.spots, id, added) : relinkSpots(app.spots, id, grains);
+    app.spots = missing ? linkUnlinkedSpots(app.spots, id, added, grains) : relinkSpots(app.spots, id, grains);
     app.persist();
     if (missing) {
       const flagged = added.filter(g => g.artifact).length;

@@ -22,7 +22,8 @@ import { draftElements, draftPrintRecipe, ensureDraft, listDrafts, pendingElemen
 import { pixelSignature } from './sync-pixels';
 import { draftSyncStatus, plainSyncStatus, manualSyncText } from './sync-status';
 import { appStorage } from './app-storage';
-import { appliedCounts, describeChanges, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, appliedPart, elementLabel, nameList, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
+import { assignLink, keepHeldVersion, linkIssues, repairLinks, rememberLinkIssues, type LinkIssue } from './link-repair';
+import { appliedCounts, describeChanges, applyChanges, changeCounts, chipText, diffElements, elementDiffer, emptyElements, groupedGrains, hasChanges, mergeElements, needsFirstSnapshot, resolveMerge, syncState, uiSpots, validateLineage, viewElements, syncChanges, syncIntentFailure, storedElements, projectElements, databaseAdditions, keepAdditions, firstSyncMerge, withKnownLineage, withStoredLineage, appliedPart, acknowledgedBase, elementLabel, nameList, heldKind, KINDS, type HeldItem, type Kind, type Elements, type ReadElements, type Merge, type Resolution } from './sync';
 
 const clone = <T>(value: T): T => timed('sync.clone', () => JSON.parse(JSON.stringify(value)) as T);
 interface HeldSync { identity: string; mine: Elements; current: ReadElements; body: SyncBody; publishPixels: boolean; counts: AtlasSyncConfirmation }
@@ -127,12 +128,59 @@ export class SyncSession {
   omissions = $state.raw<Record<Kind, string[]>>({ spots: [], grains: [], labels: [] });
   /** Items the last partial sync held back; they stay local changes until a sync applies them. */
   private heldBack = $state.raw<HeldItem[]>([]);
-  /** Held items that are still local changes here (one reverted or deleted since drops out). */
+  /** Keep evidence until a verified retry. The local baseline can be stale after a failed readback. */
   get held(): HeldItem[] {
-    if (!this.heldBack.length) return [];
-    const c = this.localChanges;
-    const ids = new Set(KINDS.flatMap(k => [...c[k].upsert.map(e => e.id), ...c[k].delete, ...(k === 'grains' ? c.grains.retire : [])]));
-    return this.heldBack.filter(h => ids.has(h.id));
+    return this.heldBack;
+  }
+  private heldSpotIds = $derived.by(() => new Set(this.held.flatMap(h => [h.id, ...(h.related ?? []).map(r => r.id)])));
+  private linkReviewDatabase = $derived.by(() => this.serverElements ?? this.draft?.base ?? this.emptyBase);
+  private linkReviewUuid = $derived.by(() => this.draft?.linked_uuid ?? this.app.project?.uuid ?? '');
+  // Draft paths, pointer previews and label edits do not invalidate spatial work.
+  private cachedLinkIssues = $derived.by(() => linkIssues({ grains: this.cachedGrains, spots: this.app.spots, labels: [] }, this.linkReviewDatabase, this.linkReviewUuid, this.heldSpotIds));
+  get linkRepairs(): LinkIssue[] { return this.cachedLinkIssues; }
+  get linkAudits() { return this.app.spots.filter(s => s.grain_link_review && s.grain_link_review.action !== 'review'); }
+  get editingIssueCount() { return this.held.length + this.linkRepairs.filter(i => !this.heldSpotIds.has(i.spot.id)).length; }
+  private rememberHeld(items: HeldItem[]) {
+    if (!items.length) return;
+    const rows = new Map(this.heldBack.map(h => [`${h.kind.replace(/s$/, '')}:${h.id}`, h]));
+    for (const h of items) rows.set(`${h.kind.replace(/s$/, '')}:${h.id}`, h);
+    this.heldBack = [...rows.values()];
+    this.save({ held_back: this.heldBack });
+  }
+  keepHeldReason(item: HeldItem): string {
+    if (oversightSession.readOnly) return 'Viewing as someone else is read-only. Return to an editable session to recover this operation.';
+    if (!canWrite() || this.app.readOnly) return 'Open an editable copy to recover this operation.';
+    if (this.busy) return 'Wait for the database check to finish.';
+    if (this.review || this.confirmation || this.staleOpen) return 'Finish the pending revision or removal review, then recover this operation.';
+    if (!this.serverElements) return 'Check or retry Sync to load the database version first.';
+    try { keepHeldVersion(this.elements, this.serverElements, item, this.draft?.linked_uuid ?? this.app.project?.uuid ?? ''); return ''; }
+    catch (e) { return e instanceof Error ? e.message : String(e); }
+  }
+  canKeepHeld(item: HeldItem): boolean { return !this.keepHeldReason(item); }
+  keepHeld(item: HeldItem) {
+    if (!this.canKeepHeld(item) || !this.serverElements) return;
+    try {
+      this.setElements(keepHeldVersion(this.elements, this.serverElements, item, this.draft?.linked_uuid ?? this.app.project?.uuid ?? ''));
+      this.save({ pending_request: null }); this.track();
+      this.app.notice = 'Kept the database version of this operation and restored required links. Other edits remain here. Sync to verify; Undo restores the local operation.';
+    } catch (e) { this.app.notice = e instanceof Error ? e.message : String(e); }
+  }
+  repairSpot(id: string, candidate: string | 'keep-original' | 'detach') {
+    if (!canWrite() || oversightSession.readOnly || this.app.readOnly || this.busy || this.review || this.confirmation || this.staleOpen) return;
+    const issue = this.linkRepairs.find(i => i.spot.id === id);
+    if (!issue) return;
+    if (candidate === 'keep-original') {
+      this.keepHeld({ kind: 'spot', id, op: 'upsert' }); return;
+    }
+    const grain = issue.candidates.find(c => c.grain.id === candidate)?.grain;
+    if (candidate !== 'detach' && !grain) return;
+    const spots = this.app.spots.map(s => s.id !== id ? s : grain ? assignLink(s, grain, 'Grain selected by the analyst at the original spot centre.') : {
+      ...s, grain_id: null, grain_number: null, detach_grain: true,
+      grain_link_review: { action: 'detach' as const, grain_id: null, from: s.grain_id, reason: 'Explicitly detached by the analyst; the spot and measurements are preserved.' },
+    });
+    this.app.checkpoint(); this.app.spots = spots as AppState['spots']; this.app.persist();
+    this.save({ pending_request: null }); this.track();
+    this.app.notice = 'Spot link reviewed. Sync to save it; Undo restores the previous link.';
   }
   /** Raw status and body of the last failure, for Details only. */
   errorDetails = $state('');
@@ -438,7 +486,8 @@ export class SyncSession {
   private diffKind = elementDiffer();
   // Lineage depends only on grains and database identities, never on spot edits.
   private knownGrainKey = $derived.by(() => [...this.knownGrains()].sort().join('|'));
-  private localGrains = $derived.by(() => withKnownLineage({ ...this.emptyBase, grains: this.cachedGrains }, new Set(this.knownGrainKey.split('|'))).grains);
+  private storedGrains = $derived(this.serverElements?.grains ?? this.draft?.base?.grains ?? this.emptyBase.grains);
+  private localGrains = $derived.by(() => withStoredLineage(withKnownLineage({ ...this.emptyBase, grains: this.cachedGrains }, new Set(this.knownGrainKey.split('|'))), { ...this.emptyBase, grains: this.storedGrains }).grains);
   private spotChanges = $derived.by(() => this.diffKind('spots', this.localBase.spots, this.app.spots));
   private grainChanges = $derived.by(() => this.diffKind('grains', this.localBase.grains, this.localGrains));
   private labelChanges = $derived.by(() => this.diffKind('labels', this.localBase.labels, this.app.labels));
@@ -625,7 +674,7 @@ export class SyncSession {
       const theirs = await api.elements(status.project_uuid);
       if (!this.isCurrent(identity)) return;
       this.checkedElements = { identity, projectUuid: status.project_uuid, fetchedAt: Date.now(), elements: theirs };
-      if (!this.serverElements) this.snapshotNeeded = needsFirstSnapshot(theirs, this.elements);
+      if (!this.serverElements) this.snapshotNeeded = needsFirstSnapshot(theirs, this.elements, this.draft?.synced ? this.draft.base ?? undefined : undefined);
       this.serverElements = theirs; this.serverSpots = theirs.spots; this.serverHashes = theirs.hashes; this.elementsRevision = theirs.revision;
       this.setStatus({ ...status, revision: theirs.revision });
       if (this.app.readOnly && this.viewRevision === null) {
@@ -854,10 +903,11 @@ export class SyncSession {
     return new Set([...(base?.grains ?? []), ...(this.draft?.base?.grains ?? []), ...(server?.grains ?? []), ...(this.viewBase?.grains ?? []), ...this.lastSeen.grains].flatMap(g => g.id === null ? [] : [g.id]));
   }
   private syncElements(elements: Elements, server: ReadElements | null = this.serverElements): Elements {
-    return withKnownLineage(elements, this.knownGrains(server));
+    return withStoredLineage(withKnownLineage(elements, this.knownGrains(server)), server ?? this.draft?.base ?? this.emptyBase);
   }
   private mergeLocal(base: ReadElements, local: Elements, server: ReadElements): Merge {
     const known = this.knownGrains(server, base);
+    local = withStoredLineage(local, server);
     const merge = timed('sync.merge', () => mergeElements(base, withKnownLineage(local, known), server));
     // Independent fields on the same row are safe to combine too. Deletion and
     // same-field conflicts still require the existing explicit resolution.
@@ -883,6 +933,7 @@ export class SyncSession {
     return merge;
   }
   private failed(e: unknown) {
+    if (e instanceof SyncApiError && e.problems.length) this.rememberHeld(e.problems);
     this.confirmation = null; this.heldSync = null;
     if (this.dialog === 'bulk') this.dialog = null;
     this.error = e instanceof Error ? e.message : String(e);
@@ -978,7 +1029,24 @@ export class SyncSession {
           }
           await yieldToInput();
           if (!this.isCurrent(identity)) return;
-          const syncMine = this.syncElements(mine, current);
+          // Only an explicit Sync prepares links. Do not apply a captured draft over edits
+          // made during the fetch, nor alter a durable retry or a bulk-approved request.
+          if (!this.automaticRunning && !recovery && !approved
+            && JSON.stringify(storedElements(mine)) === JSON.stringify(storedElements(this.elements))) {
+            const repair = repairLinks(mine, current, projectUuid, new Set(missing.map(s => s.id)), this.heldSpotIds);
+            repair.elements = rememberLinkIssues(repair.elements, repair.unresolved);
+            if (repair.elements.spots.some((s, i) => s !== mine.spots[i])) {
+              const byId = new Map(repair.elements.spots.map(s => [s.id, s]));
+              this.app.checkpoint();
+              this.app.spots = this.app.spots.map(s => ({ ...s, ...byId.get(s.id) }));
+              this.app.persist(); this.track(false);
+              mine = repair.elements;
+              this.app.notice = repair.repaired.length
+                ? `${repair.repaired.length} spot links prepared from the original centres. Review the links in Sync details; Undo restores them.`
+                : 'Spot links still need review. Open Review issues, choose a recovery action, then Sync.';
+            }
+          }
+          const syncMine = recovery ? mine : this.syncElements(mine, current);
           // These jobs use captured immutable snapshots. Never send live app state
           // across an await and later replace it without the existing in-flight merge.
           const prepared = !recovery && !approved ? await syncCompute({ op: 'prepare', mode, base: draft.base ?? emptyElements(), mine: syncMine, current, uuid: projectUuid, seen: this.lastSeen, since: draft.base ?? draft.base_seen ?? emptyElements() }) : null;
@@ -1076,15 +1144,26 @@ export class SyncSession {
           this.omissions = reply.not_in_snapshot;
           // A partial reply applied everything except the held items: acknowledge only that part.
           const held = reply.held_back ?? [];
-          const part = held.length ? appliedPart(body, syncMine, current, held, projectUuid) : { changes: body, mine: syncMine };
-          const appliedMine = part.mine;
-          let reason = syncIntentFailure(part.changes, appliedMine, current, projectUuid, reply);
-          if (reason) { this.intentFailure = reason; throw new SyncApiError(422, [reason]); }
+          // Persist evidence before provisional verification: a failed GET or a lost write
+          // must not erase the concrete rows that explain this partial response.
+          this.rememberHeld(held);
+          const applied = held.length ? appliedPart(body, held) : body;
+          const appliedMine = acknowledgedBase(current, applied, syncMine);
+          let reason = syncIntentFailure(applied, appliedMine, current, projectUuid, reply);
+          const rejectIntent = (message: string) => {
+            this.intentFailure = message;
+            this.save({ incomplete: { reason: message, omissions: reply.not_in_snapshot } });
+            throw new SyncApiError(422, [message]);
+          };
+          if (reason) rejectIntent(reason);
           // Refetch before acknowledging anything: a successful HTTP response may
           // have retained omissions or ignored submitted changes.
           const accepted = await api.elements(projectUuid);
           if (!this.isCurrent(identity)) return;
-          const ownOmissions = KINDS.flatMap(k => reply.not_in_snapshot[k].filter(id => [...current[k], ...accepted[k]].some(e => e.id === id && 'project_uuid' in e && e.project_uuid === projectUuid && e.id !== null)).map(id => `${k.slice(0, -1)} ${elementLabel(k, id, mine, current, accepted)}`));
+          if (accepted.revision < reply.revision) rejectIntent('The database verification is older than this sync; changes kept here');
+          const ownOmissions = KINDS.flatMap(k => reply.not_in_snapshot[k].filter(id =>
+            !held.some(h => heldKind(h.kind) === k && h.id === id)
+            && [...current[k], ...accepted[k]].some(e => e.id === id && 'project_uuid' in e && e.project_uuid === projectUuid && e.id !== null)).map(id => `${k.slice(0, -1)} ${elementLabel(k, id, mine, current, accepted)}`));
           if (reply.complete === false && ownOmissions.length) {
             this.serverElements = accepted;
             this.keepDatabase(databaseAdditions(accepted, this.lastSeen, this.elements, projectUuid));
@@ -1093,8 +1172,8 @@ export class SyncSession {
             this.save({ incomplete: { reason: incomplete, omissions: reply.not_in_snapshot } });
             throw new SyncApiError(422, [incomplete]);
           }
-          reason = syncIntentFailure(part.changes, appliedMine, current, projectUuid, reply, accepted);
-          if (reason) { this.intentFailure = reason; throw new SyncApiError(422, [reason]); }
+          reason = syncIntentFailure(applied, appliedMine, current, projectUuid, reply, accepted);
+          if (reason) rejectIntent(reason);
           await yieldToInput();
           if (!this.isCurrent(identity)) return;
           this.intentFailure = '';
@@ -1106,8 +1185,17 @@ export class SyncSession {
           this.registered = true;
           if (this.app.error === this.errorHeadline) this.app.error = null;
           this.error = ''; this.failureMessage = ''; this.validationFailed = false;
-          this.heldBack = held;
-          this.save({ pending_request: null, checked_at: new Date().toISOString(), server_revision: accepted.revision, incomplete: null, held_back: held, base: appliedMine, base_revision: reply.revision, base_hashes: null, synced: true, synced_at: new Date().toISOString() });
+          if (this.heldBack.length) {
+            const remaining = diffElements(projectElements(accepted, projectUuid), this.elements);
+            this.heldBack = this.heldBack.filter(h => {
+              const kind = heldKind(h.kind);
+              if (!kind) return true;
+              return held.some(fresh => fresh.id === h.id && fresh.kind === h.kind)
+                || remaining[kind].upsert.some(e => e.id === h.id) || remaining[kind].delete.includes(h.id)
+                || kind === 'grains' && remaining.grains.retire.includes(h.id);
+            });
+          }
+          this.save({ pending_request: null, checked_at: new Date().toISOString(), server_revision: accepted.revision, incomplete: null, held_back: this.heldBack, base: appliedMine, base_revision: reply.revision, base_hashes: null, synced: true, synced_at: new Date().toISOString() });
           if (accepted.revision === reply.revision) {
             // Edits made in flight remain above the submitted snapshot.
             await yieldToInput();

@@ -3,6 +3,8 @@ import { stitch } from './actions';
 import type { AppState } from './store.svelte';
 import type { Kind } from './sync';
 
+export const REVIEW_CANVAS = 'grainatlas:review-canvas';
+
 /** The area that holds this element here, or null when it is not in this copy (a kept delete). */
 export function elementArea(app: Pick<AppState, 'spots' | 'labels' | 'grains'>, kind: Kind, id: string): string | null {
   if (kind === 'spots') return app.spots.find(s => s.id === id)?.area_id ?? null;
@@ -18,5 +20,8 @@ export async function showElement(app: AppState, kind: Kind, id: string): Promis
   app.areaId = area;
   if (kind === 'grains') { app.selection = []; app.focusGrain = { area, id, flash: true }; }
   else { app.selection = [id]; if (kind === 'spots') app.focusSpot = id; }
+  // The review panel belongs to App. Let it close and transfer keyboard focus
+  // after the selected canvas has mounted, including navigation within one area.
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event(REVIEW_CANVAS));
   return true;
 }

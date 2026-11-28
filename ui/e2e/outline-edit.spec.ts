@@ -74,3 +74,30 @@ test('edge addition and Alt corner removal preserve registered spots',async({pag
   const restored=await saved(page);expect(restored.grainatlas_ui.grains).toEqual(before.grainatlas_ui.grains);expect(restored.grainatlas_ui.spots).toEqual(before.grainatlas_ui.spots);
   expect(unexpected).toEqual([]);
 });
+
+for(const viewport of [{width:1280,height:800},{width:1440,height:900}]) {
+  test(`outline selection guidance and invalid vertex retry preserve registered data at ${viewport.width}`,async({page})=>{
+    await page.setViewportSize(viewport);const {grain,before,unexpected}=await prepare(page);
+    await page.getByTestId('tool-select').click();
+    await expect(page.getByTestId('outline-tool-guidance')).toContainText('Shift-click touching grains for Merge');
+    await page.getByTestId('tool-edit-outline').click();
+    await page.getByRole('button',{name:'Close',exact:true}).click();await page.getByTestId('side-collapse').click();
+    // Drag the first corner past the opposite edge so the outline crosses itself even after pixel rounding.
+    const [corner,topRight,bottomRight]=grain.polygon_um;
+    const crossing=[topRight[0]+(topRight[0]-corner[0])/2,(topRight[1]+bottomRight[1])/2];
+    const [a,b]=await screen(page,[corner,crossing]);
+    await page.mouse.move(a.x,a.y);await page.mouse.down();await page.mouse.move(b.x,b.y,{steps:10});await page.mouse.up();
+    const recovery=page.getByRole('status').filter({hasText:'The previous outline is kept.'});
+    await expect(recovery).toContainText('The outline crosses itself.',{timeout:15000});
+    await expect(recovery).toContainText('Drag the corner again without crossing edges');
+    expect((await saved(page)).grainatlas_ui).toEqual(before.grainatlas_ui);
+    await expect(page.getByTestId('canvas-toolbar').getByRole('button',{name:'Undo',exact:true})).toBeDisabled();
+    await recovery.getByRole('button',{name:'Try on canvas',exact:true}).click();
+    await expect(page.getByRole('application',{name:'Mosaic canvas'})).toBeFocused();
+    await page.getByTestId('outline-edit-options').getByRole('button',{name:'Done',exact:true}).click();
+    await expect(page.getByTestId('tool-select')).toBeChecked();
+    await expect(page.getByRole('application',{name:'Mosaic canvas'})).toBeFocused();
+    expect((await saved(page)).grainatlas_ui).toEqual(before.grainatlas_ui);
+    expect(unexpected).toEqual([]);
+  });
+}

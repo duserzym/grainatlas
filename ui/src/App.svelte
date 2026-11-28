@@ -27,9 +27,10 @@
   import ScaleDialog from './components/ScaleDialog.svelte';
   import SyncChip from './components/SyncChip.svelte';
   import SyncDetails from './components/SyncDetails.svelte';
+  import { REVIEW_CANVAS } from './lib/held-items';
   import LeaveEditDialog from './components/LeaveEditDialog.svelte';
   import QuitDialog from './components/QuitDialog.svelte';
-  import { keepLocalForClose, needsCloseReminder, syncForClose, syncReminder } from './lib/close-sync';
+  import { keepLocalForClose, needsCloseReminder, syncForClose, syncReminder, SYNC_CLOSE_ERROR } from './lib/close-sync';
   import { startSyncPolling } from './lib/sync-scheduling';
   import { flushWrites } from './lib/deferred-writes';
   import CheckDialog from './components/CheckDialog.svelte';
@@ -77,6 +78,29 @@
 
   const desktop = isDesktop();
   let syncDetailsOpen = $state(false);
+  async function openIssueReview() {
+    const state = current();
+    syncDetailsOpen = true;
+    await tick();
+    if (current() !== state) return;
+    const review = document.getElementById('sync-details');
+    review?.focus({ preventScroll: true });
+    if (review) review.scrollTop = 0;
+  }
+  async function reviewCanvas() {
+    const state = current();
+    syncDetailsOpen = false;
+    if (Object.keys(app.stitched).length) app.screen = 'canvas';
+    await tick();
+    if (current() !== state) return;
+    const target = document.querySelector<HTMLElement>('[data-view]') ?? document.querySelector<HTMLElement>('[data-testid="review-issues"]');
+    target?.focus({ preventScroll: true });
+  }
+  onMount(() => {
+    const show = () => void reviewCanvas();
+    window.addEventListener(REVIEW_CANVAS, show);
+    return () => window.removeEventListener(REVIEW_CANVAS, show);
+  });
   let overflowOpen = $state(false);
   /** A storage warning the user hid: it then waits behind the header's Storage full button. */
   let hiddenStorageWarning = $state<string | null>(null);
@@ -120,13 +144,13 @@
   // The details drawer is in flow: closing it moves everything below it up. Close after the
   // click has reached its target (not on pointerdown), so the click lands where it was aimed.
   function closeDetailsOutside(event: MouseEvent) {
-    if (event.target instanceof Element && !event.target.closest('[data-testid="sync-chip"], [data-testid="sync-details"]')) syncDetailsOpen = false;
+    if (event.target instanceof Element && !event.target.closest('[data-testid="sync-chip"], [data-testid="sync-details"], [data-review-issues]')) syncDetailsOpen = false;
   }
   function headerKey(event: KeyboardEvent) {
     if (event.key !== 'Escape' || (!syncDetailsOpen && !overflowOpen)) return;
     event.preventDefault(); event.stopPropagation();
     if (overflowOpen) overflowButton?.focus();
-    else document.querySelector<HTMLButtonElement>('[data-testid="sync-chip"]')?.focus();
+    else document.querySelector<HTMLButtonElement>('[data-testid="review-issues"]')?.focus();
     syncDetailsOpen = false; overflowOpen = false;
   }
 
@@ -570,7 +594,7 @@
         <button class="tab" aria-pressed={app.screen === s.id} disabled={!enabled(s)} onclick={() => (app.screen = s.id)} title="{s.label} (Alt+{s.key})">{s.label}</button>
       {/each}
     </nav>
-    <SyncChip bind:detailsOpen={syncDetailsOpen} />
+    <SyncChip bind:detailsOpen={syncDetailsOpen} onreview={openIssueReview} />
     <div class="right">
       <CheckUpdatesButton />
       <VersionChip />
@@ -584,7 +608,7 @@
       <button class="icon overflow-toggle" bind:this={overflowButton} data-testid="header-overflow" aria-label="More project actions" title="More project actions" aria-expanded={overflowOpen} aria-controls={overflowOpen ? 'header-overflow-panel' : undefined} onclick={() => overflowOpen = !overflowOpen}>…</button>
     </div>
     {/if}
-    {#if menuCollapsed}<SyncChip bind:detailsOpen={syncDetailsOpen} />{/if}
+    {#if menuCollapsed}<SyncChip bind:detailsOpen={syncDetailsOpen} onreview={openIssueReview} />{/if}
     {#if app.screen === 'canvas'}
       <button class="menu-toggle" aria-expanded={!menuCollapsed} onclick={toggleMenu}
         aria-label={menuCollapsed ? 'Expand GrainAtlas menu' : 'Collapse GrainAtlas menu'}
@@ -603,7 +627,7 @@
       {#if app.remote}<span class="faint small" data-testid="remote-name" title="{app.remote.server}/atlas/projects/{app.remote.projectId}/">{new URL(app.remote.server).host} · {app.remote.readOnly ? 'read-only' : 'local copy'}</span>{/if}
     </div>
   {/if}
-  {#if syncDetailsOpen && app.project}<SyncDetails />{/if}
+  {#if app.project}<SyncDetails open={syncDetailsOpen} onclose={reviewCanvas} />{/if}
   </div>{/if}
 
   <main class:layout-screen={app.screen === 'layout'} class:has-oversight={oversightSession.readOnly || !!oversightSession.owner(app.server, app.project?.uuid)}>
@@ -627,7 +651,7 @@
           </div>
         {/if}
         {#if app.error}
-          <div class="glass toast" role="alert"><span>{app.error}</span><button class="icon" onclick={() => app.error = null} aria-label="Dismiss" title="Dismiss">✕</button></div>
+          <div class="glass toast" role="alert"><span>{app.error}</span>{#if app.error.startsWith(SYNC_CLOSE_ERROR) || app.sync.error && app.error === app.sync.errorHeadline}<button data-review-issues onclick={openIssueReview}>Review issues</button>{/if}<button class="icon" onclick={() => app.error = null} aria-label="Dismiss" title="Dismiss">✕</button></div>
         {/if}
       </div>
     {/if}
